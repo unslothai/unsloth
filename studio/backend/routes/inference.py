@@ -163,6 +163,19 @@ async def load_model(
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
 
+        # Shut down any export subprocess to free VRAM
+        try:
+            from core.export import get_export_backend
+            exp_backend = get_export_backend()
+            if exp_backend.current_checkpoint:
+                logger.info("Shutting down export subprocess to free GPU memory for inference")
+                exp_backend._shutdown_subprocess()
+                exp_backend.current_checkpoint = None
+                exp_backend.is_vision = False
+                exp_backend.is_peft = False
+        except Exception as e:
+            logger.warning("Could not shut down export subprocess: %s", e)
+
         # Auto-detect quantization for LoRA adapters from adapter_config.json
         # The training pipeline patches this file with "unsloth_training_method"
         # which is 'qlora' or 'lora'. Only LoRA (16-bit) needs load_in_4bit=False.

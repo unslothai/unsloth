@@ -63,6 +63,32 @@ async def load_checkpoint(
     try:
         # Version switching is handled automatically by the subprocess-based
         # export backend — no need for ensure_transformers_version() here.
+
+        # Free GPU memory: shut down any running inference/training subprocesses
+        # before loading the export checkpoint (they'd compete for VRAM).
+        try:
+            from core.inference import get_inference_backend
+            inf = get_inference_backend()
+            if inf.active_model_name:
+                logger.info(
+                    "Unloading inference model '%s' to free GPU memory for export",
+                    inf.active_model_name,
+                )
+                inf._shutdown_subprocess()
+                inf.active_model_name = None
+                inf.models.clear()
+        except Exception as e:
+            logger.warning("Could not unload inference model: %s", e)
+
+        try:
+            from core.training import get_training_backend
+            trn = get_training_backend()
+            if trn.is_training_active():
+                logger.info("Stopping active training to free GPU memory for export")
+                trn.stop_training()
+        except Exception as e:
+            logger.warning("Could not stop training: %s", e)
+
         backend = get_export_backend()
         success, message = backend.load_checkpoint(
             checkpoint_path=request.checkpoint_path,
