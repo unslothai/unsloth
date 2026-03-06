@@ -7,6 +7,9 @@ from typing import Optional, Dict, Any
 from utils.paths import normalize_path, is_local_path, is_model_cached
 from utils.utils import without_hf_auth
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Tuple
 import json
@@ -366,74 +369,115 @@ def load_model_config(model_name: str, use_auth: bool = False, token: Optional[s
     )
 
 
-def _fetch_raw_config(model_name: str, token: Optional[str] = None) -> Optional[dict]:
-    """Fetch raw config.json without going through AutoConfig.
-
-    This bypasses AutoConfig's architecture registry, so it works for model
-    architectures that the installed transformers version doesn't recognize
-    (e.g. ``glm4_moe_lite`` from transformers 5.x running with 4.57.x).
-
-    Checks local path first, then falls back to HuggingFace Hub download.
-    """
-    # --- Local path ---
-    local_path = Path(model_name)
-    config_path = local_path / "config.json"
-    if config_path.is_file():
-        try:
-            with open(config_path) as f:
-                return json.load(f)
-        except Exception as exc:
-            logger.debug("Could not read local config.json for %s: %s", model_name, exc)
-
-    # --- HuggingFace Hub ---
-    try:
-        from huggingface_hub import hf_hub_download
-        config_file = hf_hub_download(
-            repo_id=model_name,
-            filename="config.json",
-            token=token,
-        )
-        with open(config_file) as f:
-            return json.load(f)
-    except Exception as exc:
-        logger.debug("Could not fetch config.json from Hub for %s: %s", model_name, exc)
-
-    return None
-
-
-# VLM architecture suffixes and known VLM model_type values — shared between
-# the AutoConfig path and the raw-config fallback.
+# VLM architecture suffixes and known VLM model_type values.
 _VLM_ARCH_SUFFIXES = ("ForConditionalGeneration", "ForVisionText2Text")
 _VLM_MODEL_TYPES = {
     'phi3_v', 'llava', 'llava_next', 'llava_onevision',
     'internvl_chat', 'cogvlm2', 'minicpmv',
 }
 
+# Pre-computed project root and .venv_t5 path for subprocess version switching.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
+_VENV_T5_DIR = os.path.join(_PROJECT_ROOT, ".venv_t5")
+_BACKEND_DIR = os.path.join(_PROJECT_ROOT, "studio", "backend")
 
-def _is_vision_from_raw_config(config: dict) -> bool:
-    """Check vision indicators in a raw ``config.json`` dict."""
-    # Architecture class name patterns
-    architectures = config.get("architectures", [])
-    if any(a.endswith(_VLM_ARCH_SUFFIXES) for a in architectures):
-        return True
+# Inline script executed in a subprocess with transformers 5.x activated.
+# Receives model_name and token via argv, prints JSON result to stdout.
+_VISION_CHECK_SCRIPT = r'''
+import sys, os, json
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    # Has vision_config (most VLMs: LLaVA, Gemma-3, Qwen2-VL, etc.)
-    if "vision_config" in config:
-        return True
+# Activate transformers 5.x
+venv_t5 = sys.argv[1]
+backend_dir = sys.argv[2]
+model_name = sys.argv[3]
+token = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "" else None
 
-    # Has img_processor (Phi-3.5 Vision)
-    if "img_processor" in config:
-        return True
+sys.path.insert(0, venv_t5)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
 
-    # Has image_token_index
-    if "image_token_index" in config:
-        return True
+try:
+    from transformers import AutoConfig
+    kwargs = {"trust_remote_code": True}
+    if token:
+        kwargs["token"] = token
+    config = AutoConfig.from_pretrained(model_name, **kwargs)
 
-    # Known VLM model_type values
-    if config.get("model_type") in _VLM_MODEL_TYPES:
-        return True
+    is_vlm = False
+    if hasattr(config, "architectures"):
+        is_vlm = any(
+            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+            for x in config.architectures
+        )
+    if not is_vlm and hasattr(config, "vision_config"):
+        is_vlm = True
+    if not is_vlm and hasattr(config, "img_processor"):
+        is_vlm = True
+    if not is_vlm and hasattr(config, "image_token_index"):
+        is_vlm = True
+    if not is_vlm and hasattr(config, "model_type"):
+        vlm_types = {"phi3_v","llava","llava_next","llava_onevision",
+                      "internvl_chat","cogvlm2","minicpmv"}
+        if config.model_type in vlm_types:
+            is_vlm = True
 
-    return False
+    model_type = getattr(config, "model_type", "unknown")
+    archs = getattr(config, "architectures", [])
+    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+                       "architectures": archs}))
+except Exception as exc:
+    print(json.dumps({"error": str(exc)}))
+    sys.exit(1)
+'''
+
+
+def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> bool:
+    """Run is_vision_model check in a subprocess with transformers 5.x.
+
+    Same pattern as training/inference workers: spawn a clean subprocess
+    with .venv_t5/ prepended to sys.path so AutoConfig recognizes newer
+    architectures (glm4_moe_lite, etc.).
+    """
+    token_arg = hf_token or ""
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _VISION_CHECK_SCRIPT,
+             _VENV_T5_DIR, _BACKEND_DIR, model_name, token_arg],
+            capture_output=True, text=True, timeout=60,
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            logger.warning(
+                "Vision check subprocess failed for '%s': %s",
+                model_name, stderr or result.stdout.strip(),
+            )
+            return False
+
+        data = json.loads(result.stdout.strip())
+        if "error" in data:
+            logger.warning(
+                "Vision check subprocess error for '%s': %s",
+                model_name, data["error"],
+            )
+            return False
+
+        is_vlm = data["is_vision"]
+        logger.info(
+            "Vision check (subprocess, transformers 5.x) for '%s': "
+            "model_type=%s, architectures=%s, is_vision=%s",
+            model_name, data.get("model_type"), data.get("architectures"), is_vlm,
+        )
+        return is_vlm
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Vision check subprocess timed out for '%s'", model_name)
+        return False
+    except Exception as exc:
+        logger.warning("Vision check subprocess failed for '%s': %s", model_name, exc)
+        return False
 
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -441,14 +485,25 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Detect vision-language models (VLMs) by checking architecture in config.
     Works for fine-tuned models since they inherit the base architecture.
 
-    For models whose architecture is not recognized by the installed
-    transformers version (e.g. transformers 5.x models running with 4.57.x),
-    falls back to reading config.json directly.
+    For models that require transformers 5.x (e.g. GLM-4.7-Flash), the check
+    runs in a subprocess with .venv_t5/ activated — same pattern as the
+    training and inference workers.
 
     Args:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
     """
+    # Models that need transformers 5.x must be checked in a subprocess
+    # because AutoConfig in the main process (transformers 4.57.x) doesn't
+    # recognize their architectures.
+    from utils.transformers_version import needs_transformers_5
+    if needs_transformers_5(model_name):
+        logger.info(
+            "Model '%s' needs transformers 5.x — checking vision via subprocess",
+            model_name,
+        )
+        return _is_vision_model_subprocess(model_name, hf_token=hf_token)
+
     try:
         config = load_model_config(model_name, use_auth=True, token=hf_token)
 
@@ -486,25 +541,6 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return False
 
     except Exception as e:
-        # AutoConfig may fail for architectures that the installed transformers
-        # version doesn't recognize (e.g. glm4_moe_lite needs transformers 5.x
-        # but we're running 4.57.x in the main process).  Fall back to reading
-        # config.json directly and checking for vision indicators.
-        logger.debug(
-            "AutoConfig failed for %s (%s), trying raw config.json fallback",
-            model_name, e,
-        )
-
-        raw_config = _fetch_raw_config(model_name, token=hf_token)
-        if raw_config is not None:
-            is_vlm = _is_vision_from_raw_config(raw_config)
-            model_type = raw_config.get("model_type", "unknown")
-            logger.info(
-                "Raw config fallback for %s: model_type=%s, is_vision=%s",
-                model_name, model_type, is_vlm,
-            )
-            return is_vlm
-
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
         return False
 
