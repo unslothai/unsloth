@@ -146,12 +146,13 @@ class ExportOrchestrator:
             return None
 
     def _wait_response(
-        self, expected_type: str, timeout: float = 600.0
+        self, expected_type: str, timeout: float = 3600.0
     ) -> dict:
         """Block until a response of the expected type arrives.
 
-        Export operations can take a long time (GGUF build, push to Hub),
-        so default timeout is 10 minutes.
+        Export operations can take a very long time — GGUF conversion for
+        large models (30B+) easily takes 20-30 minutes. Default timeout
+        is 1 hour.
         """
         deadline = time.monotonic() + timeout
 
@@ -335,7 +336,7 @@ class ExportOrchestrator:
             self._send_cmd(cmd)
             resp = self._wait_response(
                 f"export_{export_type}_done",
-                timeout=600,  # Export can take a long time
+                timeout=3600,  # GGUF for 30B+ models can take 30+ min
             )
             return resp.get("success", False), resp.get("message", "")
         except RuntimeError as exc:
