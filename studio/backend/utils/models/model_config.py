@@ -364,13 +364,86 @@ def load_model_config(model_name: str, use_auth: bool = False, token: Optional[s
         model_name,
         trust_remote_code=True
     )
-pass
+
+
+def _fetch_raw_config(model_name: str, token: Optional[str] = None) -> Optional[dict]:
+    """Fetch raw config.json without going through AutoConfig.
+
+    This bypasses AutoConfig's architecture registry, so it works for model
+    architectures that the installed transformers version doesn't recognize
+    (e.g. ``glm4_moe_lite`` from transformers 5.x running with 4.57.x).
+
+    Checks local path first, then falls back to HuggingFace Hub download.
+    """
+    # --- Local path ---
+    local_path = Path(model_name)
+    config_path = local_path / "config.json"
+    if config_path.is_file():
+        try:
+            with open(config_path) as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.debug("Could not read local config.json for %s: %s", model_name, exc)
+
+    # --- HuggingFace Hub ---
+    try:
+        from huggingface_hub import hf_hub_download
+        config_file = hf_hub_download(
+            repo_id=model_name,
+            filename="config.json",
+            token=token,
+        )
+        with open(config_file) as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.debug("Could not fetch config.json from Hub for %s: %s", model_name, exc)
+
+    return None
+
+
+# VLM architecture suffixes and known VLM model_type values — shared between
+# the AutoConfig path and the raw-config fallback.
+_VLM_ARCH_SUFFIXES = ("ForConditionalGeneration", "ForVisionText2Text")
+_VLM_MODEL_TYPES = {
+    'phi3_v', 'llava', 'llava_next', 'llava_onevision',
+    'internvl_chat', 'cogvlm2', 'minicpmv',
+}
+
+
+def _is_vision_from_raw_config(config: dict) -> bool:
+    """Check vision indicators in a raw ``config.json`` dict."""
+    # Architecture class name patterns
+    architectures = config.get("architectures", [])
+    if any(a.endswith(_VLM_ARCH_SUFFIXES) for a in architectures):
+        return True
+
+    # Has vision_config (most VLMs: LLaVA, Gemma-3, Qwen2-VL, etc.)
+    if "vision_config" in config:
+        return True
+
+    # Has img_processor (Phi-3.5 Vision)
+    if "img_processor" in config:
+        return True
+
+    # Has image_token_index
+    if "image_token_index" in config:
+        return True
+
+    # Known VLM model_type values
+    if config.get("model_type") in _VLM_MODEL_TYPES:
+        return True
+
+    return False
 
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """
     Detect vision-language models (VLMs) by checking architecture in config.
     Works for fine-tuned models since they inherit the base architecture.
+
+    For models whose architecture is not recognized by the installed
+    transformers version (e.g. transformers 5.x models running with 4.57.x),
+    falls back to reading config.json directly.
 
     Args:
         model_name: Model identifier (HF repo or local path)
@@ -382,7 +455,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         # Check 1: Architecture class name patterns
         if hasattr(config, 'architectures'):
             is_vlm = any(
-                x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+                x.endswith(_VLM_ARCH_SUFFIXES)
                 for x in config.architectures
             )
             if is_vlm:
@@ -406,20 +479,34 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
         # Check 5: Known VLM model_type values that may not match above checks
         if hasattr(config, 'model_type'):
-            vlm_model_types = {
-                'phi3_v', 'llava', 'llava_next', 'llava_onevision',
-                'internvl_chat', 'cogvlm2', 'minicpmv',
-            }
-            if config.model_type in vlm_model_types:
+            if config.model_type in _VLM_MODEL_TYPES:
                 logger.info(f"Model {model_name} detected as VLM: model_type={config.model_type}")
                 return True
 
         return False
 
     except Exception as e:
+        # AutoConfig may fail for architectures that the installed transformers
+        # version doesn't recognize (e.g. glm4_moe_lite needs transformers 5.x
+        # but we're running 4.57.x in the main process).  Fall back to reading
+        # config.json directly and checking for vision indicators.
+        logger.debug(
+            "AutoConfig failed for %s (%s), trying raw config.json fallback",
+            model_name, e,
+        )
+
+        raw_config = _fetch_raw_config(model_name, token=hf_token)
+        if raw_config is not None:
+            is_vlm = _is_vision_from_raw_config(raw_config)
+            model_type = raw_config.get("model_type", "unknown")
+            logger.info(
+                "Raw config fallback for %s: model_type=%s, is_vision=%s",
+                model_name, model_type, is_vlm,
+            )
+            return is_vlm
+
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
         return False
-pass
 
 
 def _is_mmproj(filename: str) -> bool:
