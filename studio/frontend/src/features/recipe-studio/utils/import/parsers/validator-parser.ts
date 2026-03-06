@@ -1,16 +1,17 @@
 import type { ValidatorConfig } from "../../../types";
 import { readNumberString } from "../helpers";
 import { normalizeValidatorCodeLang } from "../../validators/code-lang";
+import { normalizeOxcCodeShape } from "../../validators/oxc-code-shape";
 import { normalizeOxcValidationMode } from "../../validators/oxc-mode";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
 function parseOxcValidationMarker(
   validationFunctionRaw: string,
-): { codeLang: string; mode: string } {
+): { codeLang: string; mode: string; codeShape: string } {
   const marker = `${OXC_VALIDATION_FN_MARKER}:`;
   if (!validationFunctionRaw.startsWith(marker)) {
-    return { codeLang: "", mode: "syntax" };
+    return { codeLang: "", mode: "syntax", codeShape: "auto" };
   }
   const parts = validationFunctionRaw
     .slice(marker.length)
@@ -18,11 +19,12 @@ function parseOxcValidationMarker(
     .map((value) => value.trim())
     .filter(Boolean);
   if (parts.length < 2) {
-    return { codeLang: "", mode: "syntax" };
+    return { codeLang: "", mode: "syntax", codeShape: "auto" };
   }
   return {
     codeLang: parts[0],
     mode: parts[1],
+    codeShape: parts[2] ?? "auto",
   };
 }
 
@@ -50,7 +52,7 @@ export function parseValidator(
     validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER);
   const marker = isOxc
     ? parseOxcValidationMarker(validationFunctionRaw)
-    : { codeLang: "", mode: "syntax" };
+    : { codeLang: "", mode: "syntax", codeShape: "auto" };
   return {
     id,
     kind: "validator",
@@ -66,6 +68,9 @@ export function parseValidator(
     oxc_validation_mode: isOxc
       ? normalizeOxcValidationMode(marker.mode)
       : "syntax",
+    oxc_code_shape: isOxc
+      ? normalizeOxcCodeShape(marker.codeShape)
+      : "auto",
     batch_size: readNumberString(column.batch_size) || "10",
   };
 }

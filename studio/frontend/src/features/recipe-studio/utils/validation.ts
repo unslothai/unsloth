@@ -1,6 +1,7 @@
 import type { NodeConfig } from "../types";
 import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse";
 import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";
+import { isOxcCodeShape } from "./validators/oxc-code-shape";
 import { isOxcValidationMode } from "./validators/oxc-mode";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
@@ -213,6 +214,9 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       }
       if (!isOxcValidationMode(config.oxc_validation_mode)) {
         errors.push("OXC validation mode must be syntax, lint, or syntax+lint.");
+      }
+      if (!isOxcCodeShape(config.oxc_code_shape)) {
+        errors.push("OXC code shape must be auto, module, or snippet.");
       }
     } else if (
       config.code_lang !== "python" &&
