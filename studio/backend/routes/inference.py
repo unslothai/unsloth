@@ -785,3 +785,40 @@ async def openai_chat_completions(
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# OpenAI-Compatible Models Listing  (/models → /v1/models)
+# =====================================================================
+
+@router.get("/models")
+async def openai_list_models(
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    OpenAI-compatible model listing endpoint.
+
+    Returns the currently loaded model in the format expected by
+    OpenAI-compatible clients (``GET /v1/models``).
+    """
+    models = []
+
+    # Check GGUF backend
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded:
+        models.append({
+            "id": llama_backend.model_identifier,
+            "object": "model",
+            "owned_by": "local",
+        })
+
+    # Check Unsloth backend
+    backend = get_inference_backend()
+    if backend.active_model_name:
+        models.append({
+            "id": backend.active_model_name,
+            "object": "model",
+            "owned_by": "local",
+        })
+
+    return {"object": "list", "data": models}
