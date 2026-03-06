@@ -179,7 +179,7 @@ if [ "$IS_COLAB" = true ]; then
 else
     # Local: create venv (always start fresh to preserve correct install order)
     rm -rf .venv
-    rm -rf .venv_overlay  # Clean up stale transformers version overlay
+    rm -rf .venv_overlay  # Remove legacy overlay (no longer used)
     rm -rf .venv_t5       # Will be rebuilt below
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
