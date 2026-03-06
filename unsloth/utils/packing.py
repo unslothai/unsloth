@@ -264,7 +264,7 @@ def build_xformers_block_causal_mask(
             and _XFORMERS_BLOCK_MASK_CACHE["params"] == params
         ):
             return _XFORMERS_BLOCK_MASK_CACHE["mask"]
-        
+
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
         if lengths_tensor.numel() == 0:
             return None
@@ -297,7 +297,10 @@ def build_sdpa_packed_attention_mask(
     seq_lengths, _, _ = seq_info
 
     params = (dtype, device, sliding_window)
-    if _SDPA_MASK_CACHE["seq_lengths"] is seq_lengths and _SDPA_MASK_CACHE["params"] == params:
+    if (
+        _SDPA_MASK_CACHE["seq_lengths"] is seq_lengths
+        and _SDPA_MASK_CACHE["params"] == params
+    ):
         return _SDPA_MASK_CACHE["mask"]
 
     total_tokens = int(seq_lengths.sum().item())
@@ -328,7 +331,7 @@ def build_sdpa_packed_attention_mask(
             block = block.masked_fill(window_mask, float("-inf"))
         mask[offset : offset + length, offset : offset + length] = block
         offset += length
-    
+
     result = mask.unsqueeze(0).unsqueeze(0)
     _SDPA_MASK_CACHE["seq_lengths"] = seq_lengths
     _SDPA_MASK_CACHE["params"] = params
