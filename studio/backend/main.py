@@ -36,8 +36,8 @@ async def lifespan(app: FastAPI):
     # Clean up any stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
 
-    # Remove stale .venv_overlay from previous sessions — it will be
-    # rebuilt at runtime if a model needs transformers 5.x
+    # Remove stale .venv_overlay from previous versions — no longer used.
+    # Version switching now uses .venv_t5/ (pre-installed by setup.sh).
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors=True)
