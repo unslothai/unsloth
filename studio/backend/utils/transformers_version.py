@@ -8,21 +8,20 @@ default 4.57.x that ships with Unsloth.
 When loading a LoRA adapter with a custom name, we resolve the base model from
 ``adapter_config.json`` and check *that* against the model list.
 
-Strategy (sys.path overlay):
-  • The default transformers (4.57.x) always lives in site-packages.
-  • When 5.x is needed, we ``pip install --target <dir> --no-deps`` to a
-    separate directory and **prepend** it to ``sys.path``.
-  • To revert, we simply **remove** that directory from ``sys.path``.
-  • After either change we purge cached modules so the next import picks
-    up the correct version.
+Strategy:
+  Training and inference run in subprocesses that activate the correct version
+  via sys.path (prepending .venv_t5/ for 5.x models). See:
+    - core/training/worker.py
+    - core/inference/worker.py
+
+  For export (still in-process), ensure_transformers_version() does a lightweight
+  sys.path swap using the same .venv_t5/ directory pre-installed by setup.sh.
 """
 
 import importlib
-import importlib.metadata
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -56,9 +55,9 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
 TRANSFORMERS_5_VERSION = "5.1.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.1"
 
-# Persistent directory for the transformers 5.x overlay — lives next to .venv/
+# Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # studio/backend/utils/ → project root
-_OVERLAY_DIR = str(_PROJECT_ROOT / ".venv_overlay")
+_VENV_T5_DIR = str(_PROJECT_ROOT / ".venv_t5")
 
 
 def _resolve_base_model(model_name: str) -> str:
@@ -116,7 +115,7 @@ def needs_transformers_5(model_name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Version switching
+# Version switching (in-process — used only by export)
 # ---------------------------------------------------------------------------
 
 def _get_in_memory_version() -> str | None:
@@ -165,66 +164,37 @@ def _purge_modules() -> int:
     return len(to_remove)
 
 
-# Packages to install into the overlay (each with --no-deps).
-_OVERLAY_PACKAGES = (
-    f"transformers=={TRANSFORMERS_5_VERSION}",
-    "huggingface_hub>=1.3.0,<2.0",
-)
+def _ensure_venv_t5_exists() -> bool:
+    """Ensure .venv_t5/ exists. Install at runtime if missing."""
+    if os.path.isdir(_VENV_T5_DIR) and os.listdir(_VENV_T5_DIR):
+        return True
 
-
-def _install_overlay() -> None:
-    """Install transformers 5.x into BOTH site-packages and the overlay
-    directory, then prepend the overlay to ``sys.path``.
-
-    We install into site-packages so that:
-      - ``importlib.metadata.version()`` returns the correct version
-      - sub-package resolution (``transformers.models.*``) uses 5.x code
-    The overlay is kept as a safety net for sys.path-based resolution.
-    """
-    # --- 1. Install into site-packages (updates code + metadata) -----------
-    for pkg in _OVERLAY_PACKAGES:
-        cmd = [sys.executable, "-m", "pip", "install", pkg]
-        logger.info("Installing %s into site-packages: %s", pkg, " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+    logger.warning(".venv_t5 not found at %s — installing at runtime", _VENV_T5_DIR)
+    os.makedirs(_VENV_T5_DIR, exist_ok=True)
+    for pkg in (f"transformers=={TRANSFORMERS_5_VERSION}", "huggingface_hub>=1.3.0"):
+        cmd = [
+            sys.executable, "-m", "pip", "install",
+            "--target", _VENV_T5_DIR,
+            "--no-deps",
+            pkg,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if result.returncode != 0:
             logger.error("pip install failed:\n%s", result.stdout)
-            raise RuntimeError(
-                f"Failed to install {pkg}.\npip output:\n{result.stdout}"
-            )
-    logger.info("Site-packages install succeeded")
+            return False
+    logger.info("Installed transformers 5.x to %s", _VENV_T5_DIR)
+    return True
 
-    # --- 2. Install into overlay (safety net for sys.path resolution) ------
-    needs_overlay = (
-        not os.path.isdir(_OVERLAY_DIR)
-        or not os.listdir(_OVERLAY_DIR)
-        or not os.path.isdir(os.path.join(_OVERLAY_DIR, "huggingface_hub"))
-    )
-    if needs_overlay:
-        if os.path.isdir(_OVERLAY_DIR):
-            shutil.rmtree(_OVERLAY_DIR)
-        os.makedirs(_OVERLAY_DIR, exist_ok=True)
-        for pkg in _OVERLAY_PACKAGES:
-            cmd = [
-                sys.executable, "-m", "pip", "install",
-                "--target", _OVERLAY_DIR,
-                "--no-deps",
-                pkg,
-            ]
-            logger.info("Installing %s to overlay: %s", pkg, " ".join(cmd))
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        logger.info("Overlay install succeeded")
 
-    # Prepend to sys.path (if not already there)
-    if _OVERLAY_DIR not in sys.path:
-        sys.path.insert(0, _OVERLAY_DIR)
-        logger.info("Prepended %s to sys.path", _OVERLAY_DIR)
+def _activate_5x() -> None:
+    """Prepend .venv_t5/ to sys.path, purge stale modules, reimport."""
+    if not _ensure_venv_t5_exists():
+        raise RuntimeError(f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}")
 
-    # --- 3. Purge old modules and force fresh import -----------------------
+    if _VENV_T5_DIR not in sys.path:
+        sys.path.insert(0, _VENV_T5_DIR)
+        logger.info("Prepended %s to sys.path", _VENV_T5_DIR)
+
     count = _purge_modules()
     logger.info("Purged %d cached modules", count)
 
@@ -232,32 +202,12 @@ def _install_overlay() -> None:
     logger.info("Loaded transformers %s", transformers.__version__)
 
 
-def _remove_overlay() -> None:
-    """Revert to the default transformers (4.57.x) by restoring site-packages
-    and removing the overlay from ``sys.path``."""
-    # --- 1. Restore default versions in site-packages ----------------------
-    default_packages = (
-        f"transformers=={TRANSFORMERS_DEFAULT_VERSION}",
-        "huggingface_hub==0.36.0",
-    )
-    for pkg in default_packages:
-        cmd = [sys.executable, "-m", "pip", "install", pkg]
-        logger.info("Restoring %s in site-packages: %s", pkg, " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if result.returncode != 0:
-            logger.error("pip install failed:\n%s", result.stdout)
+def _deactivate_5x() -> None:
+    """Remove .venv_t5/ from sys.path, purge stale modules, reimport."""
+    while _VENV_T5_DIR in sys.path:
+        sys.path.remove(_VENV_T5_DIR)
+    logger.info("Removed %s from sys.path", _VENV_T5_DIR)
 
-    # --- 2. Remove overlay from sys.path -----------------------------------
-    while _OVERLAY_DIR in sys.path:
-        sys.path.remove(_OVERLAY_DIR)
-    logger.info("Removed %s from sys.path", _OVERLAY_DIR)
-
-    # --- 3. Purge old modules and force fresh import -----------------------
     count = _purge_modules()
     logger.info("Purged %d cached modules", count)
 
@@ -268,15 +218,15 @@ def _remove_overlay() -> None:
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is active for *model_name*.
 
-    Uses sys.path overlay:
-      • Need 5.x → install to separate dir, prepend sys.path, purge modules.
-      • Need 4.x → remove overlay from sys.path, purge modules.
+    Uses sys.path with .venv_t5/ (pre-installed by setup.sh):
+      • Need 5.x → prepend .venv_t5/ to sys.path, purge modules.
+      • Need 4.x → remove .venv_t5/ from sys.path, purge modules.
 
     For LoRA adapters with custom names, the base model is resolved from
     ``adapter_config.json`` before checking.
 
-    Call this at the top of every model-loading code path (training ``/start``,
-    inference ``/load``, export ``/load-checkpoint``).
+    NOTE: Training and inference use subprocess isolation instead of this
+    function. This is only used by the export path (routes/export.py).
     """
     # Resolve LoRA adapters to their base model for accurate detection
     resolved = _resolve_base_model(model_name)
@@ -286,12 +236,10 @@ def ensure_transformers_version(model_name: str) -> None:
 
     # Check what's actually loaded in memory
     in_memory = _get_in_memory_version()
-    overlay_active = _OVERLAY_DIR in sys.path
 
     logger.info(
-        "Version check for '%s' (resolved: '%s'): need=%s, "
-        "in_memory=%s, overlay_active=%s",
-        model_name, resolved, target_version, in_memory, overlay_active,
+        "Version check for '%s' (resolved: '%s'): need=%s, in_memory=%s",
+        model_name, resolved, target_version, in_memory,
     )
 
     # --- Already correct? ---------------------------------------------------
@@ -306,11 +254,11 @@ def ensure_transformers_version(model_name: str) -> None:
 
     # --- Switch version -----------------------------------------------------
     if want_5:
-        logger.info("Activating transformers %s overlay…", TRANSFORMERS_5_VERSION)
-        _install_overlay()
+        logger.info("Activating transformers %s via .venv_t5…", TRANSFORMERS_5_VERSION)
+        _activate_5x()
     else:
         logger.info("Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION)
-        _remove_overlay()
+        _deactivate_5x()
 
     final = _get_in_memory_version()
     logger.info("✓ transformers version is now %s", final)
