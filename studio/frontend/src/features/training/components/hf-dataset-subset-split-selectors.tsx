@@ -48,33 +48,34 @@ export function HfDatasetSubsetSplitSelectors({
   const {
     subsets: hfSubsets,
     splits: hfSplits,
-    hasMultipleSubsets,
     isLoading,
     error,
   } = useHfDatasetSplits(enabled ? datasetName : null, datasetSubset, {
     accessToken,
   });
 
+  // Auto-select subset and split in one pass to avoid racing effects
   useEffect(() => {
-    if (hfSubsets.length === 1 && datasetSubset !== hfSubsets[0]) {
-      setDatasetSubset(hfSubsets[0]);
-    }
-  }, [hfSubsets, datasetSubset, setDatasetSubset]);
+    if (hfSubsets.length === 0) return;
 
-  useEffect(() => {
+    // --- subset ---
+    if (!datasetSubset || !hfSubsets.includes(datasetSubset)) {
+      const pick = hfSubsets.includes("default") ? "default" : hfSubsets[0];
+      setDatasetSubset(pick);
+      return;
+    }
+
+    // --- split (only once subset is settled) ---
     if (hfSplits.length === 0) return;
-    if (hasMultipleSubsets && !datasetSubset) return;
-    if (hfSplits.length === 1 && datasetSplit !== hfSplits[0]) {
-      setDatasetSplit(hfSplits[0]);
-    } else if (!datasetSplit && hfSplits.includes("train")) {
-      setDatasetSplit("train");
-    } else if (!datasetSplit) {
-      setDatasetSplit(hfSplits[0]);
+    if (!datasetSplit || !hfSplits.includes(datasetSplit)) {
+      const pick = hfSplits.includes("train") ? "train" : hfSplits[0];
+      setDatasetSplit(pick);
     }
   }, [
+    hfSubsets,
     hfSplits,
-    hasMultipleSubsets,
     datasetSubset,
+    setDatasetSubset,
     datasetSplit,
     setDatasetSplit,
   ]);
