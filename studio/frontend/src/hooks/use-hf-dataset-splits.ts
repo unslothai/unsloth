@@ -86,6 +86,14 @@ export function useHfDatasetSplits(
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  
+  const [prevDatasetName, setPrevDatasetName] = useState(datasetName);
+  if (datasetName !== prevDatasetName) {
+    setPrevDatasetName(datasetName);
+    setEntries([]);
+    setError(null);
+  }
+
   const accessToken = options?.accessToken;
 
   const fetchSplits = useCallback(
