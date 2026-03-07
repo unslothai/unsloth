@@ -240,6 +240,9 @@ class ExportOrchestrator:
             resp = self._wait_response("loaded", timeout=300)
         except RuntimeError as exc:
             self._shutdown_subprocess(timeout=5)
+            self.current_checkpoint = None
+            self.is_vision = False
+            self.is_peft = False
             return False, str(exc)
 
         if resp.get("success"):
@@ -251,6 +254,9 @@ class ExportOrchestrator:
         else:
             error = resp.get("message", "Failed to load checkpoint")
             logger.error("Failed to load checkpoint: %s", error)
+            self.current_checkpoint = None
+            self.is_vision = False
+            self.is_peft = False
             return False, error
 
     def export_merged_model(
