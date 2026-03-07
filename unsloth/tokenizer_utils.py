@@ -660,13 +660,16 @@ def _fix_chat_template(chat_template):
 
     # Case 1: nothing after endfor - template was saved without generation prompt
     if (
-        (after_endfor == "" or after_endfor.strip() == "")
-        and "add_generation_prompt" not in chat_template
-    ):
+        after_endfor == "" or after_endfor.strip() == ""
+    ) and "add_generation_prompt" not in chat_template:
         after_endfor = (
-            "{%" + dash + " if add_generation_prompt %}"
+            "{%"
+            + dash
+            + " if add_generation_prompt %}"
             + "{{ '<|im_start|>assistant\\n' }}"
-            + "{%" + dash + " endif %}"
+            + "{%"
+            + dash
+            + " endif %}"
         )
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
         return chat_template
