@@ -2,7 +2,7 @@
 Automatic transformers version switching.
 
 Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
-tiny_qwen3_moe) require transformers>=5.1.0, while everything else needs the
+tiny_qwen3_moe) require transformers>=5.2.0, while everything else needs the
 default 4.57.x that ships with Unsloth.
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
@@ -54,7 +54,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
 )
 
 # Versions
-TRANSFORMERS_5_VERSION = "5.1.0"
+TRANSFORMERS_5_VERSION = "5.2.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.1"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
@@ -111,7 +111,7 @@ def _resolve_base_model(model_name: str) -> str:
 
 def needs_transformers_5(model_name: str) -> bool:
     """Return True if *model_name* belongs to an architecture that requires
-    ``transformers>=5.1.0``."""
+    ``transformers>=5.2.0``."""
     lowered = model_name.lower()
     return any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS)
 
