@@ -46,7 +46,7 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
             os.makedirs(venv_t5, exist_ok=True)
             r1 = sp.run(
                 [sys.executable, "-m", "pip", "install", "--target", venv_t5,
-                 "--no-deps", "transformers==5.1.0"],
+                 "--no-deps", "transformers==5.2.0"],
                 stdout=sp.PIPE, stderr=sp.STDOUT,
             )
             r2 = sp.run(
