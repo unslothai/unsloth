@@ -377,7 +377,7 @@ _VLM_MODEL_TYPES = {
 }
 
 # Pre-computed project root and .venv_t5 path for subprocess version switching.
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent.parent)
 _VENV_T5_DIR = os.path.join(_PROJECT_ROOT, ".venv_t5")
 _BACKEND_DIR = os.path.join(_PROJECT_ROOT, "studio", "backend")
 
