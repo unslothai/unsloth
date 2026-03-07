@@ -221,23 +221,39 @@ def _deactivate_5x() -> None:
 # Tokenizer patches
 # ---------------------------------------------------------------------------
 
-# Some HF model uploads (e.g. Qwen3.5 family) ship with a broken
-# tokenizer_class value "TokenizersBackend" instead of the real class.
-# This causes llama.cpp's GGUF converter (and other tools) to fail.
-_TOKENIZER_CLASS_FIXES: dict[str, str] = {
-    "TokenizersBackend": "Qwen2Tokenizer",
+# Some HF model uploads ship with tokenizer_class "TokenizersBackend"
+# instead of the real class. This causes llama.cpp's GGUF converter to fail.
+# Map: lowered model substring → correct tokenizer_class.
+_TOKENIZER_CLASS_OVERRIDES: dict[str, str] = {
+    "qwen3.5": "Qwen2Tokenizer",
+    "glm-4.7": "PreTrainedTokenizer",
 }
+
+
+def _get_tokenizer_class_fix(model_name: str) -> str | None:
+    """Return the correct tokenizer_class for a model, or None if no fix needed."""
+    lowered = model_name.lower()
+    for substr, fixed_class in _TOKENIZER_CLASS_OVERRIDES.items():
+        if substr in lowered:
+            return fixed_class
+    return None
 
 
 def patch_tokenizer_config(model_dir: str, model_name: str = "") -> bool:
     """Fix known broken tokenizer_class values in tokenizer_config.json.
 
-    Only applies to Qwen3.5 models which ship with the wrong
-    tokenizer_class "TokenizersBackend" on HuggingFace.
+    Some HF uploads (Qwen3.5, GLM-4.7-Flash) ship with
+    tokenizer_class "TokenizersBackend" which breaks GGUF conversion.
+    Modifies the file in-place. Requires model_name to determine the
+    correct replacement class.
 
-    Modifies the file in-place. Returns True if a patch was applied.
+    Returns True if a patch was applied.
     """
-    if model_name and "qwen3.5" not in model_name.lower():
+    if not model_name:
+        return False
+
+    fixed_class = _get_tokenizer_class_fix(model_name)
+    if not fixed_class:
         return False
 
     config_path = os.path.join(model_dir, "tokenizer_config.json")
@@ -249,13 +265,12 @@ def patch_tokenizer_config(model_dir: str, model_name: str = "") -> bool:
             config = json.load(f)
 
         tok_class = config.get("tokenizer_class", "")
-        if tok_class in _TOKENIZER_CLASS_FIXES:
-            fixed = _TOKENIZER_CLASS_FIXES[tok_class]
+        if tok_class == "TokenizersBackend":
             logger.warning(
                 "Patching tokenizer_class: '%s' → '%s' in %s",
-                tok_class, fixed, config_path,
+                tok_class, fixed_class, config_path,
             )
-            config["tokenizer_class"] = fixed
+            config["tokenizer_class"] = fixed_class
             with open(config_path, "w") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
             return True
@@ -268,25 +283,29 @@ def patch_tokenizer_config(model_dir: str, model_name: str = "") -> bool:
 def patch_tokenizer_in_memory(tokenizer, model_name: str = "") -> bool:
     """Fix known broken tokenizer_class on an in-memory tokenizer object.
 
-    Only applies to Qwen3.5 models which ship with the wrong
-    tokenizer_class "TokenizersBackend" on HuggingFace. Patches it so
-    that save_pretrained() writes a corrected tokenizer_config.json.
+    Some HF uploads (Qwen3.5, GLM-4.7-Flash) ship with
+    tokenizer_class "TokenizersBackend". Patches init_kwargs so that
+    save_pretrained() writes a corrected tokenizer_config.json.
+    Requires model_name to determine the correct replacement class.
 
     Returns True if a patch was applied.
     """
-    if model_name and "qwen3.5" not in model_name.lower():
+    if not model_name:
+        return False
+
+    fixed_class = _get_tokenizer_class_fix(model_name)
+    if not fixed_class:
         return False
 
     try:
         init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
         tok_class = init_kwargs.get("tokenizer_class", "")
-        if tok_class in _TOKENIZER_CLASS_FIXES:
-            fixed = _TOKENIZER_CLASS_FIXES[tok_class]
+        if tok_class == "TokenizersBackend":
             logger.warning(
                 "Patching in-memory tokenizer_class: '%s' → '%s'",
-                tok_class, fixed,
+                tok_class, fixed_class,
             )
-            tokenizer.init_kwargs["tokenizer_class"] = fixed
+            tokenizer.init_kwargs["tokenizer_class"] = fixed_class
             return True
     except Exception as exc:
         logger.warning("Could not patch in-memory tokenizer: %s", exc)

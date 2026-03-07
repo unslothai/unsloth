@@ -151,9 +151,9 @@ class InferenceBackend:
                     token=hf_token if hf_token and hf_token.strip() else None,
                 )
 
-                # Patch broken tokenizer_class (Qwen3.5 "TokenizersBackend")
+                # Patch broken tokenizer_class (Qwen3.5/GLM "TokenizersBackend")
                 from utils.transformers_version import patch_tokenizer_in_memory
-                patch_tokenizer_in_memory(tokenizer, model_name=config.path)
+                patch_tokenizer_in_memory(tokenizer, model_name=model_name)
 
                 # Apply inference optimization
                 FastLanguageModel.for_inference(model)
