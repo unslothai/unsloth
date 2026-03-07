@@ -86,6 +86,14 @@ async def load_checkpoint(
             if trn.is_training_active():
                 logger.info("Stopping active training to free GPU memory for export")
                 trn.stop_training()
+                # Wait for training subprocess to actually exit before proceeding,
+                # otherwise it may still hold GPU memory when export tries to load.
+                for _ in range(60):  # up to 30s
+                    if not trn.is_training_active():
+                        break
+                    import time; time.sleep(0.5)
+                else:
+                    logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
         except Exception as e:
             logger.warning("Could not stop training: %s", e)
 

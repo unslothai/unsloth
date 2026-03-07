@@ -304,6 +304,7 @@ async def reset_training(
             )
 
         logger.info("Reset training state: clearing runtime + metric history")
+        backend._should_stop = False  # Clear stop flag so status returns to idle
         backend.trainer._update_progress(
             is_training=False, is_completed=False, error=None,
             status_message="Ready to train", step=0, loss=0.0, epoch=0,
