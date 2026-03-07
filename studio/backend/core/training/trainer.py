@@ -193,7 +193,7 @@ class UnslothTrainer:
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
                 )
-                # Patch broken tokenizer_class (Qwen3.5 "TokenizersBackend")
+                # Patch broken tokenizer_class (Qwen3.5/GLM "TokenizersBackend")
                 from utils.transformers_version import patch_tokenizer_in_memory
                 patch_tokenizer_in_memory(self.tokenizer, model_name=model_name)
                 logger.info("Loaded text model")
@@ -1074,6 +1074,8 @@ class UnslothTrainer:
                 self.trainer.save_model()
                 self.tokenizer.save_pretrained(output_dir)
                 self._patch_adapter_config(output_dir)
+                # Fix broken tokenizer_class on saved checkpoints
+                self._patch_tokenizer_class_all(output_dir)
                 print(f"\nTraining stopped. Model saved to {output_dir}\n")
                 self._update_progress(
                     is_training=False,
@@ -1091,6 +1093,8 @@ class UnslothTrainer:
                 self.trainer.save_model()
                 self.tokenizer.save_pretrained(output_dir)
                 self._patch_adapter_config(output_dir)
+                # Fix broken tokenizer_class on saved checkpoints
+                self._patch_tokenizer_class_all(output_dir)
                 print(f"\nTraining completed! Model saved to {output_dir}\n")
                 self._update_progress(
                     is_training=False,
@@ -1134,6 +1138,13 @@ class UnslothTrainer:
 
         except Exception as e:
             logger.warning(f"Failed to patch adapter_config.json: {e}")
+
+    def _patch_tokenizer_class_all(self, output_dir: str):
+        """Patch broken tokenizer_class in output dir and all checkpoint subdirs."""
+        from utils.transformers_version import patch_tokenizer_config
+        import glob
+        for f in glob.glob(os.path.join(output_dir, "**", "tokenizer_config.json"), recursive=True):
+            patch_tokenizer_config(os.path.dirname(f), model_name=self.model_name)
 
     def stop_training(self, save: bool = True):
         """Stop ongoing training"""
