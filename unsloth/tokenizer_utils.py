@@ -660,8 +660,15 @@ def _fix_chat_template(chat_template):
 
     # Case 1: nothing after endfor - template was saved without generation prompt
     if (
+<<<<<<< HEAD
         after_endfor == "" or after_endfor.strip() == ""
     ) and "add_generation_prompt" not in chat_template:
+=======
+        not after_endfor.strip()
+        and "add_generation_prompt" not in chat_template
+        and "<|im_start|>" in chat_template
+    ):
+>>>>>>> 1aebbc67 (refactor: simplify condition and restrict ChatML fix to im_start templates)
         after_endfor = (
             "{%"
             + dash
