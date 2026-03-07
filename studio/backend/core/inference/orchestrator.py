@@ -44,6 +44,7 @@ class InferenceOrchestrator:
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation instantly
         self._lock = threading.Lock()
+        self._gen_lock = threading.Lock()  # Serializes generation — one request at a time
 
         # Local state mirrors (updated from subprocess responses)
         self.active_model_name: Optional[str] = None
@@ -393,7 +394,12 @@ class InferenceOrchestrator:
         cancel_event=None,
         use_adapter=None,
     ) -> Generator[str, None, None]:
-        """Inner generation logic — sends command to subprocess, yields tokens."""
+        """Inner generation logic — sends command to subprocess, yields tokens.
+
+        Serialized by _gen_lock: only one generation runs at a time.
+        This prevents concurrent readers from consuming each other's
+        tokens off the shared resp_queue.
+        """
         if not self._ensure_subprocess_alive():
             yield "Error: Inference subprocess is not running"
             return
@@ -402,6 +408,39 @@ class InferenceOrchestrator:
             yield "Error: No active model"
             return
 
+        # Serialize generation — single GPU, one generation at a time.
+        # Without this lock, two concurrent readers on the same resp_queue
+        # can consume and drop each other's token events.
+        with self._gen_lock:
+            yield from self._generate_locked(
+                messages=messages,
+                system_prompt=system_prompt,
+                image=image,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                max_new_tokens=max_new_tokens,
+                repetition_penalty=repetition_penalty,
+                cancel_event=cancel_event,
+                use_adapter=use_adapter,
+            )
+
+    def _generate_locked(
+        self,
+        messages: list = None,
+        system_prompt: str = "",
+        image=None,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 256,
+        repetition_penalty: float = 1.1,
+        cancel_event=None,
+        use_adapter=None,
+    ) -> Generator[str, None, None]:
+        """Actual generation logic — must be called under _gen_lock."""
         request_id = str(uuid.uuid4())
 
         # Convert PIL Image to base64 if needed
@@ -432,7 +471,8 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
-        # Yield tokens from response queue
+        # Yield tokens from response queue — we are the only reader
+        # because _gen_lock is held.
         while True:
             resp = self._read_resp(timeout=30.0)
 
@@ -443,22 +483,17 @@ class InferenceOrchestrator:
                     return
                 continue
 
-            # Skip responses for other requests
-            resp_rid = resp.get("request_id")
             rtype = resp.get("type", "")
 
-            # Status messages don't have request_id
+            # Status messages — skip
             if rtype == "status":
                 continue
 
             # Error without request_id = subprocess-level error
+            resp_rid = resp.get("request_id")
             if rtype == "error" and not resp_rid:
                 yield f"Error: {resp.get('error', 'Unknown error')}"
                 return
-
-            # Skip responses for other requests
-            if resp_rid and resp_rid != request_id:
-                continue
 
             if rtype == "token":
                 # Check cancel from route (e.g. SSE connection closed)
