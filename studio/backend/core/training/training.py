@@ -101,6 +101,14 @@ class TrainingBackend:
                 logger.warning("Training subprocess already running")
                 return False
 
+        # Join prior pump thread to prevent it from consuming events
+        # from the new job's queue (it reads self._event_queue dynamically).
+        if self._pump_thread is not None and self._pump_thread.is_alive():
+            self._pump_thread.join(timeout=5.0)
+            if self._pump_thread.is_alive():
+                logger.warning("Previous pump thread did not exit within 5s")
+        self._pump_thread = None
+
         # Reset state
         self._should_stop = False
         self._progress = TrainingProgress(is_training=True, status_message="Initializing training...")
