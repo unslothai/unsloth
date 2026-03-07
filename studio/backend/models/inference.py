@@ -25,6 +25,34 @@ class UnloadRequest(BaseModel):
     model_path: str = Field(..., description="Model identifier to unload")
 
 
+class ValidateModelRequest(BaseModel):
+    """
+    Lightweight validation request to check whether a model identifier
+    *can be resolved* into a ModelConfig.
+
+    This does NOT actually load weights into GPU memory.
+    """
+    model_path: str = Field(..., description="Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description="HuggingFace token for gated models")
+    gguf_variant: Optional[str] = Field(None, description="GGUF quantization variant (e.g. 'Q4_K_M')")
+
+
+class ValidateModelResponse(BaseModel):
+    """
+    Result of model validation.
+
+    valid == True means ModelConfig.from_identifier() succeeded and basic
+    introspection (GGUF / LoRA / vision flags) is available.
+    """
+    valid: bool = Field(..., description="Whether the model identifier looks valid")
+    message: str = Field(..., description="Human-readable validation message")
+    identifier: Optional[str] = Field(None, description="Resolved model identifier")
+    display_name: Optional[str] = Field(None, description="Display name derived from identifier")
+    is_gguf: bool = Field(False, description="Whether this is a GGUF model (llama.cpp)")
+    is_lora: bool = Field(False, description="Whether this is a LoRA adapter")
+    is_vision: bool = Field(False, description="Whether this is a vision-capable model")
+
+
 class GenerateRequest(BaseModel):
     """Request for text generation (legacy /generate/stream endpoint)"""
     messages: List[dict] = Field(..., description="Chat messages in OpenAI format")
