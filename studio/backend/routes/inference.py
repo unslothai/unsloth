@@ -49,6 +49,8 @@ from models.inference import (
     ChoiceDelta,
     CompletionChoice,
     CompletionMessage,
+    ValidateModelRequest,
+    ValidateModelResponse,
 )
 from auth.authentication import get_current_subject
 
@@ -195,6 +197,50 @@ async def load_model(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load model: {str(e)}"
+        )
+
+
+@router.post("/validate", response_model=ValidateModelResponse)
+async def validate_model(
+    request: ValidateModelRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Lightweight validation endpoint for model identifiers.
+
+    This checks that ModelConfig.from_identifier() can resolve the given
+    model_path, but it does NOT actually load model weights into GPU memory.
+    """
+    try:
+        config = ModelConfig.from_identifier(
+            model_id=request.model_path,
+            hf_token=request.hf_token,
+            gguf_variant=request.gguf_variant,
+        )
+
+        if not config:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model identifier: {request.model_path}",
+            )
+
+        return ValidateModelResponse(
+            valid=True,
+            message="Model identifier is valid.",
+            identifier=config.identifier,
+            display_name=getattr(config, "display_name", config.identifier),
+            is_gguf=getattr(config, "is_gguf", False),
+            is_lora=getattr(config, "is_lora", False),
+            is_vision=getattr(config, "is_vision", False),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating model identifier '{request.model_path}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model: {str(e)}",
         )
 
 
