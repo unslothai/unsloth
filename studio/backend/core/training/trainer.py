@@ -754,10 +754,12 @@ class UnslothTrainer:
                 "dataset_num_proc": safe_num_proc(max(1, os.cpu_count() // 4)),
             }
 
-            # On Windows, disable DataLoader multiprocessing to avoid
-            # issues with modified sys.path in spawned subprocesses.
+            # On Windows with transformers 5.x, disable DataLoader multiprocessing
+            # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
             if sys.platform == "win32":
-                config_args["dataloader_num_workers"] = 0
+                import transformers as _tf
+                if _tf.__version__.startswith("5."):
+                    config_args["dataloader_num_workers"] = 0
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
             if warmup_ratio_val is not None:
