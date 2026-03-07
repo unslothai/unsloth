@@ -389,8 +389,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
-        unsloth_logit_chunk_multiplier = None, 
-        unsloth_grpo_mini_batch = None, 
+        unsloth_logit_chunk_multiplier = None,
+        unsloth_grpo_mini_batch = None,
         {max_seq_length_call}
         **kwargs,
     ):
