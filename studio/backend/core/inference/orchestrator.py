@@ -229,6 +229,24 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
+    def _drain_until_gen_done(self, timeout: float = 5.0) -> None:
+        """Consume resp_queue events until gen_done/gen_error, discarding them.
+
+        Called after cancel to ensure stale tokens from the cancelled
+        generation don't leak into the next request.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            resp = self._read_resp(timeout=min(0.5, deadline - time.monotonic()))
+            if resp is None:
+                if not self._ensure_subprocess_alive():
+                    return
+                continue
+            rtype = resp.get("type", "")
+            if rtype in ("gen_done", "gen_error"):
+                return
+        logger.warning("Timed out waiting for gen_done after cancel")
+
     # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
@@ -498,8 +516,11 @@ class InferenceOrchestrator:
             if rtype == "token":
                 # Check cancel from route (e.g. SSE connection closed)
                 if cancel_event is not None and cancel_event.is_set():
-                    # Set the subprocess mp.Event — instant, no queue needed
                     self._cancel_generation()
+                    # Wait for the subprocess to acknowledge cancellation
+                    # (gen_done/gen_error) so stale events don't leak into
+                    # the next generation request.
+                    self._drain_until_gen_done(timeout=5.0)
                     return
                 yield resp.get("text", "")
 
