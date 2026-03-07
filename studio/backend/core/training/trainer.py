@@ -402,6 +402,32 @@ class UnslothTrainer:
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
 
+            # Proactive gated-model check: verify access BEFORE from_pretrained.
+            # Catches ALL gated/private models (text, vision, audio) globally.
+            if '/' in model_name:  # Only check HF repo IDs, not local paths
+                try:
+                    from huggingface_hub import model_info as hf_model_info
+                    info = hf_model_info(model_name, token=hf_token or None)
+                    # model_info succeeds even for gated repos (metadata is public),
+                    # but info.gated tells us if files require acceptance/token.
+                    if info.gated and not hf_token:
+                        friendly = (
+                            f"Access denied for '{model_name}'. This model is gated. "
+                            f"Please add a Hugging Face token with access and try again."
+                        )
+                        logger.error(f"Model '{model_name}' is gated (gated={info.gated}) and no HF token provided")
+                        self._update_progress(error=friendly, is_training=False)
+                        return False
+                except Exception as gate_err:
+                    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+                    if isinstance(gate_err, (GatedRepoError, RepositoryNotFoundError)):
+                        friendly = (
+                            f"Access denied for '{model_name}'. This model is gated or private. "
+                            f"Please add a Hugging Face token with access and try again."
+                        )
+                        logger.error(f"Gated model check failed: {gate_err}")
+                        self._update_progress(error=friendly, is_training=False)
+                        return False
 
             # Branch based on model type
             if self._audio_type == 'csm':
@@ -554,12 +580,27 @@ class UnslothTrainer:
                 print(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(model_name, max_seq_length, load_in_4bit, hf_token,
                                        is_dataset_image, is_dataset_audio)
+            error_msg = str(e)
+            error_lower = error_msg.lower()
+            if any(k in error_lower for k in ("gated repo", "access to it at", "401", "403", "unauthorized", "forbidden")):
+                error_msg = (
+                    f"Access denied for '{model_name}'. This model is gated or private. "
+                    f"Please add a Hugging Face token with access and try again."
+                )
             logger.error(f"Error loading model: {e}")
-            self._update_progress(error=str(e), is_training=False)
+            self._update_progress(error=error_msg, is_training=False)
             return False
         except Exception as e:
+            error_msg = str(e)
+            # Catch gated/auth errors and surface a friendly message
+            error_lower = error_msg.lower()
+            if any(k in error_lower for k in ("gated repo", "access to it at", "401", "403", "unauthorized", "forbidden")):
+                error_msg = (
+                    f"Access denied for '{model_name}'. This model is gated or private. "
+                    f"Please add a Hugging Face token with access and try again."
+                )
             logger.error(f"Error loading model: {e}")
-            self._update_progress(error=str(e), is_training=False)
+            self._update_progress(error=error_msg, is_training=False)
             return False
         finally:
             self._source_code_retried = False
