@@ -193,6 +193,9 @@ class UnslothTrainer:
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
                 )
+                # Patch broken tokenizer_class (Qwen3.5 "TokenizersBackend")
+                from utils.transformers_version import patch_tokenizer_in_memory
+                patch_tokenizer_in_memory(self.tokenizer, model_name=model_name)
                 logger.info("Loaded text model")
 
             if self.should_stop:

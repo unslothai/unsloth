@@ -217,6 +217,82 @@ def _deactivate_5x() -> None:
     logger.info("Reverted to transformers %s", transformers.__version__)
 
 
+# ---------------------------------------------------------------------------
+# Tokenizer patches
+# ---------------------------------------------------------------------------
+
+# Some HF model uploads (e.g. Qwen3.5 family) ship with a broken
+# tokenizer_class value "TokenizersBackend" instead of the real class.
+# This causes llama.cpp's GGUF converter (and other tools) to fail.
+_TOKENIZER_CLASS_FIXES: dict[str, str] = {
+    "TokenizersBackend": "Qwen2Tokenizer",
+}
+
+
+def patch_tokenizer_config(model_dir: str, model_name: str = "") -> bool:
+    """Fix known broken tokenizer_class values in tokenizer_config.json.
+
+    Only applies to Qwen3.5 models which ship with the wrong
+    tokenizer_class "TokenizersBackend" on HuggingFace.
+
+    Modifies the file in-place. Returns True if a patch was applied.
+    """
+    if model_name and "qwen3.5" not in model_name.lower():
+        return False
+
+    config_path = os.path.join(model_dir, "tokenizer_config.json")
+    if not os.path.isfile(config_path):
+        return False
+
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+
+        tok_class = config.get("tokenizer_class", "")
+        if tok_class in _TOKENIZER_CLASS_FIXES:
+            fixed = _TOKENIZER_CLASS_FIXES[tok_class]
+            logger.warning(
+                "Patching tokenizer_class: '%s' → '%s' in %s",
+                tok_class, fixed, config_path,
+            )
+            config["tokenizer_class"] = fixed
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            return True
+    except Exception as exc:
+        logger.warning("Could not patch tokenizer_config.json: %s", exc)
+
+    return False
+
+
+def patch_tokenizer_in_memory(tokenizer, model_name: str = "") -> bool:
+    """Fix known broken tokenizer_class on an in-memory tokenizer object.
+
+    Only applies to Qwen3.5 models which ship with the wrong
+    tokenizer_class "TokenizersBackend" on HuggingFace. Patches it so
+    that save_pretrained() writes a corrected tokenizer_config.json.
+
+    Returns True if a patch was applied.
+    """
+    if model_name and "qwen3.5" not in model_name.lower():
+        return False
+
+    try:
+        init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
+        tok_class = init_kwargs.get("tokenizer_class", "")
+        if tok_class in _TOKENIZER_CLASS_FIXES:
+            fixed = _TOKENIZER_CLASS_FIXES[tok_class]
+            logger.warning(
+                "Patching in-memory tokenizer_class: '%s' → '%s'",
+                tok_class, fixed,
+            )
+            tokenizer.init_kwargs["tokenizer_class"] = fixed
+            return True
+    except Exception as exc:
+        logger.warning("Could not patch in-memory tokenizer: %s", exc)
+    return False
+
+
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is active for *model_name*.
 
