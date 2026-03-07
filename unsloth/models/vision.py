@@ -787,7 +787,7 @@ class FastBaseModel:
         num_labels = kwargs.pop("num_labels", None)
         id2label = kwargs.pop("id2label", None)
         label2id = kwargs.pop("label2id", None)
-        
+
         if num_labels is not None:
             model_config.num_labels = num_labels
         if id2label is not None:
