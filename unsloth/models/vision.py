@@ -784,16 +784,10 @@ class FastBaseModel:
 
         # Handle sequence classification parameters (num_labels, id2label, label2id)
         # These need to be set in the config before model instantiation
-        num_labels = kwargs.pop("num_labels", None)
-        id2label = kwargs.pop("id2label", None)
-        label2id = kwargs.pop("label2id", None)
-
-        if num_labels is not None:
-            model_config.num_labels = num_labels
-        if id2label is not None:
-            model_config.id2label = id2label
-        if label2id is not None:
-            model_config.label2id = label2id
+        for param in ("num_labels", "id2label", "label2id"):
+            value = kwargs.pop(param, None)
+            if value is not None:
+                setattr(model_config, param, value)
 
         verify_fp8_support_if_applicable(model_config)
 
