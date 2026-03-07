@@ -96,7 +96,6 @@ class ExportBackend:
         self.current_tokenizer = None
         self.is_vision = False
         self.is_peft = False
-        self._resolved_model_name = ""
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -154,7 +153,6 @@ class ExportBackend:
 
             # Check if it's a LoRA adapter
             adapter_config = checkpoint_path_obj / "adapter_config.json"
-            base_model = None
             if adapter_config.exists():
                 # It's a LoRA - get base model to check vision
                 base_model = get_base_model_from_lora(checkpoint_path)
@@ -165,21 +163,6 @@ class ExportBackend:
             else:
                 # Check the model itself
                 self.is_vision = is_vision_model(checkpoint_path)
-
-            # Resolve model name for tokenizer patching (base model for LoRA, path otherwise)
-            resolved_model_name = base_model or checkpoint_path
-            self._resolved_model_name = resolved_model_name
-
-            # Patch broken tokenizer_config.json on disk before loading.
-            # Qwen3.5/GLM checkpoints saved by TRL inherit "TokenizersBackend"
-            # from the HF upload — fix it so from_pretrained loads correctly
-            # and subsequent save_pretrained writes the right class.
-            from utils.transformers_version import patch_tokenizer_config
-            patch_tokenizer_config(checkpoint_path, model_name=resolved_model_name)
-            # Also patch subdirectories (TRL saves tokenizer in checkpoint dirs)
-            for subdir in checkpoint_path_obj.iterdir():
-                if subdir.is_dir() and (subdir / "tokenizer_config.json").exists():
-                    patch_tokenizer_config(str(subdir), model_name=resolved_model_name)
 
             # Load model based on type
             if self.is_vision:
@@ -199,27 +182,6 @@ class ExportBackend:
                     dtype=None,
                     load_in_4bit=load_in_4bit,
                 )
-
-            # Patch broken tokenizer_class (e.g. Qwen3.5/GLM "TokenizersBackend")
-            from utils.transformers_version import patch_tokenizer_in_memory
-            patch_tokenizer_in_memory(tokenizer, model_name=resolved_model_name)
-
-            # Wrap tokenizer.save_pretrained so that every subsequent call
-            # (including internal ones from save_pretrained_merged /
-            # save_pretrained_gguf) auto-patches the on-disk output.
-            # Without this, the GGUF converter subprocess fails because
-            # save_pretrained re-writes "TokenizersBackend" to the output dir.
-            _orig_tok_save = tokenizer.save_pretrained
-            _fix_model_name = resolved_model_name
-
-            def _save_and_patch(*args, **kwargs):
-                result = _orig_tok_save(*args, **kwargs)
-                _dir = args[0] if args else kwargs.get("save_directory")
-                if _dir:
-                    patch_tokenizer_config(str(_dir), model_name=_fix_model_name)
-                return result
-
-            tokenizer.save_pretrained = _save_and_patch
 
             # Check if PEFT model
             self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
@@ -298,10 +260,6 @@ class ExportBackend:
                     save_method=save_method
                 )
 
-                # Fix broken tokenizer_class on disk (belt-and-suspenders)
-                from utils.transformers_version import patch_tokenizer_config
-                patch_tokenizer_config(save_directory, model_name=self._resolved_model_name)
-
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
@@ -357,10 +315,6 @@ class ExportBackend:
 
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
-
-                # Fix broken tokenizer_class on disk (belt-and-suspenders)
-                from utils.transformers_version import patch_tokenizer_config
-                patch_tokenizer_config(save_directory, model_name=self._resolved_model_name)
 
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(save_directory)
@@ -473,12 +427,6 @@ class ExportBackend:
                     quantization_method=quant_method
                 )
 
-                # Fix broken tokenizer_class in intermediate HF output
-                # (save_pretrained wrapper handles pre-converter, this is
-                # belt-and-suspenders for the final on-disk state)
-                from utils.transformers_version import patch_tokenizer_config
-                patch_tokenizer_config(model_save_path, model_name=self._resolved_model_name)
-
                 # Relocate GGUF artifacts into the export directory.
                 # convert_to_gguf writes .gguf files to cwd (repo root)
                 # because --outfile is a relative path like "model.Q4_K_M.gguf".
@@ -563,11 +511,6 @@ class ExportBackend:
 
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
-
-                # Fix broken tokenizer_class on disk (belt-and-suspenders)
-                from utils.transformers_version import patch_tokenizer_config
-                patch_tokenizer_config(save_directory, model_name=self._resolved_model_name)
-
                 logger.info(f"Adapter saved successfully to {save_directory}")
 
             # Push to hub if requested
