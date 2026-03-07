@@ -228,6 +228,18 @@ def run_export_process(
         })
         return
 
+    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    if sys.platform == "win32":
+        try:
+            import triton  # noqa: F401
+            logger.info("Triton available — torch.compile enabled")
+        except ImportError:
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            logger.warning(
+                "Triton not found on Windows — torch.compile disabled. "
+                'Install for better performance: pip install "triton-windows<3.7"'
+            )
+
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(resp_queue, {

@@ -685,6 +685,11 @@ $CuTag = Get-PytorchCudaTag
 Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
 pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
 
+# Install Triton for Windows (enables torch.compile — without it training can hang)
+Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
+pip install "triton-windows<3.7" 2>&1 | Out-Null
+Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+
 # Ordered heavy dependency installation — shared cross-platform script
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python "$PSScriptRoot\install_python_stack.py"
