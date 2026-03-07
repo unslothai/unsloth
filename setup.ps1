@@ -708,7 +708,17 @@ New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 pip install --target $VenvT5Dir --no-deps "transformers==5.2.0" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Could not install transformers 5.2.0 into .venv_t5/" -ForegroundColor Red
+    $ErrorActionPreference = $prevEAP_t5
+    exit 1
+}
 pip install --target $VenvT5Dir --no-deps "huggingface_hub==1.3.0" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Could not install huggingface_hub 1.3.0 into .venv_t5/" -ForegroundColor Red
+    $ErrorActionPreference = $prevEAP_t5
+    exit 1
+}
 $ErrorActionPreference = $prevEAP_t5
 Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
 
