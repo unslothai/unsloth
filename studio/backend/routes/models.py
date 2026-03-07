@@ -268,11 +268,12 @@ async def list_models(
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
+    hf_token: Optional[str] = Query(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """
     Get configuration for a specific model.
-    
+
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
@@ -281,9 +282,9 @@ async def get_model_config(
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
 
-        # Detect model capabilities
+        # Detect model capabilities (pass HF token for gated models)
         is_vision = is_vision_model(model_name)
-        audio_type = detect_audio_type(model_name)
+        audio_type = detect_audio_type(model_name, hf_token=hf_token)
 
         # Check if it's a LoRA adapter
         is_lora = False
