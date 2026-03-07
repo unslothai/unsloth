@@ -43,6 +43,7 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
             sys.path.insert(0, venv_t5)
             logger.info("Activated transformers 5.x from %s", venv_t5)
         else:
+
             # Fallback: pip install at runtime (slower, ~10-15s)
             logger.warning(".venv_t5 not found at %s — installing at runtime", venv_t5)
             import subprocess as sp
@@ -63,6 +64,9 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
                     f"pip returncode: transformers={r1.returncode}, huggingface_hub={r2.returncode}"
                 )
             sys.path.insert(0, venv_t5)
+        # Propagate to child subprocesses (e.g. GGUF converter)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = venv_t5 + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 

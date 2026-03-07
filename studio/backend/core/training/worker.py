@@ -60,6 +60,9 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
                     f"pip returncode: transformers={r1.returncode}, huggingface_hub={r2.returncode}"
                 )
             sys.path.insert(0, venv_t5)
+        # Propagate to child subprocesses (e.g. GGUF converter)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = venv_t5 + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
