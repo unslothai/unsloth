@@ -666,7 +666,7 @@ def _fix_chat_template(chat_template):
     ):
         after_endfor = (
             "{%" + dash + " if add_generation_prompt %}"
-            + "{{ '<|im_start|>assistant\\n' }}"
+            + "{{ '<|im_start|>assistant\n' }}"
             + "{%" + dash + " endif %}"
         )
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
