@@ -319,10 +319,14 @@ class InferenceOrchestrator:
             else:
                 error = resp.get("error", "Failed to load model")
                 self.loading_models.discard(model_name)
+                self.active_model_name = None
+                self.models.clear()
                 raise Exception(error)
 
         except Exception:
             self.loading_models.discard(model_name)
+            self.active_model_name = None
+            self.models.clear()
             raise
 
     def unload_model(self, model_name: str) -> bool:
