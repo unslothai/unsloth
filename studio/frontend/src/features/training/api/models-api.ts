@@ -94,9 +94,11 @@ export async function checkVisionModel(modelName: string): Promise<boolean> {
 export async function getModelConfig(
   modelName: string,
   signal?: AbortSignal,
+  hfToken?: string,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/config/${encoded}`, { signal });
+  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
+  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

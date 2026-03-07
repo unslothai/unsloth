@@ -110,7 +110,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsError: null,
         });
 
-        void getModelConfig(modelName, controller.signal)
+        void getModelConfig(modelName, controller.signal, get().hfToken || undefined)
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
