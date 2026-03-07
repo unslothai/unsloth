@@ -276,8 +276,7 @@ async def get_model_config(
         logger.info(f"Getting model config for: {model_name}")
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
-        
-        # Check if it's a vision model
+
         is_vision = is_vision_model(model_name)
         
         # Check if it's a LoRA adapter
