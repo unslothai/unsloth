@@ -11,6 +11,7 @@ __pycache__/
 # Virtual environments
 .venv/
 .venv_overlay/
+.venv_t5/
 venv/
 env/
 environment.yaml
