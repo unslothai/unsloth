@@ -183,6 +183,10 @@ class ExportBackend:
                     load_in_4bit=load_in_4bit,
                 )
 
+            # Patch broken tokenizer_class (e.g. Qwen3.5 "TokenizersBackend")
+            from utils.transformers_version import patch_tokenizer_in_memory
+            patch_tokenizer_in_memory(tokenizer, model_name=checkpoint_path)
+
             # Check if PEFT model
             self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
 
