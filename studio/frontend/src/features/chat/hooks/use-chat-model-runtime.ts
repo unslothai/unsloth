@@ -44,12 +44,17 @@ function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_audio?: boolean;
+  has_audio_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
   if (model.is_lora) tags.push("LoRA");
   if (model.is_vision) tags.push("Vision");
-  if (!model.is_lora && !model.is_vision && !model.is_gguf) tags.push("Base");
+  if (model.is_audio) tags.push("Audio");
+  if (model.has_audio_input) tags.push("Audio Input");
+  if (!model.is_lora && !model.is_vision && !model.is_gguf && !model.is_audio && !model.has_audio_input)
+    tags.push("Base");
   return tags.join(" · ");
 }
 
@@ -59,6 +64,9 @@ function toChatModelSummary(model: {
   is_lora?: boolean;
   is_vision?: boolean;
   is_gguf?: boolean;
+  is_audio?: boolean;
+  audio_type?: string | null;
+  has_audio_input?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -67,6 +75,9 @@ function toChatModelSummary(model: {
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
     isGguf: Boolean(model.is_gguf),
+    isAudio: Boolean(model.is_audio),
+    audioType: model.audio_type ?? null,
+    hasAudioInput: Boolean(model.has_audio_input),
   };
 }
 

@@ -45,6 +45,9 @@ class LoadResponse(BaseModel):
     is_vision: bool = Field(False, description="Whether model is a vision model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description="Whether model is a GGUF model (llama.cpp)")
+    is_audio: bool = Field(False, description="Whether model is a TTS audio model")
+    audio_type: Optional[str] = Field(None, description="Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description="Whether model accepts audio input (ASR)")
     inference: dict = Field(..., description="Inference parameters (temperature, top_p, top_k, min_p)")
 
 
@@ -60,6 +63,9 @@ class InferenceStatusResponse(BaseModel):
     is_vision: bool = Field(False, description="Whether the active model is a vision model")
     is_gguf: bool = Field(False, description="Whether the active model is a GGUF model (llama.cpp)")
     gguf_variant: Optional[str] = Field(None, description="GGUF quantization variant (e.g. Q4_K_M)")
+    is_audio: bool = Field(False, description="Whether the active model is a TTS audio model")
+    audio_type: Optional[str] = Field(None, description="Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description="Whether model accepts audio input (ASR)")
     loading: List[str] = Field(default_factory=list, description="Models currently being loaded")
     loaded: List[str] = Field(default_factory=list, description="Models currently loaded")
 
@@ -136,6 +142,7 @@ class ChatCompletionRequest(BaseModel):
     min_p: float = Field(0.0, ge=0.0, le=1.0, description="[x-unsloth] Min-p sampling threshold")
     repetition_penalty: float = Field(1.1, ge=1.0, le=2.0, description="[x-unsloth] Repetition penalty")
     image_base64: Optional[str] = Field(None, description="[x-unsloth] Base64-encoded image for vision models")
+    audio_base64: Optional[str] = Field(None, description="[x-unsloth] Base64-encoded WAV for audio-input models (ASR)")
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
         description=(

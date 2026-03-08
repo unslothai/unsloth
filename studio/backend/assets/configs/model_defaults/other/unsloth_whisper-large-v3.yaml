@@ -2,7 +2,11 @@
 # Based on Whisper.ipynb
 # Also applies to: unsloth/whisper-large-v3, openai/whisper-large-v3
 
+audio_type: whisper
+audio_input: true
+
 training:
+  eval_steps: 5
   max_seq_length: 448
   # num_epochs: 4
   num_epochs: 0

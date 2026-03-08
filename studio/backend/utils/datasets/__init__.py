@@ -45,6 +45,7 @@ from .vlm_processing import (
 
 # Data collators
 from .data_collators import (
+    DataCollatorSpeechSeq2SeqWithPadding,
     DeepSeekOCRDataCollator,
     VLMDataCollator,
 )
@@ -85,6 +86,7 @@ __all__ = [
     # VLM
     "generate_smart_vlm_instruction",
     # Collators
+    "DataCollatorSpeechSeq2SeqWithPadding",
     "DeepSeekOCRDataCollator",
     "VLMDataCollator",
     # Mappings

@@ -37,7 +37,8 @@ const initialState: TrainingConfigState = {
   modelDefaultsError: null,
   modelDefaultsAppliedFor: null,
   isCheckingDataset: false,
-  isDatasetMultimodal: null,
+  isDatasetImage: null,
+  isDatasetAudio: false,
   ...DEFAULT_HYPERPARAMS,
 };
 
@@ -58,7 +59,8 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "modelDefaultsError",
   "modelDefaultsAppliedFor",
   "isCheckingDataset",
-  "isDatasetMultimodal",
+  "isDatasetImage",
+  "isDatasetAudio",
   "trainOnCompletions",
 ]);
 
@@ -108,7 +110,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsError: null,
         });
 
-        void getModelConfig(modelName, controller.signal)
+        void getModelConfig(modelName, controller.signal, get().hfToken || undefined)
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
@@ -116,9 +118,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _trainOnCompletionsManuallySet = false;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
-            // If vision model + multimodal dataset already known, override
+            // If vision model + image dataset already known, override
             // trainOnCompletions to false regardless of backend default.
-            if (modelDetails.is_vision && get().isDatasetMultimodal === true) {
+            if (modelDetails.is_vision && get().isDatasetImage === true) {
               patch.trainOnCompletions = false;
             }
 
@@ -174,14 +176,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         })
           .then((res) => {
             if (controller.signal.aborted) return;
-            const isMultimodal = !!res.is_multimodal;
+            const isImage = !!res.is_image;
+            const isAudio = !!res.is_audio;
             const updates: Record<string, unknown> = {
-              isDatasetMultimodal: isMultimodal,
+              isDatasetImage: isImage,
+              isDatasetAudio: isAudio,
               isCheckingDataset: false,
             };
             if (!_trainOnCompletionsManuallySet) {
               const { isVisionModel } = get();
-              if (isVisionModel && isMultimodal) {
+              if (isVisionModel && isImage) {
                 updates.trainOnCompletions = false;
               }
             }
@@ -189,7 +193,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
           .catch(() => {
             if (controller.signal.aborted) return;
-            set({ isDatasetMultimodal: null, isCheckingDataset: false });
+            set({ isDatasetImage: null, isCheckingDataset: false });
           });
       };
 
@@ -207,6 +211,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             selectedModel: null,
             isCheckingVision: false,
             isVisionModel: false,
+            isDatasetAudio: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
@@ -222,6 +227,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               isCheckingVision: false,
               isVisionModel: false,
+              isDatasetAudio: false,
               isLoadingModelDefaults: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: null,
@@ -259,7 +265,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetManualMapping: emptyManualMapping(),
             datasetSliceStart: null,
             datasetSliceEnd: null,
-            isDatasetMultimodal: null,
+            isDatasetImage: null,
             isCheckingDataset: false,
           });
         },
@@ -272,7 +278,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSplit: null,
             datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
-            isDatasetMultimodal: null,
+            isDatasetImage: null,
             isCheckingDataset: false,
           });
         },
@@ -280,7 +286,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
-            isDatasetMultimodal: null,
+            isDatasetImage: null,
             isCheckingDataset: false,
           });
 
@@ -296,7 +302,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         ensureDatasetChecked: () => {
           const state = get();
           if (state.isCheckingDataset) return;
-          if (state.isDatasetMultimodal !== null) return;
+          if (state.isDatasetImage !== null) return;
 
           const datasetName =
             state.datasetSource === "huggingface"

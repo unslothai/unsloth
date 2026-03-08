@@ -312,6 +312,9 @@ class InferenceOrchestrator:
                     "is_vision": model_info.get("is_vision", False),
                     "is_lora": model_info.get("is_lora", False),
                     "display_name": model_info.get("display_name", model_name),
+                    "is_audio": model_info.get("is_audio", False),
+                    "audio_type": model_info.get("audio_type"),
+                    "has_audio_input": model_info.get("has_audio_input", False),
                 }
                 self.loading_models.discard(model_name)
                 logger.info("Model '%s' loaded successfully in subprocess", model_name)
@@ -544,6 +547,203 @@ class InferenceOrchestrator:
             self._send_cmd({"type": "reset"})
         except RuntimeError:
             pass
+
+    # ------------------------------------------------------------------
+    # Audio generation — TTS, ASR, audio input
+    # ------------------------------------------------------------------
+
+    def generate_audio_response(
+        self,
+        text: str,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.1,
+        use_adapter: Optional[Union[bool, str]] = None,
+    ) -> Tuple[bytes, int]:
+        """Generate TTS audio. Returns (wav_bytes, sample_rate).
+
+        Blocking — sends command and waits for the complete audio response.
+        """
+        if not self._ensure_subprocess_alive():
+            raise RuntimeError("Inference subprocess is not running")
+        if not self.active_model_name:
+            raise RuntimeError("No active model")
+
+        import uuid
+        request_id = str(uuid.uuid4())
+
+        cmd = {
+            "type": "generate_audio",
+            "request_id": request_id,
+            "text": text,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "max_new_tokens": max_new_tokens,
+            "repetition_penalty": repetition_penalty,
+        }
+        if use_adapter is not None:
+            cmd["use_adapter"] = use_adapter
+
+        self._send_cmd(cmd)
+
+        # Wait for audio_done or audio_error
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            remaining = max(0.1, deadline - time.monotonic())
+            resp = self._read_resp(timeout=min(remaining, 1.0))
+
+            if resp is None:
+                if not self._ensure_subprocess_alive():
+                    raise RuntimeError("Inference subprocess crashed during audio generation")
+                continue
+
+            rtype = resp.get("type", "")
+
+            if rtype == "audio_done":
+                wav_bytes = base64.b64decode(resp["wav_base64"])
+                sample_rate = resp["sample_rate"]
+                return wav_bytes, sample_rate
+
+            if rtype == "audio_error":
+                raise RuntimeError(resp.get("error", "Audio generation failed"))
+
+            if rtype == "error":
+                raise RuntimeError(resp.get("error", "Unknown error"))
+
+            if rtype == "status":
+                continue
+
+        raise RuntimeError("Timeout waiting for audio generation (120s)")
+
+    def generate_whisper_response(
+        self,
+        audio_array,
+        cancel_event=None,
+    ) -> Generator[str, None, None]:
+        """Whisper ASR — sends audio to subprocess, yields text."""
+        yield from self._generate_audio_input_inner(
+            audio_array=audio_array,
+            audio_type="whisper",
+            messages=[],
+            system_prompt="",
+            cancel_event=cancel_event,
+        )
+
+    def generate_audio_input_response(
+        self,
+        messages,
+        system_prompt,
+        audio_array,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 512,
+        repetition_penalty: float = 1.1,
+        cancel_event=None,
+    ) -> Generator[str, None, None]:
+        """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
+        yield from self._generate_audio_input_inner(
+            audio_array=audio_array,
+            audio_type=None,  # worker will use generate_audio_input_response
+            messages=messages,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            max_new_tokens=max_new_tokens,
+            repetition_penalty=repetition_penalty,
+            cancel_event=cancel_event,
+        )
+
+    def _generate_audio_input_inner(
+        self,
+        audio_array,
+        audio_type: Optional[str] = None,
+        messages: list = None,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 512,
+        repetition_penalty: float = 1.1,
+        cancel_event=None,
+    ) -> Generator[str, None, None]:
+        """Shared inner logic for audio input generation (Whisper + ASR)."""
+        if not self._ensure_subprocess_alive():
+            yield "Error: Inference subprocess is not running"
+            return
+        if not self.active_model_name:
+            yield "Error: No active model"
+            return
+
+        with self._gen_lock:
+            import uuid
+            request_id = str(uuid.uuid4())
+
+            # Convert numpy array to list for mp.Queue serialization
+            audio_data = audio_array.tolist() if hasattr(audio_array, 'tolist') else list(audio_array)
+
+            cmd = {
+                "type": "generate_audio_input",
+                "request_id": request_id,
+                "audio_data": audio_data,
+                "audio_type": audio_type,
+                "messages": messages or [],
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "min_p": min_p,
+                "max_new_tokens": max_new_tokens,
+                "repetition_penalty": repetition_penalty,
+            }
+
+            try:
+                self._send_cmd(cmd)
+            except RuntimeError as exc:
+                yield f"Error: {exc}"
+                return
+
+            # Yield tokens — same pattern as _generate_locked
+            while True:
+                resp = self._read_resp(timeout=30.0)
+
+                if resp is None:
+                    if not self._ensure_subprocess_alive():
+                        yield "Error: Inference subprocess crashed during audio input generation"
+                        return
+                    continue
+
+                rtype = resp.get("type", "")
+
+                if rtype == "status":
+                    continue
+
+                if rtype == "error" and not resp.get("request_id"):
+                    yield f"Error: {resp.get('error', 'Unknown error')}"
+                    return
+
+                if rtype == "token":
+                    if cancel_event is not None and cancel_event.is_set():
+                        self._cancel_generation()
+                        self._drain_until_gen_done(timeout=5.0)
+                        return
+                    yield resp.get("text", "")
+
+                elif rtype == "gen_done":
+                    return
+
+                elif rtype == "gen_error":
+                    yield f"Error: {resp.get('error', 'Unknown error')}"
+                    return
 
     # ------------------------------------------------------------------
     # Local helpers (no subprocess needed)
