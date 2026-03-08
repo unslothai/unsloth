@@ -93,6 +93,8 @@ export function DatasetSection() {
     setUploadedFile,
     hfToken,
     modelType,
+    isVisionModel,
+    isCheckingVision,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -115,6 +117,8 @@ export function DatasetSection() {
       setUploadedFile: s.setUploadedFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
+      isVisionModel: s.isVisionModel,
+      isCheckingVision: s.isCheckingVision,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
@@ -185,6 +189,9 @@ export function DatasetSection() {
     }
     setSearchQuery(val);
   }
+
+  const effectiveModelType = !isCheckingVision && isVisionModel ? "vision" : modelType;
+
   const {
     results: hfResults,
     isLoading,
@@ -192,7 +199,7 @@ export function DatasetSection() {
     fetchMore,
     error: hfSearchError,
   } = useHfDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
-    modelType,
+    modelType: effectiveModelType,
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
   });

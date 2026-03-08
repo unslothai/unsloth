@@ -4,6 +4,9 @@ export interface BackendModelDetails {
   is_vision?: boolean;
   is_lora?: boolean;
   is_gguf?: boolean;
+  is_audio?: boolean;
+  audio_type?: string | null;
+  has_audio_input?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -53,6 +56,9 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_audio?: boolean;
+  audio_type?: string | null;
+  has_audio_input?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -70,8 +76,27 @@ export interface InferenceStatusResponse {
   is_vision: boolean;
   is_gguf?: boolean;
   gguf_variant?: string | null;
+  is_audio?: boolean;
+  audio_type?: string | null;
+  has_audio_input?: boolean;
   loading: string[];
   loaded: string[];
+}
+
+export interface AudioGenerationResponse {
+  id: string;
+  object: string;
+  model: string;
+  audio: {
+    data: string;
+    format: string;
+    sample_rate: number;
+  };
+  choices: Array<{
+    index: number;
+    message: { role: string; content: string };
+    finish_reason: string;
+  }>;
 }
 
 export interface OpenAIChatMessage {
@@ -90,6 +115,7 @@ export interface OpenAIChatCompletionsRequest {
   min_p: number;
   repetition_penalty: number;
   image_base64?: string;
+  audio_base64?: string;
   use_adapter?: boolean | string | null;
 }
 

@@ -17,6 +17,7 @@ import torch
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models.model_config import detect_audio_type
 from core.inference import get_inference_backend
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ class ExportBackend:
         self.current_tokenizer = None
         self.is_vision = False
         self.is_peft = False
+        self._audio_type = None
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -111,6 +113,7 @@ class ExportBackend:
             self.current_model = None
             self.current_tokenizer = None
             self.current_checkpoint = None
+            self._audio_type = None
 
             # Clear GPU memory cache (handles gc + backend-specific cleanup)
             clear_gpu_cache()
@@ -148,24 +151,75 @@ class ExportBackend:
             # First, cleanup existing models
             self.cleanup_memory()
 
-            # Detect if vision model
             checkpoint_path_obj = Path(checkpoint_path)
 
-            # Check if it's a LoRA adapter
+            # Determine the model identity for type detection
             adapter_config = checkpoint_path_obj / "adapter_config.json"
+            base_model = None
             if adapter_config.exists():
-                # It's a LoRA - get base model to check vision
                 base_model = get_base_model_from_lora(checkpoint_path)
-                if base_model:
-                    self.is_vision = is_vision_model(base_model)
-                else:
+                if not base_model:
                     return False, "Could not determine base model for adapter"
-            else:
-                # Check the model itself
-                self.is_vision = is_vision_model(checkpoint_path)
+
+            model_id = base_model or checkpoint_path
+
+            # Detect audio type and vision
+            self._audio_type = detect_audio_type(model_id)
+            self.is_vision = not self._audio_type and is_vision_model(model_id)
 
             # Load model based on type
-            if self.is_vision:
+            if self._audio_type == 'csm':
+                from unsloth import FastModel
+                from transformers import CsmForConditionalGeneration
+                logger.info("Loading as CSM audio model...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None,
+                    auto_model=CsmForConditionalGeneration,
+                    load_in_4bit=False,
+                )
+
+            elif self._audio_type == 'whisper':
+                from unsloth import FastModel
+                from transformers import WhisperForConditionalGeneration
+                logger.info("Loading as Whisper audio model...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name=checkpoint_path,
+                    dtype=None,
+                    load_in_4bit=False,
+                    auto_model=WhisperForConditionalGeneration,
+                )
+
+            elif self._audio_type == 'snac':
+                logger.info("Loading as SNAC (Orpheus) audio model...")
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None,
+                    load_in_4bit=load_in_4bit,
+                )
+
+            elif self._audio_type == 'bicodec':
+                from unsloth import FastModel
+                logger.info("Loading as BiCodec (Spark-TTS) audio model...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=torch.float32,
+                    load_in_4bit=False,
+                )
+
+            elif self._audio_type == 'dac':
+                from unsloth import FastModel
+                logger.info("Loading as DAC (OuteTTS) audio model...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    load_in_4bit=False,
+                )
+
+            elif self.is_vision:
                 logger.info("Loading as vision model...")
                 model, processor = FastVisionModel.from_pretrained(
                     model_name=checkpoint_path,
@@ -174,6 +228,7 @@ class ExportBackend:
                     load_in_4bit=load_in_4bit,
                 )
                 tokenizer = processor  # For vision models, processor acts as tokenizer
+
             else:
                 logger.info("Loading as text model...")
                 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -191,7 +246,12 @@ class ExportBackend:
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
 
-            model_type = "Vision" if self.is_vision else "Text"
+            if self._audio_type:
+                model_type = f"Audio ({self._audio_type})"
+            elif self.is_vision:
+                model_type = "Vision"
+            else:
+                model_type = "Text"
             peft_info = " (PEFT Adapter)" if self.is_peft else " (Merged Model)"
 
             logger.info(f"Successfully loaded {model_type} model{peft_info}")
@@ -246,6 +306,9 @@ class ExportBackend:
             # Determine save method
             if format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
+            elif self._audio_type == 'whisper':
+                # Whisper uses save_method=None for local 16-bit merged save
+                save_method = None
             else:  # 16-bit (FP16)
                 save_method = "merged_16bit"
 
@@ -271,10 +334,12 @@ class ExportBackend:
 
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
 
+                # Whisper uses save_method=None for local but "merged_16bit" for hub push
+                hub_save_method = save_method if save_method is not None else "merged_16bit"
                 self.current_model.push_to_hub_merged(
                     repo_id,
                     self.current_tokenizer,
-                    save_method=save_method,
+                    save_method=hub_save_method,
                     token=hf_token,
                     private=private
                 )
@@ -453,7 +518,14 @@ class ExportBackend:
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(abs_save_dir)
 
-                logger.info(f"GGUF model saved successfully in {abs_save_dir}")
+                # Log final file locations (after relocation) so it's clear
+                # where the GGUF files actually ended up.
+                final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
+                logger.info(
+                    "GGUF export complete. Final files in %s:\n  %s",
+                    abs_save_dir,
+                    "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
+                )
 
             # Push to hub if requested
             if push_to_hub:

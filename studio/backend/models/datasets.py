@@ -28,11 +28,14 @@ class CheckFormatResponse(BaseModel):
     requires_manual_mapping: bool
     detected_format: str
     columns: List[str]
-    is_multimodal: bool = False
+    is_image: bool = False
+    is_audio: bool = False
     multimodal_columns: Optional[List[str]] = None
     suggested_mapping: Optional[Dict[str, str]] = None
     detected_image_column: Optional[str] = None
+    detected_audio_column: Optional[str] = None
     detected_text_column: Optional[str] = None
+    detected_speaker_column: Optional[str] = None
     preview_samples: Optional[List[Dict]] = None
     total_rows: Optional[int] = None
     warning: Optional[str] = None

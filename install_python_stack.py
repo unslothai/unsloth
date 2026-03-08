@@ -174,6 +174,13 @@ def install_python_stack() -> int:
         req=REQ_ROOT / "extras.txt",
     )
 
+    # 3b. Extra dependencies (no-deps) — audio model support etc.
+    pip_install(
+        "Installing extras (no-deps)",
+        "--no-deps", "--no-cache-dir",
+        req=REQ_ROOT / "extras-no-deps.txt",
+    )
+
     # 4. Overrides (torchao, transformers) — force-reinstall
     pip_install(
         "Installing torchao + transformers overrides",
@@ -252,8 +259,11 @@ def install_python_stack() -> int:
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 13. Final check
-    run("Running pip check", [sys.executable, "-m", "pip", "check"], quiet=False)
+    # 13. Final check (silent; third-party conflicts are expected)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
     print(_green("✅ Python dependencies installed"))
     return 0

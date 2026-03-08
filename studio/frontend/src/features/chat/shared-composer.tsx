@@ -1,7 +1,9 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, HeadphonesIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
   type MutableRefObject,
@@ -17,7 +19,8 @@ import {
 
 export type CompareMessagePart =
   | { type: "text"; text: string }
-  | { type: "image"; image: string };
+  | { type: "image"; image: string }
+  | { type: "audio"; audio: string };
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
@@ -182,9 +185,18 @@ export function SharedComposer({
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+
+  const activeModel = useChatRuntimeStore((s) => {
+    const checkpoint = s.params.checkpoint;
+    return s.models.find((m) => m.id === checkpoint);
+  });
+  const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
+  const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
   const { isDictating, start: startDictation, stop: stopDictation, supported: dictationSupported } = useDictation(
     setText,
@@ -204,12 +216,22 @@ export function SharedComposer({
     const next: PendingImage[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (!file?.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+      if (!file) continue;
+      // Handle audio files
+      if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
+        fileToBase64(file).then((base64) => {
+          setPendingAudio({ name: file.name, base64 });
+          setPendingAudioStore(base64, file.name);
+        });
+        continue;
+      }
+      // Handle image files
+      if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
       if (file.size > MAX_IMAGE_SIZE) continue;
       next.push({ id: crypto.randomUUID(), file });
     }
     setPendingImages((prev) => [...prev, ...next]);
-  }, []);
+  }, [setPendingAudioStore]);
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
@@ -217,7 +239,7 @@ export function SharedComposer({
 
   async function send() {
     const msg = text.trim();
-    if (!msg && pendingImages.length === 0) return;
+    if (!msg && pendingImages.length === 0 && !pendingAudio) return;
 
     const content: CompareMessagePart[] = [];
     for (const { file } of pendingImages) {
@@ -227,6 +249,9 @@ export function SharedComposer({
       } catch {
         // skip failed image
       }
+    }
+    if (pendingAudio) {
+      content.push({ type: "audio", audio: pendingAudio.base64 });
     }
     if (msg) {
       content.push({ type: "text", text: msg });
@@ -238,6 +263,8 @@ export function SharedComposer({
     }
     setText("");
     setPendingImages([]);
+    setPendingAudio(null);
+    clearPendingAudioStore();
     textareaRef.current?.focus();
   }
 
@@ -257,7 +284,7 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0) && !running;
+  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !running;
 
   return (
     <div
@@ -273,7 +300,7 @@ export function SharedComposer({
         addFiles(e.dataTransfer.files);
       }}
     >
-      {pendingImages.length > 0 && (
+      {(pendingImages.length > 0 || pendingAudio) && (
         <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
           {pendingImages.map(({ id, file }) => (
             <PendingImageThumb
@@ -282,6 +309,20 @@ export function SharedComposer({
               onRemove={() => removePendingImage(id)}
             />
           ))}
+          {pendingAudio && (
+            <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+              <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+              <span className="max-w-48 truncate">{pendingAudio.name}</span>
+              <button
+                type="button"
+                onClick={() => { setPendingAudio(null); clearPendingAudioStore(); }}
+                className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+                aria-label="Remove audio"
+              >
+                <XIcon className="size-3" />
+              </button>
+            </div>
+          )}
         </div>
       )}
       <textarea
@@ -317,6 +358,31 @@ export function SharedComposer({
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />
           </TooltipIconButton>
+          {activeModel?.hasAudioInput && (
+            <>
+              <input
+                ref={audioInputRef}
+                type="file"
+                accept={AUDIO_ACCEPT}
+                className="hidden"
+                onChange={(e) => {
+                  addFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <TooltipIconButton
+                tooltip="Upload audio"
+                side="bottom"
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-full text-muted-foreground hover:bg-muted-foreground/15"
+                onClick={() => audioInputRef.current?.click()}
+                aria-label="Upload audio"
+              >
+                <HeadphonesIcon className="size-4 stroke-[1.5px]" />
+              </TooltipIconButton>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (

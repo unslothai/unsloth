@@ -40,7 +40,8 @@ export interface TrainingStartRequest {
   finetune_language_layers: boolean;
   finetune_attention_modules: boolean;
   finetune_mlp_modules: boolean;
-  is_dataset_multimodal: boolean;
+  is_dataset_image: boolean;
+  is_dataset_audio: boolean;
   enable_wandb: boolean;
   wandb_token: string | null;
   wandb_project: string | null;
