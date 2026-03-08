@@ -1322,12 +1322,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         if DEVICE_TYPE == "cuda":
             # CUDA-specific options (added to base options)
             cuda_options = """
-            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
+            "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] == 9,"""
             # cutlass options were added in PyTorch 2.8.0
             if torch_version >= Version("2.8.0"):
                 cuda_options += """
-            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] >= 9,
-            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] >= 9,"""
+            "cuda.cutlass_epilogue_fusion_enabled": torch.cuda.get_device_capability()[0] == 9,
+            "cuda.cutlass_tma_only": torch.cuda.get_device_capability()[0] == 9,"""
             cuda_options += """
             "cuda.compile_opt_level"              : "-O2",
             "cuda.enable_cuda_lto"                : True,
