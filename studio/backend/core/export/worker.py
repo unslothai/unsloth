@@ -84,6 +84,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     checkpoint_path = cmd["checkpoint_path"]
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
+    trust_remote_code = cmd.get("trust_remote_code", False)
 
     try:
         _send_response(resp_queue, {
@@ -96,6 +97,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             checkpoint_path=checkpoint_path,
             max_seq_length=max_seq_length,
             load_in_4bit=load_in_4bit,
+            trust_remote_code=trust_remote_code,
         )
 
         _send_response(resp_queue, {
