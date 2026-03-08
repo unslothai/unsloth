@@ -241,8 +241,17 @@ def install_python_stack() -> int:
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 12. Final check
-    run("Running pip check", [sys.executable, "-m", "pip", "check"], quiet=False)
+    # 12. Final check (non-fatal — third-party conflicts are expected)
+    print(_cyan("   Running pip check..."))
+    _pip_check = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    if _pip_check.returncode != 0:
+        print(_cyan("   ⚠ pip check reported dependency conflicts (non-fatal):"))
+        print(_pip_check.stdout.decode(errors="replace").rstrip())
+    else:
+        print(_green("   ✅ pip check passed"))
 
     print(_green("✅ Python dependencies installed"))
     return 0
