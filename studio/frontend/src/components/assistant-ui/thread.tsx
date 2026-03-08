@@ -8,6 +8,8 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
@@ -33,13 +35,16 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  HeadphonesIcon,
   MicIcon,
   MoreHorizontalIcon,
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
+  XIcon,
 } from "lucide-react";
-import { type FC, useRef, useState } from "react";
+import { type FC, useCallback, useRef, useState } from "react";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
   hideComposer,
@@ -162,11 +167,34 @@ const ComposerAnimated: FC = () => {
   );
 };
 
+const PendingAudioChip: FC = () => {
+  const audioName = useChatRuntimeStore((s) => s.pendingAudioName);
+  const clearPendingAudio = useChatRuntimeStore((s) => s.clearPendingAudio);
+  if (!audioName) return null;
+  return (
+    <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
+      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <span className="max-w-48 truncate">{audioName}</span>
+        <button
+          type="button"
+          onClick={clearPendingAudio}
+          className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+          aria-label="Remove audio"
+        >
+          <XIcon className="size-3" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const Composer: FC = () => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone shadow-border ring-1 ring-border flex w-full flex-col rounded-2xl bg-background px-1 pt-2 outline-none transition-shadow data-[dragging=true]:ring-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
+        <PendingAudioChip />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
           className="aui-composer-input mb-1 max-h-32 min-h-12 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
@@ -180,10 +208,64 @@ const Composer: FC = () => {
   );
 };
 
+const ComposerAudioUpload: FC = () => {
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
+  const activeModel = useChatRuntimeStore((s) => {
+    const checkpoint = s.params.checkpoint;
+    return s.models.find((m) => m.id === checkpoint);
+  });
+
+  const handleAudioFile = useCallback(
+    async (file: File) => {
+      if (file.size > MAX_AUDIO_SIZE) return;
+      try {
+        const base64 = await fileToBase64(file);
+        setPendingAudio(base64, file.name);
+      } catch {
+        // skip
+      }
+    },
+    [setPendingAudio],
+  );
+
+  if (!activeModel?.hasAudioInput) return null;
+
+  return (
+    <>
+      <input
+        ref={audioInputRef}
+        type="file"
+        accept={AUDIO_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) handleAudioFile(file);
+          e.target.value = "";
+        }}
+      />
+      <TooltipIconButton
+        tooltip="Upload audio"
+        side="bottom"
+        variant="ghost"
+        size="icon"
+        className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
+        onClick={() => audioInputRef.current?.click()}
+        aria-label="Upload audio"
+      >
+        <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
+      </TooltipIconButton>
+    </>
+  );
+};
+
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
-      <ComposerAddAttachment />
+      <div className="flex items-center gap-1">
+        <ComposerAddAttachment />
+        <ComposerAudioUpload />
+      </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
@@ -342,6 +424,19 @@ const AssistantActionBar: FC = () => {
   );
 };
 
+const UserMessageAudio: FC = () => {
+  const audioName = useAuiState(({ message }) => sentAudioNames.get(message.id));
+  if (!audioName) return null;
+  return (
+    <div className="col-start-2 flex justify-end">
+      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <span className="max-w-48 truncate">{audioName}</span>
+      </div>
+    </div>
+  );
+};
+
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -349,6 +444,7 @@ const UserMessage: FC = () => {
       data-role="user"
     >
       <UserMessageAttachments />
+      <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content wrap-break-word rounded-2xl bg-muted  px-4 py-2.5 text-foreground">
