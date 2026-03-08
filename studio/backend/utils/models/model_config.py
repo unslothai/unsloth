@@ -1258,7 +1258,7 @@ class ModelConfig:
                 is_cached=True,  # Local LoRAs are always "cached"
                 is_vision=is_vision,
                 is_lora=True,
-                is_audio=audio_type is not None,
+                is_audio=audio_type is not None and audio_type != 'audio_vlm',
                 audio_type=audio_type,
                 has_audio_input=is_audio_input_type(audio_type),
                 base_model=base_model,
@@ -1456,7 +1456,7 @@ class ModelConfig:
             is_cached=is_model_cached(identifier) if not is_local else True,
             is_vision=vision,
             is_lora=is_lora,
-            is_audio=audio_type_val is not None,
+            is_audio=audio_type_val is not None and audio_type_val != 'audio_vlm',
             audio_type=audio_type_val,
             has_audio_input=has_audio_in,
             base_model=base_model,
