@@ -100,7 +100,7 @@ export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
 ): AsyncGenerator<OpenAIChatChunk> {
-  const response = await authFetch("/api/inference/chat/completions", {
+  const response = await authFetch("/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

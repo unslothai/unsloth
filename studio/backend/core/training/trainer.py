@@ -3,6 +3,7 @@ Unsloth Training Backend
 Integrates Unsloth training capabilities with the FastAPI backend
 """
 import os
+import sys
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -64,6 +65,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self.load_in_4bit = True  # Track quantization mode for metadata
 
         # Model state tracking
         self.is_vlm = False
@@ -222,6 +224,7 @@ class UnslothTrainer:
         if self.should_stop and self.save_on_stop:
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
+            self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
             print(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
@@ -235,6 +238,7 @@ class UnslothTrainer:
         else:
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
+            self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
             print(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(
@@ -323,6 +327,7 @@ class UnslothTrainer:
                    is_dataset_image: bool = False,
                    is_dataset_audio: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
+        self.load_in_4bit = load_in_4bit  # Store for training_meta.json
         try:
             if self.model is not None:
                 del self.model
@@ -2333,6 +2338,13 @@ class UnslothTrainer:
                 "dataset_num_proc": 1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else safe_num_proc(max(1, os.cpu_count() // 4)),
                 "max_seq_length": training_args.get('max_seq_length', 2048),
             }
+
+            # On Windows with transformers 5.x, disable DataLoader multiprocessing
+            # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
+            if sys.platform == "win32":
+                import transformers as _tf
+                if _tf.__version__.startswith("5."):
+                    config_args["dataloader_num_workers"] = 0
             
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
             if warmup_ratio_val is not None:
@@ -2598,6 +2610,36 @@ class UnslothTrainer:
 
         finally:
             self.is_training = False
+
+    def _patch_adapter_config(self, output_dir: str) -> None:
+        """Patch adapter_config.json with unsloth_training_method.
+
+        Values: 'qlora', 'lora', 'FT', 'CPT', 'DPO', 'GRPO', etc.
+        For LoRA/QLoRA, the distinction comes from load_in_4bit.
+        """
+        config_path = os.path.join(output_dir, "adapter_config.json")
+        if not os.path.exists(config_path):
+            logger.info("No adapter_config.json found — skipping training method patch")
+            return
+
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+
+            # Determine the training method
+            if self.load_in_4bit:
+                method = "qlora"
+            else:
+                method = "lora"
+
+            config["unsloth_training_method"] = method
+            logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
+
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
+
+        except Exception as e:
+            logger.warning(f"Failed to patch adapter_config.json: {e}")
 
     def stop_training(self, save: bool = True):
         """Stop ongoing training"""
