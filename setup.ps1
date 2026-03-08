@@ -685,11 +685,42 @@ $CuTag = Get-PytorchCudaTag
 Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
 pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
 
+# Install Triton for Windows (enables torch.compile — without it training can hang)
+Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
+pip install "triton-windows<3.7" 2>&1 | Out-Null
+Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+
 # Ordered heavy dependency installation — shared cross-platform script
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python "$PSScriptRoot\install_python_stack.py"
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
+
+# ── Pre-install transformers 5.x into .venv_t5/ ──
+# Models like GLM-4.7-Flash need transformers>=5.2.0. Instead of pip-installing
+# at runtime (slow, ~10-15s), we pre-install into a separate directory.
+# The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
+Write-Host ""
+Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
+$VenvT5Dir = Join-Path $PSScriptRoot ".venv_t5"
+if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
+New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
+$prevEAP_t5 = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+pip install --target $VenvT5Dir --no-deps "transformers==5.2.0" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Could not install transformers 5.2.0 into .venv_t5/" -ForegroundColor Red
+    $ErrorActionPreference = $prevEAP_t5
+    exit 1
+}
+pip install --target $VenvT5Dir --no-deps "huggingface_hub==1.3.0" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Could not install huggingface_hub 1.3.0 into .venv_t5/" -ForegroundColor Red
+    $ErrorActionPreference = $prevEAP_t5
+    exit 1
+}
+$ErrorActionPreference = $prevEAP_t5
+Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
 
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)

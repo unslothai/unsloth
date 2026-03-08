@@ -518,7 +518,14 @@ class ExportBackend:
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(abs_save_dir)
 
-                logger.info(f"GGUF model saved successfully in {abs_save_dir}")
+                # Log final file locations (after relocation) so it's clear
+                # where the GGUF files actually ended up.
+                final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
+                logger.info(
+                    "GGUF export complete. Final files in %s:\n  %s",
+                    abs_save_dir,
+                    "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
+                )
 
             # Push to hub if requested
             if push_to_hub:
