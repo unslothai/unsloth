@@ -16,6 +16,7 @@ const CHATML_ROLES = ["system", "user", "assistant"] as const;
 const ALPACA_ROLES = ["instruction", "input", "output"] as const;
 const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
 const VLM_ROLES = ["image", "text"] as const;
+const AUDIO_ROLES = ["audio", "text", "speaker_id"] as const;
 
 const ROLE_LABELS: Record<string, string> = {
   system: "System",
@@ -28,9 +29,12 @@ const ROLE_LABELS: Record<string, string> = {
   output: "Output",
   image: "Image",
   text: "Text",
+  audio: "Audio",
+  speaker_id: "Speaker ID",
 };
 
-export function getAvailableRoles(isVlm: boolean, format?: string): readonly string[] {
+export function getAvailableRoles(isVlm: boolean, format?: string, isAudio?: boolean): readonly string[] {
+  if (isAudio) return AUDIO_ROLES;
   if (isVlm) return VLM_ROLES;
   if (format === "alpaca") return ALPACA_ROLES;
   if (format === "sharegpt") return SHAREGPT_ROLES;
@@ -41,8 +45,10 @@ export function isMappingComplete(
   mapping: Record<string, string>,
   isVlm: boolean,
   format?: string,
+  isAudio?: boolean,
 ): boolean {
   const roles = new Set(Object.values(mapping));
+  if (isAudio) return roles.has("audio") && roles.has("text");
   if (isVlm) return roles.has("image") && roles.has("text");
   if (format === "alpaca") return roles.has("instruction") && roles.has("output");
   if (format === "sharegpt") return roles.has("human") && roles.has("gpt");
@@ -85,22 +91,26 @@ export function DatasetMappingCard({
   mappingOk,
   autoDetected = false,
   isVlm = false,
+  isAudio = false,
   format,
 }: {
   mapping: Record<string, string>;
   mappingOk: boolean;
   autoDetected?: boolean;
   isVlm?: boolean;
+  isAudio?: boolean;
   format?: string;
 }) {
   const entries = Object.entries(mapping);
-  const requiredLabel = isVlm
-    ? "image and text"
-    : format === "alpaca"
-      ? "instruction and output"
-      : format === "sharegpt"
-        ? "human and gpt"
-        : "user and assistant";
+  const requiredLabel = isAudio
+    ? "audio and text"
+    : isVlm
+      ? "image and text"
+      : format === "alpaca"
+        ? "instruction and output"
+        : format === "sharegpt"
+          ? "human and gpt"
+          : "user and assistant";
 
   return (
     <div
@@ -228,6 +238,7 @@ const TO_CANONICAL: Record<string, string> = {
   instruction: "user", input: "system", output: "assistant",
   human: "user", gpt: "assistant",
   image: "image", text: "text",
+  audio: "audio", speaker_id: "speaker_id",
 };
 
 /** Chatml → format-specific role names (only for formats that differ). */
@@ -257,9 +268,17 @@ export function deriveDefaultMapping(
   data: CheckFormatResponse,
   isVlm: boolean,
   format?: string,
+  isAudio?: boolean,
 ): Record<string, string> {
   if (data.suggested_mapping) {
     return remapRolesForFormat({ ...data.suggested_mapping }, format);
+  }
+  if (isAudio) {
+    const result: Record<string, string> = {};
+    if (data.detected_audio_column) result[data.detected_audio_column] = "audio";
+    if (data.detected_text_column) result[data.detected_text_column] = "text";
+    if (data.detected_speaker_column) result[data.detected_speaker_column] = "speaker_id";
+    return result;
   }
   if (isVlm) {
     const result: Record<string, string> = {};

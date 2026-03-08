@@ -1,6 +1,6 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
-import { streamChatCompletions } from "./chat-api";
+import { generateAudio, streamChatCompletions } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -10,6 +10,9 @@ import {
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
+
+/** Tracks which user messages were sent with an audio file (messageId → filename). */
+export const sentAudioNames = new Map<string, string>();
 
 function collectTextParts(message: RunMessage): string[] {
   const textParts = message.content
@@ -92,6 +95,26 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
+function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
+  // Check message content parts (from compare view's CompareMessagePart with type: "audio")
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "user") continue;
+
+    for (const part of message.content ?? []) {
+      if (part.type === "audio" && "audio" in part) {
+        const audioPart = (part as unknown as { type: "audio"; audio: string | { data: string; format: string } }).audio;
+        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+      }
+    }
+  }
+
+  // Check the runtime store (from main composer's audio upload)
+  const pendingAudio = useChatRuntimeStore.getState().pendingAudioBase64;
+  return pendingAudio ?? undefined;
+}
+
 async function resolveUseAdapter(
   threadId: string | undefined,
 ): Promise<boolean | undefined> {
@@ -135,7 +158,68 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);
+      const audioBase64 = findLatestUserAudioBase64(messages);
+      // Clear pending audio from store after extracting (consumed on send)
+      if (audioBase64) {
+        const audioName = runtime.pendingAudioName;
+        if (audioName) {
+          const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+          if (lastUserMsg) sentAudioNames.set(lastUserMsg.id, audioName);
+        }
+        runtime.clearPendingAudio();
+      }
       const useAdapter = await resolveUseAdapter(unstable_threadId);
+
+      // ── Audio model path (non-streaming) ─────────────────────
+      const activeModel = runtime.models.find(
+        (m) => m.id === params.checkpoint,
+      );
+      if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
+        const threadKey = unstable_threadId || "__default";
+        runtime.setThreadRunning(threadKey, true);
+        try {
+          yield {
+            content: [{ type: "text" as const, text: "Generating audio..." }],
+          };
+
+          const result = await generateAudio(
+            {
+              model: params.checkpoint,
+              messages: outboundMessages,
+              stream: false,
+              temperature: params.temperature,
+              top_p: params.topP,
+              max_tokens: params.maxTokens,
+              top_k: params.topK,
+              min_p: params.minP,
+              repetition_penalty: params.repetitionPenalty,
+              ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
+            },
+            abortSignal,
+          );
+
+          const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
+          yield {
+            content: [
+              {
+                type: "text" as const,
+                text: `<audio-player src="${audioUrl}" />`,
+              },
+            ],
+          };
+        } catch (err) {
+          if (!abortSignal.aborted) {
+            toast.error("Audio generation failed", {
+              description:
+                err instanceof Error ? err.message : "Unknown error",
+            });
+          }
+          throw err;
+        } finally {
+          runtime.setThreadRunning(threadKey, false);
+        }
+        return;
+      }
 
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
@@ -194,6 +278,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             image_base64: imageBase64,
+            audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
           },
           abortSignal,

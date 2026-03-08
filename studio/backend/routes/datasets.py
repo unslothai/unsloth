@@ -353,7 +353,7 @@ def check_format(
         # Run lightweight format check on the preview slice
         result = check_dataset_format(preview_slice, is_vlm=request.is_vlm)
 
-        logger.info(f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}, is_multimodal={result.get('is_multimodal', False)}")
+        logger.info(f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}, is_image={result.get('is_image', False)}")
 
         # Generate preview samples
         preview_samples = None
@@ -396,11 +396,14 @@ def check_format(
             requires_manual_mapping=result["requires_manual_mapping"],
             detected_format=result["detected_format"],
             columns=result["columns"],
-            is_multimodal=result.get("is_multimodal", False),
+            is_image=result.get("is_image", False),
+            is_audio=result.get("is_audio", False),
             multimodal_columns=result.get("multimodal_columns"),
             suggested_mapping=result.get("suggested_mapping"),
             detected_image_column=result.get("detected_image_column"),
+            detected_audio_column=result.get("detected_audio_column"),
             detected_text_column=result.get("detected_text_column"),
+            detected_speaker_column=result.get("detected_speaker_column"),
             preview_samples=preview_samples,
             total_rows=total_rows,
             warning=warning,

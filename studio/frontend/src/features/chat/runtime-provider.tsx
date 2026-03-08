@@ -202,7 +202,7 @@ async function generateTitleWithModel(payload: {
     return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
   }
 
-  const response = await authFetch("/api/inference/chat/completions", {
+  const response = await authFetch("/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

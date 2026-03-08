@@ -1,5 +1,6 @@
 import { authFetch } from "@/features/auth";
 import type {
+  AudioGenerationResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -99,7 +100,7 @@ export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
 ): AsyncGenerator<OpenAIChatChunk> {
-  const response = await authFetch("/api/inference/chat/completions", {
+  const response = await authFetch("/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -154,4 +155,23 @@ export async function* streamChatCompletions(
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
   }
+}
+
+export async function generateAudio(
+  payload: OpenAIChatCompletionsRequest,
+  signal: AbortSignal,
+): Promise<AudioGenerationResponse> {
+  const response = await authFetch("/api/inference/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, stream: false }),
+    signal,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+
+  return (await response.json()) as AudioGenerationResponse;
 }
