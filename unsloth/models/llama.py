@@ -643,7 +643,8 @@ torch_mean = torch.mean
 
 def fast_rms_layernorm_inference(self, X, XX = None, XX2 = None, variance = None):
     old_dtype = X.dtype
-    if XX is None:
+    inplace = XX is not None
+    if not inplace:
         XX = X.to(torch.float32)
         variance = XX.square().mean(-1, keepdim = True)
     else:
@@ -652,10 +653,10 @@ def fast_rms_layernorm_inference(self, X, XX = None, XX2 = None, variance = None
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
 
-    if XX is None:
-        X = XX.to(old_dtype)
-    else:
+    if inplace:
         X.copy_(XX)
+    else:
+        X = XX.to(old_dtype)
 
     X *= self.weight
     return X
