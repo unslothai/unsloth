@@ -9,25 +9,41 @@ function Slider({
   value,
   min = 0,
   max = 100,
+  orientation = "horizontal",
+  onValueChange,
   ...props
 }: React.ComponentProps<typeof SliderPrimitive.Root>) {
-  const _values = React.useMemo(
-    () =>
-      Array.isArray(value)
-        ? value
-        : Array.isArray(defaultValue)
-          ? defaultValue
-          : [min, max],
-    [value, defaultValue, min, max],
+  const isControlled = Array.isArray(value);
+  const [uncontrolledValues, setUncontrolledValues] =
+    React.useState<number[]>(() =>
+      Array.isArray(defaultValue) ? defaultValue : [min, max],
+    );
+
+  const values = isControlled ? value : uncontrolledValues;
+  const handleValueChange = React.useCallback(
+    (nextValues: number[]) => {
+      if (!isControlled) {
+        setUncontrolledValues(nextValues);
+      }
+      onValueChange?.(nextValues);
+    },
+    [isControlled, onValueChange],
   );
 
   // For single-thumb horizontal sliders, render the fill bar as a sibling of
   // the track (outside its overflow-hidden container) so it can align flush
   // with the thumb center without being clipped. The Range inside the track
   // is hidden in this case to avoid double-painting.
-  const isSingleThumb = _values.length === 1;
-  const fillPercent = isSingleThumb
-    ? Math.min(100, Math.max(0, (((_values[0] ?? min) - min) / (max - min)) * 100))
+  const isSingleThumbHorizontal =
+    values.length === 1 && orientation === "horizontal";
+  const fillPercent = isSingleThumbHorizontal
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          max === min ? 0 : (((values[0] ?? min) - min) / (max - min)) * 100,
+        ),
+      )
     : null;
 
   return (
@@ -37,6 +53,8 @@ function Slider({
       value={value}
       min={min}
       max={max}
+      orientation={orientation}
+      onValueChange={handleValueChange}
       className={cn(
         "data-vertical:min-h-40 relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:w-auto data-vertical:flex-col",
         className,
@@ -51,18 +69,18 @@ function Slider({
           data-slot="slider-range"
           className={cn(
             "bg-primary absolute select-none data-horizontal:h-full data-vertical:w-full",
-            isSingleThumb && "opacity-0",
+            isSingleThumbHorizontal && "opacity-0",
           )}
         />
       </SliderPrimitive.Track>
-      {isSingleThumb && (
+      {isSingleThumbHorizontal && (
         <div
           aria-hidden={true}
           className="absolute inset-y-0 left-0 my-auto h-3 rounded-4xl bg-primary pointer-events-none"
           style={{ width: `${fillPercent}%` }}
         />
       )}
-      {Array.from({ length: _values.length }, (_, index) => (
+      {Array.from({ length: values.length }, (_, index) => (
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
