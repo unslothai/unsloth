@@ -256,15 +256,17 @@ def prefer_flex_attn_if_supported(model_class, config):
 
 def _run_temporary_patches(phase):
     import inspect
+
     for temporary_patch in TEMPORARY_PATCHES:
         try:
             sig = inspect.signature(temporary_patch)
             if "phase" in sig.parameters:
-                temporary_patch(phase=phase)
+                temporary_patch(phase = phase)
             else:
                 temporary_patch()
         except (ValueError, TypeError):
             temporary_patch()
+
 
 _run_temporary_patches("init")
 
