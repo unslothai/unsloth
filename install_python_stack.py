@@ -171,6 +171,13 @@ def install_python_stack() -> int:
         req=REQ_ROOT / "extras.txt",
     )
 
+    # 3b. Extra dependencies (no-deps) — audio model support etc.
+    pip_install(
+        "Installing extras (no-deps)",
+        "--no-deps", "--no-cache-dir",
+        req=REQ_ROOT / "extras-no-deps.txt",
+    )
+
     # 4. Overrides (torchao, transformers) — force-reinstall
     pip_install(
         "Installing torchao + transformers overrides",
