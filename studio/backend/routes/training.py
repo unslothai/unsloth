@@ -191,6 +191,7 @@ async def start_training(
             "wandb_project": request.wandb_project or "",
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
+            "trust_remote_code": request.trust_remote_code,
         }
 
         # Free GPU memory: shut down any running inference/export subprocesses

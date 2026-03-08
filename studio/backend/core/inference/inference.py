@@ -63,7 +63,8 @@ class InferenceBackend:
                    max_seq_length: int = 2048,
                    dtype = None,
                    load_in_4bit: bool = True,
-                   hf_token: Optional[str] = None) -> bool:
+                   hf_token: Optional[str] = None,
+                   trust_remote_code: bool = False) -> bool:
         """
         Load any model: base, LoRA adapter, text, or vision.
         """
@@ -110,6 +111,7 @@ class InferenceBackend:
                         auto_model=CsmForConditionalGeneration,
                         load_in_4bit=False,
                         token=hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code=trust_remote_code,
                     )
                     FastModel.for_inference(model)
                     self.models[model_name]["model"] = model
@@ -139,6 +141,7 @@ class InferenceBackend:
                             dtype=torch.float32,
                             load_in_4bit=False,
                             token=hf_token if hf_token and hf_token.strip() else None,
+                            trust_remote_code=trust_remote_code,
                         )
                     else:
                         # Base model: download full HF repo, then load from /LLM subfolder
@@ -155,6 +158,7 @@ class InferenceBackend:
                             dtype=torch.float32,
                             load_in_4bit=False,
                             token=hf_token if hf_token and hf_token.strip() else None,
+                            trust_remote_code=trust_remote_code,
                         )
 
                     FastModel.for_inference(model)
@@ -169,6 +173,7 @@ class InferenceBackend:
                         max_seq_length=max_seq_length,
                         load_in_4bit=False,
                         token=hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code=trust_remote_code,
                     )
                     FastModel.for_inference(model)
                     self.models[model_name]["model"] = model
@@ -184,6 +189,7 @@ class InferenceBackend:
                         whisper_task="transcribe",
                         load_in_4bit=False,
                         token=hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code=trust_remote_code,
                     )
                     FastModel.for_inference(model)
                     model.eval()
@@ -209,6 +215,7 @@ class InferenceBackend:
                         max_seq_length=max_seq_length,
                         load_in_4bit=False,
                         token=hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code=trust_remote_code,
                     )
                     FastLanguageModel.for_inference(model)
                     self.models[model_name]["model"] = model
@@ -240,6 +247,7 @@ class InferenceBackend:
                     dtype=dtype,
                     load_in_4bit=load_in_4bit,
                     token=hf_token if hf_token and hf_token.strip() else None,
+                    trust_remote_code=trust_remote_code,
                 )
 
                 # Apply inference optimization
@@ -270,6 +278,7 @@ class InferenceBackend:
                     processor = AutoProcessor.from_pretrained(
                         processor_source,
                         token=hf_token if hf_token and hf_token.strip() else None,
+                        trust_remote_code=trust_remote_code,
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
 
@@ -285,6 +294,7 @@ class InferenceBackend:
                     dtype=dtype,
                     load_in_4bit=load_in_4bit,
                     token=hf_token if hf_token and hf_token.strip() else None,
+                    trust_remote_code=trust_remote_code,
                 )
 
                 # Apply inference optimization

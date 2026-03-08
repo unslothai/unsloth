@@ -325,9 +325,11 @@ class UnslothTrainer:
                    load_in_4bit: bool = True,
                    hf_token: Optional[str] = None,
                    is_dataset_image: bool = False,
-                   is_dataset_audio: bool = False) -> bool:
+                   is_dataset_audio: bool = False,
+                   trust_remote_code: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
+        self.trust_remote_code = trust_remote_code  # For AutoProcessor etc. used during training
         try:
             if self.model is not None:
                 del self.model
@@ -446,6 +448,7 @@ class UnslothTrainer:
                     auto_model=CsmForConditionalGeneration,
                     load_in_4bit=False,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -461,6 +464,7 @@ class UnslothTrainer:
                     whisper_language="English",
                     whisper_task="transcribe",
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 # Configure generation settings (notebook lines 100-105)
                 self.model.generation_config.language = "<|en|>"
@@ -477,6 +481,7 @@ class UnslothTrainer:
                     dtype=None,
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -510,6 +515,7 @@ class UnslothTrainer:
                     dtype=torch.float32,  # Spark-TTS requires float32
                     load_in_4bit=False,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded Spark-TTS (bicodec) model")
 
@@ -521,6 +527,7 @@ class UnslothTrainer:
                     max_seq_length=max_seq_length,
                     load_in_4bit=False,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -534,6 +541,7 @@ class UnslothTrainer:
                     dtype=None,
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -545,6 +553,7 @@ class UnslothTrainer:
                     dtype=None,  # Auto-detect
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded vision model")
 
@@ -564,6 +573,7 @@ class UnslothTrainer:
                     dtype=None,  # Auto-detect
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded text model")
 
@@ -584,7 +594,7 @@ class UnslothTrainer:
                 self._source_code_retried = True
                 print(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(model_name, max_seq_length, load_in_4bit, hf_token,
-                                       is_dataset_image, is_dataset_audio)
+                                       is_dataset_image, is_dataset_audio, trust_remote_code)
             error_msg = str(e)
             error_lower = error_msg.lower()
             if any(k in error_lower for k in ("gated repo", "access to it at", "401", "403", "unauthorized", "forbidden")):
@@ -983,7 +993,10 @@ class UnslothTrainer:
         from datasets import Audio
         import torch
 
-        processor = AutoProcessor.from_pretrained(self.model_name)
+        processor = AutoProcessor.from_pretrained(
+            self.model_name,
+            trust_remote_code=getattr(self, "trust_remote_code", False),
+        )
 
         # Strip pad_to_multiple_of from tokenizer init_kwargs — fine-tuned models
         # (e.g. keanteng/sesame-csm-elise) save it in tokenizer_config.json, and
