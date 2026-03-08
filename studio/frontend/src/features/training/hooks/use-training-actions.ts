@@ -49,7 +49,7 @@ export function useTrainingActions() {
 
     try {
       const datasetName = getDatasetName(config);
-      let isVlm = config.isVisionModel && config.isDatasetMultimodal === true;
+      let isVlm = config.isVisionModel && config.isDatasetImage === true;
 
       if (datasetName) {
         const check = await checkDatasetFormat({
@@ -60,12 +60,22 @@ export function useTrainingActions() {
           isVlm,
         });
 
-        // Backend auto-detects multimodal even if we didn't know yet
-        if (check.is_multimodal && config.isVisionModel) {
+        // Backend auto-detects image/audio from dataset content.
+        // Sync these flags into the store so buildTrainingStartPayload picks them up.
+        const isAudio = !!check.is_audio;
+        const isImage = !!check.is_image;
+
+        if (isImage && config.isVisionModel) {
           isVlm = true;
         }
+        if (isImage !== config.isDatasetImage || isAudio !== config.isDatasetAudio) {
+          useTrainingConfigStore.setState({
+            isDatasetImage: isImage,
+            isDatasetAudio: isAudio,
+          });
+        }
 
-        if (check.requires_manual_mapping && !hasManualMapping(config, isVlm)) {
+        if (check.requires_manual_mapping && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};
           if (check.suggested_mapping) {
@@ -73,6 +83,10 @@ export function useTrainingActions() {
             for (const [col, role] of Object.entries(check.suggested_mapping)) {
               hint[col] = table ? (table[role] ?? role) : role;
             }
+          } else if (isAudio) {
+            if (check.detected_audio_column) hint[check.detected_audio_column] = "audio";
+            if (check.detected_text_column) hint[check.detected_text_column] = "text";
+            if (check.detected_speaker_column) hint[check.detected_speaker_column] = "speaker_id";
           } else if (isVlm) {
             if (check.detected_image_column) hint[check.detected_image_column] = "image";
             if (check.detected_text_column) hint[check.detected_text_column] = "text";
@@ -88,7 +102,8 @@ export function useTrainingActions() {
         }
       }
 
-      const payload = buildTrainingStartPayload(config);
+      // Re-read config after potential store updates from dataset check
+      const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
       const response = await startTraining(payload);
 
       if (response.status === "error") {
@@ -159,12 +174,11 @@ function getDatasetName(config: TrainingConfigState): string | null {
     : config.uploadedFile;
 }
 
-function hasManualMapping(config: TrainingConfigState, isVlm = false): boolean {
+function hasManualMapping(config: TrainingConfigState, isVlm = false, isAudio = false): boolean {
   const mapping = config.datasetManualMapping;
   const roles = new Set(Object.values(mapping));
-  if (isVlm) {
-    return roles.has("image") && roles.has("text");
-  }
+  if (isAudio) return roles.has("audio") && roles.has("text");
+  if (isVlm) return roles.has("image") && roles.has("text");
   const fmt = config.datasetFormat;
   if (fmt === "alpaca") return roles.has("instruction") && roles.has("output");
   if (fmt === "sharegpt") return roles.has("human") && roles.has("gpt");

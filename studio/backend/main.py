@@ -3,6 +3,7 @@ Main FastAPI application for Unsloth UI Backend
 """
 import os
 import secrets
+import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -34,6 +35,12 @@ async def lifespan(app: FastAPI):
     """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
     # Clean up any stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
+
+    # Remove stale .venv_overlay from previous versions — no longer used.
+    # Version switching now uses .venv_t5/ (pre-installed by setup.sh).
+    overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
+    if overlay_dir.is_dir():
+        shutil.rmtree(overlay_dir, ignore_errors=True)
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
@@ -89,6 +96,11 @@ app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(training_router, prefix="/api/train", tags=["training"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
+
+# OpenAI-compatible endpoints: mount the same inference router at /v1
+# so external tools (Open WebUI, SillyTavern, etc.) can use the
+# standard /v1/chat/completions path.
+app.include_router(inference_router, prefix="/v1", tags=["openai-compat"])
 app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
 app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
 app.include_router(export_router, prefix="/api/export", tags=["export"])
