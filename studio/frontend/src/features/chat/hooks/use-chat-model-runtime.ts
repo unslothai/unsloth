@@ -206,6 +206,7 @@ export function useChatModelRuntime() {
             await unloadModel({ model_path: currentCheckpoint });
           }
 
+          const currentParams = useChatRuntimeStore.getState().params;
           const loadResponse = await loadModel({
             model_path: modelId,
             hf_token: null,
@@ -213,10 +214,11 @@ export function useChatModelRuntime() {
             load_in_4bit: true,
             is_lora: isLora,
             gguf_variant: ggufVariant ?? null,
+            trust_remote_code: currentParams.trustRemoteCode ?? false,
           });
 
-          const currentParams = useChatRuntimeStore.getState().params;
-          setParams(mergeRecommendedInference(currentParams, loadResponse, modelId));
+          const paramsAfterLoad = useChatRuntimeStore.getState().params;
+          setParams(mergeRecommendedInference(paramsAfterLoad, loadResponse, modelId));
           await refresh();
         }
 
