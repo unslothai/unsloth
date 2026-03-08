@@ -103,7 +103,8 @@ function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
 
     for (const part of message.content ?? []) {
       if (part.type === "audio" && "audio" in part) {
-        const raw = (part as { type: "audio"; audio: string }).audio;
+        const audioPart = (part as unknown as { type: "audio"; audio: string | { data: string; format: string } }).audio;
+        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
         if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
       }
     }
