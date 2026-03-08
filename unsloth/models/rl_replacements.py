@@ -1013,17 +1013,61 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
-            loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
-                grpo_compute_loss_slow(
-                    ref_logps,
-                    per_token_logps,
-                    old_logps,
-                    input_ids,
+            (
+                loss,
+                completion_length,
+                mean_kl,
+                delta,
+                flat_is_ratio,
+                coef_1,
+                completion_mask,
+            ) = grpo_compute_loss_slow(
+                ref_logps,
+                per_token_logps,
+                old_logps,
+                input_ids,
+                completion_mask,
+                self.beta,
+                advantages,
+                pixel_values = pixel_values,
+                image_grid_thw = image_grid_thw,
+                loss_type = self.args.loss_type,
+                importance_sampling_level = self.importance_sampling_level,
+                epsilon_low = self.epsilon_low,
+                epsilon_high = self.epsilon_high,
+                max_completion_length = self.args.max_completion_length,
+                delta = self.args.delta,
+                temperature = self.args.temperature,
+                max_left_pad = max_left_pad,
+                logit_softcapping = logit_softcapping,
+                logit_scale_multiply = logit_scale_multiply,
+                logit_scale_divide = logit_scale_divide,
+                num_items_in_batch = num_items_in_batch,
+                current_gradient_accumulation_steps = current_gradient_accumulation_steps,
+                num_processes = num_processes,
+                sampling_per_token_logps = sampling_per_token_logps,
+            )
+        else:
+            if hasattr(self.args, "loss_type"):
+                (
+                    loss,
+                    completion_length,
+                    mean_kl,
+                    delta,
+                    flat_is_ratio,
+                    coef_1,
                     completion_mask,
-                    self.beta,
-                    advantages,
+                ) = grpo_accumulated_loss(
+                    trainer = self,
+                    input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    logits_to_keep = logits_to_keep,
+                    completion_mask = completion_mask,
+                    advantages = advantages,
+                    old_logps = old_logps,
+                    ref_logps = ref_logps,
+                    n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
                     importance_sampling_level = self.importance_sampling_level,
                     epsilon_low = self.epsilon_low,
@@ -1035,60 +1079,30 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
+                    attention_mask = attention_mask,
                     num_items_in_batch = num_items_in_batch,
                     current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                     num_processes = num_processes,
                     sampling_per_token_logps = sampling_per_token_logps,
                 )
-            )
-        else:
-            if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
+            else:
+                # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
+                loss, completion_length, mean_kl, coef_1, completion_mask = (
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
-                        pixel_values = pixel_values,
-                        image_grid_thw = image_grid_thw,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
                         old_logps = old_logps,
                         ref_logps = ref_logps,
                         n_chunks = self.args.unsloth_num_chunks,
-                        loss_type = self.args.loss_type,
-                        importance_sampling_level = self.importance_sampling_level,
-                        epsilon_low = self.epsilon_low,
-                        epsilon_high = self.epsilon_high,
-                        max_completion_length = self.args.max_completion_length,
-                        delta = self.args.delta,
                         temperature = self.args.temperature,
-                        max_left_pad = max_left_pad,
                         logit_softcapping = logit_softcapping,
                         logit_scale_multiply = logit_scale_multiply,
                         logit_scale_divide = logit_scale_divide,
                         attention_mask = attention_mask,
-                        num_items_in_batch = num_items_in_batch,
-                        current_gradient_accumulation_steps = current_gradient_accumulation_steps,
-                        num_processes = num_processes,
-                        sampling_per_token_logps = sampling_per_token_logps,
                     )
-                )
-            else:
-                # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
-                loss, completion_length, mean_kl, coef_1 = grpo_accumulated_loss(
-                    trainer = self,
-                    input_ids = _input_ids,
-                    logits_to_keep = logits_to_keep,
-                    completion_mask = completion_mask,
-                    advantages = advantages,
-                    old_logps = old_logps,
-                    ref_logps = ref_logps,
-                    n_chunks = self.args.unsloth_num_chunks,
-                    temperature = self.args.temperature,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    attention_mask = attention_mask,
                 )
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
