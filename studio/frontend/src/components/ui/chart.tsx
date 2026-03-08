@@ -46,22 +46,94 @@ function ChartContainer({
 }) {
   const uniqueId = React.useId();
   const chartId = `chart-${id || uniqueId.replace(/:/g, "")}`;
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [containerSize, setContainerSize] = React.useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+
+  React.useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+
+    const updateSizeState = () => {
+      const { width, height } = element.getBoundingClientRect();
+      const nextSize =
+        width > 0 && height > 0
+          ? {
+              width: Math.round(width),
+              height: Math.round(height),
+            }
+          : null;
+
+      setContainerSize((currentSize) => {
+        if (!nextSize) {
+          // Keep the last valid size once mounted to avoid unmount/remount thrash.
+          return currentSize;
+        }
+        if (
+          currentSize &&
+          currentSize.width === nextSize.width &&
+          currentSize.height === nextSize.height
+        ) {
+          return currentSize;
+        }
+        return nextSize;
+      });
+    };
+
+    updateSizeState();
+
+    if (typeof ResizeObserver === "undefined") {
+      const recheckSize = () => {
+        if (document.visibilityState === "visible") {
+          updateSizeState();
+        }
+      };
+
+      window.addEventListener("resize", recheckSize);
+      window.addEventListener("orientationchange", recheckSize);
+      document.addEventListener("visibilitychange", recheckSize);
+
+      return () => {
+        window.removeEventListener("resize", recheckSize);
+        window.removeEventListener("orientationchange", recheckSize);
+        document.removeEventListener("visibilitychange", recheckSize);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateSizeState();
+    });
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <ChartContext.Provider value={{ config }}>
       <div
+        ref={containerRef}
         data-slot="chart"
         data-chart={chartId}
         className={cn(
-          "[&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border flex aspect-video justify-center text-xs [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
+          "[&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border flex min-w-0 aspect-video justify-center text-xs [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
           className,
         )}
         {...props}
       >
         <ChartStyle id={chartId} config={config} />
-        <RechartsPrimitive.ResponsiveContainer>
-          {children}
-        </RechartsPrimitive.ResponsiveContainer>
+        {containerSize ? (
+          <RechartsPrimitive.ResponsiveContainer
+            width="100%"
+            height="100%"
+            minWidth={0}
+            minHeight={1}
+            initialDimension={containerSize}
+          >
+            {children}
+          </RechartsPrimitive.ResponsiveContainer>
+        ) : null}
       </div>
     </ChartContext.Provider>
   );

@@ -105,7 +105,7 @@ export function TrainingSection() {
         <div className="relative  ">
           <ChartContainer
             config={chartConfig}
-            className="min-h-[180px] w-full relative right-8 w-full blur "
+            className="h-[180px] w-full relative right-8 blur"
           >
             <LineChart data={placeholderData} accessibilityLayer={true}>
               <CartesianGrid vertical={false} strokeDasharray="3 3" />

@@ -9,7 +9,6 @@ from typing import Dict, Optional, Any
 import logging
 import asyncio
 from datetime import datetime
-import threading
 
 # Add backend directory to path
 # The backend code should be in the same directory structure
@@ -85,6 +84,11 @@ async def start_training(
     """
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+
+        # NOTE: No in-process ensure_transformers_version() call here.
+        # The subprocess (worker.py) activates the correct version in a
+        # fresh Python interpreter before importing any ML libraries.
+
         backend = get_training_backend()
 
         # Generate job ID and attach to backend for later status/progress calls
@@ -189,84 +193,50 @@ async def start_training(
             "tensorboard_dir": request.tensorboard_dir or "",
         }
 
-        # Set initial "preparing" state
+        # Free GPU memory: shut down any running inference/export subprocesses
+        # before training starts (they'd compete for VRAM otherwise)
         try:
-            backend.trainer._update_progress(
-                status_message="Initializing training...",
-                is_training=False,
-            )
-        except Exception:
-            pass
-
-        def run_training():
-            try:
+            from core.inference import get_inference_backend
+            inf_backend = get_inference_backend()
+            if inf_backend.active_model_name:
                 logger.info(
-                    f"Starting training job {job_id} with model {request.model_name}"
+                    "Unloading inference model '%s' to free GPU memory for training",
+                    inf_backend.active_model_name,
                 )
+                inf_backend._shutdown_subprocess()
+                inf_backend.active_model_name = None
+                inf_backend.models.clear()
+        except Exception as e:
+            logger.warning("Could not unload inference model: %s", e)
 
-                # Update status to show we're loading model
-                try:
-                    backend.trainer._update_progress(status_message="Loading model...")
-                except Exception as e:
-                    logger.error(f"Error updating progress: {e}")
+        try:
+            from core.export import get_export_backend
+            exp_backend = get_export_backend()
+            if exp_backend.current_checkpoint:
+                logger.info("Shutting down export subprocess to free GPU memory for training")
+                exp_backend._shutdown_subprocess()
+                exp_backend.current_checkpoint = None
+                exp_backend.is_vision = False
+                exp_backend.is_peft = False
+        except Exception as e:
+            logger.warning("Could not shut down export subprocess: %s", e)
 
-                # start_training returns bool (not generator)
-                run_result = backend.start_training(**training_kwargs)
-                logger.info(
-                    "Training job %s backend.start_training returned type=%s value=%r",
-                    job_id,
-                    type(run_result).__name__,
-                    run_result,
-                )
-                if not run_result:
-                    progress_error = backend.trainer.training_progress.error
-                    raise RuntimeError(progress_error or "Training failed to start")
+        # start_training now spawns a subprocess (non-blocking)
+        success = backend.start_training(**training_kwargs)
 
-                logger.info(f"Training job {job_id} started successfully")
-
-            except Exception as e:
-                logger.error(f"Training error in job {job_id}: {e}", exc_info=True)
-                try:
-                    backend.trainer._update_progress(
-                        error=str(e),
-                        is_training=False,
-                    )
-                except Exception as update_error:
-                    logger.error(f"Failed to update progress: {update_error}")
-
-        # Start training in a daemon thread
-        training_thread = threading.Thread(
-            target=run_training,
-            daemon=True,
-            name=f"Training-{job_id}",
-        )
-        training_thread.start()
-
-        # Store thread reference for status checking
-        backend._training_thread = training_thread
-
-        # Give it a moment to start
-        import time
-
-        time.sleep(0.5)
-
-        # Verify training thread is alive
-        if not training_thread.is_alive():
-            logger.warning(f"Training thread died immediately for job {job_id}")
+        if not success:
+            progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(
                 job_id=job_id,
                 status="error",
-                message=(
-                    "Training thread failed to start. "
-                    "Check server logs for details."
-                ),
-                error="Thread not alive",
+                message=progress_error or "Failed to start training subprocess",
+                error=progress_error or "subprocess_start_failed",
             )
 
         return TrainingJobResponse(
             job_id=job_id,
             status="queued",
-            message="Training job queued and starting in background",
+            message="Training job queued and starting in subprocess",
             error=None,
         )
 
@@ -291,18 +261,10 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        trainer_thread = getattr(getattr(backend, "trainer", None), "training_thread", None)
-        thread_alive = bool(trainer_thread and trainer_thread.is_alive())
         is_active = backend.is_training_active()
-        logger.info(
-            "Stop requested: save=%s is_active=%s thread_alive=%s should_stop=%s",
-            body.save,
-            is_active,
-            thread_alive,
-            getattr(getattr(backend, "trainer", None), "should_stop", None),
-        )
+        logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
 
-        if not is_active and not thread_alive:
+        if not is_active:
             return TrainingStopResponse(
                 status="idle",
                 message="No training job is currently running"
@@ -333,25 +295,22 @@ async def reset_training(
     """
     try:
         backend = get_training_backend()
-        trainer_thread = getattr(getattr(backend, "trainer", None), "training_thread", None)
-        thread_alive = bool(trainer_thread and trainer_thread.is_alive())
         is_active = backend.is_training_active()
 
-        if is_active or thread_alive:
-            logger.warning(
-                "Rejected reset while training active: is_active=%s thread_alive=%s should_stop=%s",
-                is_active,
-                thread_alive,
-                getattr(getattr(backend, "trainer", None), "should_stop", None),
-            )
+        if is_active:
+            logger.warning("Rejected reset while training active: is_active=%s", is_active)
             raise HTTPException(
                 status_code=409,
                 detail="Training is still running. Stop training and wait for it to finish before resetting.",
             )
 
         logger.info("Reset training state: clearing runtime + metric history")
-        backend.trainer.should_stop = False
-        backend.trainer.training_progress = backend.trainer.training_progress.__class__()
+        backend._should_stop = False  # Clear stop flag so status returns to idle
+        backend.trainer._update_progress(
+            is_training=False, is_completed=False, error=None,
+            status_message="Ready to train", step=0, loss=0.0, epoch=0,
+            total_steps=0,
+        )
         backend.loss_history = []
         backend.lr_history = []
         backend.step_history = []
@@ -377,17 +336,10 @@ async def get_training_status(
     """
     try:
         backend = get_training_backend()
-        job_id: str = getattr(backend, "current_job_id", "")
+        job_id: str = getattr(backend, "current_job_id", "") or ""
 
         # Check if training is active
         is_active = backend.is_training_active()
-
-        # Check if there's a training thread running (preparation phase)
-        has_thread = (
-            hasattr(backend, "_training_thread")
-            and backend._training_thread
-            and backend._training_thread.is_alive()
-        )
 
         # Get progress info from trainer
         try:
@@ -401,14 +353,14 @@ async def get_training_status(
         error_message = getattr(progress, "error", None) if progress else None
 
         # Check if training was stopped by user
-        trainer_stopped = getattr(backend.trainer, "should_stop", False)
+        trainer_stopped = getattr(backend, "_should_stop", False)
 
         # Derive high-level phase
         if error_message:
             phase = "error"
         elif is_active:
             msg_lower = status_message.lower()
-            if "loading" in msg_lower:
+            if "loading" in msg_lower or "importing" in msg_lower:
                 phase = "loading_model"
             elif any(
                 k in msg_lower for k in ["preparing", "initializing", "configuring"]
@@ -420,8 +372,6 @@ async def get_training_status(
             phase = "stopped"
         elif progress and getattr(progress, "is_completed", False):
             phase = "completed"
-        elif has_thread:
-            phase = "loading_model"
         else:
             phase = "idle"
 
@@ -535,7 +485,7 @@ async def stream_training_progress(
 
     async def event_generator():
         backend = get_training_backend()
-        job_id: str = getattr(backend, "current_job_id", "")
+        job_id: str = getattr(backend, "current_job_id", "") or ""
 
         # ── Helpers ──────────────────────────────────────────────
         def build_progress(
