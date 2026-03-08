@@ -216,12 +216,18 @@ MODEL_NAME_MAPPING = {
         "unsloth/Nemotron-3-Nano-30B-A3B",
     ],
     "unsloth_orpheus-3b-0.1-ft.yaml": [
+        "unsloth/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit",
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
     ],
     "OuteAI_Llama-OuteTTS-1.0-1B.yaml": [
         "OuteAI/Llama-OuteTTS-1.0-1B",
+        "unsloth/Llama-OuteTTS-1.0-1B",
+        "unsloth/llama-outetts-1.0-1b",
+        "OuteAI/OuteTTS-1.0-0.6B",
+        "unsloth/OuteTTS-1.0-0.6B",
+        "unsloth/outetts-1.0-0.6b",
     ],
     "unsloth_PaddleOCR-VL.yaml": [
         "unsloth/PaddleOCR-VL",
@@ -320,9 +326,11 @@ MODEL_NAME_MAPPING = {
     ],
     "sesame_csm-1b.yaml": [
         "sesame/csm-1b",
+        "unsloth/csm-1b",
     ],
     "Spark-TTS-0.5B_LLM.yaml": [
         "Spark-TTS-0.5B/LLM",
+        "unsloth/Spark-TTS-0.5B",
     ],
     "unsloth_tinyllama-bnb-4bit.yaml": [
         "unsloth/tinyllama",
@@ -507,6 +515,13 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         config = load_model_config(model_name, use_auth=True, token=hf_token)
 
+        # Exclude audio-only models that share ForConditionalGeneration suffix
+        # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
+        _audio_only_model_types = {'csm', 'whisper'}
+        model_type = getattr(config, 'model_type', None)
+        if model_type in _audio_only_model_types:
+            return False
+
         # Check 1: Architecture class name patterns
         if hasattr(config, 'architectures'):
             is_vlm = any(
@@ -543,6 +558,115 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
         return False
+
+
+VALID_AUDIO_TYPES = ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm')
+
+# Cache detection results per session to avoid repeated API calls
+_audio_detection_cache: Dict[str, Optional[str]] = {}
+
+# Tokenizer token patterns → audio_type (all 6 types detected from tokenizer_config.json)
+_AUDIO_TOKEN_PATTERNS = {
+    'csm': lambda tokens: '<|AUDIO|>' in tokens and '<|audio_eos|>' in tokens,
+    'whisper': lambda tokens: '<|startoftranscript|>' in tokens,
+    'audio_vlm': lambda tokens: '<audio_soft_token>' in tokens,
+    'bicodec': lambda tokens: any(t.startswith('<|bicodec_') for t in tokens),
+    'dac': lambda tokens: '<|audio_start|>' in tokens and '<|audio_end|>' in tokens,
+    'snac': lambda tokens: sum(1 for t in tokens if t.startswith('<custom_token_')) > 10000,
+}
+
+
+def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """
+    Dynamically detect if a model is an audio model and return its type.
+
+    Fully dynamic — works for any model, not just known ones.
+    Uses tokenizer_config.json special tokens to detect all 6 audio types.
+
+    Returns: audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm') or None.
+    """
+    if model_name in _audio_detection_cache:
+        return _audio_detection_cache[model_name]
+
+    result = _detect_audio_from_tokenizer(model_name, hf_token)
+
+    _audio_detection_cache[model_name] = result
+    if result:
+        logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
+    return result
+
+
+def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """Detect audio type from tokenizer special tokens (for LLM-based audio models).
+
+    First checks local HF cache, then fetches tokenizer_config.json from HuggingFace.
+    Checks added_tokens_decoder for distinctive patterns.
+    """
+    def _check_token_patterns(tok_config: dict) -> Optional[str]:
+        added = tok_config.get('added_tokens_decoder', {})
+        if not added:
+            return None
+        token_contents = [v.get('content', '') for v in added.values()]
+        for audio_type, check_fn in _AUDIO_TOKEN_PATTERNS.items():
+            if check_fn(token_contents):
+                return audio_type
+        return None
+
+    # 1) Check local HF cache first (works for gated/offline models)
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        cache_dir = Path(HF_HUB_CACHE)
+        repo_dir_name = f"models--{model_name.replace('/', '--')}"
+        repo_dir = cache_dir / repo_dir_name
+        if repo_dir.exists():
+            snapshots_dir = repo_dir / "snapshots"
+            if snapshots_dir.exists():
+                for snapshot in snapshots_dir.iterdir():
+                    for tok_path in ['tokenizer_config.json', 'LLM/tokenizer_config.json']:
+                        tok_file = snapshot / tok_path
+                        if tok_file.exists():
+                            tok_config = json.loads(tok_file.read_text())
+                            result = _check_token_patterns(tok_config)
+                            if result:
+                                return result
+    except Exception as e:
+        logger.debug(f"Could not check local cache for {model_name}: {e}")
+
+    # 2) Fall back to HuggingFace API
+    try:
+        import requests
+        import os
+
+        paths_to_try = ['tokenizer_config.json', 'LLM/tokenizer_config.json']
+        # Use provided token, or fall back to env
+        token = hf_token or os.environ.get('HF_TOKEN')
+        headers = {}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+
+        for tok_path in paths_to_try:
+            url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
+            resp = requests.get(url, headers=headers, timeout=15)
+            if not resp.ok:
+                continue
+
+            tok_config = resp.json()
+            result = _check_token_patterns(tok_config)
+            if result:
+                return result
+
+        return None
+    except Exception as e:
+        logger.debug(f"Could not detect audio type from tokenizer for {model_name}: {e}")
+        return None
+
+
+def is_audio_input_type(audio_type: Optional[str]) -> bool:
+    """Check if an audio_type accepts audio input (ASR/speech understanding).
+
+    Whisper (ASR) and audio_vlm (Gemma3n) accept audio input.
+    """
+    return audio_type in ('whisper', 'audio_vlm')
 
 
 def _is_mmproj(filename: str) -> bool:
@@ -1028,6 +1152,23 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         logger.info(f"Loaded model defaults from {config_path} (via mapping)")
                         return config
         
+        # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
+        # adapter_config.json), try matching the last 1-2 path components against
+        # the registry (e.g. "Spark-TTS-0.5B/LLM").
+        if model_name not in _REVERSE_MODEL_MAPPING and (model_name.startswith("/") or model_name.startswith(".")):
+            parts = Path(model_name).parts
+            for depth in [2, 1]:
+                if len(parts) >= depth:
+                    suffix = "/".join(parts[-depth:])
+                    if suffix in _REVERSE_MODEL_MAPPING:
+                        canonical_file = _REVERSE_MODEL_MAPPING[suffix]
+                        for config_path in defaults_dir.rglob(canonical_file):
+                            if config_path.is_file():
+                                with open(config_path, 'r', encoding='utf-8') as f:
+                                    config = yaml.safe_load(f) or {}
+                                    logger.info(f"Loaded model defaults from {config_path} (via path suffix '{suffix}')")
+                                    return config
+
         # Try exact model name match (for backward compatibility)
         model_filename = model_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
@@ -1064,6 +1205,9 @@ class ModelConfig:
     is_vision: bool     # Is this a vision model?
     is_lora: bool       # Is this a lora adapter?
     is_gguf: bool = False       # Is this a GGUF model?
+    is_audio: bool = False      # Is this a TTS audio model?
+    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_hf_repo: Optional[str] = None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
@@ -1100,6 +1244,9 @@ class ModelConfig:
             # Check if base model is vision
             is_vision = is_vision_model(base_model, hf_token=hf_token)
 
+            # Check if base model is audio
+            audio_type = detect_audio_type(base_model, hf_token=hf_token)
+
             display_name = lora_path_obj.name
             identifier = lora_path  # Use path as identifier for local LoRAs
 
@@ -1111,6 +1258,9 @@ class ModelConfig:
                 is_cached=True,  # Local LoRAs are always "cached"
                 is_vision=is_vision,
                 is_lora=True,
+                is_audio=audio_type is not None and audio_type != 'audio_vlm',
+                audio_type=audio_type,
+                has_audio_input=is_audio_input_type(audio_type),
                 base_model=base_model,
             )
 
@@ -1288,12 +1438,16 @@ class ModelConfig:
             if not base_model:
                 logger.warning(f"Could not determine base model for LoRA '{path}'")
                 return None
-            vision = is_vision_model(base_model, hf_token=hf_token)
+            check_model = base_model
         else:
-            vision = is_vision_model(identifier, hf_token=hf_token)
-        
+            check_model = identifier
+
+        vision = is_vision_model(check_model, hf_token=hf_token)
+        audio_type_val = detect_audio_type(check_model, hf_token=hf_token)
+        has_audio_in = is_audio_input_type(audio_type_val)
+
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
-        
+
         return cls(
             identifier=identifier,
             display_name=display_name,
@@ -1302,6 +1456,9 @@ class ModelConfig:
             is_cached=is_model_cached(identifier) if not is_local else True,
             is_vision=vision,
             is_lora=is_lora,
+            is_audio=audio_type_val is not None and audio_type_val != 'audio_vlm',
+            audio_type=audio_type_val,
+            has_audio_input=has_audio_in,
             base_model=base_model,
         )
 
@@ -1381,4 +1538,3 @@ class ModelConfig:
             is_lora=is_lora,
             base_model=base_model, # This will be None for base models, and populated for LoRAs
         )
-    pass

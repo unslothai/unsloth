@@ -15,6 +15,7 @@ from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
 from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
+from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import logging
 
@@ -39,6 +40,7 @@ class InferenceBackend:
             "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
         ]
         self.device = get_device().value
+        self._audio_codec_manager = AudioCodecManager()
 
         # Thread safety — _generation_lock serializes model.generate() calls.
         # Must be a regular Lock (NOT RLock) because in async FastAPI, multiple
@@ -84,11 +86,145 @@ class InferenceBackend:
             self.models[model_name] = {
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
+                "is_audio": config.is_audio,
+                "audio_type": config.audio_type,
+                "has_audio_input": config.has_audio_input,
                 "model_path": config.path,
                 "base_model": config.base_model if config.is_lora else None,
                 "loaded_adapters": {},
                 "active_adapter": None,
             }
+
+            # ── Audio model loading path ──────────────────────────
+            if config.is_audio:
+                audio_type = config.audio_type
+                adapter_info = " (LoRA adapter)" if config.is_lora else ""
+                logger.info(f"Loading audio ({audio_type}) model{adapter_info}: {model_name}")
+                log_gpu_memory(f"Before loading {model_name}")
+
+                if audio_type == "csm":
+                    from unsloth import FastModel
+                    from transformers import CsmForConditionalGeneration
+                    model, processor = FastModel.from_pretrained(
+                        config.path,
+                        auto_model=CsmForConditionalGeneration,
+                        load_in_4bit=False,
+                        token=hf_token if hf_token and hf_token.strip() else None,
+                    )
+                    FastModel.for_inference(model)
+                    self.models[model_name]["model"] = model
+                    self.models[model_name]["tokenizer"] = processor
+                    self.models[model_name]["processor"] = processor
+                elif audio_type == "bicodec":
+                    import os
+                    from unsloth import FastModel
+
+                    if config.is_lora and config.base_model:
+                        # LoRA adapter: load from local adapter path.
+                        # base_model is e.g. /home/.../Spark-TTS-0.5B/LLM
+                        # The BiCodec weights are in the parent dir (Spark-TTS-0.5B/).
+                        base_path = config.base_model
+                        if os.path.isdir(base_path):
+                            abs_repo_path = os.path.abspath(os.path.dirname(base_path))
+                        else:
+                            # base_model is an HF ID — download it
+                            from huggingface_hub import snapshot_download
+                            local_dir = base_path.split("/")[-1]
+                            repo_path = snapshot_download(base_path, local_dir=local_dir)
+                            abs_repo_path = os.path.abspath(repo_path)
+
+                        logger.info(f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}")
+                        model, tokenizer = FastModel.from_pretrained(
+                            config.path,
+                            dtype=torch.float32,
+                            load_in_4bit=False,
+                            token=hf_token if hf_token and hf_token.strip() else None,
+                        )
+                    else:
+                        # Base model: download full HF repo, then load from /LLM subfolder
+                        from huggingface_hub import snapshot_download
+                        hf_repo = config.path
+                        local_dir = hf_repo.split("/")[-1]
+                        repo_path = snapshot_download(hf_repo, local_dir=local_dir)
+                        abs_repo_path = os.path.abspath(repo_path)
+                        llm_path = os.path.join(abs_repo_path, "LLM")
+                        logger.info(f"Spark-TTS: downloaded repo to {repo_path}, loading LLM from {llm_path}")
+
+                        model, tokenizer = FastModel.from_pretrained(
+                            llm_path,
+                            dtype=torch.float32,
+                            load_in_4bit=False,
+                            token=hf_token if hf_token and hf_token.strip() else None,
+                        )
+
+                    FastModel.for_inference(model)
+                    self.models[model_name]["model"] = model
+                    self.models[model_name]["tokenizer"] = tokenizer
+                    self.models[model_name]["model_repo_path"] = abs_repo_path
+                elif audio_type == "dac":
+                    # OuteTTS uses FastModel (not FastLanguageModel)
+                    from unsloth import FastModel
+                    model, tokenizer = FastModel.from_pretrained(
+                        config.path,
+                        max_seq_length=max_seq_length,
+                        load_in_4bit=False,
+                        token=hf_token if hf_token and hf_token.strip() else None,
+                    )
+                    FastModel.for_inference(model)
+                    self.models[model_name]["model"] = model
+                    self.models[model_name]["tokenizer"] = tokenizer
+                elif audio_type == "whisper":
+                    # Whisper ASR — uses FastModel with WhisperForConditionalGeneration
+                    from unsloth import FastModel
+                    from transformers import WhisperForConditionalGeneration
+                    model, tokenizer = FastModel.from_pretrained(
+                        config.path,
+                        auto_model=WhisperForConditionalGeneration,
+                        whisper_language="English",
+                        whisper_task="transcribe",
+                        load_in_4bit=False,
+                        token=hf_token if hf_token and hf_token.strip() else None,
+                    )
+                    FastModel.for_inference(model)
+                    model.eval()
+
+                    # Create ASR pipeline (per notebook)
+                    from transformers import pipeline as hf_pipeline
+                    whisper_pipe = hf_pipeline(
+                        "automatic-speech-recognition",
+                        model=model,
+                        tokenizer=tokenizer.tokenizer,
+                        feature_extractor=tokenizer.feature_extractor,
+                        processor=tokenizer,
+                        return_language=True,
+                        torch_dtype=torch.float16,
+                    )
+                    self.models[model_name]["model"] = model
+                    self.models[model_name]["tokenizer"] = tokenizer
+                    self.models[model_name]["whisper_pipeline"] = whisper_pipe
+                else:
+                    # SNAC (Orpheus) uses FastLanguageModel
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name=config.path,
+                        max_seq_length=max_seq_length,
+                        load_in_4bit=False,
+                        token=hf_token if hf_token and hf_token.strip() else None,
+                    )
+                    FastLanguageModel.for_inference(model)
+                    self.models[model_name]["model"] = model
+                    self.models[model_name]["tokenizer"] = tokenizer
+
+                # Load the external codec for TTS audio types
+                # (Whisper is ASR, audio_vlm is audio input — neither needs a codec)
+                if audio_type not in ("whisper", "audio_vlm"):
+                    model_repo_path = self.models[model_name].get("model_repo_path")
+                    self._audio_codec_manager.load_codec(audio_type, self.device, model_repo_path=model_repo_path)
+
+                self.active_model_name = model_name
+                self.loading_models.discard(model_name)
+                logger.info(f"Successfully loaded audio model: {model_name}")
+                log_gpu_memory(f"After loading {model_name}")
+                return True
 
             model_type = "vision" if config.is_vision else "text"
             adapter_info = " (LoRA adapter)" if self.models[model_name]["is_lora"] else ""
@@ -177,15 +313,17 @@ class InferenceBackend:
             self.loading_models.discard(model_name)
 
             raise Exception(error_msg)
-    pass
 
-    # Add this new function
     def unload_model(self, model_name: str) -> bool:
         """
         Completely removes a model from the registry and clears GPU memory.
         """
         if model_name in self.models:
             try:
+                # If this was an audio model, clean up codecs
+                if self.models[model_name].get("is_audio"):
+                    self._audio_codec_manager.unload()
+
                 logger.info(f"Unloading model '{model_name}' from memory.")
                 # Delete the model entry from our registry
                 del self.models[model_name]
@@ -209,7 +347,6 @@ class InferenceBackend:
         else:
             logger.warning(f"Attempted to unload model '{model_name}', but it was not found in the registry.")
             return True
-    pass
 
     def revert_to_base_model(self, base_model_name: str) -> bool:
         """
@@ -243,61 +380,6 @@ class InferenceBackend:
             logger.error(f"Failed to revert model to base state: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return False
-
-    def activate_lora_adapter(self, base_model_name: str, lora_path: str) -> Tuple[bool, Optional[str]]:
-        """
-        Activates a specific LoRA adapter on what is assumed to be a clean base model.
-        Uses PeftModel.from_pretrained() which correctly wraps the base model.
-        """
-        model = self.models[base_model_name].get("model")
-        adapter_name_to_load = lora_path.split("/")[-1].replace(".", "_")
-
-        try:
-            # Use PeftModel.from_pretrained to wrap the clean base model with the adapter.
-            # This is the correct approach after model.unload() + del peft_config.
-            logger.info(f"Loading LoRA adapter '{adapter_name_to_load}' from '{lora_path}'...")
-            model = PeftModel.from_pretrained(model, lora_path, adapter_name=adapter_name_to_load)
-            self.models[base_model_name]["model"] = model
-            logger.info(f"LoRA adapter '{adapter_name_to_load}' activated successfully.")
-
-            return True, adapter_name_to_load
-        except Exception as e:
-            logger.error(f"Failed to activate LoRA adapter '{adapter_name_to_load}': {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False, None
-
-    def enable_adapter(self, base_model_name: str, adapter_name: str) -> bool:
-        """Enable specific adapter (for generation)"""
-        if base_model_name not in self.models:
-            return False
-
-        model = self.models[base_model_name]["model"]
-
-        try:
-            logger.info(f"Enabling adapter: {adapter_name}")
-            model.set_adapter(adapter_name)
-            self.models[base_model_name]["active_adapter"] = adapter_name
-            return True
-        except Exception as e:
-            logger.error(f"Failed to enable adapter: {e}")
-            return False
-
-    def disable_adapters(self, base_model_name: str) -> bool:
-        """Disable all adapters (back to pure base model)"""
-        if base_model_name not in self.models:
-            return False
-
-        model = self.models[base_model_name]["model"]
-
-        try:
-            logger.info(f"Disabling all adapters on {base_model_name}")
-            model.disable_adapters()
-            self.models[base_model_name]["active_adapter"] = None
-            return True
-        except Exception as e:
-            logger.error(f"Failed to disable adapters: {e}")
             return False
 
     def load_for_eval(self, lora_path: str, max_seq_length: int = 2048,
@@ -346,7 +428,6 @@ class InferenceBackend:
             import traceback
             logger.error(traceback.format_exc())
             return False, None, None
-    pass
 
     def load_adapter(self, base_model_name: str, adapter_path: str, adapter_name: str) -> bool:
         """
@@ -374,7 +455,6 @@ class InferenceBackend:
         except Exception as e:
             logger.error(f"Failed to load adapter '{adapter_name}': {e}")
             return False
-    pass
 
     def set_active_adapter(self, base_model_name: str, adapter_name: str) -> bool:
         """
@@ -390,7 +470,6 @@ class InferenceBackend:
             # This will catch the "adapter not found" error if something goes wrong.
             logger.error(f"Failed to set active adapter to '{adapter_name}': {e}")
             return False
-    pass
 
     def _apply_adapter_state(self, use_adapter: Optional[Union[bool, str]]) -> None:
         """
@@ -709,7 +788,146 @@ class InferenceBackend:
         except Exception as e:
             logger.error(f"Vision generation error: {e}")
             yield f"Error: {str(e)}"
-    pass
+
+    def generate_audio_input_response(self, messages, system_prompt, audio_array,
+                                       temperature, top_p, top_k, min_p,
+                                       max_new_tokens, repetition_penalty,
+                                       cancel_event=None) -> Generator[str, None, None]:
+        """Handle audio input (ASR) generation — accepts audio numpy array, streams text output.
+
+        Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
+        """
+        import threading
+        import numpy as np
+
+        model_info = self.models[self.active_model_name]
+        model = model_info["model"]
+        processor = model_info.get("processor") or model_info.get("tokenizer")
+        raw_tokenizer = getattr(processor, "tokenizer", processor)
+
+        # Extract last user text — default matches notebook prompt
+        user_text = "Please transcribe this audio."
+        if messages:
+            for msg in reversed(messages):
+                if msg["role"] == "user" and msg.get("content"):
+                    user_text = msg["content"]
+                    break
+
+        # Use ASR-specific system prompt if user hasn't set a custom one
+        if not system_prompt or system_prompt == "You are a helpful AI assistant.":
+            system_prompt = "You are an assistant that transcribes speech accurately."
+
+        # Build messages in Gemma 3n format — audio goes INTO apply_chat_template
+        audio_messages = [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "audio", "audio": audio_array},
+                    {"type": "text", "text": user_text},
+                ],
+            },
+        ]
+
+        # apply_chat_template handles audio embedding + tokenization in one step
+        inputs = processor.apply_chat_template(
+            audio_messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            truncation=False,
+        ).to(self.device)
+
+        try:
+            from transformers import TextIteratorStreamer
+            from queue import Empty
+
+            streamer = TextIteratorStreamer(
+                raw_tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True,
+                timeout=0.2,
+            )
+
+            # Notebook uses do_sample=False for ASR (greedy decoding for accuracy)
+            generation_kwargs = dict(
+                **inputs,
+                streamer=streamer,
+                max_new_tokens=max_new_tokens,
+                use_cache=True,
+                do_sample=False,
+            )
+
+            err: dict[str, str] = {}
+
+            def generate_fn():
+                with self._generation_lock:
+                    try:
+                        model.generate(**generation_kwargs)
+                    except Exception as e:
+                        err["msg"] = str(e)
+                        logger.error(f"Audio input generation error in thread: {e}")
+                    finally:
+                        try:
+                            streamer.end()
+                        except Exception:
+                            pass
+
+            thread = threading.Thread(target=generate_fn)
+            thread.start()
+
+            output = ""
+            try:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                    try:
+                        new_token = next(streamer)
+                    except StopIteration:
+                        break
+                    except Empty:
+                        if not thread.is_alive():
+                            break
+                        continue
+                    if new_token:
+                        output += new_token
+                        yield new_token
+            finally:
+                if cancel_event is not None:
+                    cancel_event.set()
+                thread.join(timeout=10)
+                if thread.is_alive():
+                    logger.warning("Audio input generation thread did not exit after cancel/join timeout")
+
+            if err.get("msg"):
+                yield f"Error: {err['msg']}"
+
+        except Exception as e:
+            logger.error(f"Audio input generation error: {e}")
+            yield f"Error: {str(e)}"
+
+    def generate_whisper_response(self, audio_array, cancel_event=None) -> Generator[str, None, None]:
+        """Whisper ASR — takes audio numpy array, yields transcribed text.
+
+        Uses the pre-built transformers pipeline (created during model loading).
+        """
+        model_info = self.models[self.active_model_name]
+        whisper_pipe = model_info.get("whisper_pipeline")
+        if not whisper_pipe:
+            yield "Error: Whisper pipeline not initialized"
+            return
+
+        try:
+            with self._generation_lock:
+                result = whisper_pipe({"raw": audio_array, "sampling_rate": 16000})
+
+            text = result.get("text", "") if isinstance(result, dict) else str(result)
+            if text:
+                yield text
+        except Exception as e:
+            logger.error(f"Whisper ASR error: {e}")
+            yield f"Error: {str(e)}"
 
     def generate_stream(self,
                        prompt: str,
@@ -832,8 +1050,164 @@ class InferenceBackend:
             logger.error(f"Error during generation: {e}")
             yield f"Error: {str(e)}"
 
-    # ... other helper methods (format_chat_prompt, _clean_generated_text, etc.)
-    pass
+    # ── Audio (TTS) Generation ────────────────────────────────────
+
+    def generate_audio_response(
+        self,
+        text: str,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.1,
+        use_adapter: Optional[Union[bool, str]] = None,
+    ) -> Tuple[bytes, int]:
+        """
+        Generate audio from text for TTS models.
+        Returns (wav_bytes, sample_rate).
+        Blocking — generates complete audio before returning.
+        """
+        if not self.active_model_name:
+            raise RuntimeError("No active model")
+
+        model_info = self.models[self.active_model_name]
+        audio_type = model_info.get("audio_type")
+        model = model_info["model"]
+        tokenizer = model_info.get("tokenizer")
+
+        if not audio_type:
+            raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
+
+        top_k = self._normalize_top_k(top_k)
+
+        with self._generation_lock:
+            if use_adapter is not None:
+                self._apply_adapter_state(use_adapter)
+
+            if audio_type == "snac":
+                return self._generate_snac(model, tokenizer, text, temperature, top_p, max_new_tokens, repetition_penalty)
+            elif audio_type == "csm":
+                processor = model_info.get("processor", tokenizer)
+                return self._generate_csm(model, processor, text, max_new_tokens)
+            elif audio_type == "bicodec":
+                return self._generate_bicodec(model, tokenizer, text, temperature, top_k, max_new_tokens)
+            elif audio_type == "dac":
+                return self._generate_dac(model, tokenizer, text, temperature, top_k, top_p, min_p, max_new_tokens, repetition_penalty)
+            else:
+                raise RuntimeError(f"Unknown audio_type: {audio_type}")
+
+    def _generate_snac(self, model, tokenizer, text, temperature, top_p, max_new_tokens, repetition_penalty):
+        """Generate audio using SNAC codec (Orpheus)."""
+        device = model.device
+        start_token = torch.tensor([[128259]], device=device)   # START_OF_HUMAN
+        end_tokens = torch.tensor([[128009, 128260]], device=device)  # EOT, END_OF_HUMAN
+        text_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
+        input_ids = torch.cat([start_token, text_ids, end_tokens], dim=1)
+        attention_mask = torch.ones_like(input_ids)
+
+        generated = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            eos_token_id=128258,  # END_OF_SPEECH
+            use_cache=True,
+        )
+        return self._audio_codec_manager.decode_snac(generated, str(device))
+
+    def _generate_csm(self, model, processor, text, max_new_tokens):
+        """Generate audio using CSM (Sesame)."""
+        speaker_id = 0
+        inputs = processor(f"[{speaker_id}]{text}", add_special_tokens=True, return_tensors="pt").to(model.device)
+        audio_values = model.generate(**inputs, max_new_tokens=max_new_tokens, output_audio=True)
+        return self._audio_codec_manager.decode_csm(audio_values)
+
+    def _generate_bicodec(self, model, tokenizer, text, temperature, top_k, max_new_tokens):
+        """Generate audio using BiCodec (Spark-TTS)."""
+        prompt = "<|task_tts|><|start_content|>" + text + "<|end_content|><|start_global_token|>"
+        inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_k=top_k,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+        new_tokens = generated[:, inputs.input_ids.shape[1]:]
+        decoded_text = tokenizer.batch_decode(new_tokens, skip_special_tokens=False)[0]
+        return self._audio_codec_manager.decode_bicodec(decoded_text, str(model.device))
+
+    def _generate_dac(self, model, tokenizer, text, temperature, top_k, top_p, min_p, max_new_tokens, repetition_penalty):
+        """Generate audio using DAC (OuteTTS). Follows Oute_TTS_(1B).ipynb exactly."""
+        # Monkey-patch RepetitionPenaltyLogitsProcessor with a 64-token penalty
+        # window (same as the OuteTTS notebook) to avoid degenerate repetition.
+        self._patch_repetition_penalty_processor()
+
+        prompt = "<|im_start|>\n<|text_start|>" + text + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
+        with torch.inference_mode():
+            with torch.amp.autocast('cuda', dtype=model.dtype):
+                inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
+                generated = model.generate(
+                    **inputs,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    min_p=min_p,
+                    repetition_penalty=repetition_penalty,
+                    max_new_tokens=max_new_tokens,
+                )
+        decoded_text = tokenizer.batch_decode(generated, skip_special_tokens=False)[0]
+        return self._audio_codec_manager.decode_dac(decoded_text, str(model.device))
+
+    _repetition_penalty_patched = False
+
+    @classmethod
+    def _patch_repetition_penalty_processor(cls):
+        """
+        Monkey-patch transformers' RepetitionPenaltyLogitsProcessor with a
+        64-token sliding window variant (from the OuteTTS notebook).
+        Only applied once per process.
+        """
+        if cls._repetition_penalty_patched:
+            return
+        cls._repetition_penalty_patched = True
+
+        from transformers import LogitsProcessor
+        import transformers.generation.utils as generation_utils
+
+        class RepetitionPenaltyLogitsProcessorPatch(LogitsProcessor):
+            def __init__(self, penalty: float):
+                self.penalty_last_n = 64
+                if not isinstance(penalty, float) or penalty <= 0:
+                    raise ValueError(f"`penalty` has to be a positive float, but is {penalty}")
+                self.penalty = penalty
+
+            @torch.no_grad()
+            def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+                if self.penalty_last_n == 0 or self.penalty == 1.0:
+                    return scores
+                batch_size, seq_len = input_ids.shape
+                vocab_size = scores.shape[-1]
+                for b in range(batch_size):
+                    start_index = max(0, seq_len - self.penalty_last_n)
+                    window_indices = input_ids[b, start_index:]
+                    if window_indices.numel() == 0:
+                        continue
+                    for token_id in set(window_indices.tolist()):
+                        if token_id >= vocab_size:
+                            continue
+                        logit = scores[b, token_id]
+                        scores[b, token_id] = logit * self.penalty if logit <= 0 else logit / self.penalty
+                return scores
+
+        generation_utils.RepetitionPenaltyLogitsProcessor = RepetitionPenaltyLogitsProcessorPatch
+        logger.info("Patched RepetitionPenaltyLogitsProcessor with 64-token window for OuteTTS")
 
     def format_chat_prompt(self, messages: list, system_prompt: str = None) -> str:
         if not self.active_model_name or self.active_model_name not in self.models:
@@ -1056,7 +1430,6 @@ class InferenceBackend:
             logger.debug(f"Reset generation state for model: {model_name}")
         except Exception as e:
             logger.warning(f"Could not fully reset model state for {model_name}: {e}")
-    pass
 
     def reset_generation_state(self):
         """Reset any cached generation state to prevent hanging after errors"""
@@ -1183,10 +1556,10 @@ class InferenceBackend:
         return next(iter(self.loading_models)) if self.loading_models else None
 
     def load_model_simple(self,
-                     model_path: str,
-                     hf_token: Optional[str] = None,
-                     max_seq_length: int = 2048,
-                     load_in_4bit: bool = True) -> bool:
+                         model_path: str,
+                         hf_token: Optional[str] = None,
+                         max_seq_length: int = 2048,
+                         load_in_4bit: bool = True) -> bool:
         """
         Simple model loading wrapper for chat interface.
         Accepts model path as string and handles ModelConfig creation internally.
@@ -1201,18 +1574,12 @@ class InferenceBackend:
             bool: True if successful, False otherwise
         """
         try:
-            from backend.model_config import ModelConfig
-
-            logger.info(f"load_model_simple called with: {model_path}")
-
             # Create config from string path
             config = ModelConfig.from_ui_selection(
                 model_path,
                 lora_path=None,  # No LoRA for chat
                 is_lora=False
             )
-
-            logger.info(f"Created ModelConfig with identifier: {config.identifier}")
 
             # Call existing load_model with config
             return self.load_model(
@@ -1225,11 +1592,8 @@ class InferenceBackend:
 
         except Exception as e:
             logger.error(f"Error in load_model_simple: {e}")
-            import traceback
-            traceback.print_exc()
             return False
 
-pass
 
 
 # Global inference backend instance

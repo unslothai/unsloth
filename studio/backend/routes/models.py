@@ -26,7 +26,7 @@ try:
         list_gguf_variants,
         ModelConfig,
     )
-    from utils.models.model_config import _pick_best_gguf, _extract_quant_label
+    from utils.models.model_config import _pick_best_gguf, _extract_quant_label, is_audio_input_type
     from core.inference import get_inference_backend
 except ImportError:
     # Fallback: try to import from parent directory
@@ -43,7 +43,7 @@ except ImportError:
         list_gguf_variants,
         ModelConfig,
     )
-    from utils.models.model_config import _pick_best_gguf, _extract_quant_label
+    from utils.models.model_config import _pick_best_gguf, _extract_quant_label, is_audio_input_type
     from core.inference import get_inference_backend
 
 from models import (
@@ -225,7 +225,10 @@ async def list_models(
                 id=model_name,
                 name=model_name.split("/")[-1] if "/" in model_name else model_name,
                 is_vision=model_data.get("is_vision", False),
-                is_lora=model_data.get("is_lora", False)
+                is_lora=model_data.get("is_lora", False),
+                is_audio=model_data.get("is_audio", False),
+                audio_type=model_data.get("audio_type"),
+                has_audio_input=model_data.get("has_audio_input", False),
             )
             loaded_models.append(model_info)
         
@@ -265,40 +268,44 @@ async def list_models(
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
+    hf_token: Optional[str] = Query(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """
     Get configuration for a specific model.
-    
+
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
         logger.info(f"Getting model config for: {model_name}")
+        from utils.models.model_config import detect_audio_type
         # Load model defaults from backend
         config_dict = load_model_defaults(model_name)
 
+        # Detect model capabilities (pass HF token for gated models)
         is_vision = is_vision_model(model_name)
-        
+        audio_type = detect_audio_type(model_name, hf_token=hf_token)
+
         # Check if it's a LoRA adapter
         is_lora = False
         base_model = None
-        
-        # Try to create ModelConfig to get more info
         try:
             model_config = ModelConfig.from_identifier(model_name)
             is_lora = model_config.is_lora
             base_model = model_config.base_model if is_lora else None
         except Exception:
-            # If ModelConfig creation fails, use defaults
             pass
-        
-        logger.info(f"Model config result for {model_name}: is_vision={is_vision}, is_lora={is_lora}, base_model={base_model}")
+
+        logger.info(f"Model config result for {model_name}: is_vision={is_vision}, audio_type={audio_type}, is_lora={is_lora}")
         return ModelDetails(
             id=model_name,
             model_name=model_name,
             config=config_dict,
             is_vision=is_vision,
             is_lora=is_lora,
+            is_audio=audio_type is not None,
+            audio_type=audio_type,
+            has_audio_input=is_audio_input_type(audio_type),
             base_model=base_model,
         )
         
