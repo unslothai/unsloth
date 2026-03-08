@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.3.3"
+__version__ = "2026.3.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -254,8 +254,21 @@ def prefer_flex_attn_if_supported(model_class, config):
         return None
 
 
-for temporary_patch in TEMPORARY_PATCHES:
-    temporary_patch()
+def _run_temporary_patches(phase):
+    import inspect
+
+    for temporary_patch in TEMPORARY_PATCHES:
+        try:
+            sig = inspect.signature(temporary_patch)
+            if "phase" in sig.parameters:
+                temporary_patch(phase = phase)
+            else:
+                temporary_patch()
+        except (ValueError, TypeError):
+            temporary_patch()
+
+
+_run_temporary_patches("init")
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -2095,8 +2108,7 @@ def unsloth_compile_transformers(
 
     # Run patches BEFORE compiler so class replacements (e.g. GptOssTopKRouter,
     # GptOssExperts) are in place before the compiler caches references to them.
-    for temporary_patch in TEMPORARY_PATCHES:
-        temporary_patch()
+    _run_temporary_patches("pre_compile")
 
     for model_type in model_types:
         _unsloth_compile_transformers(
@@ -2128,8 +2140,7 @@ def unsloth_compile_transformers(
             supports_sdpa = supports_sdpa,
         )
     # Redo patches which override compiler
-    for temporary_patch in TEMPORARY_PATCHES:
-        temporary_patch()
+    _run_temporary_patches("post_compile")
     return model_types, supports_sdpa[0]
 
 
