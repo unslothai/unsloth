@@ -214,8 +214,9 @@ class InferenceBackend:
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
 
-                # Load the external codec for TTS audio types (Whisper is ASR, no codec needed)
-                if audio_type != "whisper":
+                # Load the external codec for TTS audio types
+                # (Whisper is ASR, audio_vlm is audio input — neither needs a codec)
+                if audio_type not in ("whisper", "audio_vlm"):
                     model_repo_path = self.models[model_name].get("model_repo_path")
                     self._audio_codec_manager.load_codec(audio_type, self.device, model_repo_path=model_repo_path)
 
@@ -835,6 +836,7 @@ class InferenceBackend:
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
+            truncation=False,
         ).to(self.device)
 
         try:
