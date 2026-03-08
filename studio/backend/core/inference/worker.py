@@ -165,6 +165,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_vision": mc.is_vision,
                 "is_lora": mc.is_lora,
                 "is_gguf": False,
+                "is_audio": getattr(mc, "is_audio", False),
+                "audio_type": getattr(mc, "audio_type", None),
+                "has_audio_input": getattr(mc, "has_audio_input", False),
             }
             _send_response(resp_queue, {
                 "type": "loaded",
@@ -258,6 +261,110 @@ def _handle_generate(
 
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
+        _send_response(resp_queue, {
+            "type": "gen_error",
+            "request_id": request_id,
+            "error": str(exc),
+            "stack": traceback.format_exc(limit=20),
+            "ts": time.time(),
+        })
+
+
+def _handle_generate_audio(
+    backend,
+    cmd: dict,
+    resp_queue: Any,
+) -> None:
+    """Handle TTS audio generation — returns WAV bytes + sample_rate."""
+    request_id = cmd.get("request_id", "")
+    try:
+        wav_bytes, sample_rate = backend.generate_audio_response(
+            text=cmd["text"],
+            temperature=cmd.get("temperature", 0.6),
+            top_p=cmd.get("top_p", 0.95),
+            top_k=cmd.get("top_k", 50),
+            min_p=cmd.get("min_p", 0.0),
+            max_new_tokens=cmd.get("max_new_tokens", 2048),
+            repetition_penalty=cmd.get("repetition_penalty", 1.1),
+            use_adapter=cmd.get("use_adapter"),
+        )
+
+        # Send WAV bytes as base64 (bytes can't go through mp.Queue directly)
+        _send_response(resp_queue, {
+            "type": "audio_done",
+            "request_id": request_id,
+            "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
+            "sample_rate": sample_rate,
+            "ts": time.time(),
+        })
+
+    except Exception as exc:
+        logger.error("Audio generation error: %s", exc, exc_info=True)
+        _send_response(resp_queue, {
+            "type": "audio_error",
+            "request_id": request_id,
+            "error": str(exc),
+            "stack": traceback.format_exc(limit=20),
+            "ts": time.time(),
+        })
+
+
+def _handle_generate_audio_input(
+    backend,
+    cmd: dict,
+    resp_queue: Any,
+    cancel_event,
+) -> None:
+    """Handle audio input generation (ASR/Whisper) — streams text tokens back."""
+    request_id = cmd.get("request_id", "")
+
+    try:
+        import numpy as np
+
+        # Decode audio array from list (numpy arrays can't go through mp.Queue)
+        audio_array = np.array(cmd["audio_data"], dtype=np.float32)
+
+        audio_type = cmd.get("audio_type")
+
+        if audio_type == "whisper":
+            generator = backend.generate_whisper_response(
+                audio_array=audio_array,
+                cancel_event=cancel_event,
+            )
+        else:
+            generator = backend.generate_audio_input_response(
+                messages=cmd.get("messages", []),
+                system_prompt=cmd.get("system_prompt", ""),
+                audio_array=audio_array,
+                temperature=cmd.get("temperature", 0.7),
+                top_p=cmd.get("top_p", 0.9),
+                top_k=cmd.get("top_k", 40),
+                min_p=cmd.get("min_p", 0.0),
+                max_new_tokens=cmd.get("max_new_tokens", 512),
+                repetition_penalty=cmd.get("repetition_penalty", 1.1),
+                cancel_event=cancel_event,
+            )
+
+        for text_chunk in generator:
+            if cancel_event.is_set():
+                logger.info("Audio input generation cancelled for request %s", request_id)
+                break
+
+            _send_response(resp_queue, {
+                "type": "token",
+                "request_id": request_id,
+                "text": text_chunk,
+                "ts": time.time(),
+            })
+
+        _send_response(resp_queue, {
+            "type": "gen_done",
+            "request_id": request_id,
+            "ts": time.time(),
+        })
+
+    except Exception as exc:
+        logger.error("Audio input generation error: %s", exc, exc_info=True)
         _send_response(resp_queue, {
             "type": "gen_error",
             "request_id": request_id,
@@ -413,6 +520,14 @@ def run_inference_process(
                 if backend.active_model_name:
                     backend.unload_model(backend.active_model_name)
                 _handle_load(backend, cmd, resp_queue)
+
+            elif cmd_type == "generate_audio":
+                cancel_event.clear()
+                _handle_generate_audio(backend, cmd, resp_queue)
+
+            elif cmd_type == "generate_audio_input":
+                cancel_event.clear()
+                _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "unload":
                 _handle_unload(backend, cmd, resp_queue)
