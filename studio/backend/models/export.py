@@ -19,6 +19,10 @@ class LoadCheckpointRequest(BaseModel):
         True,
         description="Whether to load the model in 4-bit quantization",
     )
+    trust_remote_code: bool = Field(
+        False,
+        description="Allow loading models with custom code. Only enable for checkpoints/base models you trust.",
+    )
 
 
 class ExportStatusResponse(BaseModel):

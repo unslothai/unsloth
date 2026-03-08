@@ -226,6 +226,7 @@ async def load_model(
             max_seq_length=request.max_seq_length,
             load_in_4bit=load_in_4bit,
             hf_token=request.hf_token,
+            trust_remote_code=request.trust_remote_code,
         )
 
         if not success:

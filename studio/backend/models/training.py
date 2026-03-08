@@ -13,6 +13,10 @@ class TrainingStartRequest(BaseModel):
     hf_token: Optional[str] = Field(None, description="HuggingFace token")
     load_in_4bit: bool = Field(True, description="Load model in 4-bit quantization")
     max_seq_length: int = Field(2048, description="Maximum sequence length")
+    trust_remote_code: bool = Field(
+        False,
+        description="Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
+    )
 
     # Dataset parameters
     hf_dataset: Optional[str] = Field(None, description="HuggingFace dataset identifier")

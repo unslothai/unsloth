@@ -192,6 +192,7 @@ def run_training_process(
             hf_token=hf_token,
             is_dataset_image=config.get("is_dataset_image", False),
             is_dataset_audio=config.get("is_dataset_audio", False),
+            trust_remote_code=config.get("trust_remote_code", False),
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:

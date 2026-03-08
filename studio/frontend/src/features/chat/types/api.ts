@@ -34,6 +34,8 @@ export interface LoadModelRequest {
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
+  /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
+  trust_remote_code?: boolean;
 }
 
 export interface GgufVariantDetail {
