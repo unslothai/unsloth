@@ -26,6 +26,7 @@ try:
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
+    from utils.models.model_config import load_model_defaults
 except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
@@ -34,6 +35,7 @@ except ImportError:
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
+    from utils.models.model_config import load_model_defaults
 
 from models.inference import (
     LoadRequest,
@@ -220,13 +222,24 @@ async def load_model(
                 except Exception as e:
                     logger.warning(f"Could not read adapter_config.json: {e}")
 
+        # Resolve trust_remote_code: use True if either the request or YAML config says so.
+        # This ensures models like Nemotron that require it always get it, even if the
+        # frontend toggle hasn't been set yet.
+        trust_remote_code = request.trust_remote_code
+        if not trust_remote_code:
+            model_defaults = load_model_defaults(config.identifier)
+            yaml_trust = model_defaults.get("inference", {}).get("trust_remote_code", False)
+            if yaml_trust:
+                logger.info(f"YAML config sets trust_remote_code=True for {config.identifier}")
+                trust_remote_code = True
+
         # Load the model
         success = backend.load_model(
             config=config,
             max_seq_length=request.max_seq_length,
             load_in_4bit=load_in_4bit,
             hf_token=request.hf_token,
-            trust_remote_code=request.trust_remote_code,
+            trust_remote_code=trust_remote_code,
         )
 
         if not success:
