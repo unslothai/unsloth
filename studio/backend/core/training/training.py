@@ -176,6 +176,7 @@ class TrainingBackend:
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "trust_remote_code": kwargs.get("trust_remote_code", False),
         }
 
         # Derive load_in_4bit from training_type
@@ -382,6 +383,9 @@ class TrainingBackend:
                     self.eval_loss_history.append(eval_loss)
                     self.eval_step_history.append(step)
                     self.eval_enabled = True
+
+            elif etype == "eval_configured":
+                self.eval_enabled = True
 
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")

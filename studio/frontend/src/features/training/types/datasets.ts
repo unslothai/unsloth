@@ -15,6 +15,11 @@ export type CheckFormatResponse = {
   warning?: string | null;
 };
 
+export type UploadDatasetResponse = {
+  filename: string;
+  stored_path: string;
+};
+
 export type LocalDatasetInfo = {
   metadata?: {
     actual_num_records?: number | null;

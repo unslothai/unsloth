@@ -4,6 +4,7 @@
 # added inference parameters from Ollama
 
 training:
+  trust_remote_code: false
   max_seq_length: 4096
   # num_epochs: 4
   num_epochs: 0
@@ -44,5 +45,6 @@ logging:
   log_frequency: 10
 
 inference:
+  trust_remote_code: false
   temperature: 0
   top_p: 0.9

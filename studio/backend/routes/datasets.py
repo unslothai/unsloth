@@ -6,7 +6,8 @@ import io
 import json
 import sys
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from uuid import uuid4
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 import logging
 
 # Add backend directory to path
@@ -36,6 +37,7 @@ from models.datasets import (
     CheckFormatResponse,
     LocalDatasetItem,
     LocalDatasetsResponse,
+    UploadDatasetResponse,
 )
 
 
@@ -89,8 +91,10 @@ DATA_EXTS = (
     '.zip',
 )
 LOCAL_FILE_EXTS = ('.json', '.jsonl', '.csv', '.parquet')
+LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_DATASETS_ROOT = BACKEND_ROOT / "assets" / "datasets"
+DATASET_UPLOAD_DIR = LOCAL_DATASETS_ROOT / "uploads"
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -250,6 +254,50 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     total_rows = len(dataset)
     preview_slice = dataset.select(range(min(preview_size, total_rows)))
     return preview_slice, total_rows
+
+
+def _sanitize_filename(filename: str) -> str:
+    name = Path(filename).name.strip().replace("\x00", "")
+    if not name:
+        return "dataset_upload"
+    return name
+
+
+@router.post("/upload", response_model=UploadDatasetResponse)
+async def upload_dataset(
+    file: UploadFile,
+    current_subject: str = Depends(get_current_subject),
+) -> UploadDatasetResponse:
+    filename = _sanitize_filename(file.filename or "dataset_upload")
+    ext = Path(filename).suffix.lower()
+    if ext not in LOCAL_UPLOAD_EXTS:
+        allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Allowed: {allowed}",
+        )
+
+    max_size_bytes = 512 * 1024 * 1024
+    DATASET_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    stem = Path(filename).stem
+    stored_name = f"{uuid4().hex}_{stem}{ext}"
+    stored_path = DATASET_UPLOAD_DIR / stored_name
+
+    # Stream file to disk in chunks to avoid holding entire file in memory
+    size = 0
+    with open(stored_path, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_size_bytes:
+                stored_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="File too large (max 512MB)")
+            f.write(chunk)
+
+    if size == 0:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Empty upload payload")
+
+    return UploadDatasetResponse(filename=filename, stored_path=str(stored_path))
 
 
 @router.get("/local", response_model=LocalDatasetsResponse)

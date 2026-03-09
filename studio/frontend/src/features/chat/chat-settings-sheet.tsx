@@ -170,6 +170,7 @@ export function ChatSettingsPanel({
         ...p.params,
         systemPrompt: params.systemPrompt,
         checkpoint: params.checkpoint,
+        trustRemoteCode: params.trustRemoteCode,
       });
       setActivePreset(name);
     }
@@ -330,17 +331,31 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
 
           <CollapsibleSection icon={Settings02Icon} label="Settings">
-            <div className="flex items-center justify-between gap-3 py-1">
-              <div className="min-w-0">
-                <div className="text-xs font-medium">Auto title</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Generate short title after reply.
+            <div className="flex flex-col gap-3 py-1">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium">Auto title</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Generate short title after reply.
+                  </div>
                 </div>
+                <Switch
+                  checked={autoTitle}
+                  onCheckedChange={onAutoTitleChange}
+                />
               </div>
-              <Switch
-                checked={autoTitle}
-                onCheckedChange={onAutoTitleChange}
-              />
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium">Trust remote code</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Allow models with custom code (e.g. Nemotron). Only enable for repos you trust.
+                  </div>
+                </div>
+                <Switch
+                  checked={params.trustRemoteCode ?? false}
+                  onCheckedChange={set("trustRemoteCode")}
+                />
+              </div>
             </div>
           </CollapsibleSection>
         </div>

@@ -6,6 +6,7 @@
 audio_type: bicodec
 
 training:
+  trust_remote_code: false
   eval_steps: 0
   max_seq_length: 2048
   # num_epochs: 4
@@ -47,6 +48,7 @@ logging:
   log_frequency: 10
 
 inference:
+  trust_remote_code: false
   temperature: 0.8
   top_k: 50
   top_p: 1.0

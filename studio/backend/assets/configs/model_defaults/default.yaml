@@ -2,6 +2,7 @@
 # Used for models without specific configurations
 
 training:
+  trust_remote_code: false
   max_seq_length: 2048
   # num_epochs: 4
   num_epochs: 0
@@ -47,6 +48,7 @@ logging:
   log_frequency: 10
 
 inference:
+  trust_remote_code: false
   temperature: 0.7
   top_p: 0.95
   top_k: -1
