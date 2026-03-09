@@ -3,6 +3,7 @@
 # Also applies to: unsloth/Llama-3.2-1B-Instruct-unsloth-bnb-4bit, meta-llama/Llama-3.2-1B-Instruct, unsloth/Llama-3.2-1B-Instruct-bnb-4bit, RedHatAI/Llama-3.2-1B-Instruct-FP8, unsloth/Llama-3.2-1B-Instruct-FP8-Block, unsloth/Llama-3.2-1B-Instruct-FP8-Dynamic
 
 training:
+  trust_remote_code: false
   max_seq_length: 2048
   # num_epochs: 5
   num_epochs: 0
@@ -42,3 +43,5 @@ logging:
   tensorboard_dir: "runs"
   log_frequency: 10
 
+inference:
+  trust_remote_code: false

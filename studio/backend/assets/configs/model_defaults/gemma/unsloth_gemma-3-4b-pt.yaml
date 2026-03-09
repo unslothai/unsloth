@@ -4,6 +4,7 @@
 # added inference parameters from unsloth guides
 
 training:
+  trust_remote_code: false
   max_seq_length: 2048
   # num_epochs: 2
   num_epochs: 0
@@ -42,6 +43,7 @@ logging:
   log_frequency: 10
 
 inference:
+  trust_remote_code: false
   temperature: 1.0
   top_k: 64
   top_p: 0.95
