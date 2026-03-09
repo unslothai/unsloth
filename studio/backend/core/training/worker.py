@@ -135,7 +135,9 @@ def run_training_process(
 
     # Wire up progress callback → event_queue
     def _on_progress(progress: TrainingProgress):
-        if progress.step >= 0 and progress.loss > 0:
+        has_train_loss = progress.step >= 0 and progress.loss > 0
+        has_eval_loss = progress.eval_loss is not None
+        if has_train_loss or has_eval_loss:
             event_queue.put({
                 "type": "progress",
                 "step": progress.step,
