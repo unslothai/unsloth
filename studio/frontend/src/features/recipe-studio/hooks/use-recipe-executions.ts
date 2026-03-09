@@ -324,19 +324,26 @@ export function useRecipeExecutions({
       rows: number,
       runName: string | null,
     ): Promise<boolean> => {
+      const trimmedRunName = typeof runName === "string" ? runName.trim() : "";
+      if (kind === "full" && !trimmedRunName) {
+        const message = "Run name required for full runs.";
+        setRunErrors([message]);
+        toastError("Run name required", message);
+        return false;
+      }
+
       const payload = readExecutablePayload();
       if (!payload) {
         return false;
       }
 
       const normalizedRows = sanitizeExecutionRows(rows, kind);
-      const normalizedRunName = kind === "full" ? normalizeRunName(runName) : null;
       const executionPayload = buildExecutionPayload({
         payload,
         kind,
         rows: normalizedRows,
         settings: runSettings,
-        runName: normalizedRunName,
+        runName,
       });
 
       try {
@@ -361,7 +368,7 @@ export function useRecipeExecutions({
         payload,
         rows: normalizedRows,
         settings: runSettings,
-        runName: normalizedRunName,
+        runName,
       });
     },
     [readExecutablePayload, runExecution, runSettings, setRunErrors],

@@ -254,6 +254,8 @@ export function RunDialog({
 }: RunDialogProps): ReactElement {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const kindLabel = kind === "preview" ? "Preview" : "Full run";
+  const normalizedFullRunName = fullRunName.trim();
+  const isFullRunNameMissing = kind === "full" && normalizedFullRunName.length === 0;
   const rowHint =
     kind === "preview"
       ? "How many sample rows to generate for a quick check."
@@ -376,7 +378,13 @@ export function RunDialog({
               value={fullRunName}
               onChange={(event) => onFullRunNameChange(event.target.value)}
               placeholder="Sprint dataset v2"
+              aria-invalid={isFullRunNameMissing}
             />
+            {isFullRunNameMissing ? (
+              <p className="text-xs text-destructive">
+                Run name is required before starting a full run.
+              </p>
+            ) : null}
           </div>
         )}
 
@@ -657,7 +665,12 @@ export function RunDialog({
             <HugeiconsIcon icon={TestTube01Icon} className="size-3.5" />
             {validateLoading ? "Validating..." : "Validate recipe"}
           </Button>
-          <Button type="button" onClick={onRun} disabled={loading} className="corner-squircle">
+          <Button
+            type="button"
+            onClick={onRun}
+            disabled={loading || isFullRunNameMissing}
+            className="corner-squircle"
+          >
             <HugeiconsIcon icon={CookBookIcon} className="size-3.5" />
             {loading ? "Starting..." : `Start ${kindLabel.toLowerCase()}`}
           </Button>
