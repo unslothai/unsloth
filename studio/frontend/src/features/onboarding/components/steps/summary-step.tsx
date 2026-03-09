@@ -69,7 +69,7 @@ export function SummaryStep() {
 
   return (
     <div className="grid grid-cols-2 gap-4">
-      <Card size="sm">
+      <Card size="sm" className="rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             System
@@ -106,7 +106,7 @@ export function SummaryStep() {
         </CardContent>
       </Card>
 
-      <Card size="sm">
+      <Card size="sm" className="rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">Model</CardTitle>
         </CardHeader>
@@ -128,7 +128,7 @@ export function SummaryStep() {
         </CardContent>
       </Card>
 
-      <Card size="sm">
+      <Card size="sm" className="rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             Dataset
@@ -166,7 +166,7 @@ export function SummaryStep() {
         </CardContent>
       </Card>
 
-      <Card size="sm">
+      <Card size="sm" className="rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             Hyperparameters
