@@ -293,7 +293,7 @@ export function DatasetSection() {
     if (!uploadedFile) return;
     if (selectedLocalDataset) return;
     // Don't clear if this is a direct file upload (not a recipe directory)
-    if (isLikelyLocalDatasetRef(uploadedFile)) return;
+    if (uploadedFile.includes("/dataset-uploads/")) return;
     selectLocalDataset(null);
   }, [
     datasetSource,
