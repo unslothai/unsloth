@@ -23,11 +23,11 @@ IS_WINDOWS = sys.platform == "win32"
 
 # ── Paths ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
-REQ_ROOT = SCRIPT_DIR / "studio" / "backend" / "requirements"
+REQ_ROOT = SCRIPT_DIR / "backend" / "requirements"
 SINGLE_ENV = REQ_ROOT / "single-env"
 CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 LOCAL_DD_UNSTRUCTURED_PLUGIN = (
-    SCRIPT_DIR / "studio" / "backend" / "plugins" / "data-designer-unstructured-seed"
+    SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
 
 # ── Color support ──────────────────────────────────────────────────────
