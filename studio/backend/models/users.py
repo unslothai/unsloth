@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+# Copyright © 2025 Unsloth AI
+
 """Pydantic models for authentication tokens.
 
 This module defines the Token response model used by auth routes.

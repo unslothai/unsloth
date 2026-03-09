@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { type ReactElement, useCallback } from "react";
 import { Lock, LockOpen, Maximize2, Minus, Plus } from "lucide-react";
 import { Panel, useReactFlow } from "@xyflow/react";

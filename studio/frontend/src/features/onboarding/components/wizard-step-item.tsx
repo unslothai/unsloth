@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { cn } from "@/lib/utils";
 import { useTrainingConfigStore } from "@/features/training";
 import type { StepConfig, StepNumber } from "@/types/training";
