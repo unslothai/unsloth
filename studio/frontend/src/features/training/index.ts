@@ -11,3 +11,4 @@ export { listLocalModels } from "./api/models-api";
 export type { LocalModelInfo } from "./api/models-api";
 export type { TrainingPhase } from "./types/runtime";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
+export { validateTrainingConfig } from "./lib/validation";

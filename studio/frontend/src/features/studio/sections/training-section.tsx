@@ -12,6 +12,7 @@ import {
   serializeConfigToYaml,
   useTrainingActions,
   useTrainingConfigStore,
+  validateTrainingConfig,
 } from "@/features/training";
 import {
   Archive04Icon,
@@ -43,7 +44,8 @@ export function TrainingSection() {
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
   const isIncompatible =
     !store.isVisionModel && store.isDatasetImage === true;
-    const fileInputRef = useRef<HTMLInputElement>(null);
+  const configValidation = validateTrainingConfig(store);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -150,7 +152,7 @@ export function TrainingSection() {
           data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible}
+          disabled={isStarting || isIncompatible || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
           {isStarting ? "Starting..." : "Start Training"}
@@ -162,6 +164,9 @@ export function TrainingSection() {
           <p className="text-xs text-red-500 leading-relaxed">
             Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset.
           </p>
+        )}
+        {!configValidation.ok && configValidation.message && !isIncompatible && (
+          <p className="text-xs text-red-500 leading-relaxed">{configValidation.message}</p>
         )}
 
         {/* Upload / Save / Reset */}
