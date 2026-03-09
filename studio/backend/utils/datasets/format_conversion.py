@@ -506,6 +506,8 @@ def convert_to_vlm_format(
                     except Exception as e:
                         failed_count += 1
                         if failed_count == 1:
+                            print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
+                        if failed_count == 1:
                             logger.info(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
 
             converted_list.extend(r for r in batch_results if r is not None)
@@ -526,7 +528,11 @@ def convert_to_vlm_format(
             try:
                 converted_list.append(_convert_single_sample(sample))
             except Exception as e:
+            except Exception as e:
                 failed_count += 1
+                if failed_count == 1:
+                    # Log the first failure to aid debugging
+                    print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
                 if failed_count == 1:
                     # Log the first failure to aid debugging
                     logger.info(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
