@@ -285,6 +285,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             uploadedFile,
             ...resetDatasetState(),
           });
+          if (uploadedFile) {
+            runDatasetCheck(uploadedFile, "train");
+          }
         },
         setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
         setDataset: (dataset) => {

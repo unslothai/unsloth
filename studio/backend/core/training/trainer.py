@@ -380,6 +380,9 @@ class UnslothTrainer:
                 self.is_audio = self._audio_type is not None
                 self.is_audio_vlm = False
 
+            if not self.is_audio and not self.is_audio_vlm:
+                self._cuda_audio_used = False
+
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
             vision = is_vision_model(model_name) if not self.is_audio else False
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
@@ -1799,18 +1802,20 @@ class UnslothTrainer:
             eval_enabled = eval_steps is not None and eval_steps > 0
 
             if local_datasets:
-                # Load local datasets
-                all_data = []
+                # Load local datasets using load_dataset() so the result is
+                # Arrow-backed (has cache files).  Dataset.from_list() creates
+                # an in-memory dataset with no cache, which forces num_proc=1
+                # during tokenization/map because sharding requires Arrow files.
+                all_files: list[str] = []
                 for dataset_file in local_datasets:
                     # dataset_file may already be an absolute path from routes/training.py
                     if os.path.isabs(dataset_file):
                         file_path = dataset_file
                     else:
                         # Fallback: try relative to assets/datasets
-                        file_path = _ASSETS_DATASETS_ROOT / dataset_file
+                        file_path = str(_ASSETS_DATASETS_ROOT / dataset_file)
 
                     file_path_obj = Path(file_path)
-                    file_path_str = str(file_path_obj)
 
                     if file_path_obj.is_dir():
                         parquet_dir = (
@@ -1820,36 +1825,41 @@ class UnslothTrainer:
                         )
                         parquet_files = sorted(parquet_dir.glob("*.parquet"))
                         if parquet_files:
-                            for parquet_file in parquet_files:
-                                df = pd.read_parquet(parquet_file)
-                                all_data.extend(df.to_dict("records"))
+                            all_files.extend(str(p) for p in parquet_files)
                             continue
+                        # Fall through to single-file detection for dirs with json/csv
+                        candidates: list[Path] = []
+                        for ext in ('.json', '.jsonl', '.csv', '.parquet'):
+                            candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
+                        if candidates:
+                            all_files.extend(str(c) for c in candidates)
+                            continue
+                        raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                    else:
+                        all_files.append(str(file_path_obj))
 
-                    if file_path_str.endswith('.json'):
-                        with open(file_path_obj, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            if isinstance(data, list):
-                                all_data.extend(data)
-                            else:
-                                all_data.append(data)
-                    elif file_path_str.endswith('.csv'):
-                        df = pd.read_csv(file_path_obj)
-                        all_data.extend(df.to_dict('records'))
-                    elif file_path_str.endswith('.parquet'):
-                        df = pd.read_parquet(file_path_obj)
-                        all_data.extend(df.to_dict('records'))
-                        continue
+                if all_files:
+                    # Determine loader type from the first file extension
+                    first_ext = Path(all_files[0]).suffix.lower()
+                    if first_ext in ('.json', '.jsonl'):
+                        loader = 'json'
+                    elif first_ext == '.csv':
+                        loader = 'csv'
+                    elif first_ext == '.parquet':
+                        loader = 'parquet'
+                    else:
+                        raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
 
-                if all_data:
-                    dataset = Dataset.from_list(all_data)
+                    dataset = load_dataset(loader, data_files=all_files, split='train')
 
                     # Check if stopped during dataset loading
                     if self.should_stop:
                         print("Stopped during dataset loading\n")
                         return None
 
-                    self._update_progress(status_message=f"Loaded {len(all_data)} samples from local files")
-                    print(f"Loaded {len(all_data)} samples from local files\n")
+                    self._update_progress(status_message=f"Loaded {len(dataset)} samples from local files")
+                    print(f"Loaded {len(dataset)} samples from local files\n")
+                    print(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
             elif dataset_source:
                 # Load from Hugging Face
@@ -2377,6 +2387,7 @@ class UnslothTrainer:
                 "dataset_num_proc": 1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else safe_num_proc(max(1, os.cpu_count() // 4)),
                 "max_seq_length": training_args.get('max_seq_length', 2048),
             }
+            print(f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})")
 
             # On Windows with transformers 5.x, disable DataLoader multiprocessing
             # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
