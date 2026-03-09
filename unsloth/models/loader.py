@@ -397,7 +397,7 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
-        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -537,7 +537,7 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                 )
             # Check if pre-quantized models are allowed
-            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
@@ -1005,7 +1005,7 @@ class FastModel(FastBaseModel):
                     load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
-        # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
@@ -1288,7 +1288,7 @@ class FastModel(FastBaseModel):
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
-            # For eg AMD Instinct GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
