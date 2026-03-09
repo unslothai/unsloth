@@ -11,7 +11,7 @@ import { ChartAverageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import { formatStepTick, placeholderEvalData } from "./utils";
+import { formatMetric, formatStepTick, placeholderEvalData } from "./utils";
 
 const evalLossConfig = {
   loss: { label: "Eval Loss", color: "#ef4444" },
@@ -33,14 +33,23 @@ export function EvalLossChartCard({
   return (
     <Card data-tour="studio-eval-loss" size="sm">
       <CardHeader>
-        <CardTitle className={`text-sm pl-2${data.length > 0 ? "" : " text-muted-foreground"}`}>
+        <CardTitle
+          className={`text-sm pl-1${data.length > 0 ? "" : " text-muted-foreground"}`}
+        >
           Eval Loss
         </CardTitle>
       </CardHeader>
       <CardContent>
         {data.length > 0 ? (
-          <ChartContainer config={evalLossConfig} className="-ml-3 h-[220px] w-full">
-            <LineChart data={data} accessibilityLayer={true} margin={{ left: 0, right: 8 }}>
+          <ChartContainer
+            config={evalLossConfig}
+            className="-ml-3 h-[220px] w-full"
+          >
+            <LineChart
+              data={data}
+              accessibilityLayer={true}
+              margin={{ left: 0, right: 8 }}
+            >
               <CartesianGrid vertical={false} strokeDasharray="3 3" />
               <XAxis
                 dataKey="step"
@@ -64,8 +73,8 @@ export function EvalLossChartCard({
                 axisLine={false}
                 tickMargin={4}
                 fontSize={10}
-                width={52}
-                tickFormatter={(value) => Number(value).toFixed(2)}
+                width={80}
+                tickFormatter={(value) => formatMetric(Number(value))}
               />
               <ChartTooltip
                 content={
@@ -73,6 +82,10 @@ export function EvalLossChartCard({
                     labelFormatter={(_value, payload) =>
                       `Step ${payload?.[0]?.payload?.step ?? ""}`
                     }
+                    formatter={(_value, _name, item) => [
+                      formatMetric(Number(item?.payload?.loss)),
+                      "Eval Loss",
+                    ]}
                   />
                 }
               />
@@ -91,7 +104,10 @@ export function EvalLossChartCard({
           </ChartContainer>
         ) : (
           <div className="relative">
-            <ChartContainer config={evalLossConfig} className="-ml-3 h-[220px] w-full blur">
+            <ChartContainer
+              config={evalLossConfig}
+              className="-ml-3 h-[220px] w-full blur"
+            >
               <LineChart
                 data={placeholderEvalData}
                 accessibilityLayer={true}
@@ -126,7 +142,10 @@ export function EvalLossChartCard({
               </LineChart>
             </ChartContainer>
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
-              <HugeiconsIcon icon={ChartAverageIcon} className="size-5 text-muted-foreground/50" />
+              <HugeiconsIcon
+                icon={ChartAverageIcon}
+                className="size-5 text-muted-foreground/50"
+              />
               <p className="text-sm font-medium text-muted-foreground">
                 {isTraining && evalEnabled
                   ? "Waiting for first evaluation step…"
