@@ -384,6 +384,9 @@ class TrainingBackend:
                     self.eval_step_history.append(step)
                     self.eval_enabled = True
 
+            elif etype == "eval_configured":
+                self.eval_enabled = True
+
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
