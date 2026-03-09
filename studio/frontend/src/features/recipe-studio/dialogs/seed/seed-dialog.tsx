@@ -423,13 +423,13 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   );
 
   return (
-    <Tabs defaultValue="config" className="w-full">
+    <Tabs defaultValue="config" className="w-full min-w-0">
       <TabsList className="w-full">
         <TabsTrigger value="config">Config</TabsTrigger>
         <TabsTrigger value="preview">Preview</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="config" className="pt-3">
+      <TabsContent value="config" className="min-w-0 pt-3">
         <div className="space-y-4">
           {mode === "hf" && (
             <>
@@ -774,7 +774,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         </div>
       </TabsContent>
 
-      <TabsContent value="preview" className="pt-3">
+      <TabsContent value="preview" className="min-w-0 pt-3">
         <div className="space-y-4">
           {previewRows.length === 0 ? (
             <div className="flex w-full items-center justify-center">
@@ -795,8 +795,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               <div className="text-xs text-muted-foreground">
                 Loaded columns: {previewColumns.join(", ") || "None"}
               </div>
-              <div className="max-h-[360px] overflow-auto rounded-xl corner-squircle border border-border/60">
-                <Table className="corner-squircle">
+              <div className="max-h-[360px] overflow-y-auto overflow-x-hidden rounded-xl corner-squircle border border-border/60">
+                <Table className="corner-squircle min-w-max">
                   <TableHeader>
                     <TableRow>
                       {previewColumns.map((col) => (
