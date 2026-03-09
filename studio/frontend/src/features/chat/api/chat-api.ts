@@ -10,6 +10,7 @@ import type {
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   UnloadModelRequest,
+  ValidateModelResponse,
 } from "../types/api";
 
 function parseErrorText(status: number, body: unknown): string {
@@ -65,6 +66,21 @@ export async function loadModel(
     body: JSON.stringify(payload),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
+}
+
+export async function validateModel(
+  payload: LoadModelRequest,
+): Promise<ValidateModelResponse> {
+  const response = await authFetch("/api/inference/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: payload.model_path,
+      hf_token: payload.hf_token,
+      gguf_variant: payload.gguf_variant ?? null,
+    }),
+  });
+  return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {

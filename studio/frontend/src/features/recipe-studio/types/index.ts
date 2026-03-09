@@ -13,6 +13,21 @@ export type SamplerType =
   | "person_from_faker";
 
 export type LlmType = "text" | "structured" | "code" | "judge";
+export type ValidatorCodeLang =
+  | "javascript"
+  | "typescript"
+  | "jsx"
+  | "tsx"
+  | "python"
+  | "sql:sqlite"
+  | "sql:postgres"
+  | "sql:mysql"
+  | "sql:tsql"
+  | "sql:bigquery"
+  | "sql:ansi";
+export type ValidatorType = "code" | "oxc";
+export type OxcValidationMode = "syntax" | "lint" | "syntax+lint";
+export type OxcCodeShape = "auto" | "module" | "snippet";
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -28,6 +43,7 @@ export type RecipeNodeData = {
   kind:
     | "sampler"
     | "llm"
+    | "validator"
     | "expression"
     | "seed"
     | "note"
@@ -37,12 +53,17 @@ export type RecipeNodeData = {
   blockType:
     | SamplerType
     | LlmType
+    | "validator_python"
+    | "validator_sql"
+    | "validator_oxc"
     | "expression"
     | "seed"
     | "markdown_note"
     | "model_provider"
     | "model_config";
   layoutDirection?: LayoutDirection;
+  runtimeState?: "idle" | "running" | "done";
+  executionLocked?: boolean;
 };
 
 export type RecipeNode = Node<RecipeNodeData, "builder">;
@@ -57,6 +78,8 @@ export type CategoryConditionalParams = {
 export type SamplerConfig = {
   id: string;
   kind: "sampler";
+  // ui-only
+  advancedOpen?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: SamplerType;
   name: string;
@@ -150,9 +173,19 @@ export type LlmToolConfig = {
   timeout_sec?: string;
 };
 
+export type LlmImageContextConfig = {
+  enabled: boolean;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  column_name: string;
+};
+
+export type LlmTraceType = "none" | "last_message" | "all_messages";
+
 export type LlmConfig = {
   id: string;
   kind: "llm";
+  // ui-only
+  advancedOpen?: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
   llm_type: LlmType;
   name: string;
@@ -173,6 +206,13 @@ export type LlmConfig = {
   // biome-ignore lint/style/useNamingConvention: ui schema
   mcp_providers?: LlmMcpProviderConfig[];
   scores?: Score[];
+  // ui-only, serialized into multi_modal_context for DataDesigner
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  image_context?: LlmImageContextConfig;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  with_trace?: LlmTraceType;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  extract_reasoning_content?: boolean;
 };
 
 export type ModelProviderConfig = {
@@ -205,6 +245,10 @@ export type ModelConfig = {
   // biome-ignore lint/style/useNamingConvention: api schema
   inference_max_tokens?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
+  inference_timeout?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  inference_extra_body?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   skip_health_check?: boolean;
 };
 
@@ -215,6 +259,27 @@ export type ExpressionConfig = {
   drop?: boolean;
   expr: string;
   dtype: ExpressionDtype;
+};
+
+export type ValidatorConfig = {
+  id: string;
+  kind: "validator";
+  // ui-only
+  advancedOpen?: boolean;
+  name: string;
+  drop?: boolean;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  target_columns: string[];
+  // ui-only
+  validator_type: ValidatorType;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  code_lang: ValidatorCodeLang;
+  // ui-only (used for OXC validators)
+  oxc_validation_mode: OxcValidationMode;
+  // ui-only (used for OXC validators)
+  oxc_code_shape: OxcCodeShape;
+  // ui ergonomics (serialized to int in payload)
+  batch_size: string;
 };
 
 export type MarkdownNoteConfig = {
@@ -231,6 +296,8 @@ export type MarkdownNoteConfig = {
 export type SeedConfig = {
   id: string;
   kind: "seed";
+  // ui-only
+  advancedOpen?: boolean;
   name: string;
   drop?: boolean;
   // ui-only: explicit per-column drop for structured seed sources (hf/local)
@@ -277,6 +344,7 @@ export type RecipeProcessorConfig = SchemaTransformProcessorConfig;
 export type NodeConfig =
   | SamplerConfig
   | LlmConfig
+  | ValidatorConfig
   | ExpressionConfig
   | MarkdownNoteConfig
   | SeedConfig

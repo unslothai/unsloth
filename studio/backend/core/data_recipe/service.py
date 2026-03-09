@@ -1,9 +1,125 @@
 from __future__ import annotations
 
+import base64
+import io
 import os
+from pathlib import Path
 from typing import Any
 
 from .jsonable import to_jsonable
+from .local_callable_validators import (
+    register_oxc_local_callable_validators,
+    split_oxc_local_callable_validators,
+)
+_IMAGE_CONTEXT_PATCHED = False
+
+
+def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
+    return base64.b64encode(bytes(value)).decode("utf-8")
+
+
+def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
+    try:
+        path = Path(path_value)
+        candidates: list[Path] = []
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            if base_path:
+                candidates.append(Path(base_path) / path)
+            candidates.append(Path.cwd() / path)
+
+        for candidate in candidates:
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            with candidate.open("rb") as f:
+                return _encode_bytes_to_base64(f.read())
+    except (OSError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _pil_image_to_base64(value: Any) -> str | None:
+    try:
+        from PIL.Image import Image as PILImage  # type: ignore
+    except ImportError:
+        return None
+    if not isinstance(value, PILImage):
+        return None
+    buffer = io.BytesIO()
+    image_format = str(getattr(value, "format", "") or "").upper()
+    if image_format not in {"PNG", "JPEG", "JPG", "WEBP", "GIF"}:
+        image_format = "PNG"
+    value.save(buffer, format=image_format)
+    return _encode_bytes_to_base64(buffer.getvalue())
+
+
+def _normalize_image_context_value(value: Any, *, base_path: str | None = None) -> Any:
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, (bytes, bytearray)):
+        return _encode_bytes_to_base64(value)
+
+    pil_base64 = _pil_image_to_base64(value)
+    if pil_base64 is not None:
+        return pil_base64
+
+    if isinstance(value, dict):
+        url = value.get("url")
+        if isinstance(url, str):
+            return url
+
+        image_url = value.get("image_url")
+        if isinstance(image_url, str):
+            return image_url
+        if isinstance(image_url, dict):
+            nested_url = image_url.get("url")
+            if isinstance(nested_url, str):
+                return nested_url
+
+        inline_data = value.get("data")
+        if isinstance(inline_data, str):
+            return inline_data
+
+        raw_bytes = value.get("bytes")
+        if isinstance(raw_bytes, (bytes, bytearray)):
+            return _encode_bytes_to_base64(raw_bytes)
+        if isinstance(raw_bytes, str) and raw_bytes.strip():
+            return raw_bytes
+
+        path_value = value.get("path")
+        if isinstance(path_value, str) and path_value.strip():
+            if as_base64 := _load_image_file_to_base64(path_value, base_path=base_path):
+                return as_base64
+            return path_value
+
+    return value
+
+
+def _apply_data_designer_image_context_patch() -> None:
+    global _IMAGE_CONTEXT_PATCHED
+    if _IMAGE_CONTEXT_PATCHED:
+        return
+
+    try:
+        from data_designer.config.models import ImageContext
+    except ImportError:
+        return
+
+    if getattr(ImageContext, "_unsloth_image_context_patch_applied", False):
+        _IMAGE_CONTEXT_PATCHED = True
+        return
+
+    original_auto_resolve = ImageContext._auto_resolve_context_value
+
+    def _patched_auto_resolve(self: Any, context_value: Any, base_path: str | None) -> Any:
+        normalized = _normalize_image_context_value(context_value, base_path=base_path)
+        return original_auto_resolve(self, normalized, base_path)
+
+    ImageContext._auto_resolve_context_value = _patched_auto_resolve
+    setattr(ImageContext, "_unsloth_image_context_patch_applied", True)
+    _IMAGE_CONTEXT_PATCHED = True
 
 
 def build_model_providers(recipe: dict[str, Any]):
@@ -75,6 +191,7 @@ def build_mcp_providers(
 
 
 def build_config_builder(recipe: dict[str, Any]):
+    _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder
     from data_designer.config.processors import ProcessorType
 
@@ -83,7 +200,14 @@ def build_config_builder(recipe: dict[str, Any]):
         for key, value in recipe.items()
         if key not in {"model_providers", "mcp_providers"}
     }
+    recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
+        recipe_core
+    )
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
+    register_oxc_local_callable_validators(
+        builder=builder,
+        specs=oxc_local_callable_specs,
+    )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
     # Re-attach explicitly so drop_columns/schema_transform survive API payload.
@@ -107,6 +231,7 @@ def create_data_designer(
     *,
     artifact_path: str | None = None,
 ):
+    _apply_data_designer_image_context_patch()
     from data_designer.interface.data_designer import DataDesigner
 
     return DataDesigner(

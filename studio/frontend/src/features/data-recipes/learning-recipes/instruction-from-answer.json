@@ -3,7 +3,7 @@
     "model_providers": [
       {
         "name": "openai_provider",
-        "endpoint": "https://openrouter.ai/api/v1",
+        "endpoint": "",
         "provider_type": "openai",
         "extra_headers": {},
         "extra_body": {}
@@ -13,19 +13,18 @@
     "model_configs": [
       {
         "alias": "ministral",
-        "model": "mistralai/ministral-8b-2512",
+        "model": "",
         "provider": "openai_provider",
         "inference_parameters": {
           "temperature": 0.7,
-          "max_tokens": 1024
+          "max_tokens": 2048
         }
       }
     ],
     "seed_config": {
       "source": {
         "seed_type": "hf",
-        "path": "datasets/unsloth/alpaca-cleaned/**/*.json",
-        "token": null,
+        "path": "unsloth/alpaca-cleaned",
         "endpoint": "https://huggingface.co"
       },
       "sampling_strategy": "ordered",
@@ -42,10 +41,20 @@
         "drop": false,
         "model_alias": "ministral",
         "prompt": "Based on this target answer:\n{{ output }}\n\nWrite one high-quality plain text short and brief user instruction that this answer would satisfy.\nReturn only the instruction.",
-        "with_trace": "none"
+        "with_trace": "none",
+        "extract_reasoning_content": false
       }
     ],
-    "processors": []
+    "processors": [
+      {
+        "processor_type": "drop_columns",
+        "name": "drop_seed_columns",
+        "column_names": [
+          "input",
+          "instruction"
+        ]
+      }
+    ]
   },
   "run": {
     "rows": 5,
@@ -63,7 +72,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_1",
-        "markdown": "#### Hugginface seed block\nThis recipe uses a ** HuggingFace dataset ** as seed data.\nYou provide dataset identity, load columns, then generate new fields from seed columns.\n\n##### Setup:\n\n1. Paste dataset id as `org/repo` (example: `unsloth/alpaca-cleaned`)\n2. Add token only if dataset is gated/private\n3. Load columns + preview rows so variables are available in prompts\n\n##### Why this matters:\n- Seed columns can drive generation quality\n- You can reference seed values directly in prompts (for example `{{ output }}`)",
+        "markdown": "#### Hugging Face seed block\nThis recipe uses a ** HuggingFace dataset ** as seed data.\nYou select a Hugging Face dataset, load columns, then generate new fields from seed columns. Each column in the Hugging Face dataset becomes a valid variable that you can reference eg. `{{ topic }}`\n\n##### Setup:\n\n1. Search for a dataset and select one in the dropdown (example: `unsloth/alpaca-cleaned`)\n2. Add token only if dataset is gated/private\n3. Load columns + preview rows so variables are available in prompts\n\n##### Why this matters:\n- Seed columns can drive generation quality\n- You can reference seed values directly in prompts (for example `{{ output }}`)",
         "note_color": "#DCFCE7",
         "note_opacity": "35"
       },
@@ -74,7 +83,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_2",
-        "markdown": "##### Drop columns behavior:\n\n- You can mark specific seed columns to **drop from final output**\n- Those columns are still used during generation\n- They are removed only from exported final dataset\n\n##### Example:\n- Keep `generated_instruction` from llm-text block\n- Drop original `instruction`, `input`, `output` from the hugginface dataset from final artifact\n- Result: clean training output while still using source columns as generation context\n",
+        "markdown": "##### Drop columns behavior:\n\n- You can mark specific seed columns to **drop from final output**\n- Those columns are still used during generation\n- They are removed only from exported final dataset\n\n##### Example:\n- Keep `generated_instruction` from llm-text block\n- Drop original `instruction`, `input`, `output` from the hugginface dataset from final dataset\n- Result: clean training output while still using source columns as generation context\n",
         "note_color": "#DCFCE7",
         "note_opacity": "35"
       },
@@ -128,64 +137,9 @@
     ],
     "layout_direction": "LR",
     "seed_source_type": "hf",
-    "seed_columns": [
-      "instruction",
-      "input",
-      "output"
-    ],
+    "seed_columns": [],
     "seed_drop_columns": [],
-    "seed_preview_rows": [
-      {
-        "instruction": "Give three tips for staying healthy.",
-        "input": "",
-        "output": "1. Eat a balanced and nutritious diet: Make sure your meals are inclusive of a variety of fruits and vegetables, lean protein, whole grains, and healthy fats. This helps to provide your body with the essential nutrients to function at its best and can help prevent chronic diseases.\n\n2. Engage in regular physical activity: Exercise is crucial for maintaining strong bones, muscles, and cardiovascular health. Aim for at least 150 minutes of moderate aerobic exercise or 75 minutes of vigorous exercise each week.\n\n3. Get enough sleep: Getting enough quality sleep is crucial for physical and mental well-being. It helps to regulate mood, improve cognitive function, and supports healthy growth and immune function. Aim for 7-9 hours of sleep each night."
-      },
-      {
-        "instruction": "What are the three primary colors?",
-        "input": "",
-        "output": "The three primary colors are red, blue, and yellow. These colors are called primary because they cannot be created by mixing other colors and all other colors can be made by combining them in various proportions. In the additive color system, used for light, the primary colors are red, green, and blue (RGB)."
-      },
-      {
-        "instruction": "Describe the structure of an atom.",
-        "input": "",
-        "output": "An atom is the basic building block of all matter and is made up of three types of particles: protons, neutrons, and electrons. The structure of an atom can be described as a nucleus at the center surrounded by a cloud of electrons.\n\nThe nucleus of an atom is made up of protons and neutrons. Protons are positively charged particles and neutrons are neutral particles with no charge. Both of these particles are located in the nucleus of the atom, which is at the center of the atom and contains most of the atom's mass.\n\nSurrounding the nucleus of the atom is a cloud of electrons. Electrons are negatively charged particles that are in constant motion around the nucleus. The electron cloud is divided into shells or orbitals, and each shell can hold a certain number of electrons. The number of electrons in the outermost shell, called the valence shell, determines the chemical properties of the atom. \n\nIn a neutral atom, the number of protons in the nucleus is equal to the number of electrons in the electron cloud, so the positive and negative charges balance out and the atom has no overall charge. The number of protons, also called the atomic number, determines what element the atom is."
-      },
-      {
-        "instruction": "How can we reduce air pollution?",
-        "input": "",
-        "output": "There are several ways to reduce air pollution, including:\n\n1. Reduce energy consumption: By conserving energy, we reduce the amount of pollution emitted from power plants. Some ways to achieve this include: using energy-efficient appliances and lighting, insulating homes, and shutting off lights and electronics when not in use.\n\n2. Use public transportation or carpool: Cars and trucks are major sources of pollution. By using public transportation, carpooling or biking, you can reduce the number of cars on the road, which in turn reduces emissions.\n\n3. Be responsible with waste: When waste is burned or decomposed, they can release harmful gases into the air. Dispose of hazardous waste correctly and recycle materials like plastics, paper, and glass when possible.\n\n4. Support clean energy sources: Renewable energy sources like solar and wind power generate little or no pollution. Support clean energy companies and projects, and consider installing renewable energy systems in your home.\n\n5. Drive efficiently: If you need to drive, make sure your vehicle is well maintained and drive efficiently by avoiding rapid acceleration and braking, and reducing idling.\n\n6. Be mindful of product choices: Some products and practices release more pollution than others. Choose products with eco-friendly packaging and try to minimize your use of aerosol sprays, which can release harmful chemicals into the air."
-      },
-      {
-        "instruction": "Pretend you are a project manager of a construction company. Describe a time when you had to make a difficult decision.",
-        "input": "",
-        "output": "I had to make a difficult decision when I was working as a project manager at a construction company. I was in charge of a project that needed to be completed by a certain date in order to meet the client’s expectations. However, due to unexpected delays, we were not able to meet the deadline and so I had to make a difficult decision. I decided to extend the deadline, but I had to stretch the team’s resources even further and increase the budget. Although it was a risky decision, I ultimately decided to go ahead with it to ensure that the project was completed on time and that the client’s expectations were met. The project was eventually successfully completed and this was seen as a testament to my leadership and decision-making abilities."
-      },
-      {
-        "instruction": "Write a concise summary of the following:\n\"Commodore 64 (commonly known as the C64 or CBM 64) was manufactured by Commodore Business Machine (CBM) in August 1982 with a starting price of $595. It was an 8-bit home computer with remarkable market success. Between 1983-1986, C64 sales amounted to about 17 million units sold, making them the best-selling single personal computer model of all time in 1983-1986. \n\nAdditionally, the Commodore 64 dominated the market with between 30% and 40% share and 2 million units sold per year, outselling the IBM PC clones, Apple Computers, and Atari computers. Adding to their success, Sam Tramiel (former Atari president), during an interview in 1989, said they were building 400,000 C64s a month for a couple of years. \"",
-        "input": "",
-        "output": "The Commodore 64 was a highly successful 8-bit home computer manufactured by Commodore Business Machine (CBM) in 1982, with sales amounting to approximately 17 million units sold between 1983-1986. It dominated the market with between 30% and 40% share and outsold its competitors, including IBM PC clones, Apple Computers, and Atari computers. At its peak, CBM was building 400,000 C64s a month for a couple of years."
-      },
-      {
-        "instruction": "Explain why the following fraction is equivalent to 1/4",
-        "input": "4/16",
-        "output": "The fraction 4/16 is equivalent to 1/4 because both fractions represent the same value. A fraction can be simplified by dividing both the numerator and the denominator by a common factor. In this case, 4 is a common factor of both the numerator and the denominator of 4/16. When we divide both by 4, we get 4/4 = 1 and 16/4 = 4, so the simplified fraction is 1/4. Alternatively, we can think of this in terms of multiplication. For example, if we multiply the numerator and denominator of the fraction 1/4 by 4, we get (1x4)/(4x4), or 4/16. Since both fractions can be derived from the other through multiplication or division by the same number, they represent the same value and are equivalent."
-      },
-      {
-        "instruction": "Write a short story in third person narration about a protagonist who has to make an important career decision.",
-        "input": "",
-        "output": "Sophie sat at her desk, staring blankly at the computer screen. Her mind was racing as she weighed the options in front of her. She had been offered a promotion to a senior management position within her company, but it meant moving across the country and leaving her friends and family behind. At the same time, her dream job at a rival company had finally opened up, and she had been invited for an interview. \n\nThe thought of leaving her comfortable life behind, to take a chance on something new and uncertain, made Sophie feel anxious, but also excited. She had always been one to take risks, and it had paid off in the past. But now, with such a big decision to make, Sophie couldn't help but feel overwhelmed.\n\nAfter much deliberation, Sophie made her choice. She packed her bags, said goodbye to her loved ones, and moved across the country for the new job. It was a difficult first few months, adjusting to a new city and a new company culture. But as time went by, Sophie realized that she had made the best decision for her career. The job was challenging, but also rewarding, and she was surrounded by passionate, driven colleagues who inspired her to grow and develop.\n\nIn the end, Sophie's bold move paid off. She was thriving in her new role, and had made new friends and connections in her new city. Looking back, Sophie was grateful for the opportunity to take a risk and make a change, and was confident that she had made the right decision for her career."
-      },
-      {
-        "instruction": "Evaluate this sentence for spelling and grammar mistakes",
-        "input": "He finnished his meal and left the resturant",
-        "output": "There are two spelling errors in the sentence. The corrected sentence should be: \"He finished his meal and left the restaurant.\""
-      },
-      {
-        "instruction": "How did Julius Caesar die?",
-        "input": "",
-        "output": "Julius Caesar, the Roman Military general, and statesman was assassinated on March 15, 44 BC. He was stabbed to death at a meeting of the Senate in the Theatre of Pompey by a group of senators who called themselves the Liberatores. Led by Gaius Cassius Longinus, and Marcus Junius Brutus, they believed that Caesar's dictatorship was subverting the Roman Republic and sought to restore the traditional republican government. The exact number of assailants is not known, but it is believed that a group of as many as 60 conspirators participated in the assassination, and each of them took turns in stabbing Caesar. The day of his death is still known as the Ides of March."
-      }
-    ],
+    "seed_preview_rows": [],
     "local_file_name": "",
     "unstructured_file_name": "",
     "unstructured_chunk_size": "1200",

@@ -1,5 +1,8 @@
+import type {
+  CheckFormatResponse,
+  LocalDatasetsResponse,
+} from "../types/datasets";
 import { authFetch } from "@/features/auth";
-import type { CheckFormatResponse } from "../types/datasets";
 
 type CheckDatasetFormatArgs = {
   datasetName: string;
@@ -36,3 +39,11 @@ export async function checkDatasetFormat({
   return res.json();
 }
 
+export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
+  const res = await authFetch("/api/datasets/local");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `Request failed (${res.status})`);
+  }
+  return res.json();
+}

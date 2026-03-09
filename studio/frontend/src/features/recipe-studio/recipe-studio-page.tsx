@@ -2,23 +2,16 @@ import {
   Background,
   BackgroundVariant,
   type Edge,
-  type EdgeChange,
   type EdgeTypes,
   type Node,
-  type NodeChange,
   type NodeTypes,
   Panel,
   ReactFlow,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import {
-  CookBookIcon,
-  PlusSignIcon,
-  TestTube01Icon,
-} from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  type DragEvent as ReactDragEvent,
   type ReactElement,
   useCallback,
   useEffect,
@@ -31,77 +24,39 @@ import "@xyflow/react/dist/style.css";
 import { RecipeGraphAuxNode, type RecipeGraphAuxNodeData } from "./components/recipe-graph-aux-node";
 import {
   BlockSheet,
-  RECIPE_BLOCK_DND_MIME,
-  type RecipeBlockDragPayload,
 } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
+import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
 import { InternalsSync } from "./components/graph/internals-sync";
+import { ExecutionProgressIsland } from "./components/runtime/execution-progress-island";
 import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { RecipeNode } from "./components/recipe-graph-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
 import { DataEdge } from "./components/rf-ui/data-edge";
-import { Button } from "@/components/ui/button";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { RunDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
+import { useRecipeEditorGraph } from "./hooks/use-recipe-editor-graph";
+import { useRecipeRuntimeVisuals } from "./hooks/use-recipe-runtime-visuals";
 import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
-import type {
-  LlmType,
-  RecipeNode as RecipeBuilderNode,
-  RecipeNodeData,
-  SamplerType,
-} from "./types";
-import type { SeedBlockType } from "./blocks/registry";
-import { deriveDisplayGraph } from "./utils/graph/derive-display-graph";
+import { isExecutionInProgress } from "./executions/execution-helpers";
+import type { RecipeNodeData } from "./types";
 import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
-import {
-  applyAuxNodeChanges,
-  filterEdgeChangesByIds,
-  filterNodeChangesByIds,
-} from "./utils/reactflow-changes";
-import {
-  buildDialogOptions,
-} from "./utils/recipe-studio-view";
-import type { RecipeStudioView } from "./execution-types";
+import { buildDialogOptions } from "./utils/recipe-studio-view";
+import type { RecipeExecutionRecord, RecipeStudioView } from "./execution-types";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
 const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
-const SUPPORTED_DRAG_KINDS: RecipeBlockDragPayload["kind"][] = [
-  "sampler",
-  "seed",
-  "llm",
-  "expression",
-  "note",
-];
-
-function parseRecipeBlockDragPayload(raw: string): RecipeBlockDragPayload | null {
-  try {
-    const parsed = JSON.parse(raw) as {
-      kind?: RecipeBlockDragPayload["kind"];
-      type?: RecipeBlockDragPayload["type"];
-    };
-    if (
-      !parsed.kind ||
-      !parsed.type ||
-      !SUPPORTED_DRAG_KINDS.includes(parsed.kind)
-    ) {
-      return null;
-    }
-    return {
-      kind: parsed.kind,
-      type: parsed.type,
-    };
-  } catch {
-    return null;
-  }
-}
+const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
+const TAB_SWITCH_FIT_DELAY_MS = 110;
+const FIT_ANIMATION_MS = 340;
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -150,6 +105,7 @@ export function RecipeStudioPage({
     addModelProviderNode,
     addModelConfigNode,
     addExpressionNode,
+    addValidatorNode,
     addMarkdownNoteNode,
     selectConfig,
     openConfig,
@@ -163,6 +119,7 @@ export function RecipeStudioPage({
     setLayoutDirection,
     applyLayout,
     setAuxNodePosition,
+    setExecutionLocked,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -185,6 +142,7 @@ export function RecipeStudioPage({
       addModelProviderNode: state.addModelProviderNode,
       addModelConfigNode: state.addModelConfigNode,
       addExpressionNode: state.addExpressionNode,
+      addValidatorNode: state.addValidatorNode,
       addMarkdownNoteNode: state.addMarkdownNoteNode,
       selectConfig: state.selectConfig,
       openConfig: state.openConfig,
@@ -198,6 +156,7 @@ export function RecipeStudioPage({
       setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
+      setExecutionLocked: state.setExecutionLocked,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -208,204 +167,53 @@ export function RecipeStudioPage({
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
+  const [recentCompletedExecution, setRecentCompletedExecution] =
+    useState<RecipeExecutionRecord | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<
     ReactFlowInstance<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge> | null
   >(null);
   const lastProcessedFitTickRef = useRef(0);
-  const handleExecutionStart = useCallback(() => {
-    setActiveView("executions");
-  }, []);
-  const handlePreviewSuccess = useCallback(() => {
-    setActiveView("executions");
-  }, []);
-
-  const baseNodeIds = useMemo(
-    () => new Set(nodes.map((node) => node.id)),
-    [nodes],
-  );
-  const baseEdgeIds = useMemo(
-    () => new Set(edges.map((edge) => edge.id)),
-    [edges],
-  );
-
-  const displayGraph = useMemo(() => {
-    return deriveDisplayGraph({
-      nodes,
-      edges,
-      configs,
-      layoutDirection,
-      auxNodePositions,
-      llmAuxVisibility,
-    });
-  }, [
-    auxNodePositions,
-    configs,
-    edges,
-    layoutDirection,
-    llmAuxVisibility,
+  const previousActiveViewRef = useRef<RecipeStudioView>("editor");
+  const previousActiveExecutionIdRef = useRef<string | null>(null);
+  const pendingEditorTabFitRef = useRef(false);
+  const forceEditorTabFitRef = useRef(false);
+  const viewportMovedSinceAutoFitRef = useRef(true);
+  const {
+    handleNodeClick,
+    handleNodeDoubleClick,
+    handleNodesChange,
+    handleEdgesChange,
+    handleDragOver,
+    handleDrop,
+    handleAddSamplerFromSheet,
+    handleAddSeedFromSheet,
+    handleAddLlmFromSheet,
+    handleAddModelProviderFromSheet,
+    handleAddModelConfigFromSheet,
+    handleAddExpressionFromSheet,
+    handleAddValidatorFromSheet,
+    handleAddMarkdownNoteFromSheet,
+  } = useRecipeEditorGraph({
     nodes,
-  ]);
-  const displayNodeIds = useMemo(
-    () => displayGraph.nodes.map((node) => node.id),
-    [displayGraph.nodes],
-  );
-
-  const handleNodeClick = useCallback(
-    (_: unknown, node: Node<RecipeNodeData | RecipeGraphAuxNodeData>) => {
-      if (node.type !== "builder") {
-        return;
-      }
-      selectConfig(node.id);
-    },
-    [selectConfig],
-  );
-
-  const handleNodeDoubleClick = useCallback(
-    (_: unknown, node: Node<RecipeNodeData | RecipeGraphAuxNodeData>) => {
-      if (node.type !== "builder") {
-        return;
-      }
-      const nodeConfig = configs[node.id];
-      if (nodeConfig?.kind === "markdown_note") {
-        openConfig(node.id);
-      }
-    },
-    [configs, openConfig],
-  );
-
-  const handleNodesChange = useCallback(
-    (changes: NodeChange<Node<RecipeNodeData | RecipeGraphAuxNodeData>>[]) => {
-      applyAuxNodeChanges(changes, { setAuxNodePosition });
-      const next = filterNodeChangesByIds(
-        changes as NodeChange<RecipeBuilderNode>[],
-        baseNodeIds,
-      );
-      if (next.length) {
-        onNodesChange(next);
-      }
-    },
-    [baseNodeIds, onNodesChange, setAuxNodePosition],
-  );
-
-  const handleEdgesChange = useCallback(
-    (changes: EdgeChange<Edge>[]) => {
-      const next = filterEdgeChangesByIds(changes, baseEdgeIds);
-      if (next.length) {
-        onEdgesChange(next);
-      }
-    },
-    [baseEdgeIds, onEdgesChange],
-  );
-
-  const handleDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
-    if (
-      !event.dataTransfer.types.includes(RECIPE_BLOCK_DND_MIME) &&
-      !event.dataTransfer.types.includes("text/plain")
-    ) {
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-  }, []);
-
-  const handleDrop = useCallback(
-    (event: ReactDragEvent<HTMLDivElement>) => {
-      if (!reactFlowInstance) {
-        return;
-      }
-      const raw =
-        event.dataTransfer.getData(RECIPE_BLOCK_DND_MIME) ||
-        event.dataTransfer.getData("text/plain");
-      if (!raw) {
-        return;
-      }
-      const payload = parseRecipeBlockDragPayload(raw);
-      if (!payload) {
-        return;
-      }
-      event.preventDefault();
-      const position = reactFlowInstance.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-
-      if (payload.kind === "sampler") {
-        addSamplerNode(payload.type as SamplerType, position, false);
-        return;
-      }
-      if (payload.kind === "seed") {
-        addSeedNode(payload.type as SeedBlockType, position, false);
-        return;
-      }
-      if (payload.kind === "expression") {
-        addExpressionNode(position, false);
-        return;
-      }
-      if (payload.kind === "note") {
-        addMarkdownNoteNode(position, false);
-        return;
-      }
-      if (payload.type === "model_provider") {
-        addModelProviderNode(position, false);
-        return;
-      }
-      if (payload.type === "model_config") {
-        addModelConfigNode(position, false);
-        return;
-      }
-      addLlmNode(payload.type as LlmType, position, false);
-    },
-    [
-      addExpressionNode,
-      addLlmNode,
-      addMarkdownNoteNode,
-      addModelConfigNode,
-      addModelProviderNode,
-      addSamplerNode,
-      addSeedNode,
-      reactFlowInstance,
-    ],
-  );
-  const getViewportCenterPosition = useCallback(() => {
-    if (!reactFlowInstance || !flowContainerRef.current) {
-      return undefined;
-    }
-    const rect = flowContainerRef.current.getBoundingClientRect();
-    return reactFlowInstance.screenToFlowPosition({
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-    });
-  }, [reactFlowInstance]);
-  const handleAddSamplerFromSheet = useCallback(
-    (type: SamplerType) => {
-      addSamplerNode(type, getViewportCenterPosition());
-    },
-    [addSamplerNode, getViewportCenterPosition],
-  );
-  const handleAddSeedFromSheet = useCallback(
-    (type: SeedBlockType) => {
-      addSeedNode(type, getViewportCenterPosition());
-    },
-    [addSeedNode, getViewportCenterPosition],
-  );
-  const handleAddLlmFromSheet = useCallback(
-    (type: LlmType) => {
-      addLlmNode(type, getViewportCenterPosition());
-    },
-    [addLlmNode, getViewportCenterPosition],
-  );
-  const handleAddModelProviderFromSheet = useCallback(() => {
-    addModelProviderNode(getViewportCenterPosition());
-  }, [addModelProviderNode, getViewportCenterPosition]);
-  const handleAddModelConfigFromSheet = useCallback(() => {
-    addModelConfigNode(getViewportCenterPosition());
-  }, [addModelConfigNode, getViewportCenterPosition]);
-  const handleAddExpressionFromSheet = useCallback(() => {
-    addExpressionNode(getViewportCenterPosition());
-  }, [addExpressionNode, getViewportCenterPosition]);
-  const handleAddMarkdownNoteFromSheet = useCallback(() => {
-    addMarkdownNoteNode(getViewportCenterPosition());
-  }, [addMarkdownNoteNode, getViewportCenterPosition]);
+    edges,
+    configs,
+    reactFlowInstance,
+    flowContainerRef,
+    selectConfig,
+    openConfig,
+    onNodesChange,
+    onEdgesChange,
+    setAuxNodePosition,
+    addSamplerNode,
+    addSeedNode,
+    addLlmNode,
+    addModelProviderNode,
+    addModelConfigNode,
+    addExpressionNode,
+    addValidatorNode,
+    addMarkdownNoteNode,
+  });
 
   const configList = useMemo(() => Object.values(configs), [configs]);
   const config = activeConfigId ? configs[activeConfigId] : null;
@@ -417,10 +225,6 @@ export function RecipeStudioPage({
   const handleToggleDirection = useCallback(() => {
     setLayoutDirection(layoutDirection === "LR" ? "TB" : "LR");
   }, [layoutDirection, setLayoutDirection]);
-
-  const toggleInteractive = useCallback(() => {
-    setInteractive((value) => !value);
-  }, []);
 
   const payloadResult = useMemo(
     () =>
@@ -460,8 +264,10 @@ export function RecipeStudioPage({
     setRunDialogOpen,
     previewRows,
     fullRows,
+    fullRunName,
     setPreviewRows,
     setFullRows,
+    setFullRunName,
     runErrors,
     runSettings,
     setRunSettings,
@@ -491,9 +297,78 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
-    onExecutionStart: handleExecutionStart,
-    onPreviewSuccess: handlePreviewSuccess,
   });
+  const {
+    activeExecution,
+    runtimeVisualState,
+    displayGraph,
+    displayNodeIds,
+    currentColumnIcon,
+  } = useRecipeRuntimeVisuals({
+    executions,
+    configs,
+    nodes,
+    edges,
+    layoutDirection,
+    auxNodePositions,
+    llmAuxVisibility,
+  });
+  const executionLocked = runtimeVisualState.executionLocked;
+  const canvasInteractive = interactive && !executionLocked;
+  const runBusy = previewLoading || fullLoading || executionLocked;
+  const islandExecution = activeExecution ?? recentCompletedExecution;
+
+  const toggleInteractive = useCallback(() => {
+    if (executionLocked) {
+      return;
+    }
+    setInteractive((value) => !value);
+  }, [executionLocked]);
+
+  useEffect(() => {
+    setExecutionLocked(executionLocked);
+  }, [executionLocked, setExecutionLocked]);
+
+  useEffect(() => {
+    const activeExecutionId = activeExecution?.id ?? null;
+    if (
+      activeExecutionId &&
+      activeExecutionId !== previousActiveExecutionIdRef.current
+    ) {
+      setRuntimeIslandMinimized(false);
+    }
+    previousActiveExecutionIdRef.current = activeExecutionId;
+  }, [activeExecution?.id]);
+
+  useEffect(() => {
+    if (activeExecution) {
+      setRecentCompletedExecution(null);
+      return;
+    }
+    const latestCompleted = executions.find(
+      (execution) =>
+        execution.status === "completed" && typeof execution.finishedAt === "number",
+    );
+    if (!latestCompleted || typeof latestCompleted.finishedAt !== "number") {
+      setRecentCompletedExecution(null);
+      return;
+    }
+    const elapsedMs = Date.now() - latestCompleted.finishedAt;
+    if (elapsedMs >= COMPLETE_ISLAND_VISIBLE_MS) {
+      setRecentCompletedExecution(null);
+      return;
+    }
+    setRecentCompletedExecution(latestCompleted);
+    const hideTimer = window.setTimeout(() => {
+      setRecentCompletedExecution(null);
+      setActiveView((currentView) =>
+        currentView === "editor" ? "executions" : currentView,
+      );
+    }, COMPLETE_ISLAND_VISIBLE_MS - elapsedMs);
+    return () => {
+      window.clearTimeout(hideTimer);
+    };
+  }, [activeExecution, executions]);
 
   const openProcessorsFromSheet = useCallback(() => {
     if (
@@ -514,6 +389,95 @@ export function RecipeStudioPage({
   const runDialogLoading =
     runDialogKind === "preview" ? previewLoading : fullLoading;
 
+  const scheduleFitView = useCallback(
+    ({ delayMs = 0 }: { delayMs?: number } = {}) => {
+      if (!reactFlowInstance) {
+        return () => {};
+      }
+
+      let timeoutId = 0;
+      let frameId = 0;
+      let retryFrameId = 0;
+
+      const fitWithCurrentNodes = () => {
+        const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
+        if (targetNodes.length === 0) {
+          return false;
+        }
+        viewportMovedSinceAutoFitRef.current = false;
+        reactFlowInstance.fitView({
+          duration: FIT_ANIMATION_MS,
+          nodes: targetNodes,
+        });
+        return true;
+      };
+
+      const runFit = () => {
+        if (fitWithCurrentNodes()) {
+          return;
+        }
+
+        retryFrameId = window.requestAnimationFrame(() => {
+          fitWithCurrentNodes();
+        });
+      };
+
+      const start = () => {
+        frameId = window.requestAnimationFrame(runFit);
+      };
+
+      if (delayMs > 0) {
+        timeoutId = window.setTimeout(start, delayMs);
+      } else {
+        start();
+      }
+
+      return () => {
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
+        if (frameId) {
+          window.cancelAnimationFrame(frameId);
+        }
+        if (retryFrameId) {
+          window.cancelAnimationFrame(retryFrameId);
+        }
+      };
+    },
+    [reactFlowInstance],
+  );
+
+  useEffect(() => {
+    if (previousActiveViewRef.current !== activeView && activeView === "editor") {
+      pendingEditorTabFitRef.current = true;
+      forceEditorTabFitRef.current = previousActiveViewRef.current === "executions";
+    }
+    previousActiveViewRef.current = activeView;
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== "editor" && reactFlowInstance) {
+      setReactFlowInstance(null);
+    }
+  }, [activeView, reactFlowInstance]);
+
+  useEffect(() => {
+    if (
+      !reactFlowInstance ||
+      activeView !== "editor" ||
+      !pendingEditorTabFitRef.current
+    ) {
+      return;
+    }
+    pendingEditorTabFitRef.current = false;
+    const forceFit = forceEditorTabFitRef.current;
+    forceEditorTabFitRef.current = false;
+    if (!forceFit && !viewportMovedSinceAutoFitRef.current) {
+      return;
+    }
+    return scheduleFitView({ delayMs: TAB_SWITCH_FIT_DELAY_MS });
+  }, [activeView, reactFlowInstance, scheduleFitView]);
+
   useEffect(() => {
     if (!reactFlowInstance || fitViewTick === 0 || activeView !== "editor") {
       return;
@@ -522,28 +486,8 @@ export function RecipeStudioPage({
       return;
     }
     lastProcessedFitTickRef.current = fitViewTick;
-    let frame2 = 0;
-    let frame3 = 0;
-    const frame1 = window.requestAnimationFrame(() => {
-      frame2 = window.requestAnimationFrame(() => {
-        frame3 = window.requestAnimationFrame(() => {
-          reactFlowInstance.fitView({
-            duration: 320,
-            nodes: getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes()),
-          });
-        });
-      });
-    });
-    return () => {
-      window.cancelAnimationFrame(frame1);
-      if (frame2) {
-        window.cancelAnimationFrame(frame2);
-      }
-      if (frame3) {
-        window.cancelAnimationFrame(frame3);
-      }
-    };
-  }, [activeView, fitViewTick, reactFlowInstance]);
+    return scheduleFitView();
+  }, [activeView, fitViewTick, reactFlowInstance, scheduleFitView]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -584,9 +528,14 @@ export function RecipeStudioPage({
                 onNodeClick={handleNodeClick}
                 onNodeDoubleClick={handleNodeDoubleClick}
                 isValidConnection={isValidConnection}
-                nodesDraggable={interactive}
-                nodesConnectable={interactive}
-                elementsSelectable={interactive}
+                onMoveEnd={(event) => {
+                  if (event) {
+                    viewportMovedSinceAutoFitRef.current = true;
+                  }
+                }}
+                nodesDraggable={canvasInteractive}
+                nodesConnectable={canvasInteractive}
+                elementsSelectable={canvasInteractive}
                 fitView={false}
                 className="h-full w-full rounded-t-none"
               >
@@ -639,6 +588,7 @@ export function RecipeStudioPage({
                     onAddModelProvider={handleAddModelProviderFromSheet}
                     onAddModelConfig={handleAddModelConfigFromSheet}
                     onAddExpression={handleAddExpressionFromSheet}
+                    onAddValidator={handleAddValidatorFromSheet}
                     onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
                     onOpenProcessors={openProcessorsFromSheet}
                     copied={copied}
@@ -647,35 +597,34 @@ export function RecipeStudioPage({
                   />
                 </Panel>
                 <ViewportControls
-                  interactive={interactive}
+                  interactive={canvasInteractive}
+                  lockDisabled={executionLocked}
                   onToggleInteractive={toggleInteractive}
                 />
-                <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
-                  <div className="pointer-events-auto flex items-center gap-2">
-                    <Button
-                      type="button"
-                      className="h-11 px-5"
-                      onClick={() => openRunDialog(runDialogKind)}
-                      disabled={previewLoading || fullLoading}
-                    >
-                      <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                      {previewLoading || fullLoading ? "Running..." : "Run"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-11 px-5"
-                      onClick={() => {
-                        openRunDialog(runDialogKind);
-                        void validateFromDialog();
-                      }}
-                      disabled={validateLoading}
-                    >
-                      <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
-                      {validateLoading ? "Validating..." : "Validate"}
-                    </Button>
-                  </div>
-                </div>
+                {islandExecution &&
+                  (isExecutionInProgress(islandExecution.status) ||
+                    islandExecution.status === "completed") && (
+                    <Panel position="top-center" className="!m-0">
+                      <ExecutionProgressIsland
+                        execution={islandExecution}
+                        currentColumnIcon={currentColumnIcon}
+                        minimized={runtimeIslandMinimized}
+                        onMinimizedChange={setRuntimeIslandMinimized}
+                        onViewExecutions={() => setActiveView("executions")}
+                      />
+                    </Panel>
+                  )}
+                <RunValidateFloatingControls
+                  runBusy={runBusy}
+                  runDialogKind={runDialogKind}
+                  validateLoading={validateLoading}
+                  executionLocked={executionLocked}
+                  onOpenRunDialog={openRunDialog}
+                  onValidate={() => {
+                    openRunDialog(runDialogKind);
+                    void validateFromDialog();
+                  }}
+                />
               </ReactFlow>
             ) : (
               <ExecutionsView
@@ -698,6 +647,7 @@ export function RecipeStudioPage({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         config={config}
+        readOnly={executionLocked}
         categoryOptions={dialogOptions.categoryOptions}
         modelConfigAliases={dialogOptions.modelConfigAliases}
         modelProviderOptions={dialogOptions.modelProviderOptions}
@@ -724,6 +674,8 @@ export function RecipeStudioPage({
         kind={runDialogKind}
         onKindChange={setRunDialogKind}
         rows={runDialogRows}
+        fullRunName={fullRunName}
+        onFullRunNameChange={setFullRunName}
         onRowsChange={(rows) => {
           if (runDialogKind === "preview") {
             setPreviewRows(rows);

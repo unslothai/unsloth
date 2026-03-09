@@ -17,7 +17,12 @@ import {
   TagsIcon,
   UserAccountIcon,
 } from "@hugeicons/core-free-icons";
-import type { LlmType, NodeConfig, SamplerType, SeedSourceType } from "../types";
+import type {
+  LlmType,
+  NodeConfig,
+  SamplerType,
+  SeedSourceType,
+} from "../types";
 import {
   makeExpressionConfig,
   makeLlmConfig,
@@ -26,12 +31,22 @@ import {
   makeModelProviderConfig,
   makeSamplerConfig,
   makeSeedConfig,
+  makeValidatorConfig,
 } from "../utils";
 
-export type BlockKind = "sampler" | "llm" | "expression" | "seed" | "note";
+export type BlockKind =
+  | "sampler"
+  | "llm"
+  | "validator"
+  | "expression"
+  | "seed"
+  | "note";
 export type BlockType =
   | SamplerType
   | LlmType
+  | "validator_python"
+  | "validator_sql"
+  | "validator_oxc"
   | "expression"
   | "markdown_note"
   | "seed"
@@ -65,6 +80,7 @@ export type BlockDialogKey =
   | "uuid"
   | "person"
   | "llm"
+  | "validator"
   | "model_provider"
   | "model_config"
   | "expression";
@@ -99,6 +115,12 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     icon: PencilEdit02Icon,
   },
   {
+    kind: "validator",
+    title: "Validators",
+    description: "Validate generated code outputs with built-in engines.",
+    icon: Shield02Icon,
+  },
+  {
     kind: "expression",
     title: "Expression",
     description: "Derive columns with Jinja templates.",
@@ -116,7 +138,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
     type: "seed_hf",
-    title: "Hugginface dataset",
+    title: "Hugging Face dataset",
     description: "Load real rows from HF and use them as generation context.",
     icon: Plant01Icon,
     dialogKey: "seed",
@@ -276,6 +298,36 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     createConfig: (id, existing) => makeModelConfig(id, existing),
   },
   {
+    kind: "validator",
+    type: "validator_python",
+    title: "Python Validator",
+    description: "Validate Python code columns.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "code", "python", existing),
+  },
+  {
+    kind: "validator",
+    type: "validator_sql",
+    title: "SQL Validator",
+    description: "Validate SQL code columns.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "code", "sql:sqlite", existing),
+  },
+  {
+    kind: "validator",
+    type: "validator_oxc",
+    title: "OXC Validator",
+    description: "Validate JavaScript or TypeScript code columns.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "oxc", "javascript", existing),
+  },
+  {
     kind: "expression",
     type: "expression",
     title: "Expression",
@@ -330,6 +382,16 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "llm") {
     return getBlockDefinition("llm", config.llm_type);
+  }
+  if (config.kind === "validator") {
+    if (config.validator_type === "oxc") {
+      return getBlockDefinition("validator", "validator_oxc");
+    }
+    const isSql = config.code_lang.startsWith("sql:");
+    return getBlockDefinition(
+      "validator",
+      isSql ? "validator_sql" : "validator_python",
+    );
   }
   if (config.kind === "model_provider") {
     return getBlockDefinition("llm", "model_provider");

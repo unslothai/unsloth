@@ -83,6 +83,17 @@ export function applyRenameToConfig(
     const base = next as LlmConfig;
     next = { ...base, model_alias: to };
   }
+  if (config.kind === "validator") {
+    const targets = config.target_columns ?? [];
+    if (targets.includes(from)) {
+      const base = next as typeof config;
+      next = {
+        ...base,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        target_columns: targets.map((target) => (target === from ? to : target)),
+      };
+    }
+  }
   return next;
 }
 
@@ -124,6 +135,17 @@ export function applyRemovalToConfig(
   if (config.kind === "llm" && config.model_alias === ref) {
     const base = next as LlmConfig;
     next = { ...base, model_alias: "" };
+  }
+  if (config.kind === "validator") {
+    const targets = (config.target_columns ?? []).filter((target) => target !== ref);
+    if (targets.length !== (config.target_columns ?? []).length) {
+      const base = next as typeof config;
+      next = {
+        ...base,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        target_columns: targets,
+      };
+    }
   }
   return next;
 }

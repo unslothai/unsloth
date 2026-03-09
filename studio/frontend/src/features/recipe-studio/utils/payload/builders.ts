@@ -2,6 +2,7 @@ export { buildLlmColumn, buildLlmMcpProvider, buildLlmToolConfig } from "./build
 export { buildModelConfig, buildModelProvider } from "./builders-model";
 export { buildExpressionColumn, buildProcessors } from "./builders-processors";
 export { buildSamplerColumn } from "./builders-sampler";
+export { buildValidatorColumn } from "./builders-validator";
 export {
   buildSeedConfig,
   buildSeedDropProcessor,

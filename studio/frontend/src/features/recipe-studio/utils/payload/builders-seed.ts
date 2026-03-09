@@ -1,11 +1,26 @@
 import type { NodeConfig, SeedConfig } from "../../types";
 
+const DEFAULT_CHUNK_SIZE = 1200;
+const DEFAULT_CHUNK_OVERLAP = 200;
+const MAX_CHUNK_SIZE = 20000;
+
 function parseIntStrict(value: string | undefined): number | null {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   const num = Number(value);
   if (!Number.isFinite(num) || !Number.isInteger(num)) return null;
   return num;
+}
+
+function resolveChunking(config: SeedConfig): { chunkSize: number; chunkOverlap: number } {
+  const rawSize = parseIntStrict(config.unstructured_chunk_size);
+  const rawOverlap = parseIntStrict(config.unstructured_chunk_overlap);
+  const chunkSize = Math.min(MAX_CHUNK_SIZE, Math.max(1, rawSize ?? DEFAULT_CHUNK_SIZE));
+  const chunkOverlap = Math.min(
+    Math.max(0, chunkSize - 1),
+    Math.max(0, rawOverlap ?? DEFAULT_CHUNK_OVERLAP),
+  );
+  return { chunkSize, chunkOverlap };
 }
 
 export function buildSeedConfig(
@@ -47,11 +62,24 @@ export function buildSeedConfig(
           token,
           endpoint,
         }
-      : {
-          // biome-ignore lint/style/useNamingConvention: api schema
-          seed_type: "local",
-          path,
-        };
+      : seedSourceType === "unstructured"
+        ? (() => {
+            const { chunkSize, chunkOverlap } = resolveChunking(config);
+            return {
+              // biome-ignore lint/style/useNamingConvention: api schema
+              seed_type: "unstructured",
+              path,
+              // biome-ignore lint/style/useNamingConvention: api schema
+              chunk_size: chunkSize,
+              // biome-ignore lint/style/useNamingConvention: api schema
+              chunk_overlap: chunkOverlap,
+            };
+          })()
+        : {
+            // biome-ignore lint/style/useNamingConvention: api schema
+            seed_type: "local",
+            path,
+          };
 
   return {
     source,

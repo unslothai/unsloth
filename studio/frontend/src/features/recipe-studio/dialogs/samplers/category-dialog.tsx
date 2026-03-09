@@ -44,7 +44,7 @@ export function CategoryDialog({
   onUpdate,
 }: CategoryDialogProps): ReactElement {
   const [conditionDraft, setConditionDraft] = useState("");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedOpen = config.advancedOpen === true;
   const conditionInputId = `${config.id}-conditional-rule`;
   const conditional = config.conditional_params ?? {};
   const conditionalCount = Object.keys(conditional).length;
@@ -112,7 +112,10 @@ export function CategoryDialog({
           />
         </div>
       </div>
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+      <Collapsible
+        open={advancedOpen}
+        onOpenChange={(open) => onUpdate({ advancedOpen: open })}
+      >
         <CollapsibleTrigger asChild={true}>
           <button
             type="button"

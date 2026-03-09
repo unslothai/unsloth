@@ -1,5 +1,10 @@
 import type { NodeConfig } from "../types";
 import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse";
+import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";
+import { isOxcCodeShape } from "./validators/oxc-code-shape";
+import { isOxcValidationMode } from "./validators/oxc-mode";
+
+const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validation rules
 export function getConfigErrors(config: NodeConfig | null): string[] {
@@ -173,10 +178,51 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
         }
       }
     }
+    if (config.image_context?.enabled) {
+      if (!config.image_context.column_name.trim()) {
+        errors.push("Image context column is required.");
+      }
+    }
+    if (
+      config.with_trace &&
+      !TRACE_MODES.has(config.with_trace)
+    ) {
+      errors.push("Trace mode must be none, last_message, or all_messages.");
+    }
   }
   if (config.kind === "expression") {
     if (!config.expr.trim()) {
       errors.push("Expression is required.");
+    }
+  }
+  if (config.kind === "validator") {
+    const targets = (config.target_columns ?? [])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (targets.length === 0) {
+      errors.push("Target code column is required.");
+    }
+    const batch = parseIntNumber(config.batch_size);
+    if (batch === null || batch < 1) {
+      errors.push("Batch size must be an integer >= 1.");
+    }
+    if (!config.code_lang.trim()) {
+      errors.push("Validator code language is required.");
+    } else if (config.validator_type === "oxc") {
+      if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
+        errors.push("OXC validator code language must be javascript/typescript/jsx/tsx.");
+      }
+      if (!isOxcValidationMode(config.oxc_validation_mode)) {
+        errors.push("OXC validation mode must be syntax, lint, or syntax+lint.");
+      }
+      if (!isOxcCodeShape(config.oxc_code_shape)) {
+        errors.push("OXC code shape must be auto, module, or snippet.");
+      }
+    } else if (
+      config.code_lang !== "python" &&
+      !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
+    ) {
+      errors.push("Code validator code language must be python or sql dialect.");
     }
   }
   if (config.kind === "seed") {
@@ -197,6 +243,21 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     if (seedSourceType === "unstructured") {
       if (config.drop && (config.seed_columns?.length ?? 0) === 0) {
         errors.push("Seed drop needs loaded columns.");
+      }
+      const chunkSizeRaw = Number(config.unstructured_chunk_size);
+      const chunkOverlapRaw = Number(config.unstructured_chunk_overlap);
+      if (!Number.isFinite(chunkSizeRaw) || Math.floor(chunkSizeRaw) < 1) {
+        errors.push("Chunk size must be an integer >= 1.");
+      }
+      if (!Number.isFinite(chunkOverlapRaw) || Math.floor(chunkOverlapRaw) < 0) {
+        errors.push("Chunk overlap must be an integer >= 0.");
+      }
+      if (
+        Number.isFinite(chunkSizeRaw) &&
+        Number.isFinite(chunkOverlapRaw) &&
+        Math.floor(chunkOverlapRaw) >= Math.floor(chunkSizeRaw)
+      ) {
+        errors.push("Chunk overlap must be less than chunk size.");
       }
     } else {
       const selectedDropColumns = (config.seed_drop_columns ?? [])

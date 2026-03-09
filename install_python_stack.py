@@ -22,6 +22,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REQ_ROOT = SCRIPT_DIR / "studio" / "backend" / "requirements"
 SINGLE_ENV = REQ_ROOT / "single-env"
 CONSTRAINTS = SINGLE_ENV / "constraints.txt"
+LOCAL_DD_UNSTRUCTURED_PLUGIN = (
+    SCRIPT_DIR / "studio" / "backend" / "plugins" / "data-designer-unstructured-seed"
+)
 
 # ── Color support ──────────────────────────────────────────────────────
 
@@ -235,13 +238,28 @@ def install_python_stack() -> int:
         req=SINGLE_ENV / "data-designer.txt",
     )
 
-    # 11. Patch metadata for single-env compatibility
+    # 11. Local Data Designer seed plugin
+    if not LOCAL_DD_UNSTRUCTURED_PLUGIN.is_dir():
+        print(
+            _red(
+                f"❌ Missing local plugin directory: {LOCAL_DD_UNSTRUCTURED_PLUGIN}",
+            ),
+        )
+        return 1
+    pip_install(
+        "Installing local data-designer unstructured plugin",
+        "--no-cache-dir", "--no-deps",
+        "-e", str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
+        constrain=False,
+    )
+
+    # 12. Patch metadata for single-env compatibility
     run(
         "Patching single-env metadata",
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 12. Final check (silent — third-party conflicts are expected)
+    # 13. Final check (silent; third-party conflicts are expected)
     subprocess.run(
         [sys.executable, "-m", "pip", "check"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
