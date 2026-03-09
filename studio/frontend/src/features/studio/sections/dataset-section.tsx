@@ -357,6 +357,14 @@ export function DatasetSection() {
     event.target.value = "";
     if (!file) return;
 
+    const MAX_SIZE_BYTES = 512 * 1024 * 1024;
+    if (file.size > MAX_SIZE_BYTES) {
+      toast.error("File too large", {
+        description: "Maximum upload size is 512 MB.",
+      });
+      return;
+    }
+
     setIsUploading(true);
     try {
       const contentBase64 = await fileToBase64Payload(file);
