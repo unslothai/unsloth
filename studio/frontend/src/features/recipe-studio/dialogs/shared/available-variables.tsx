@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { Badge } from "@/components/ui/badge";
 import { type ReactElement, useMemo, useState } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";

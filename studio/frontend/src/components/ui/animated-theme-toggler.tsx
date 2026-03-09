@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Moon, Sun } from "lucide-react"
 import { flushSync } from "react-dom"

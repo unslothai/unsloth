@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { createRouter } from "@tanstack/react-router";
 import { Route as rootRoute } from "./routes/__root";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";

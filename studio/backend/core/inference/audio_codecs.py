@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+# Copyright © 2025 Unsloth AI
+
 """
 Audio codec loading and decoding for TTS inference.
 Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+# Copyright © 2025 Unsloth AI
+
 """Cross-platform Python dependency installer for Unsloth Studio.
 
 Called by both setup.sh (Linux / WSL) and setup.ps1 (Windows) after the
