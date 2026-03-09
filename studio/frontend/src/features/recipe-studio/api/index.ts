@@ -1,3 +1,5 @@
+import { authFetch } from "@/features/auth";
+
 const DEFAULT_BASE = "/api/data-recipe";
 
 export const DATA_DESIGNER_API_BASE =
@@ -15,6 +17,8 @@ export type JobStatusResponse = {
   stage?: string | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   current_column?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  completed_columns?: string[] | null;
   batch?: {
     idx?: number | null;
     total?: number | null;
@@ -87,6 +91,12 @@ export type SeedInspectUploadRequest = {
   content_base64: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  seed_source_type?: "local" | "unstructured";
+  // biome-ignore lint/style/useNamingConvention: api schema
+  unstructured_chunk_size?: number;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  unstructured_chunk_overlap?: number;
 };
 
 export type SeedInspectResponse = {
@@ -138,7 +148,7 @@ async function parseErrorResponse(response: Response): Promise<string> {
 }
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await fetch(`${DATA_DESIGNER_API_BASE}${path}`, {
+  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -154,7 +164,7 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${DATA_DESIGNER_API_BASE}${path}`);
+  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`);
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
   }
@@ -265,7 +275,7 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await fetch(
+  const response = await authFetch(
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
     {
       method: "GET",

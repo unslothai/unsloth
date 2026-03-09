@@ -4,7 +4,7 @@ import type {
   SeedSelectionType,
   SeedSourceType,
 } from "../../../types";
-import { isRecord, readString } from "../helpers";
+import { isRecord, readNumberString, readString } from "../helpers";
 
 function normalizeSampling(value: unknown): SeedSamplingStrategy {
   const raw = readString(value);
@@ -69,7 +69,9 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let hf_endpoint = "https://huggingface.co";
   let hf_repo_id = "";
   let local_file_name = "";
-  const unstructured_file_name = "";
+  let unstructured_file_name = "";
+  let unstructured_chunk_size = "1200";
+  let unstructured_chunk_overlap = "200";
   const sourceRaw = seedConfigRaw.source;
   if (isRecord(sourceRaw)) {
     const seedType = readString(sourceRaw.seed_type);
@@ -84,6 +86,12 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
       seed_source_type = "local";
       hf_path = sourcePath;
       local_file_name = sourcePath.split("/").pop() ?? sourcePath;
+    } else if (seedType === "unstructured") {
+      seed_source_type = "unstructured";
+      hf_path = sourcePath;
+      unstructured_file_name = sourcePath.split("/").pop() ?? sourcePath;
+      unstructured_chunk_size = readNumberString(sourceRaw.chunk_size) || "1200";
+      unstructured_chunk_overlap = readNumberString(sourceRaw.chunk_overlap) || "200";
     }
   }
 
@@ -119,6 +127,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
     hf_endpoint,
     local_file_name,
     unstructured_file_name,
+    unstructured_chunk_size,
+    unstructured_chunk_overlap,
     sampling_strategy,
     selection_type,
     selection_start,

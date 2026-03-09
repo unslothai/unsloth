@@ -66,6 +66,7 @@ class Job:
     processor_artifacts: dict[str, Any] | None = None
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     progress_columns_total: int | None = None
+    completed_columns: list[str] = field(default_factory=list)
     _current_usage_model: str | None = None
     _in_usage_summary: bool = False
     _seen_generation_columns: list[str] = field(default_factory=list)

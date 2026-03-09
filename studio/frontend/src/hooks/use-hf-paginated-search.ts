@@ -39,14 +39,16 @@ async function pullBatch<T>(
 export function useHfPaginatedSearch<T>(
   createIter: () => AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
+  options?: { enabled?: boolean },
 ): HfPaginatedState<T> & { fetchMore: () => void } {
+  const enabled = options?.enabled ?? true;
   const [state, setState] = useState<HfPaginatedState<T>>(
     INITIAL as HfPaginatedState<T>,
   );
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
-  });
+  }, [state]);
 
   const iterRef = useRef<AsyncGenerator<unknown> | null>(null);
   const versionRef = useRef(0);
@@ -54,6 +56,11 @@ export function useHfPaginatedSearch<T>(
   useEffect(() => {
     const v = ++versionRef.current;
     iterRef.current = null;
+
+    if (!enabled) {
+      setState(INITIAL as HfPaginatedState<T>);
+      return;
+    }
 
     setState({
       ...(INITIAL as HfPaginatedState<T>),
@@ -88,7 +95,7 @@ export function useHfPaginatedSearch<T>(
           error: err instanceof Error ? err.message : "Search failed",
         });
       });
-  }, [createIter, mapItem]);
+  }, [createIter, mapItem, enabled]);
 
   const fetchMore = useCallback(() => {
     const iter = iterRef.current;

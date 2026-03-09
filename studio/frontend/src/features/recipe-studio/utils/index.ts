@@ -6,6 +6,7 @@ export {
   makeModelProviderConfig,
   makeSamplerConfig,
   makeSeedConfig,
+  makeValidatorConfig,
 } from "./config-factories";
 export {
   labelForExpression,
@@ -18,6 +19,7 @@ export {
   isLlmConfig,
   isSamplerConfig,
   isSubcategoryConfig,
+  isValidatorConfig,
 } from "./config-type-guards";
 export { nextName } from "./naming";
 export { nodeDataFromConfig } from "./node-data";

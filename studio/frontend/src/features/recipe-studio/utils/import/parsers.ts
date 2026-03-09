@@ -4,6 +4,7 @@ import { parseExpression } from "./parsers/expression-parser";
 import { parseLlm } from "./parsers/llm-parser";
 export { parseModelConfig, parseModelProvider } from "./parsers/model-parser";
 import { parseSampler } from "./parsers/sampler-parser";
+import { parseValidator } from "./parsers/validator-parser";
 
 type ColumnParser = (
   column: Record<string, unknown>,
@@ -20,6 +21,7 @@ const COLUMN_PARSERS: Record<string, ColumnParser> = {
   "llm-structured": (column, name, id) => parseLlm(column, name, id),
   "llm-code": (column, name, id) => parseLlm(column, name, id),
   "llm-judge": (column, name, id) => parseLlm(column, name, id),
+  validation: (column, name, id) => parseValidator(column, name, id),
 };
 
 export function parseColumn(

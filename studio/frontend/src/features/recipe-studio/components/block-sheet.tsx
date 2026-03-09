@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Sheet,
@@ -15,6 +16,7 @@ import {
   type Database02Icon,
   DragDropVerticalIcon,
   PlusSignIcon,
+  Search01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -39,10 +41,17 @@ type SheetView =
   | "sampler"
   | "seed"
   | "llm"
+  | "validator"
   | "expression"
   | "note"
   | "processor";
-type SheetKind = "sampler" | "seed" | "llm" | "expression" | "note";
+type SheetKind =
+  | "sampler"
+  | "seed"
+  | "llm"
+  | "validator"
+  | "expression"
+  | "note";
 type RootSheetView = Exclude<SheetView, "root">;
 type RootGroup = {
   kind: RootSheetView;
@@ -63,6 +72,9 @@ type BlockSheetProps = {
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
   onAddExpression: () => void;
+  onAddValidator: (
+    type: "validator_python" | "validator_sql" | "validator_oxc",
+  ) => void;
   onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
@@ -89,6 +101,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "expression") {
     return "Expression blocks";
   }
+  if (sheetView === "validator") {
+    return "Validator blocks";
+  }
   if (sheetView === "note") {
     return "Note blocks";
   }
@@ -103,6 +118,7 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   sampler: "sampler",
   seed: "seed",
   llm: "llm",
+  validator: "validator",
   expression: "expression",
   note: "note",
   processor: null,
@@ -121,6 +137,7 @@ const SEARCHABLE_KINDS: SheetKind[] = [
   "sampler",
   "seed",
   "llm",
+  "validator",
   "expression",
   "note",
 ];
@@ -136,6 +153,8 @@ function BlockSheetButton({
   draggable = false,
   onDragStart,
   trailing = "chevron",
+  disabled = false,
+  badge,
 }: {
   icon: typeof Database02Icon;
   title: string;
@@ -145,24 +164,38 @@ function BlockSheetButton({
   draggable?: boolean;
   onDragStart?: (event: ReactDragEvent<HTMLButtonElement>) => void;
   trailing?: "chevron" | "drag" | "none";
+  disabled?: boolean;
+  badge?: string;
 }): ReactElement {
   return (
     <button
       type="button"
-      onClick={onClick}
-      draggable={draggable}
-      onDragStart={onDragStart}
-      className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition hover:bg-muted/35 ${
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      draggable={disabled ? false : draggable}
+      onDragStart={disabled ? undefined : onDragStart}
+      className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition ${
+        disabled ? "cursor-not-allowed opacity-60" : "hover:bg-muted/35"
+      } ${
         isActive
           ? "border-emerald-500"
-          : "border-transparent hover:border-border/60"
+          : disabled
+            ? "border-transparent"
+            : "border-transparent hover:border-border/60"
       } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
       <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
       </div>
       <div className="flex-1">
-        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-semibold text-foreground">{title}</p>
+          {badge ? (
+            <Badge variant="outline" className="rounded-full text-[10px]">
+              {badge}
+            </Badge>
+          ) : null}
+        </div>
         <p className="text-[11px] text-muted-foreground">{description}</p>
       </div>
       {trailing === "chevron" ? (
@@ -193,6 +226,7 @@ export function BlockSheet({
   onAddModelProvider,
   onAddModelConfig,
   onAddExpression,
+  onAddValidator,
   onAddMarkdownNote,
   onOpenProcessors,
   copied,
@@ -302,6 +336,12 @@ export function BlockSheet({
       onAddLlm(type as LlmType);
       return;
     }
+    if (kind === "validator") {
+      onAddValidator(
+        type as "validator_python" | "validator_sql" | "validator_oxc",
+      );
+      return;
+    }
     if (kind === "expression") {
       onAddExpression();
       return;
@@ -355,12 +395,18 @@ export function BlockSheet({
               )}
               <SheetTitle>{sheetTitle}</SheetTitle>
             </div>
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search blocks..."
-              className="corner-squircle mt-3 h-9"
-            />
+            <div className="relative mt-3">
+              <HugeiconsIcon
+                icon={Search01Icon}
+                className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search blocks..."
+                className="corner-squircle h-9 pl-8"
+              />
+            </div>
           </SheetHeader>
           <div className=" py-4">
             <div className="mt-4 flex flex-col gap-2">
@@ -399,8 +445,12 @@ export function BlockSheet({
                     trailing={
                       item.kind === "expression" || item.kind === "note"
                         ? "drag"
-                        : "chevron"
+                        : item.kind === "processor"
+                          ? "none"
+                          : "chevron"
                     }
+                    disabled={item.kind === "processor"}
+                    badge={item.kind === "processor" ? "Work in progress" : undefined}
                     onClick={() => {
                       if (item.kind === "processor") {
                         setSheetOpen(false);

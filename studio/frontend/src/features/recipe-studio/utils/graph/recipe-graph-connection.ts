@@ -1,5 +1,5 @@
 import { type Connection, type Edge, addEdge } from "@xyflow/react";
-import type { NodeConfig, SamplerConfig } from "../../types";
+import type { LayoutDirection, NodeConfig, SamplerConfig } from "../../types";
 import {
   HANDLE_IDS,
   isDataSourceHandle,
@@ -12,9 +12,12 @@ import { isSemanticRelation } from "./relations";
 import {
   isCategoryConfig,
   isExpressionConfig,
-  isLlmConfig,
   isSubcategoryConfig,
 } from "../index";
+import {
+  VALIDATOR_OXC_CODE_LANGS,
+  VALIDATOR_SQL_CODE_LANGS,
+} from "../validators/code-lang";
 
 function buildTemplateWithRef(template: string, ref: string): string {
   if (template.includes(ref)) {
@@ -78,7 +81,8 @@ type SingleRefRelation =
   | "provider"
   | "model_alias"
   | "reference_column_name"
-  | "subcategory_parent";
+  | "subcategory_parent"
+  | "validator_target_columns";
 
 function getSingleRefRelation(
   source: NodeConfig,
@@ -100,6 +104,13 @@ function getSingleRefRelation(
   }
   if (isCategoryConfig(source) && isSubcategoryConfig(target)) {
     return "subcategory_parent";
+  }
+  if (
+    source.kind === "llm" &&
+    source.llm_type === "code" &&
+    target.kind === "validator"
+  ) {
+    return "validator_target_columns";
   }
   return null;
 }
@@ -126,6 +137,9 @@ function isCompetingIncomingEdge(
   if (relation === "subcategory_parent") {
     return isCategoryConfig(source);
   }
+  if (relation === "validator_target_columns") {
+    return source.kind === "llm" && source.llm_type === "code";
+  }
   return source.kind === "sampler" && source.sampler_type === "datetime";
 }
 
@@ -134,6 +148,25 @@ function isModelSemanticRelation(source: NodeConfig, target: NodeConfig): boolea
     (source.kind === "model_provider" && target.kind === "model_config") ||
     (source.kind === "model_config" && target.kind === "llm")
   );
+}
+
+function canApplyCodeLangToValidator(
+  validator: Extract<NodeConfig, { kind: "validator" }>,
+  codeLang: string,
+): boolean {
+  const normalized = codeLang.trim();
+  if (!normalized) {
+    return false;
+  }
+  if (validator.validator_type === "oxc") {
+    return VALIDATOR_OXC_CODE_LANGS.includes(
+      normalized as typeof validator.code_lang,
+    );
+  }
+  if (normalized === "python") {
+    return true;
+  }
+  return VALIDATOR_SQL_CODE_LANGS.includes(normalized as typeof validator.code_lang);
 }
 
 function countHandleUsage(
@@ -186,20 +219,30 @@ function chooseModelSemanticHandles(
   source: NodeConfig,
   target: NodeConfig,
   edges: Edge[],
+  layoutDirection: LayoutDirection,
 ): Connection {
   if (!isModelSemanticRelation(source, target)) {
     return connection;
   }
 
-  const sourceCandidates = [HANDLE_IDS.semanticOut, HANDLE_IDS.semanticOutBottom];
+  const sourceCandidates =
+    source.kind === "model_config" && target.kind === "llm"
+      ? layoutDirection === "TB"
+        ? [HANDLE_IDS.semanticOut]
+        : [HANDLE_IDS.semanticOutBottom]
+      : layoutDirection === "TB"
+        ? [HANDLE_IDS.semanticOut, HANDLE_IDS.semanticOutBottom]
+        : [HANDLE_IDS.semanticOutBottom, HANDLE_IDS.semanticOut];
   const targetCandidates =
     target.kind === "model_config"
-      ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
+      ? layoutDirection === "TB"
+        ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
+        : [HANDLE_IDS.semanticInTop, HANDLE_IDS.semanticIn]
       : [
-          HANDLE_IDS.dataIn,
           HANDLE_IDS.dataInTop,
-          HANDLE_IDS.dataInRight,
           HANDLE_IDS.dataInBottom,
+          HANDLE_IDS.dataIn,
+          HANDLE_IDS.dataInRight,
         ];
 
   const sourceHandle = pickLeastUsedHandle(
@@ -218,6 +261,27 @@ function chooseModelSemanticHandles(
     sourceHandle,
     targetHandle,
   };
+}
+
+function normalizeValidatorSemanticConnection(
+  connection: Connection,
+  source: NodeConfig,
+  target: NodeConfig,
+): Connection {
+  if (
+    source.kind === "validator" &&
+    target.kind === "llm" &&
+    target.llm_type === "code"
+  ) {
+    return {
+      ...connection,
+      source: target.id,
+      target: source.id,
+      sourceHandle: HANDLE_IDS.dataOut,
+      targetHandle: HANDLE_IDS.dataIn,
+    };
+  }
+  return connection;
 }
 
 export function isValidRecipeConnection(
@@ -249,21 +313,46 @@ export function applyRecipeConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
   edges: Edge[],
+  layoutDirection: LayoutDirection = "LR",
 ): { edges: Edge[]; configs?: Record<string, NodeConfig> } {
   if (!isValidRecipeConnection(connection, configs)) {
     return { edges };
   }
-  const source = connection.source
+  const initialSource = connection.source
     ? configs[connection.source]
     : null;
-  const target = connection.target
+  const initialTarget = connection.target
     ? configs[connection.target]
+    : null;
+  if (!(initialSource && initialTarget)) {
+    return { edges };
+  }
+  const normalizedConnection = normalizeValidatorSemanticConnection(
+    connection,
+    initialSource,
+    initialTarget,
+  );
+  const source = normalizedConnection.source
+    ? configs[normalizedConnection.source]
+    : null;
+  const target = normalizedConnection.target
+    ? configs[normalizedConnection.target]
     : null;
   if (!(source && target)) {
     return { edges };
   }
+
   const semanticRelation = isSemanticRelation(source, target);
   const singleRefRelation = getSingleRefRelation(source, target);
+  if (
+    singleRefRelation === "subcategory_parent" &&
+    isSubcategoryConfig(target)
+  ) {
+    const currentParent = target.subcategory_parent?.trim() ?? "";
+    if (currentParent && currentParent !== source.name) {
+      return { edges };
+    }
+  }
   const nextBaseEdges = singleRefRelation
     ? edges.filter(
         (edge) =>
@@ -271,10 +360,11 @@ export function applyRecipeConnection(
       )
     : edges;
   const resolvedConnection = chooseModelSemanticHandles(
-    connection,
+    normalizedConnection,
     source,
     target,
     nextBaseEdges,
+    layoutDirection,
   );
   const nextEdges = addEdge(
     { ...resolvedConnection, type: semanticRelation ? "semantic" : "canvas" },
@@ -302,23 +392,34 @@ export function applyRecipeConnection(
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (
-    isLlmConfig(target) &&
-    source.kind !== "seed" &&
-    source.kind !== "model_provider" &&
-    source.kind !== "model_config"
+    source.kind === "llm" &&
+    source.llm_type === "code" &&
+    target.kind === "validator"
   ) {
-    const ref = `{{ ${source.name} }}`;
+    const nextCodeLang = (source.code_lang ?? "").trim();
+    const canUseCodeLangForTarget = canApplyCodeLangToValidator(
+      target,
+      nextCodeLang,
+    );
     const next = {
       ...target,
-      prompt: buildTemplateWithRef(target.prompt ?? "", ref),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: [source.name],
+      // biome-ignore lint/style/useNamingConvention: api schema
+      code_lang:
+        (
+          canUseCodeLangForTarget ? nextCodeLang : target.code_lang
+        ) as typeof target.code_lang,
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (
     isExpressionConfig(target) &&
+    !semanticRelation &&
     source.kind !== "seed" &&
     source.kind !== "model_provider" &&
-    source.kind !== "model_config"
+    source.kind !== "model_config" &&
+    source.kind !== "validator"
   ) {
     const ref = `{{ ${source.name} }}`;
     const next = {
