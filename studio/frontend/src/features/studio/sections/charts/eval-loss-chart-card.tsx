@@ -11,7 +11,15 @@ import { ChartAverageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import { formatMetric, formatStepTick, placeholderEvalData } from "./utils";
+import {
+  CHART_CONTAINER_CLASS,
+  DEFAULT_CHART_MARGIN,
+  DEFAULT_Y_AXIS_WIDTH,
+  formatAxisMetric,
+  formatMetric,
+  formatStepTick,
+  placeholderEvalData,
+} from "./utils";
 
 const evalLossConfig = {
   loss: { label: "Eval Loss", color: "#ef4444" },
@@ -33,22 +41,17 @@ export function EvalLossChartCard({
   return (
     <Card data-tour="studio-eval-loss" size="sm">
       <CardHeader>
-        <CardTitle
-          className={`text-sm pl-1${data.length > 0 ? "" : " text-muted-foreground"}`}
-        >
+        <CardTitle className={`text-sm${data.length > 0 ? "" : " text-muted-foreground"}`}>
           Eval Loss
         </CardTitle>
       </CardHeader>
       <CardContent>
         {data.length > 0 ? (
-          <ChartContainer
-            config={evalLossConfig}
-            className="-ml-3 h-[220px] w-full"
-          >
+          <ChartContainer config={evalLossConfig} className={CHART_CONTAINER_CLASS}>
             <LineChart
               data={data}
               accessibilityLayer={true}
-              margin={{ left: 0, right: 8 }}
+              margin={DEFAULT_CHART_MARGIN}
             >
               <CartesianGrid vertical={false} strokeDasharray="3 3" />
               <XAxis
@@ -71,10 +74,11 @@ export function EvalLossChartCard({
                 allowDataOverflow={true}
                 tickLine={false}
                 axisLine={false}
-                tickMargin={4}
+                tickMargin={8}
+                tickCount={5}
                 fontSize={10}
-                width={80}
-                tickFormatter={(value) => formatMetric(Number(value))}
+                width={DEFAULT_Y_AXIS_WIDTH}
+                tickFormatter={(value) => formatAxisMetric(Number(value))}
               />
               <ChartTooltip
                 content={
@@ -106,12 +110,12 @@ export function EvalLossChartCard({
           <div className="relative">
             <ChartContainer
               config={evalLossConfig}
-              className="-ml-3 h-[220px] w-full blur"
+              className={`${CHART_CONTAINER_CLASS} blur`}
             >
               <LineChart
                 data={placeholderEvalData}
                 accessibilityLayer={true}
-                margin={{ left: 0, right: 8 }}
+                margin={DEFAULT_CHART_MARGIN}
               >
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis
@@ -127,9 +131,10 @@ export function EvalLossChartCard({
                 <YAxis
                   tickLine={false}
                   axisLine={false}
-                  tickMargin={4}
+                  tickMargin={8}
+                  tickCount={5}
                   fontSize={10}
-                  width={40}
+                  width={DEFAULT_Y_AXIS_WIDTH}
                 />
                 <Line
                   type="monotone"

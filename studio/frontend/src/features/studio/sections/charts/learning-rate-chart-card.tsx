@@ -10,7 +10,14 @@ import type { ChartConfig } from "@/components/ui/chart";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import type { ScaleMode } from "./types";
-import { CHART_SYNC_ID, formatStepTick, fromLog1p } from "./utils";
+import {
+  CHART_CONTAINER_CLASS,
+  CHART_SYNC_ID,
+  DEFAULT_CHART_MARGIN,
+  DEFAULT_Y_AXIS_WIDTH,
+  formatStepTick,
+  fromLog1p,
+} from "./utils";
 
 const lrConfig = {
   displayLr: { label: "LR", color: "#8b5cf6" },
@@ -40,16 +47,16 @@ export function LearningRateChartCard({
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm pl-1">Learning Rate</CardTitle>
+        <CardTitle className="text-sm">Learning Rate</CardTitle>
       </CardHeader>
       <CardContent>
-        <ChartContainer config={lrConfig} className="-ml-1.5 h-[220px] w-full">
+        <ChartContainer config={lrConfig} className={CHART_CONTAINER_CLASS}>
           <LineChart
             data={data}
             syncId={CHART_SYNC_ID}
             syncMethod="value"
             accessibilityLayer={true}
-            margin={{ left: 0, right: 8 }}
+            margin={DEFAULT_CHART_MARGIN}
           >
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis
@@ -72,9 +79,10 @@ export function LearningRateChartCard({
               allowDataOverflow={true}
               tickLine={false}
               axisLine={false}
-              tickMargin={4}
+              tickMargin={8}
+              tickCount={5}
               fontSize={10}
-              width={52}
+              width={DEFAULT_Y_AXIS_WIDTH}
               tickFormatter={(value) => {
                 const num = Number(value);
                 if (!Number.isFinite(num)) {
