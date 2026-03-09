@@ -8,6 +8,8 @@ This module contains functions for converting between dataset formats
 (Alpaca, ShareGPT, ChatML) and standardizing chat formats.
 """
 
+import os
+
 from datasets import IterableDataset
 
 
@@ -311,7 +313,7 @@ def convert_to_vlm_format(
 
     def _convert_single_sample(sample):
         """Convert a single sample to VLM format."""
-        # Get image (might be PIL Image, local path, or URL)
+        # Get image (might be PIL Image, local path, URL, or bare filename)
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -320,6 +322,13 @@ def convert_to_vlm_format(
                 from io import BytesIO
                 with fsspec.open(image_data, "rb", expand=True) as f:
                     image_data = Image.open(BytesIO(f.read())).convert("RGB")
+            elif _image_lookup is not None and image_data in _image_lookup:
+                # Bare filename → resolve via HF repo lookup
+                from huggingface_hub import hf_hub_download
+                local_path = hf_hub_download(
+                    dataset_name, _image_lookup[image_data], repo_type="dataset",
+                )
+                image_data = Image.open(local_path).convert("RGB")
             else:
                 image_data = Image.open(image_data).convert("RGB")
 
@@ -355,6 +364,36 @@ def convert_to_vlm_format(
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+
+    # ── Bare-filename detection: images stored as filenames (e.g. "img_001.png")
+    #    that don't exist locally.  Build a basename→repo_path lookup so we can
+    #    resolve them via hf_hub_download during conversion.
+    _image_lookup = None
+    _IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff')
+    if (
+        not has_urls
+        and isinstance(first_image, str)
+        and not os.path.exists(first_image)
+        and dataset_name
+    ):
+        try:
+            from huggingface_hub import HfApi
+            _notify("Resolving image filenames from HF repo...")
+            print(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
+            repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
+            _image_lookup = {
+                os.path.basename(f): f
+                for f in repo_files
+                if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
+            }
+            if first_image in _image_lookup:
+                print(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
+            else:
+                print(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
+                _image_lookup = None
+        except Exception as e:
+            print(f"⚠️ Failed to build HF repo image lookup: {e}")
+            _image_lookup = None
 
     # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
     PROBE_SIZE = 200
