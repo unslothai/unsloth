@@ -135,6 +135,7 @@ export function DatasetSection() {
     datasetSource === "upload" ? "local" : "huggingface",
   );
   const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
+  const [hasLoadedLocalDatasets, setHasLoadedLocalDatasets] = useState(false);
   const [localLoading, setLocalLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
@@ -157,6 +158,7 @@ export function DatasetSection() {
         error instanceof Error ? error.message : "Failed to load local datasets.",
       );
     } finally {
+      setHasLoadedLocalDatasets(true);
       setLocalLoading(false);
     }
   }, []);
@@ -247,19 +249,34 @@ export function DatasetSection() {
     return new Map(localDatasets.map((item) => [item.id, item.label]));
   }, [localDatasets]);
 
-  const selectedLocalId = useMemo(() => {
+  const selectedLocalDataset = useMemo(() => {
     if (!uploadedFile) return null;
-    const item = localDatasets.find((entry) => entry.path === uploadedFile);
-    return item?.id ?? deriveLocalDatasetName(uploadedFile);
+    return localDatasets.find((item) => item.path === uploadedFile) ?? null;
   }, [localDatasets, uploadedFile]);
+
+  const selectedLocalId = selectedLocalDataset?.id ?? null;
 
   const localResultIds = useMemo(() => {
     const ids = localFilteredDatasets.map((item) => item.id);
-    if (selectedLocalId && !ids.includes(selectedLocalId)) {
+    if (selectedLocalDataset && selectedLocalId && !ids.includes(selectedLocalId)) {
       ids.push(selectedLocalId);
     }
     return ids;
-  }, [localFilteredDatasets, selectedLocalId]);
+  }, [localFilteredDatasets, selectedLocalDataset, selectedLocalId]);
+
+  useEffect(() => {
+    if (!hasLoadedLocalDatasets) return;
+    if (datasetSource !== "upload") return;
+    if (!uploadedFile) return;
+    if (selectedLocalDataset) return;
+    selectLocalDataset(null);
+  }, [
+    datasetSource,
+    hasLoadedLocalDatasets,
+    uploadedFile,
+    selectedLocalDataset,
+    selectLocalDataset,
+  ]);
 
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
   const comboboxItems = pickerTab === "huggingface" ? hfResultIds : localResultIds;
@@ -277,10 +294,6 @@ export function DatasetSection() {
     !isLikelyLocalDatasetRef(dataset);
 
   const selectedDatasetName = datasetSource === "upload" ? uploadedFile : dataset;
-  const selectedLocalDataset = useMemo(() => {
-    if (!uploadedFile) return null;
-    return localDatasets.find((item) => item.path === uploadedFile) ?? null;
-  }, [localDatasets, uploadedFile]);
   const selectedLocalMetadata = selectedLocalDataset?.metadata ?? null;
   const selectedLocalColumns = selectedLocalMetadata?.columns ?? [];
   const selectedLocalRows =
