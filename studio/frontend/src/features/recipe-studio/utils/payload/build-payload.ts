@@ -24,14 +24,13 @@ import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
   buildLlmColumn,
-  buildLlmMcpProvider,
-  buildLlmToolConfig,
   buildModelConfig,
   buildModelProvider,
   buildProcessors,
   buildSamplerColumn,
   buildSeedConfig,
   buildSeedDropProcessor,
+  buildToolProfilePayload,
   buildValidatorColumn,
   pickFirstSeedConfig,
 } from "./builders";
@@ -169,34 +168,6 @@ export function buildRecipePayload(
         }
       }
       columns.push(buildLlmColumn(config, errors));
-      for (const provider of config.mcp_providers ?? []) {
-        const builtProvider = buildLlmMcpProvider(provider, errors);
-        if (!builtProvider) {
-          continue;
-        }
-        pushUniqueJson(
-          "MCP provider",
-          String(builtProvider.name),
-          builtProvider,
-          mcpProviderJsonByName,
-          mcpProviders,
-          errors,
-        );
-      }
-      for (const toolConfig of config.tool_configs ?? []) {
-        const builtToolConfig = buildLlmToolConfig(toolConfig, errors);
-        if (!builtToolConfig) {
-          continue;
-        }
-        pushUniqueJson(
-          "Tool config",
-          String(builtToolConfig.tool_alias),
-          builtToolConfig,
-          toolConfigJsonByAlias,
-          toolConfigs,
-          errors,
-        );
-      }
       if (config.model_alias) {
         modelAliases.add(config.model_alias);
       }
@@ -228,6 +199,30 @@ export function buildRecipePayload(
       modelProviderNames.add(config.name);
       modelProviders.push(buildModelProvider(config, errors));
       modelProviderConfigs.push(config);
+      continue;
+    }
+    if (config.kind === "tool_config") {
+      const built = buildToolProfilePayload(config, errors);
+      for (const provider of built.mcp_providers) {
+        pushUniqueJson(
+          "MCP provider",
+          String(provider.name),
+          provider,
+          mcpProviderJsonByName,
+          mcpProviders,
+          errors,
+        );
+      }
+      if (built.tool_config) {
+        pushUniqueJson(
+          "Tool config",
+          String(built.tool_config.tool_alias),
+          built.tool_config,
+          toolConfigJsonByAlias,
+          toolConfigs,
+          errors,
+        );
+      }
       continue;
     }
     modelConfigs.push(buildModelConfig(config, errors));
@@ -269,6 +264,31 @@ export function buildRecipePayload(
           markdown: config.markdown,
           note_color: config.note_color,
           note_opacity: config.note_opacity,
+        },
+      ];
+    }
+    if (config.kind === "tool_config") {
+      const toolsByProvider = Object.fromEntries(
+        Object.entries(config.fetched_tools_by_provider ?? {}).flatMap(
+          ([providerName, tools]) => {
+            const name = providerName.trim();
+            const values = Array.from(
+              new Set(tools.map((tool) => tool.trim()).filter(Boolean)),
+            );
+            return name && values.length > 0 ? [[name, values]] : [];
+          },
+        ),
+      );
+      return [
+        {
+          id: config.name,
+          x: node.position.x,
+          y: node.position.y,
+          ...(width !== null ? { width } : {}),
+          node_type: "tool_config" as const,
+          ...(Object.keys(toolsByProvider).length > 0 && {
+            tools_by_provider: toolsByProvider,
+          }),
         },
       ];
     }

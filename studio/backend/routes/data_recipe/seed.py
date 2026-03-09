@@ -171,9 +171,9 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
             df = pd.read_json(path, lines=True).head(preview_size)
         elif ext == ".json":
             try:
-                df = pd.read_json(path, lines=True).head(preview_size)
-            except ValueError:
                 df = pd.read_json(path).head(preview_size)
+            except ValueError:
+                df = pd.read_json(path, lines=True).head(preview_size)
         else:
             raise HTTPException(status_code=422, detail=f"unsupported file type: {ext}")
     except HTTPException:

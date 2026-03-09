@@ -195,6 +195,44 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       errors.push("Expression is required.");
     }
   }
+  if (config.kind === "tool_config") {
+    if (config.mcp_providers.length === 0) {
+      errors.push("Add at least one MCP server.");
+    }
+    const serverNames = new Set<string>();
+    for (const provider of config.mcp_providers) {
+      const name = provider.name.trim();
+      if (!name) {
+        errors.push("Each MCP server needs a name.");
+        continue;
+      }
+      if (serverNames.has(name)) {
+        errors.push(`Duplicate MCP server name: ${name}.`);
+      }
+      serverNames.add(name);
+      if (provider.provider_type === "stdio") {
+        if (!provider.command?.trim()) {
+          errors.push(`MCP server ${name}: command is required.`);
+        }
+      } else if (!provider.endpoint?.trim()) {
+        errors.push(`MCP server ${name}: endpoint is required.`);
+      }
+    }
+    const maxTurnsRaw = config.max_tool_call_turns?.trim();
+    if (
+      maxTurnsRaw &&
+      (!Number.isFinite(Number(maxTurnsRaw)) || Number(maxTurnsRaw) < 1)
+    ) {
+      errors.push("Max tool call turns must be >= 1.");
+    }
+    const timeoutRaw = config.timeout_sec?.trim();
+    if (
+      timeoutRaw &&
+      (!Number.isFinite(Number(timeoutRaw)) || Number(timeoutRaw) <= 0)
+    ) {
+      errors.push("Timeout must be > 0.");
+    }
+  }
   if (config.kind === "validator") {
     const targets = (config.target_columns ?? [])
       .map((value) => value.trim())

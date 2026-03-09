@@ -1,4 +1,4 @@
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
   ChartLegend,
@@ -7,19 +7,17 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Settings02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import { SharedChartSettings } from "./shared-chart-settings";
-import type { OutlierMode, ScaleMode, ViewSettingsState } from "./types";
-import { CHART_SYNC_ID, formatStepTick, fromLog1p } from "./utils";
+import type { ScaleMode } from "./types";
+import {
+  CHART_CONTAINER_CLASS,
+  CHART_SYNC_ID,
+  DEFAULT_CHART_MARGIN,
+  DEFAULT_Y_AXIS_WIDTH,
+  formatStepTick,
+  fromLog1p,
+} from "./utils";
 
 const lrConfig = {
   displayLr: { label: "LR", color: "#8b5cf6" },
@@ -37,56 +35,28 @@ export function LearningRateChartCard({
   visibleStepDomain,
   xAxisTicks,
   scale,
-  setScale,
-  outlierMode,
-  setOutlierMode,
-  viewSettings,
 }: {
   data: LearningRatePoint[];
   domain: [number, number];
   visibleStepDomain: [number, number];
   xAxisTicks: number[];
   scale: ScaleMode;
-  setScale: (value: ScaleMode) => void;
-  outlierMode: OutlierMode;
-  setOutlierMode: (value: OutlierMode) => void;
-  viewSettings: ViewSettingsState;
 }): ReactElement {
+  const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
+
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm pl-2">Learning Rate</CardTitle>
-        <CardAction>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <button
-                type="button"
-                className="cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <HugeiconsIcon icon={Settings02Icon} className="size-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel className="text-xs">Chart Settings</DropdownMenuLabel>
-              <SharedChartSettings
-                view={viewSettings}
-                scale={scale}
-                setScale={setScale}
-                outlierMode={outlierMode}
-                setOutlierMode={setOutlierMode}
-              />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </CardAction>
+        <CardTitle className="text-sm">Learning Rate</CardTitle>
       </CardHeader>
       <CardContent>
-        <ChartContainer config={lrConfig} className="-ml-1.5 h-[220px] w-full">
+        <ChartContainer config={lrConfig} className={CHART_CONTAINER_CLASS}>
           <LineChart
             data={data}
             syncId={CHART_SYNC_ID}
             syncMethod="value"
             accessibilityLayer={true}
-            margin={{ left: 0, right: 8 }}
+            margin={DEFAULT_CHART_MARGIN}
           >
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis
@@ -109,12 +79,15 @@ export function LearningRateChartCard({
               allowDataOverflow={true}
               tickLine={false}
               axisLine={false}
-              tickMargin={4}
+              tickMargin={8}
+              tickCount={5}
               fontSize={10}
-              width={52}
+              width={DEFAULT_Y_AXIS_WIDTH}
               tickFormatter={(value) => {
                 const num = Number(value);
-                if (!Number.isFinite(num)) return "0e+0";
+                if (!Number.isFinite(num)) {
+                  return "0e+0";
+                }
                 const shown = scale === "log" ? fromLog1p(num) : num;
                 return shown.toExponential(0);
               }}
@@ -136,11 +109,11 @@ export function LearningRateChartCard({
               }
             />
             <Line
-              type="monotoneX"
+              type="linear"
               dataKey="displayLr"
               stroke="var(--color-displayLr)"
               strokeWidth={2}
-              dot={false}
+              dot={showPoint}
               activeDot={{ r: 3, strokeWidth: 0 }}
               connectNulls={true}
               strokeLinecap="round"

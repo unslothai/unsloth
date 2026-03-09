@@ -86,6 +86,15 @@ function isConfigToLlmEdge(
   return source?.kind === "model_config" && target?.kind === "llm";
 }
 
+function isToolConfigToLlmEdge(
+  edge: Edge,
+  configs: Record<string, NodeConfig>,
+): boolean {
+  const source = configs[edge.source];
+  const target = configs[edge.target];
+  return source?.kind === "tool_config" && target?.kind === "llm";
+}
+
 function usageKey(nodeId: string, handleId: string): string {
   return `${nodeId}::${handleId}`;
 }
@@ -263,9 +272,11 @@ export function optimizeModelInfraEdgeHandles(
 
     const sourceHandleBefore = normalizeRecipeHandleId(edge.sourceHandle);
     const targetHandleBefore = normalizeRecipeHandleId(edge.targetHandle);
-    const isModelSemantic =
-      isProviderToConfigEdge(edge, configs) || isConfigToLlmEdge(edge, configs);
-    if (!isModelSemantic) {
+    const isSemanticInfra =
+      isProviderToConfigEdge(edge, configs) ||
+      isConfigToLlmEdge(edge, configs) ||
+      isToolConfigToLlmEdge(edge, configs);
+    if (!isSemanticInfra) {
       nextEdges.push(edge);
       continue;
     }
@@ -340,6 +351,7 @@ export function centerModelInfraNodes(
 ): RecipeNode[] {
   const nodesById = new Map(nodes.map((node) => [node.id, node] as const));
   const configToLlmIds = new Map<string, string[]>();
+  const toolConfigToLlmIds = new Map<string, string[]>();
   const providerToConfigIds = new Map<string, string[]>();
 
   for (const edge of edges) {
@@ -357,6 +369,14 @@ export function centerModelInfraNodes(
         entries.push(edge.target);
       }
       configToLlmIds.set(edge.source, entries);
+      continue;
+    }
+    if (isToolConfigToLlmEdge(edge, configs)) {
+      const entries = toolConfigToLlmIds.get(edge.source) ?? [];
+      if (!entries.includes(edge.target)) {
+        entries.push(edge.target);
+      }
+      toolConfigToLlmIds.set(edge.source, entries);
     }
   }
 
@@ -369,6 +389,9 @@ export function centerModelInfraNodes(
     .filter(
       (config) => config.kind === "model_provider" && nodesById.has(config.id),
     )
+    .map((config) => config.id);
+  const toolConfigIds = Object.values(configs)
+    .filter((config) => config.kind === "tool_config" && nodesById.has(config.id))
     .map((config) => config.id);
 
   const occupiedById = new Map(
@@ -442,6 +465,28 @@ export function centerModelInfraNodes(
             y: (targetBounds.minY + targetBounds.maxY) / 2 - height / 2,
           };
     placeNode(modelProviderId, preferred);
+  }
+
+  for (const toolConfigId of toolConfigIds) {
+    const llmIds = toolConfigToLlmIds.get(toolConfigId) ?? [];
+    const targetBounds = collectBounds(llmIds, nodesById);
+    const toolConfigNode = nodesById.get(toolConfigId);
+    if (!(targetBounds && toolConfigNode)) {
+      continue;
+    }
+    const width = readNodeWidth(toolConfigNode) ?? DEFAULT_NODE_WIDTH;
+    const height = readNodeHeight(toolConfigNode) ?? DEFAULT_NODE_HEIGHT;
+    const preferred =
+      direction === "LR"
+        ? {
+            x: (targetBounds.minX + targetBounds.maxX) / 2 - width / 2,
+            y: targetBounds.minY - height - clusterGap,
+          }
+        : {
+            x: targetBounds.minX - width - clusterGap,
+            y: (targetBounds.minY + targetBounds.maxY) / 2 - height / 2,
+          };
+    placeNode(toolConfigId, preferred);
   }
 
   return nodes.map((node) => nodesById.get(node.id) ?? node);

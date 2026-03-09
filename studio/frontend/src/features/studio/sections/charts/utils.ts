@@ -3,6 +3,11 @@ import type { LossHistoryItem, OutlierMode, SmoothedLossItem } from "./types";
 export const CHART_SYNC_ID = "train-metrics-sync";
 export const MAX_RENDER_POINTS = 800;
 export const DEFAULT_VISIBLE_POINTS = 160;
+export const CHART_CONTAINER_CLASS = "h-[220px] w-full";
+export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
+export const DEFAULT_Y_AXIS_WIDTH = 41;
+const TRAILING_ZEROES_RE = /\.?0+$/;
+const NEGATIVE_ZERO_RE = /^-0$/;
 
 export const placeholderEvalData = [
   { step: 0, loss: 2.8 },
@@ -22,11 +27,56 @@ export function fromLog1p(value: number): number {
 }
 
 export function formatMetric(value: number): string {
-  if (!Number.isFinite(value)) return "0";
-  if (value === 0) return "0";
-  if (value >= 1000) return value.toFixed(0);
-  if (value >= 1) return value.toFixed(2);
-  return value.toExponential(2);
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+  const abs = Math.abs(value);
+  let decimals = 6;
+
+  if (abs >= 1000) {
+    decimals = 0;
+  } else if (abs >= 100) {
+    decimals = 2;
+  } else if (abs >= 1) {
+    decimals = 4;
+  } else if (abs >= 0.01) {
+    decimals = 5;
+  } else if (abs >= 0.0001) {
+    decimals = 6;
+  } else {
+    decimals = 8;
+  }
+
+  return value
+    .toFixed(decimals)
+    .replace(TRAILING_ZEROES_RE, "")
+    .replace(NEGATIVE_ZERO_RE, "0");
+}
+
+export function formatAxisMetric(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  const abs = Math.abs(value);
+  let decimals = 4;
+
+  if (abs >= 1000) {
+    decimals = 0;
+  } else if (abs >= 100) {
+    decimals = 1;
+  } else if (abs >= 1) {
+    decimals = 3;
+  } else if (abs >= 0.01) {
+    decimals = 4;
+  } else {
+    decimals = 5;
+  }
+
+  return value
+    .toFixed(decimals)
+    .replace(TRAILING_ZEROES_RE, "")
+    .replace(NEGATIVE_ZERO_RE, "0");
 }
 
 export function formatStepTick(value: number): string {
@@ -54,18 +104,12 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-export function getDefaultWindowSize(totalSteps: number): number {
-  if (totalSteps <= 1) {
-    return Math.max(totalSteps, 1);
-  }
-  if (totalSteps <= DEFAULT_VISIBLE_POINTS) {
-    return clamp(Math.floor(totalSteps * 0.6), 1, totalSteps);
-  }
-  return DEFAULT_VISIBLE_POINTS;
-}
-
-export function buildStepTicks(min: number, max: number, targetCount = 6): number[] {
-  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+export function buildStepTicks(
+  min: number,
+  max: number,
+  targetCount = 6,
+): number[] {
+  if (!(Number.isFinite(min) && Number.isFinite(max))) {
     return [0, 1];
   }
   if (max <= min) {
@@ -104,10 +148,17 @@ export function buildYDomain(values: number[]): [number, number] {
   return [min - pad, max + pad];
 }
 
-function getUpperPercentile(values: number[], mode: OutlierMode): number | null {
-  if (mode === "none") return null;
+function getUpperPercentile(
+  values: number[],
+  mode: OutlierMode,
+): number | null {
+  if (mode === "none") {
+    return null;
+  }
   const finiteValues = values.filter((value) => Number.isFinite(value));
-  if (finiteValues.length < 3) return null;
+  if (finiteValues.length < 3) {
+    return null;
+  }
 
   const sorted = [...finiteValues].sort((a, b) => a - b);
   const q = mode === "p99" ? 0.99 : 0.95;
@@ -120,18 +171,36 @@ function getUpperPercentile(values: number[], mode: OutlierMode): number | null 
 
 export function applyOutlierCap(values: number[], mode: OutlierMode): number[] {
   const cap = getUpperPercentile(values, mode);
-  if (cap == null) return values;
+  if (cap == null) {
+    return values;
+  }
   return values.map((value) => Math.min(value, cap));
 }
 
-export function ema(data: LossHistoryItem[], alpha: number): SmoothedLossItem[] {
+export function ema(
+  data: LossHistoryItem[],
+  alpha: number,
+): SmoothedLossItem[] {
   if (data.length === 0) {
     return [];
   }
 
-  let s = data[0].loss;
-  return data.map((d) => {
-    s = alpha * d.loss + (1 - alpha) * s;
-    return { ...d, smoothed: +s.toFixed(4) };
+  const values = data.map((point) => point.loss);
+  const isConstant = values.every((value) => value === values[0]);
+
+  let last = 0;
+  let count = 0;
+
+  return data.map((point) => {
+    const next = point.loss;
+    if (!Number.isFinite(next) || isConstant) {
+      return { ...point, smoothed: next };
+    }
+
+    last = last * alpha + (1 - alpha) * next;
+    count += 1;
+
+    const debias = alpha === 1 ? 1 : 1 - alpha ** count;
+    return { ...point, smoothed: last / debias };
   });
 }

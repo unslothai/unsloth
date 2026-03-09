@@ -7,6 +7,7 @@ import {
   EqualSignIcon,
   FingerPrintIcon,
   FunctionIcon,
+  Plug01Icon,
   Parabola02Icon,
   PencilEdit02Icon,
   Plant01Icon,
@@ -77,6 +78,9 @@ function resolveExecutionColumnIcon(config: NodeConfig | null): IconType {
   }
   if (config.kind === "model_config") {
     return Plant01Icon;
+  }
+  if (config.kind === "tool_config") {
+    return Plug01Icon;
   }
   return PencilEdit02Icon;
 }

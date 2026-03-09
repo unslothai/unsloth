@@ -1,4 +1,9 @@
-import type { LlmConfig, LlmMcpProviderConfig, LlmToolConfig } from "../../types";
+import type {
+  LlmConfig,
+  LlmMcpProviderConfig,
+  LlmToolConfig,
+  ToolProfileConfig,
+} from "../../types";
 
 function buildImageContext(
   config: LlmConfig,
@@ -198,5 +203,42 @@ export function buildLlmToolConfig(
     max_tool_call_turns: maxToolCallTurns,
     // biome-ignore lint/style/useNamingConvention: api schema
     timeout_sec: timeoutSec,
+  };
+}
+
+export function buildToolProfilePayload(
+  config: ToolProfileConfig,
+  errors: string[],
+): {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  mcp_providers: Record<string, unknown>[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  tool_config: Record<string, unknown> | null;
+} {
+  const mcpProviders = config.mcp_providers
+    .map((provider) => buildLlmMcpProvider(provider, errors))
+    .flatMap((provider) => (provider ? [provider] : []));
+  const toolConfig = buildLlmToolConfig(
+    {
+      id: config.id,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      tool_alias: config.name,
+      providers: mcpProviders
+        .map((provider) => String(provider.name ?? "").trim())
+        .filter(Boolean),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      allow_tools: config.allow_tools,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      max_tool_call_turns: config.max_tool_call_turns,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      timeout_sec: config.timeout_sec,
+    },
+    errors,
+  );
+  return {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    mcp_providers: mcpProviders,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    tool_config: toolConfig,
   };
 }

@@ -83,6 +83,10 @@ export function applyRenameToConfig(
     const base = next as LlmConfig;
     next = { ...base, model_alias: to };
   }
+  if (config.kind === "llm" && config.tool_alias === from) {
+    const base = next as LlmConfig;
+    next = { ...base, tool_alias: to };
+  }
   if (config.kind === "validator") {
     const targets = config.target_columns ?? [];
     if (targets.includes(from)) {
@@ -135,6 +139,10 @@ export function applyRemovalToConfig(
   if (config.kind === "llm" && config.model_alias === ref) {
     const base = next as LlmConfig;
     next = { ...base, model_alias: "" };
+  }
+  if (config.kind === "llm" && config.tool_alias === ref) {
+    const base = next as LlmConfig;
+    next = { ...base, tool_alias: "" };
   }
   if (config.kind === "validator") {
     const targets = (config.target_columns ?? []).filter((target) => target !== ref);

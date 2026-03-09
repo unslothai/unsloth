@@ -104,6 +104,7 @@ export function RecipeStudioPage({
     addLlmNode,
     addModelProviderNode,
     addModelConfigNode,
+    addToolProfileNode,
     addExpressionNode,
     addValidatorNode,
     addMarkdownNoteNode,
@@ -141,6 +142,7 @@ export function RecipeStudioPage({
       addLlmNode: state.addLlmNode,
       addModelProviderNode: state.addModelProviderNode,
       addModelConfigNode: state.addModelConfigNode,
+      addToolProfileNode: state.addToolProfileNode,
       addExpressionNode: state.addExpressionNode,
       addValidatorNode: state.addValidatorNode,
       addMarkdownNoteNode: state.addMarkdownNoteNode,
@@ -191,6 +193,7 @@ export function RecipeStudioPage({
     handleAddLlmFromSheet,
     handleAddModelProviderFromSheet,
     handleAddModelConfigFromSheet,
+    handleAddToolProfileFromSheet,
     handleAddExpressionFromSheet,
     handleAddValidatorFromSheet,
     handleAddMarkdownNoteFromSheet,
@@ -210,6 +213,7 @@ export function RecipeStudioPage({
     addLlmNode,
     addModelProviderNode,
     addModelConfigNode,
+    addToolProfileNode,
     addExpressionNode,
     addValidatorNode,
     addMarkdownNoteNode,
@@ -584,10 +588,11 @@ export function RecipeStudioPage({
                     onOpenChange={setBlockSheetOpen}
                     onAddSampler={handleAddSamplerFromSheet}
                     onAddSeed={handleAddSeedFromSheet}
-                    onAddLlm={handleAddLlmFromSheet}
-                    onAddModelProvider={handleAddModelProviderFromSheet}
-                    onAddModelConfig={handleAddModelConfigFromSheet}
-                    onAddExpression={handleAddExpressionFromSheet}
+              onAddLlm={handleAddLlmFromSheet}
+              onAddModelProvider={handleAddModelProviderFromSheet}
+              onAddModelConfig={handleAddModelConfigFromSheet}
+              onAddToolProfile={handleAddToolProfileFromSheet}
+              onAddExpression={handleAddExpressionFromSheet}
                     onAddValidator={handleAddValidatorFromSheet}
                     onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
                     onOpenProcessors={openProcessorsFromSheet}
@@ -651,6 +656,7 @@ export function RecipeStudioPage({
         categoryOptions={dialogOptions.categoryOptions}
         modelConfigAliases={dialogOptions.modelConfigAliases}
         modelProviderOptions={dialogOptions.modelProviderOptions}
+        toolProfileAliases={dialogOptions.toolProfileAliases}
         datetimeOptions={dialogOptions.datetimeOptions}
         onUpdate={updateConfig}
         container={sheetContainer}
