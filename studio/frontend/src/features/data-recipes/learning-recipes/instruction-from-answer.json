@@ -72,7 +72,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_1",
-        "markdown": "#### Hugginface seed block\nThis recipe uses a ** HuggingFace dataset ** as seed data.\nYou select HuggingFace dataset, load columns, then generate new fields from seed columns. Each column in Hugginface dataset becomes a valid variable that you can reference eg. `{{ topic }}`\n\n##### Setup:\n\n1. Search for dataset and select on in the dropdown (example: `unsloth/alpaca-cleaned`)\n2. Add token only if dataset is gated/private\n3. Load columns + preview rows so variables are available in prompts\n\n##### Why this matters:\n- Seed columns can drive generation quality\n- You can reference seed values directly in prompts (for example `{{ output }}`)",
+        "markdown": "#### Hugging Face seed block\nThis recipe uses a ** HuggingFace dataset ** as seed data.\nYou select a Hugging Face dataset, load columns, then generate new fields from seed columns. Each column in the Hugging Face dataset becomes a valid variable that you can reference eg. `{{ topic }}`\n\n##### Setup:\n\n1. Search for a dataset and select one in the dropdown (example: `unsloth/alpaca-cleaned`)\n2. Add token only if dataset is gated/private\n3. Load columns + preview rows so variables are available in prompts\n\n##### Why this matters:\n- Seed columns can drive generation quality\n- You can reference seed values directly in prompts (for example `{{ output }}`)",
         "note_color": "#DCFCE7",
         "note_opacity": "35"
       },

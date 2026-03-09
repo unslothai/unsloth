@@ -168,6 +168,21 @@ export function DatasetSection() {
     void refreshLocalDatasets();
   }, [pickerTab, refreshLocalDatasets]);
 
+  useEffect(() => {
+    const handleRefresh = () => {
+      if (document.hidden) return;
+      if (pickerTab !== "local" && datasetSource !== "upload") return;
+      void refreshLocalDatasets();
+    };
+
+    window.addEventListener("focus", handleRefresh);
+    document.addEventListener("visibilitychange", handleRefresh);
+    return () => {
+      window.removeEventListener("focus", handleRefresh);
+      document.removeEventListener("visibilitychange", handleRefresh);
+    };
+  }, [datasetSource, pickerTab, refreshLocalDatasets]);
+
   function handleDatasetSelect(id: string | null) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "huggingface";
@@ -266,6 +281,8 @@ export function DatasetSection() {
 
   useEffect(() => {
     if (!hasLoadedLocalDatasets) return;
+    if (localLoading) return;
+    if (localError) return;
     if (datasetSource !== "upload") return;
     if (!uploadedFile) return;
     if (selectedLocalDataset) return;
@@ -273,6 +290,8 @@ export function DatasetSection() {
   }, [
     datasetSource,
     hasLoadedLocalDatasets,
+    localError,
+    localLoading,
     uploadedFile,
     selectedLocalDataset,
     selectLocalDataset,
@@ -380,6 +399,9 @@ export function DatasetSection() {
                 value={comboboxValue}
                 onOpenChange={(open) => {
                   setSearchQuery("");
+                  if (open && (pickerTab === "local" || activeSourceTab === "local")) {
+                    void refreshLocalDatasets();
+                  }
                   if (!open) {
                     setPickerTab(pendingSourceTabRef.current ?? activeSourceTab);
                     pendingSourceTabRef.current = null;
