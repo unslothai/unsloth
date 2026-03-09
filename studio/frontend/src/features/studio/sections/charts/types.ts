@@ -10,10 +10,3 @@ export interface TrainingChartSeries {
   gradNormHistory: { step: number; gradNorm: number }[];
   evalLossHistory: { step: number; loss: number }[];
 }
-
-export interface ViewSettingsState {
-  effectiveWindowSize: number;
-  minWindow: number;
-  allStepsLength: number;
-  setWindowSize: (value: number) => void;
-}
