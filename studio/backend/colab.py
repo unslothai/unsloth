@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+# Copyright © 2025 Unsloth AI
+
 """
 Colab-specific helpers for running Unsloth Studio.
 Uses Colab's built-in proxy - no external tunneling needed!

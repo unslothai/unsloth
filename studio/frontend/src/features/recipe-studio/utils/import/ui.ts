@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import type { RecipeNode, NodeConfig } from "../../types";
 import { DEFAULT_NODE_WIDTH } from "../../constants";
 import { nodeDataFromConfig } from "../index";

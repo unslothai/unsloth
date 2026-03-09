@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 export type ScaleMode = "linear" | "log";
 export type OutlierMode = "none" | "p99" | "p95";
 

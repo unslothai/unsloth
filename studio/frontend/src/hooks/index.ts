@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 export { useDebouncedValue } from "./use-debounced-value";
 export { useGpuInfo } from "./use-gpu-info";
 export { useGpuUtilization } from "./use-gpu-utilization";

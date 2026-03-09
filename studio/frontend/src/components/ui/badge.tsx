@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 /* eslint-disable react-refresh/only-export-components */
 
 import { type VariantProps, cva } from "class-variance-authority";
