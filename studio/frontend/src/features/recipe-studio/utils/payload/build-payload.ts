@@ -24,14 +24,13 @@ import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
   buildLlmColumn,
-  buildLlmMcpProvider,
-  buildLlmToolConfig,
   buildModelConfig,
   buildModelProvider,
   buildProcessors,
   buildSamplerColumn,
   buildSeedConfig,
   buildSeedDropProcessor,
+  buildToolProfilePayload,
   buildValidatorColumn,
   pickFirstSeedConfig,
 } from "./builders";
@@ -169,34 +168,6 @@ export function buildRecipePayload(
         }
       }
       columns.push(buildLlmColumn(config, errors));
-      for (const provider of config.mcp_providers ?? []) {
-        const builtProvider = buildLlmMcpProvider(provider, errors);
-        if (!builtProvider) {
-          continue;
-        }
-        pushUniqueJson(
-          "MCP provider",
-          String(builtProvider.name),
-          builtProvider,
-          mcpProviderJsonByName,
-          mcpProviders,
-          errors,
-        );
-      }
-      for (const toolConfig of config.tool_configs ?? []) {
-        const builtToolConfig = buildLlmToolConfig(toolConfig, errors);
-        if (!builtToolConfig) {
-          continue;
-        }
-        pushUniqueJson(
-          "Tool config",
-          String(builtToolConfig.tool_alias),
-          builtToolConfig,
-          toolConfigJsonByAlias,
-          toolConfigs,
-          errors,
-        );
-      }
       if (config.model_alias) {
         modelAliases.add(config.model_alias);
       }
@@ -228,6 +199,30 @@ export function buildRecipePayload(
       modelProviderNames.add(config.name);
       modelProviders.push(buildModelProvider(config, errors));
       modelProviderConfigs.push(config);
+      continue;
+    }
+    if (config.kind === "tool_config") {
+      const built = buildToolProfilePayload(config, errors);
+      for (const provider of built.mcp_providers) {
+        pushUniqueJson(
+          "MCP provider",
+          String(provider.name),
+          provider,
+          mcpProviderJsonByName,
+          mcpProviders,
+          errors,
+        );
+      }
+      if (built.tool_config) {
+        pushUniqueJson(
+          "Tool config",
+          String(built.tool_config.tool_alias),
+          built.tool_config,
+          toolConfigJsonByAlias,
+          toolConfigs,
+          errors,
+        );
+      }
       continue;
     }
     modelConfigs.push(buildModelConfig(config, errors));

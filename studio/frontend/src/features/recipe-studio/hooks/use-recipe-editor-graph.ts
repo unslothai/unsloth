@@ -67,6 +67,7 @@ type UseRecipeEditorGraphArgs = {
   addLlmNode: (type: LlmType, position?: XYPosition, openDialog?: boolean) => void;
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
   addValidatorNode: (
     type: "validator_python" | "validator_sql" | "validator_oxc",
@@ -90,6 +91,7 @@ type UseRecipeEditorGraphResult = {
   handleAddLlmFromSheet: (type: LlmType) => void;
   handleAddModelProviderFromSheet: () => void;
   handleAddModelConfigFromSheet: () => void;
+  handleAddToolProfileFromSheet: () => void;
   handleAddExpressionFromSheet: () => void;
   handleAddValidatorFromSheet: (
     type: "validator_python" | "validator_sql" | "validator_oxc",
@@ -113,6 +115,7 @@ export function useRecipeEditorGraph({
   addLlmNode,
   addModelProviderNode,
   addModelConfigNode,
+  addToolProfileNode,
   addExpressionNode,
   addValidatorNode,
   addMarkdownNoteNode,
@@ -231,6 +234,10 @@ export function useRecipeEditorGraph({
         addModelConfigNode(position, false);
         return;
       }
+      if (payload.type === "tool_config") {
+        addToolProfileNode(position, false);
+        return;
+      }
       addLlmNode(payload.type as LlmType, position, false);
     },
     [
@@ -239,6 +246,7 @@ export function useRecipeEditorGraph({
       addMarkdownNoteNode,
       addModelConfigNode,
       addModelProviderNode,
+      addToolProfileNode,
       addSamplerNode,
       addSeedNode,
       addValidatorNode,
@@ -290,6 +298,10 @@ export function useRecipeEditorGraph({
     addExpressionNode(getViewportCenterPosition());
   }, [addExpressionNode, getViewportCenterPosition]);
 
+  const handleAddToolProfileFromSheet = useCallback(() => {
+    addToolProfileNode(getViewportCenterPosition());
+  }, [addToolProfileNode, getViewportCenterPosition]);
+
   const handleAddValidatorFromSheet = useCallback(
     (type: "validator_python" | "validator_sql" | "validator_oxc") => {
       addValidatorNode(type, getViewportCenterPosition());
@@ -313,6 +325,7 @@ export function useRecipeEditorGraph({
     handleAddLlmFromSheet,
     handleAddModelProviderFromSheet,
     handleAddModelConfigFromSheet,
+    handleAddToolProfileFromSheet,
     handleAddExpressionFromSheet,
     handleAddValidatorFromSheet,
     handleAddMarkdownNoteFromSheet,

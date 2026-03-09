@@ -29,7 +29,11 @@ export function getAvailableVariableEntries(
     if (config.id === currentId) {
       continue;
     }
-    if (config.kind === "model_provider" || config.kind === "model_config") {
+    if (
+      config.kind === "model_provider" ||
+      config.kind === "model_config" ||
+      config.kind === "tool_config"
+    ) {
       continue;
     }
 

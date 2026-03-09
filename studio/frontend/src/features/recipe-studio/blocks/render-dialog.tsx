@@ -16,6 +16,7 @@ import { TimedeltaDialog } from "../dialogs/samplers/timedelta-dialog";
 import { UniformDialog } from "../dialogs/samplers/uniform-dialog";
 import { UuidDialog } from "../dialogs/samplers/uuid-dialog";
 import { MarkdownNoteDialog } from "../dialogs/markdown-note/markdown-note-dialog";
+import { ToolProfileDialog } from "../dialogs/tool-profile/tool-profile-dialog";
 import { ValidatorDialog } from "../dialogs/validators/validator-dialog";
 
 export function renderBlockDialog(
@@ -24,6 +25,7 @@ export function renderBlockDialog(
   categoryOptions: SamplerConfig[],
   modelConfigAliases: string[],
   modelProviderOptions: string[],
+  toolProfileAliases: string[],
   datetimeOptions: string[],
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void,
 ): ReactElement | null {
@@ -91,6 +93,7 @@ export function renderBlockDialog(
           config={config}
           modelConfigAliases={modelConfigAliases}
           modelProviderOptions={modelProviderOptions}
+          toolProfileAliases={toolProfileAliases}
           onUpdate={update}
         />
       ) : null;
@@ -105,6 +108,10 @@ export function renderBlockDialog(
           providerOptions={modelProviderOptions}
           onUpdate={update}
         />
+      ) : null;
+    case "tool_config":
+      return config.kind === "tool_config" ? (
+        <ToolProfileDialog config={config} onUpdate={update} />
       ) : null;
     case "expression":
       return config.kind === "expression" ? (

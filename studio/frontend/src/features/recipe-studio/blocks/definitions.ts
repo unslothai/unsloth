@@ -9,6 +9,7 @@ import {
   EqualSignIcon,
   FingerPrintIcon,
   FunctionIcon,
+  Plug01Icon,
   Parabola02Icon,
   PencilEdit02Icon,
   Plant01Icon,
@@ -29,6 +30,7 @@ import {
   makeMarkdownNoteConfig,
   makeModelConfig,
   makeModelProviderConfig,
+  makeToolProfileConfig,
   makeSamplerConfig,
   makeSeedConfig,
   makeValidatorConfig,
@@ -54,7 +56,8 @@ export type BlockType =
   | "seed_local"
   | "seed_unstructured"
   | "model_provider"
-  | "model_config";
+  | "model_config"
+  | "tool_config";
 
 export type SeedBlockType = "seed_hf" | "seed_local" | "seed_unstructured";
 
@@ -83,6 +86,7 @@ export type BlockDialogKey =
   | "validator"
   | "model_provider"
   | "model_config"
+  | "tool_config"
   | "expression";
 
 export type BlockDefinition = {
@@ -111,7 +115,7 @@ export const BLOCK_GROUPS: BlockGroup[] = [
   {
     kind: "llm",
     title: "LLM + Models",
-    description: "Generation, providers, and model aliases.",
+    description: "Generation, model aliases, and shared tool profiles.",
     icon: PencilEdit02Icon,
   },
   {
@@ -298,6 +302,15 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     createConfig: (id, existing) => makeModelConfig(id, existing),
   },
   {
+    kind: "llm",
+    type: "tool_config",
+    title: "Tool Profile",
+    description: "Reusable MCP servers + allowed tools for one or more LLMs.",
+    icon: Plug01Icon,
+    dialogKey: "tool_config",
+    createConfig: (id, existing) => makeToolProfileConfig(id, existing),
+  },
+  {
     kind: "validator",
     type: "validator_python",
     title: "Python Validator",
@@ -398,6 +411,9 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "model_config") {
     return getBlockDefinition("llm", "model_config");
+  }
+  if (config.kind === "tool_config") {
+    return getBlockDefinition("llm", "tool_config");
   }
   if (config.kind === "markdown_note") {
     return getBlockDefinition("note", "markdown_note");
