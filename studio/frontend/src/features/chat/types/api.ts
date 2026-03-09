@@ -36,6 +36,16 @@ export interface LoadModelRequest {
   gguf_variant?: string | null;
 }
 
+export interface ValidateModelResponse {
+  valid: boolean;
+  message: string;
+  identifier?: string | null;
+  display_name?: string | null;
+  is_gguf?: boolean;
+  is_lora?: boolean;
+  is_vision?: boolean;
+}
+
 export interface GgufVariantDetail {
   filename: string;
   quant: string;
