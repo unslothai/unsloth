@@ -269,6 +269,14 @@ def run_training_process(
         if eval_steps is not None and float(eval_steps) <= 0:
             eval_dataset = None
 
+        # Tell the parent process that eval is configured so the frontend
+        # shows "Waiting for first evaluation step..." instead of "not configured"
+        if eval_dataset is not None:
+            event_queue.put({
+                "type": "eval_configured",
+                "ts": time.time(),
+            })
+
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
