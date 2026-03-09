@@ -5,6 +5,7 @@
 audio_type: csm
 
 training:
+  trust_remote_code: false
   eval_steps: 0
   max_seq_length: 2048
   # num_epochs: 4
@@ -45,3 +46,5 @@ logging:
   tensorboard_dir: "runs"
   log_frequency: 10
 
+inference:
+  trust_remote_code: false

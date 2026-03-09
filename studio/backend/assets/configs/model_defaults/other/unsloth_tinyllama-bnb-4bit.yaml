@@ -3,6 +3,7 @@
 # Also applies to: TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T
 
 training:
+  trust_remote_code: false
   max_seq_length: 4096
   # num_epochs: 1
   num_epochs: 0
@@ -42,3 +43,5 @@ logging:
   tensorboard_dir: "runs"
   log_frequency: 10
 
+inference:
+  trust_remote_code: false
