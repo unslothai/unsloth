@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -171,4 +172,40 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     dataframe = read_parquet_dataset(parquet_dir)
     shutil.rmtree(parquet_dir)
     parquet_dir.mkdir(parents=True, exist_ok=True)
-    dataframe.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    merged_file = parquet_dir / "batch_00000.parquet"
+    dataframe.to_parquet(merged_file, index=False)
+    _rewrite_merged_metadata(
+        base_dataset_path=base_dataset_path,
+        parquet_file=merged_file,
+    )
+
+
+def _rewrite_merged_metadata(*, base_dataset_path: Path, parquet_file: Path) -> None:
+    metadata_path = base_dataset_path / "metadata.json"
+    if not metadata_path.exists():
+        return
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return
+
+    if not isinstance(metadata, dict):
+        return
+
+    relative_parquet_path = str(parquet_file.relative_to(base_dataset_path))
+    file_paths = metadata.get("file_paths")
+    if not isinstance(file_paths, dict):
+        file_paths = {}
+    file_paths["parquet-files"] = [relative_parquet_path]
+    metadata["file_paths"] = file_paths
+    metadata["total_num_batches"] = 1
+    metadata["num_completed_batches"] = 1
+
+    try:
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        return

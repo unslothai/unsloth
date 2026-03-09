@@ -138,7 +138,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "seed",
     type: "seed_hf",
-    title: "Hugginface dataset",
+    title: "Hugging Face dataset",
     description: "Load real rows from HF and use them as generation context.",
     icon: Plant01Icon,
     dialogKey: "seed",

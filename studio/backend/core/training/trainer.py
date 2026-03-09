@@ -32,6 +32,9 @@ from trl import SFTTrainer, SFTConfig
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_ASSETS_DATASETS_ROOT = _BACKEND_ROOT / "assets" / "datasets"
+
 
 @dataclass
 class TrainingProgress:
@@ -1791,9 +1794,7 @@ class UnslothTrainer:
                         file_path = dataset_file
                     else:
                         # Fallback: try relative to assets/datasets
-                        script_dir = Path(__file__).parent.parent
-                        assets_datasets_dir = script_dir / "assets" / "datasets"
-                        file_path = assets_datasets_dir / dataset_file
+                        file_path = _ASSETS_DATASETS_ROOT / dataset_file
 
                     file_path_obj = Path(file_path)
                     file_path_str = str(file_path_obj)

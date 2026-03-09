@@ -66,7 +66,8 @@ export function DatasetStep() {
     hfToken,
     setHfToken,
     datasetSource,
-    setDatasetSource,
+    selectHfDataset,
+    selectLocalDataset,
     datasetFormat,
     setDatasetFormat,
     dataset,
@@ -85,7 +86,8 @@ export function DatasetStep() {
       hfToken: s.hfToken,
       setHfToken: s.setHfToken,
       datasetSource: s.datasetSource,
-      setDatasetSource: s.setDatasetSource,
+      selectHfDataset: s.selectHfDataset,
+      selectLocalDataset: s.selectLocalDataset,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       dataset: s.dataset,
@@ -138,7 +140,9 @@ export function DatasetStep() {
         <div className="flex gap-2">
           <Button
             variant={datasetSource === "huggingface" ? "dark" : "outline"}
-            onClick={() => setDatasetSource("huggingface")}
+            onClick={() =>
+              selectHfDataset(datasetSource === "huggingface" ? dataset : null)
+            }
             className="flex-1"
           >
             <img
@@ -151,7 +155,11 @@ export function DatasetStep() {
           </Button>
           <Button
             variant={datasetSource === "upload" ? "dark" : "outline"}
-            onClick={() => setDatasetSource("upload")}
+            onClick={() =>
+              selectLocalDataset(
+                datasetSource === "upload" ? uploadedFile : null,
+              )
+            }
             className="flex-1"
           >
             <HugeiconsIcon icon={Upload04Icon} data-icon="inline-start" />

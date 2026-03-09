@@ -111,6 +111,7 @@ async def start_training(
         # Validate dataset paths if provided
         if request.local_datasets:
             validated_datasets = []
+            missing_datasets = []
             # Get the backend directory (where this file is located)
             backend_dir = Path(__file__).parent.parent
             assets_datasets_dir = backend_dir / "assets" / "datasets"
@@ -131,12 +132,20 @@ async def start_training(
                     dataset_file = candidate
 
                 if not dataset_file.exists():
-                    logger.warning(
-                        f"Dataset file not found: {dataset_path} (resolved: {dataset_file})"
+                    missing_datasets.append(
+                        f"{dataset_path} (resolved: {dataset_file})"
                     )
-                else:
-                    logger.info(f"Found dataset file: {dataset_file}")
+                    continue
+
+                logger.info(f"Found dataset file: {dataset_file}")
                 validated_datasets.append(str(dataset_file))
+
+            if missing_datasets:
+                missing_detail = "; ".join(missing_datasets[:3])
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Local dataset not found: {missing_detail}",
+                )
             request.local_datasets = validated_datasets
 
         # Convert request to kwargs for backend
