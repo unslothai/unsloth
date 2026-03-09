@@ -92,11 +92,9 @@ DATA_EXTS = (
 )
 LOCAL_FILE_EXTS = ('.json', '.jsonl', '.csv', '.parquet')
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
-DATASET_UPLOAD_DIR = (
-    Path.home() / ".cache" / "unsloth" / "training" / "dataset-uploads"
-)
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_DATASETS_ROOT = BACKEND_ROOT / "assets" / "datasets"
+DATASET_UPLOAD_DIR = LOCAL_DATASETS_ROOT / "uploads"
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
