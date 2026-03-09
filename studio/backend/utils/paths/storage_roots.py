@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 
 
 def studio_root() -> Path:
@@ -32,7 +33,7 @@ def exports_root() -> Path:
 
 
 def tmp_root() -> Path:
-    return studio_root() / "tmp"
+    return Path(tempfile.gettempdir()) / "unsloth-studio"
 
 
 def seed_uploads_root() -> Path:
