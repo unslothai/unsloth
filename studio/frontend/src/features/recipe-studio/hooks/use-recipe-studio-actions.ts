@@ -48,8 +48,10 @@ type UseRecipeStudioActionsResult = {
   setRunDialogOpen: (open: boolean) => void;
   previewRows: number;
   fullRows: number;
+  fullRunName: string;
   setPreviewRows: (rows: number) => void;
   setFullRows: (rows: number) => void;
+  setFullRunName: (name: string) => void;
   runErrors: string[];
   runSettings: RecipeRunSettings;
   setRunSettings: (patch: Partial<RecipeRunSettings>) => void;
@@ -125,8 +127,10 @@ export function useRecipeStudioActions({
     setRunDialogOpen: executions.setRunDialogOpen,
     previewRows: executions.previewRows,
     fullRows: executions.fullRows,
+    fullRunName: executions.fullRunName,
     setPreviewRows: executions.setPreviewRows,
     setFullRows: executions.setFullRows,
+    setFullRunName: executions.setFullRunName,
     runErrors: executions.runErrors,
     runSettings: executions.runSettings,
     setRunSettings: executions.setRunSettings,

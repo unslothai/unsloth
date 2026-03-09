@@ -17,7 +17,21 @@ function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return true;
   }
-  return source.kind === "model_config" && target.kind === "llm";
+  if (source.kind === "model_config" && target.kind === "llm") {
+    return true;
+  }
+  if (
+    source.kind === "llm" &&
+    source.llm_type === "code" &&
+    target.kind === "validator"
+  ) {
+    return true;
+  }
+  return (
+    source.kind === "validator" &&
+    target.kind === "llm" &&
+    target.llm_type === "code"
+  );
 }
 
 export function buildEdges(
@@ -148,6 +162,13 @@ export function buildEdges(
     }
     if (config.kind === "llm" && config.model_alias) {
       addEdgeByName(config.model_alias, config.name);
+    }
+    if (config.kind === "validator") {
+      for (const targetColumn of config.target_columns ?? []) {
+        if (targetColumn.trim()) {
+          addEdgeByName(targetColumn, config.name);
+        }
+      }
     }
   }
 

@@ -1,3 +1,8 @@
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Combobox,
@@ -8,7 +13,8 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { type ReactElement, useRef } from "react";
+import { Textarea } from "@/components/ui/textarea";
+import { type ReactElement, useRef, useState } from "react";
 import type { ModelConfig } from "../../types";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -24,11 +30,14 @@ export function ModelConfigDialog({
   providerOptions,
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
+  const [optionalOpen, setOptionalOpen] = useState(false);
   const modelId = `${config.id}-model`;
   const providerId = `${config.id}-provider`;
   const tempId = `${config.id}-temperature`;
   const topPId = `${config.id}-top-p`;
   const maxTokensId = `${config.id}-max-tokens`;
+  const timeoutId = `${config.id}-timeout`;
+  const extraBodyId = `${config.id}-inference-extra-body`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
   const lastProviderRef = useRef(config.provider);
@@ -46,6 +55,7 @@ export function ModelConfigDialog({
   return (
     <div className="space-y-4">
       <NameField
+        label="Model alias"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
@@ -114,7 +124,7 @@ export function ModelConfigDialog({
           label="Inference"
           hint="Runtime generation params for this model alias."
         />
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Input
             id={tempId}
             className="nodrag"
@@ -142,17 +152,55 @@ export function ModelConfigDialog({
               updateField("inference_max_tokens", event.target.value)
             }
           />
+          <Input
+            id={timeoutId}
+            className="nodrag"
+            placeholder="Timeout (sec)"
+            value={config.inference_timeout ?? ""}
+            onChange={(event) =>
+              updateField("inference_timeout", event.target.value)
+            }
+          />
         </div>
       </div>
-      <label className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-        <Checkbox
-          checked={config.skip_health_check ?? false}
-          onCheckedChange={(value) =>
-            updateField("skip_health_check", Boolean(value))
-          }
-        />
-        Skip health check
-      </label>
+      <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
+        <CollapsibleTrigger asChild={true}>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
+          >
+            <span className="font-semibold uppercase">Optional</span>
+            <span>{optionalOpen ? "Hide" : "Show"}</span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3 space-y-4">
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Inference extra body (JSON)"
+              htmlFor={extraBodyId}
+              hint="Optional request fields merged into inference parameters."
+            />
+            <Textarea
+              id={extraBodyId}
+              className="corner-squircle nodrag"
+              placeholder='{"top_k": 20, "min_p": 0.0}'
+              value={config.inference_extra_body ?? ""}
+              onChange={(event) =>
+                updateField("inference_extra_body", event.target.value)
+              }
+            />
+          </div>
+          <label className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+            <Checkbox
+              checked={config.skip_health_check ?? false}
+              onCheckedChange={(value) =>
+                updateField("skip_health_check", Boolean(value))
+              }
+            />
+            Skip health check
+          </label>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }

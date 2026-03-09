@@ -35,6 +35,7 @@ export function ModelProviderDialog({
   return (
     <div className="space-y-4">
       <NameField
+        label="Provider name"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />

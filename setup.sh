@@ -99,6 +99,8 @@ echo "Building frontend..."
 cd "$SCRIPT_DIR/studio/frontend"
 run_quiet "npm install" npm install
 run_quiet "npm run build" npm run build
+cd "$SCRIPT_DIR/studio/backend/core/data_recipe/oxc-validator"
+run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to studio/frontend/dist"
 

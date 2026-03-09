@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/utils";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
-import { formatCellValue, isExpandableCellValue } from "./executions-view-helpers";
+import { hasExpandableTextCell } from "./executions-view-helpers";
 
 type ExecutionDataTabProps = {
   execution: RecipeExecutionRecord;
@@ -129,9 +129,7 @@ export function ExecutionDataTab({
             columns={tableColumns}
             data={datasetRowsForTable}
             getRowClassName={(row, _rowIndex, rowId) => {
-              const canExpand = visibleDatasetColumnNames.some((columnName) =>
-                isExpandableCellValue(formatCellValue(row[columnName])),
-              );
+              const canExpand = hasExpandableTextCell(row, visibleDatasetColumnNames);
               if (!canExpand) {
                 return undefined;
               }
@@ -141,9 +139,7 @@ export function ExecutionDataTab({
               );
             }}
             onRowClick={(row, _rowIndex, rowId) => {
-              const canExpand = visibleDatasetColumnNames.some((columnName) =>
-                isExpandableCellValue(formatCellValue(row[columnName])),
-              );
+              const canExpand = hasExpandableTextCell(row, visibleDatasetColumnNames);
               if (!canExpand || !selectedExecutionIdSafe) {
                 return;
               }

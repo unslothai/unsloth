@@ -277,9 +277,9 @@ function isOcrOrVisionTextDataset(dataset: HfDatasetResult): boolean {
 
 export function useHfDatasetSearch(
   query: string,
-  options?: { modelType?: ModelType | null; accessToken?: string },
+  options?: { modelType?: ModelType | null; accessToken?: string; enabled?: boolean },
 ) {
-  const { modelType, accessToken } = options ?? {};
+  const { modelType, accessToken, enabled = true } = options ?? {};
   const createIter = useCallback(
     () =>
       listDatasets({
@@ -291,9 +291,10 @@ export function useHfDatasetSearch(
     [query, accessToken],
   );
 
-  const search = useHfPaginatedSearch(createIter, mapDataset);
+  const search = useHfPaginatedSearch(createIter, mapDataset, { enabled });
 
   const results = useMemo(() => {
+    if (!enabled) return [];
     const hideOcr = modelType !== "vision";
     const baseResults = hideOcr
       ? search.results.filter((ds) => !isOcrOrVisionTextDataset(ds))
@@ -311,7 +312,7 @@ export function useHfDatasetSearch(
     }
 
     return [...boosted, ...neutral];
-  }, [search.results, modelType]);
+  }, [enabled, search.results, modelType]);
 
   return { ...search, results };
 }

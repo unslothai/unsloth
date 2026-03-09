@@ -11,6 +11,7 @@ import {
 
 export type DataEdge = Edge<{
   path?: "auto" | "bezier" | "smoothstep" | "step" | "straight";
+  active?: boolean;
 }>;
 
 export function DataEdge({
@@ -29,6 +30,7 @@ export function DataEdge({
   const resolvedPathType = resolvePathType({
     type: data.path ?? "auto",
   });
+  const isActive = Boolean(data.active);
   const [edgePath] = getPath({
     type: resolvedPathType,
     sourceX,
@@ -40,16 +42,20 @@ export function DataEdge({
   });
 
   const edgeStyle = {
-    stroke: selected
-      ? "hsl(var(--primary) / 0.92)"
-      : "hsl(var(--foreground) / 0.42)",
-    strokeWidth: selected ? 2.6 : 2.1,
-    opacity: selected ? 1 : 0.92,
+    stroke: isActive || selected ? "var(--primary)" : "var(--muted-foreground)",
+    strokeWidth: isActive ? 2.6 : selected ? 2.6 : 2.1,
+    opacity: isActive ? 1 : selected ? 0.96 : 0.7,
+    strokeDasharray: isActive ? "8 6" : undefined,
     ...style,
   };
 
   return (
-    <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={edgeStyle} />
+    <BaseEdge
+      id={id}
+      path={edgePath}
+      markerEnd={markerEnd}
+      style={edgeStyle}
+    />
   );
 }
 

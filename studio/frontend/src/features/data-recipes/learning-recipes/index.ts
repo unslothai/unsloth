@@ -12,7 +12,10 @@ const instructionFromAnswerUrl = new URL(
 ).href;
 const textToPythonUrl = new URL("./text-to-python.json", import.meta.url).href;
 const textToSqlUrl = new URL("./text-to-sql.json", import.meta.url).href;
-const conversationUrl = new URL("./conversation.json", import.meta.url).href;
+const ocrDocumentExtractionUrl = new URL(
+  "./ocr-document-extraction.json",
+  import.meta.url,
+).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -125,10 +128,10 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     loadPayload: () => loadPayloadFromUrl(textToSqlUrl),
   },
   {
-    id: "conversation",
-    title: "Multi-Turn Chat",
+    id: "ocr-document-extraction",
+    title: "OCR Document Extraction",
     description:
-      "Generate realistic user-assistant conversations with structured message output.",
-    loadPayload: () => loadPayloadFromUrl(conversationUrl),
+      "Use image context to generate OCR-style document extraction output.",
+    loadPayload: () => loadPayloadFromUrl(ocrDocumentExtractionUrl),
   },
 ];
