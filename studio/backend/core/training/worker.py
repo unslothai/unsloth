@@ -199,19 +199,6 @@ def run_training_process(
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 error_msg = trainer.training_progress.error or "Failed to load model"
-                # Hint about trust_remote_code if YAML says this model needs it
-                if not config.get("trust_remote_code", False):
-                    try:
-                        from utils.models.model_config import load_model_defaults
-                        model_defaults = load_model_defaults(model_name)
-                        yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-                        if yaml_trust:
-                            error_msg = (
-                                f"Model '{model_name}' requires trust_remote_code to be enabled. "
-                                f"Please enable 'Trust remote code' in Chat Settings and try again."
-                            )
-                    except Exception:
-                        pass
                 event_queue.put({
                     "type": "error",
                     "error": error_msg,
