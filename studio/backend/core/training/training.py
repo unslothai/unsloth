@@ -176,6 +176,7 @@ class TrainingBackend:
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "trust_remote_code": kwargs.get("trust_remote_code", False),
         }
 
         # Derive load_in_4bit from training_type

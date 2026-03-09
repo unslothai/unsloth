@@ -124,6 +124,10 @@ function mergeRecommendedInference(
     topP: toFiniteNumber(inference?.top_p) ?? current.topP,
     topK: toFiniteNumber(inference?.top_k) ?? current.topK,
     minP: toFiniteNumber(inference?.min_p) ?? current.minP,
+    trustRemoteCode:
+      typeof inference?.trust_remote_code === "boolean"
+        ? inference.trust_remote_code
+        : current.trustRemoteCode,
   };
 }
 
@@ -232,6 +236,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
+            const paramsBeforeLoad = useChatRuntimeStore.getState().params;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
@@ -239,6 +244,7 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
             });
 
             const currentParams = useChatRuntimeStore.getState().params;
