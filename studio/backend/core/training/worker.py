@@ -135,7 +135,9 @@ def run_training_process(
 
     # Wire up progress callback → event_queue
     def _on_progress(progress: TrainingProgress):
-        if progress.step >= 0 and progress.loss > 0:
+        has_train_loss = progress.step >= 0 and progress.loss > 0
+        has_eval_loss = progress.eval_loss is not None
+        if has_train_loss or has_eval_loss:
             event_queue.put({
                 "type": "progress",
                 "step": progress.step,
@@ -266,6 +268,14 @@ def run_training_process(
         eval_steps = config.get("eval_steps", 0.00)
         if eval_steps is not None and float(eval_steps) <= 0:
             eval_dataset = None
+
+        # Tell the parent process that eval is configured so the frontend
+        # shows "Waiting for first evaluation step..." instead of "not configured"
+        if eval_dataset is not None:
+            event_queue.put({
+                "type": "eval_configured",
+                "ts": time.time(),
+            })
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
