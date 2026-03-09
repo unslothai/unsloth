@@ -13,9 +13,9 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import {
-  AiChat02Icon,
   ArrowRight01Icon,
   Book03Icon,
+  BubbleChatIcon,
   ChefHatIcon,
   CursorInfo02Icon,
   PackageIcon,
@@ -32,7 +32,7 @@ const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
   { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: true },
   { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
-  { label: "Chat", href: "/chat", icon: AiChat02Icon, enabled: true },
+  { label: "Chat", href: "/chat", icon: BubbleChatIcon, enabled: true },
 ];
 
 function getTourId(pathname: string): "studio" | "chat" | "export" | null {
@@ -87,7 +87,7 @@ export function Navbar() {
               return (
                 <span
                   key={item.href}
-                  className="relative rounded-full px-4 py-1.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
+                  className="relative rounded-full px-3 py-1.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
                 >
                   {item.label}
                 </span>
@@ -98,7 +98,7 @@ export function Navbar() {
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  "relative rounded-full px-4 py-1.5 text-sm font-medium transition-colors",
+                  "relative rounded-full px-3 py-1.5 text-sm font-medium transition-colors",
                   active
                     ? "text-background"
                     : "text-muted-foreground hover:text-foreground",
@@ -116,22 +116,23 @@ export function Navbar() {
                     }}
                   />
                 )}
-                <span className="relative z-10 flex items-center gap-1.5">
-                  <span className="inline-flex size-3.5 items-center justify-center overflow-hidden">
-                    <motion.span
-                      initial={false}
-                      animate={{
-                        opacity: active ? 1 : 0,
-                        scale: active ? 1 : 0.9,
-                      }}
-                      transition={{ duration: 0.2, ease: [0.165, 0.84, 0.44, 1] }}
-                    >
-                      <HugeiconsIcon
-                        icon={item.icon}
-                        className="size-3.5 -mt-px"
-                      />
-                    </motion.span>
-                  </span>
+                <span className="relative z-10 flex items-center">
+                  <motion.span
+                    initial={false}
+                    animate={{
+                      width: active ? 14 : 0,
+                      marginLeft: active ? -4 : 0,
+                      marginRight: active ? 4 : 0,
+                      opacity: active ? 1 : 0,
+                    }}
+                    transition={{ duration: 0.2, ease: [0.165, 0.84, 0.44, 1] }}
+                    className="inline-flex shrink-0 items-center justify-center overflow-hidden"
+                  >
+                    <HugeiconsIcon
+                      icon={item.icon}
+                      className="size-3.5 -mt-px shrink-0"
+                    />
+                  </motion.span>
                   {item.label}
                 </span>
               </Link>
