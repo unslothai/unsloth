@@ -334,18 +334,6 @@ export function DatasetSection() {
     hfResults.length,
   );
 
-  const fileToBase64Payload = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const value = String(reader.result ?? "");
-        const parts = value.split(",");
-        resolve(parts.length > 1 ? parts[1] : value);
-      };
-      reader.onerror = () => reject(new Error("Failed to read file"));
-      reader.readAsDataURL(file);
-    });
-
   const [isUploading, setIsUploading] = useState(false);
 
   const handleUploadButtonClick = () => {
@@ -367,11 +355,7 @@ export function DatasetSection() {
 
     setIsUploading(true);
     try {
-      const contentBase64 = await fileToBase64Payload(file);
-      const uploaded = await uploadTrainingDataset({
-        filename: file.name,
-        contentBase64,
-      });
+      const uploaded = await uploadTrainingDataset(file);
 
       selectLocalDataset(uploaded.stored_path);
 
