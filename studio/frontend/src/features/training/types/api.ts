@@ -4,6 +4,8 @@ export interface TrainingStartRequest {
   hf_token: string | null;
   load_in_4bit: boolean;
   max_seq_length: number;
+  /** Allow loading models with custom code. Only enable for repos you trust. */
+  trust_remote_code?: boolean;
   hf_dataset: string | null;
   subset: string | null;
   train_split: string | null;
