@@ -275,6 +275,8 @@ export function makeToolProfileConfig(
     name: nextName(existing, "tools"),
     // biome-ignore lint/style/useNamingConvention: ui schema
     mcp_providers: [],
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    fetched_tools_by_provider: {},
     // biome-ignore lint/style/useNamingConvention: api schema
     allow_tools: [],
     // biome-ignore lint/style/useNamingConvention: api schema

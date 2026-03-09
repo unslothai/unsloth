@@ -267,6 +267,31 @@ export function buildRecipePayload(
         },
       ];
     }
+    if (config.kind === "tool_config") {
+      const toolsByProvider = Object.fromEntries(
+        Object.entries(config.fetched_tools_by_provider ?? {}).flatMap(
+          ([providerName, tools]) => {
+            const name = providerName.trim();
+            const values = Array.from(
+              new Set(tools.map((tool) => tool.trim()).filter(Boolean)),
+            );
+            return name && values.length > 0 ? [[name, values]] : [];
+          },
+        ),
+      );
+      return [
+        {
+          id: config.name,
+          x: node.position.x,
+          y: node.position.y,
+          ...(width !== null ? { width } : {}),
+          node_type: "tool_config" as const,
+          ...(Object.keys(toolsByProvider).length > 0 && {
+            tools_by_provider: toolsByProvider,
+          }),
+        },
+      ];
+    }
     return [
       {
         id: config.name,

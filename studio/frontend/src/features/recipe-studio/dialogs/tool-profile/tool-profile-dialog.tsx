@@ -14,7 +14,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { listMcpTools } from "../../api";
 import { ChipInput } from "../../components/chip-input";
 import type { LlmMcpProviderConfig, McpEnvVar, ToolProfileConfig } from "../../types";
@@ -351,11 +351,12 @@ export function ToolProfileDialog({
   const providers = config.mcp_providers;
   const [loadingTools, setLoadingTools] = useState(false);
   const [toolsByProvider, setToolsByProvider] = useState<Record<string, string[]>>(
-    {},
+    config.fetched_tools_by_provider ?? {},
   );
   const [providerErrors, setProviderErrors] = useState<Record<string, string>>({});
   const [duplicateTools, setDuplicateTools] = useState<Record<string, string[]>>({});
   const [openProviders, setOpenProviders] = useState<Record<string, boolean>>({});
+  const previousProviderSignatureRef = useRef<string | null>(null);
 
   const providerSignature = useMemo(
     () =>
@@ -378,10 +379,30 @@ export function ToolProfileDialog({
   );
 
   useEffect(() => {
+    const previousSignature = previousProviderSignatureRef.current;
+    previousProviderSignatureRef.current = providerSignature;
+    if (previousSignature === null) {
+      setToolsByProvider(config.fetched_tools_by_provider ?? {});
+      return;
+    }
+    if (previousSignature === providerSignature) {
+      return;
+    }
     setToolsByProvider({});
     setProviderErrors({});
     setDuplicateTools({});
-  }, [providerSignature]);
+    if (Object.keys(config.fetched_tools_by_provider ?? {}).length > 0) {
+      onUpdate({
+        // biome-ignore lint/style/useNamingConvention: ui schema
+        fetched_tools_by_provider: {},
+      });
+    }
+  }, [config.fetched_tools_by_provider, onUpdate, providerSignature]);
+
+  useEffect(() => {
+    const tools = config.fetched_tools_by_provider ?? {};
+    setToolsByProvider(tools);
+  }, [config.fetched_tools_by_provider]);
 
   useEffect(() => {
     setOpenProviders((current) => {
@@ -523,13 +544,16 @@ export function ToolProfileDialog({
         // biome-ignore lint/style/useNamingConvention: api schema
         timeout_sec: timeoutSec,
       });
-      setToolsByProvider(
-        Object.fromEntries(
-          response.providers
-            .filter((provider) => provider.name.trim())
-            .map((provider) => [provider.name.trim(), provider.tools]),
-        ),
+      const nextToolsByProvider = Object.fromEntries(
+        response.providers
+          .filter((provider) => provider.name.trim())
+          .map((provider) => [provider.name.trim(), provider.tools]),
       );
+      setToolsByProvider(nextToolsByProvider);
+      onUpdate({
+        // biome-ignore lint/style/useNamingConvention: ui schema
+        fetched_tools_by_provider: nextToolsByProvider,
+      });
       setProviderErrors(
         Object.fromEntries(
           response.providers
