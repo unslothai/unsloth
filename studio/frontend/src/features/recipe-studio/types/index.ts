@@ -48,7 +48,8 @@ export type RecipeNodeData = {
     | "seed"
     | "note"
     | "model_provider"
-    | "model_config";
+    | "model_config"
+    | "tool_config";
   subtype: string;
   blockType:
     | SamplerType
@@ -60,7 +61,8 @@ export type RecipeNodeData = {
     | "seed"
     | "markdown_note"
     | "model_provider"
-    | "model_config";
+    | "model_config"
+    | "tool_config";
   layoutDirection?: LayoutDirection;
   runtimeState?: "idle" | "running" | "done";
   executionLocked?: boolean;
@@ -173,6 +175,22 @@ export type LlmToolConfig = {
   timeout_sec?: string;
 };
 
+export type ToolProfileConfig = {
+  id: string;
+  kind: "tool_config";
+  name: string;
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  mcp_providers: LlmMcpProviderConfig[];
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  fetched_tools_by_provider?: Record<string, string[]>;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  allow_tools?: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  max_tool_call_turns?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  timeout_sec?: string;
+};
+
 export type LlmImageContextConfig = {
   enabled: boolean;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -201,10 +219,6 @@ export type LlmConfig = {
   output_format?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   tool_alias?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
-  tool_configs?: LlmToolConfig[];
-  // biome-ignore lint/style/useNamingConvention: ui schema
-  mcp_providers?: LlmMcpProviderConfig[];
   scores?: Score[];
   // ui-only, serialized into multi_modal_context for DataDesigner
   // biome-ignore lint/style/useNamingConvention: ui schema
@@ -349,4 +363,5 @@ export type NodeConfig =
   | MarkdownNoteConfig
   | SeedConfig
   | ModelProviderConfig
-  | ModelConfig;
+  | ModelConfig
+  | ToolProfileConfig;

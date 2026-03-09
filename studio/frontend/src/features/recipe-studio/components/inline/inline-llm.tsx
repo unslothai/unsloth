@@ -52,9 +52,17 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
         .map((c) => c.name),
     [configs],
   );
+  const toolProfileAliases = useMemo(
+    () =>
+      Object.values(configs)
+        .filter((c) => c.kind === "tool_config")
+        .map((c) => c.name),
+    [configs],
+  );
   const aliasInputRef = useRef(config.model_alias);
   const lastAliasRef = useRef(config.model_alias);
   const anchorRef = useRef<HTMLDivElement>(null);
+  const toolAnchorRef = useRef<HTMLDivElement>(null);
   if (lastAliasRef.current !== config.model_alias) {
     lastAliasRef.current = config.model_alias;
     aliasInputRef.current = config.model_alias;
@@ -96,6 +104,48 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
             />
             <ComboboxContent anchor={anchorRef}>
               <ComboboxEmpty>No model configs found</ComboboxEmpty>
+              <ComboboxList>
+                {(alias: string) => (
+                  <ComboboxItem key={alias} value={alias}>
+                    {alias}
+                  </ComboboxItem>
+                )}
+              </ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        </div>
+      </InlineField>
+      <InlineField label="Tool profile">
+        <div ref={toolAnchorRef}>
+          <Combobox
+            items={toolProfileAliases}
+            filteredItems={toolProfileAliases}
+            filter={null}
+            value={config.tool_alias || null}
+            onValueChange={(value) =>
+              onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                tool_alias: value ?? "",
+              })
+            }
+            itemToStringValue={(value) => value}
+            autoHighlight={true}
+          >
+            <ComboboxInput
+              className="nodrag h-8 w-full text-xs"
+              placeholder="Tool profile"
+              onBlur={(event) => {
+                const next = event.target.value;
+                if (next !== (config.tool_alias ?? "")) {
+                  onUpdate({
+                    // biome-ignore lint/style/useNamingConvention: api schema
+                    tool_alias: next,
+                  });
+                }
+              }}
+            />
+            <ComboboxContent anchor={toolAnchorRef}>
+              <ComboboxEmpty>No tool profiles found</ComboboxEmpty>
               <ComboboxList>
                 {(alias: string) => (
                   <ComboboxItem key={alias} value={alias}>

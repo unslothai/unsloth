@@ -184,6 +184,7 @@ def build_mcp_providers(
                 MCPProvider(
                     name=str(provider.get("name", "")),
                     endpoint=str(provider.get("endpoint", "")),
+                    provider_type=str(provider_type),
                     api_key=str(api_key) if api_key else None,
                 )
             )

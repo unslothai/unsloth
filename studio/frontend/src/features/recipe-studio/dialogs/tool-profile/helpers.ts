@@ -1,11 +1,7 @@
-import type { LlmMcpProviderConfig, LlmToolConfig } from "../../../types";
+import type { LlmMcpProviderConfig } from "../../types";
 
 export function createMcpProviderId(prefix: string, index: number): string {
   return `${prefix}-mcp-${Date.now()}-${index + 1}`;
-}
-
-export function createToolConfigId(prefix: string, index: number): string {
-  return `${prefix}-tool-${Date.now()}-${index + 1}`;
 }
 
 export function addUnique(items: string[], value: string): string[] {
@@ -14,6 +10,32 @@ export function addUnique(items: string[], value: string): string[] {
     return items;
   }
   return [...items, trimmed];
+}
+
+export function collectToolSuggestions(
+  providerNames: string[],
+  toolsByProvider: Record<string, string[]>,
+): string[] {
+  return Array.from(
+    new Set(
+      providerNames.flatMap(
+        (providerName) => toolsByProvider[providerName.trim()] ?? [],
+      ),
+    ),
+  );
+}
+
+export function isProviderReadyForToolFetch(
+  provider: LlmMcpProviderConfig,
+): boolean {
+  const hasName = provider.name.trim().length > 0;
+  if (!hasName) {
+    return false;
+  }
+  if (provider.provider_type === "stdio") {
+    return (provider.command?.trim().length ?? 0) > 0;
+  }
+  return (provider.endpoint?.trim().length ?? 0) > 0;
 }
 
 export function toApiProvider(
@@ -44,44 +66,4 @@ export function toApiProvider(
     // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: provider.api_key_env?.trim() || undefined,
   };
-}
-
-export function collectToolSuggestions(
-  providerNames: string[],
-  toolsByProvider: Record<string, string[]>,
-): string[] {
-  return Array.from(
-    new Set(
-      providerNames.flatMap((providerName) => {
-        return toolsByProvider[providerName.trim()] ?? [];
-      }),
-    ),
-  );
-}
-
-export function isProviderReadyForToolFetch(
-  provider: LlmMcpProviderConfig,
-): boolean {
-  const hasName = provider.name.trim().length > 0;
-  if (!hasName) {
-    return false;
-  }
-  if (provider.provider_type === "stdio") {
-    return (provider.command?.trim().length ?? 0) > 0;
-  }
-  return (provider.endpoint?.trim().length ?? 0) > 0;
-}
-
-export function resolveLlmToolAlias(
-  toolConfigs: LlmToolConfig[],
-  previousAlias: string | undefined,
-): string {
-  const toolAliases = toolConfigs
-    .map((item) => item.tool_alias.trim())
-    .filter(Boolean);
-  const currentAlias = previousAlias?.trim() ?? "";
-  if (currentAlias && toolAliases.includes(currentAlias)) {
-    return currentAlias;
-  }
-  return toolAliases[0] ?? "";
 }

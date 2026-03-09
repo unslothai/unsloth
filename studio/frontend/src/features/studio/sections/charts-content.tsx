@@ -1,11 +1,12 @@
-import { type ReactElement, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { useChartPreferencesStore } from "./charts/chart-preferences-store";
 import { EvalLossChartCard } from "./charts/eval-loss-chart-card";
 import { GradNormChartCard } from "./charts/grad-norm-chart-card";
 import { LearningRateChartCard } from "./charts/learning-rate-chart-card";
 import { TrainingLossChartCard } from "./charts/training-loss-chart-card";
-import type { OutlierMode, ScaleMode, TrainingChartSeries, ViewSettingsState } from "./charts/types";
+import type { TrainingChartSeries } from "./charts/types";
 import {
-  DEFAULT_VISIBLE_POINTS,
   MAX_RENDER_POINTS,
   applyOutlierCap,
   buildStepTicks,
@@ -16,29 +17,82 @@ import {
   toLog1p,
 } from "./charts/utils";
 
+type LossDisplayPoint = {
+  step: number;
+  displayLoss: number;
+  displaySmoothed: number;
+};
+
+function isStepVisible(step: number, domain: [number, number]): boolean {
+  return step >= domain[0] && step <= domain[1];
+}
+
+function collectLossValues(
+  data: LossDisplayPoint[],
+  domain: [number, number],
+  options: { includeRaw: boolean; includeSmoothed: boolean },
+): number[] {
+  const values: number[] = [];
+
+  for (const point of data) {
+    if (!isStepVisible(point.step, domain)) {
+      continue;
+    }
+
+    if (options.includeRaw && Number.isFinite(point.displayLoss)) {
+      values.push(point.displayLoss);
+    }
+
+    if (options.includeSmoothed && Number.isFinite(point.displaySmoothed)) {
+      values.push(point.displaySmoothed);
+    }
+  }
+
+  return values;
+}
+
 export function ChartsContent({
   metrics,
   isTraining,
   evalEnabled,
-}: { metrics: TrainingChartSeries; isTraining: boolean; evalEnabled: boolean }): ReactElement {
-  const [smoothing, setSmoothing] = useState(0.75);
-  const [showRaw, setShowRaw] = useState(true);
-  const [showSmoothed, setShowSmoothed] = useState(true);
-  const [showAvgLine, setShowAvgLine] = useState(true);
-  const [windowSize, setWindowSize] = useState<number | null>(
-    Math.max(24, Math.floor(DEFAULT_VISIBLE_POINTS / 2)),
+}: {
+  metrics: TrainingChartSeries;
+  isTraining: boolean;
+  evalEnabled: boolean;
+}): ReactElement {
+  const {
+    windowSize,
+    smoothing,
+    showRaw,
+    showSmoothed,
+    showAvgLine,
+    lossScale,
+    lrScale,
+    gradScale,
+    lossOutlierMode,
+    gradOutlierMode,
+    lrOutlierMode,
+    setAvailableSteps,
+  } = useChartPreferencesStore(
+    useShallow((state) => ({
+      windowSize: state.windowSize,
+      smoothing: state.smoothing,
+      showRaw: state.showRaw,
+      showSmoothed: state.showSmoothed,
+      showAvgLine: state.showAvgLine,
+      lossScale: state.lossScale,
+      lrScale: state.lrScale,
+      gradScale: state.gradScale,
+      lossOutlierMode: state.lossOutlierMode,
+      gradOutlierMode: state.gradOutlierMode,
+      lrOutlierMode: state.lrOutlierMode,
+      setAvailableSteps: state.setAvailableSteps,
+    })),
   );
 
-  const [lossScale, setLossScale] = useState<ScaleMode>("linear");
-  const [lrScale, setLrScale] = useState<ScaleMode>("linear");
-  const [gradScale, setGradScale] = useState<ScaleMode>("linear");
-
-  const [lossOutlierMode, setLossOutlierMode] = useState<OutlierMode>("none");
-  const [gradOutlierMode, setGradOutlierMode] = useState<OutlierMode>("none");
-  const [lrOutlierMode, setLrOutlierMode] = useState<OutlierMode>("none");
-
   const smoothedData = useMemo(
-    () => (metrics.lossHistory.length > 0 ? ema(metrics.lossHistory, 1 - smoothing) : []),
+    () =>
+      metrics.lossHistory.length > 0 ? ema(metrics.lossHistory, smoothing) : [],
     [metrics.lossHistory, smoothing],
   );
 
@@ -61,11 +115,21 @@ export function ChartsContent({
 
   const allSteps = useMemo(() => {
     const set = new Set<number>();
-    for (const point of reducedLossData) set.add(point.step);
-    for (const point of reducedGradNormData) set.add(point.step);
-    for (const point of reducedLrData) set.add(point.step);
+    for (const point of metrics.lossHistory) {
+      set.add(point.step);
+    }
+    for (const point of metrics.gradNormHistory) {
+      set.add(point.step);
+    }
+    for (const point of metrics.lrHistory) {
+      set.add(point.step);
+    }
     return Array.from(set).sort((a, b) => a - b);
-  }, [reducedGradNormData, reducedLossData, reducedLrData]);
+  }, [metrics.gradNormHistory, metrics.lossHistory, metrics.lrHistory]);
+
+  useEffect(() => {
+    setAvailableSteps(allSteps.length);
+  }, [allSteps.length, setAvailableSteps]);
 
   const stepCount = Math.max(1, allSteps.length);
   const effectiveWindowSize =
@@ -129,35 +193,23 @@ export function ChartsContent({
   );
 
   const visibleLossDisplayValues = useMemo(() => {
-    const values: number[] = [];
+    const visibleValues = collectLossValues(
+      displayLossData,
+      visibleStepDomain,
+      {
+        includeRaw: showRaw,
+        includeSmoothed: showSmoothed,
+      },
+    );
 
-    for (const point of displayLossData) {
-      if (point.step < visibleStepDomain[0] || point.step > visibleStepDomain[1]) {
-        continue;
-      }
-      if (showRaw && Number.isFinite(point.displayLoss)) {
-        values.push(point.displayLoss);
-      }
-      if (showSmoothed && Number.isFinite(point.displaySmoothed)) {
-        values.push(point.displaySmoothed);
-      }
+    if (visibleValues.length > 0) {
+      return visibleValues;
     }
 
-    if (values.length === 0) {
-      for (const point of displayLossData) {
-        if (point.step < visibleStepDomain[0] || point.step > visibleStepDomain[1]) {
-          continue;
-        }
-        if (Number.isFinite(point.displayLoss)) {
-          values.push(point.displayLoss);
-        }
-        if (Number.isFinite(point.displaySmoothed)) {
-          values.push(point.displaySmoothed);
-        }
-      }
-    }
-
-    return values;
+    return collectLossValues(displayLossData, visibleStepDomain, {
+      includeRaw: true,
+      includeSmoothed: true,
+    });
   }, [displayLossData, showRaw, showSmoothed, visibleStepDomain]);
 
   const visibleGradDisplayValues = useMemo(
@@ -165,7 +217,8 @@ export function ChartsContent({
       displayGradData
         .filter(
           (point) =>
-            point.step >= visibleStepDomain[0] && point.step <= visibleStepDomain[1],
+            point.step >= visibleStepDomain[0] &&
+            point.step <= visibleStepDomain[1],
         )
         .map((point) => point.displayGradNorm)
         .filter((value) => Number.isFinite(value)),
@@ -177,7 +230,8 @@ export function ChartsContent({
       displayLrData
         .filter(
           (point) =>
-            point.step >= visibleStepDomain[0] && point.step <= visibleStepDomain[1],
+            point.step >= visibleStepDomain[0] &&
+            point.step <= visibleStepDomain[1],
         )
         .map((point) => point.displayLr)
         .filter((value) => Number.isFinite(value)),
@@ -185,11 +239,13 @@ export function ChartsContent({
   );
 
   const lossDomain = useMemo(
-    () => buildYDomain(applyOutlierCap(visibleLossDisplayValues, lossOutlierMode)),
+    () =>
+      buildYDomain(applyOutlierCap(visibleLossDisplayValues, lossOutlierMode)),
     [lossOutlierMode, visibleLossDisplayValues],
   );
   const gradDomain = useMemo(
-    () => buildYDomain(applyOutlierCap(visibleGradDisplayValues, gradOutlierMode)),
+    () =>
+      buildYDomain(applyOutlierCap(visibleGradDisplayValues, gradOutlierMode)),
     [gradOutlierMode, visibleGradDisplayValues],
   );
   const lrDomain = useMemo(
@@ -203,7 +259,9 @@ export function ChartsContent({
   }, [reducedEvalLossData]);
 
   const evalLossStepTicks = useMemo(() => {
-    if (reducedEvalLossData.length < 2) return undefined;
+    if (reducedEvalLossData.length < 2) {
+      return undefined;
+    }
     const min = reducedEvalLossData[0].step;
     const max = reducedEvalLossData[reducedEvalLossData.length - 1].step;
     return buildStepTicks(min, max);
@@ -218,21 +276,6 @@ export function ChartsContent({
       : 0;
   const avgDisplay = lossScale === "log" ? toLog1p(avgRaw) : avgRaw;
 
-  const minWindow = Math.min(10, Math.max(1, allSteps.length));
-  const viewSettings: ViewSettingsState = {
-    effectiveWindowSize,
-    minWindow,
-    allStepsLength: allSteps.length,
-    setWindowSize: (value) => {
-      const clampedWindow = clamp(Math.round(value), 1, Math.max(1, allSteps.length));
-      if (clampedWindow >= allSteps.length) {
-        setWindowSize(null);
-        return;
-      }
-      setWindowSize(clampedWindow);
-    },
-  };
-
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <TrainingLossChartCard
@@ -242,19 +285,10 @@ export function ChartsContent({
         xAxisTicks={xAxisTicks}
         avgRaw={avgRaw}
         avgDisplay={avgDisplay}
-        smoothing={smoothing}
-        setSmoothing={setSmoothing}
         showRaw={showRaw}
-        setShowRaw={setShowRaw}
         showSmoothed={showSmoothed}
-        setShowSmoothed={setShowSmoothed}
         showAvgLine={showAvgLine}
-        setShowAvgLine={setShowAvgLine}
-        viewSettings={viewSettings}
         scale={lossScale}
-        setScale={setLossScale}
-        outlierMode={lossOutlierMode}
-        setOutlierMode={setLossOutlierMode}
       />
       <GradNormChartCard
         data={displayGradData}
@@ -262,10 +296,6 @@ export function ChartsContent({
         visibleStepDomain={visibleStepDomain}
         xAxisTicks={xAxisTicks}
         scale={gradScale}
-        setScale={setGradScale}
-        outlierMode={gradOutlierMode}
-        setOutlierMode={setGradOutlierMode}
-        viewSettings={viewSettings}
       />
       <LearningRateChartCard
         data={displayLrData}
@@ -273,10 +303,6 @@ export function ChartsContent({
         visibleStepDomain={visibleStepDomain}
         xAxisTicks={xAxisTicks}
         scale={lrScale}
-        setScale={setLrScale}
-        outlierMode={lrOutlierMode}
-        setOutlierMode={setLrOutlierMode}
-        viewSettings={viewSettings}
       />
       <EvalLossChartCard
         data={reducedEvalLossData}

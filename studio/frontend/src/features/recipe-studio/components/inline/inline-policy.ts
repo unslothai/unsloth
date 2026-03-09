@@ -21,6 +21,9 @@ export function getConfigUiMode(
   if (config.kind === "model_provider" || config.kind === "model_config") {
     return "inline";
   }
+  if (config.kind === "tool_config") {
+    return "dialog";
+  }
   if (config.kind === "llm") {
     if (config.llm_type === "text" || config.llm_type === "code") {
       return "inline";

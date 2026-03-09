@@ -4,6 +4,7 @@ export type DialogOptions = {
   categoryOptions: SamplerConfig[];
   modelConfigAliases: string[];
   modelProviderOptions: string[];
+  toolProfileAliases: string[];
   datetimeOptions: string[];
 };
 
@@ -11,6 +12,7 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
   const categoryOptions: SamplerConfig[] = [];
   const modelConfigAliases: string[] = [];
   const modelProviderOptions: string[] = [];
+  const toolProfileAliases: string[] = [];
   const datetimeOptions: string[] = [];
 
   for (const config of configList) {
@@ -29,6 +31,10 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
     }
     if (config.kind === "model_provider") {
       modelProviderOptions.push(config.name);
+      continue;
+    }
+    if (config.kind === "tool_config") {
+      toolProfileAliases.push(config.name);
     }
   }
 
@@ -36,6 +42,7 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
     categoryOptions,
     modelConfigAliases,
     modelProviderOptions,
+    toolProfileAliases,
     datetimeOptions,
   };
 }

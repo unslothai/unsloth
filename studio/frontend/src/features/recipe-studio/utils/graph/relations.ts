@@ -10,6 +10,9 @@ export function isSemanticRelation(
   if (source.kind === "model_config" && target.kind === "llm") {
     return true;
   }
+  if (source.kind === "tool_config" && target.kind === "llm") {
+    return true;
+  }
   if (
     source.kind === "llm" &&
     source.llm_type === "code" &&
