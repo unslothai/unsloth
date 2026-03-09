@@ -97,6 +97,17 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "tool_config") {
+    const providerCount = config.mcp_providers.length;
+    return {
+      title: "Tool Profile",
+      kind: "tool_config",
+      subtype: providerCount === 1 ? "1 MCP server" : `${providerCount} MCP servers`,
+      blockType: "tool_config",
+      name: config.name,
+      layoutDirection,
+    };
+  }
   return {
     title: "LLM",
     kind: "llm",

@@ -61,3 +61,19 @@ class SeedInspectResponse(BaseModel):
     preview_rows: list[dict[str, Any]] = Field(default_factory=list)
     split: str | None = None
     subset: str | None = None
+
+
+class McpToolsListRequest(BaseModel):
+    mcp_providers: list[dict[str, Any]] = Field(default_factory=list)
+    timeout_sec: float | None = Field(default=None, gt=0)
+
+
+class McpToolsProviderResult(BaseModel):
+    name: str
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class McpToolsListResponse(BaseModel):
+    providers: list[McpToolsProviderResult] = Field(default_factory=list)
+    duplicate_tools: dict[str, list[str]] = Field(default_factory=dict)

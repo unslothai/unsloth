@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
@@ -10,6 +11,7 @@ import {
   EqualSignIcon,
   FingerPrintIcon,
   FunctionIcon,
+  Plug01Icon,
   Parabola02Icon,
   PencilEdit02Icon,
   Plant01Icon,
@@ -99,6 +101,9 @@ const NODE_META = {
   model_config: {
     tone: "bg-orange-50 text-orange-600 border-orange-100",
   },
+  tool_config: {
+    tone: "bg-cyan-50 text-cyan-700 border-cyan-100",
+  },
 } as const;
 const USER_NODE_TONE =
   "bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900/60";
@@ -147,6 +152,9 @@ function resolveNodeIcon(
   }
   if (kind === "model_config") {
     return Plant01Icon;
+  }
+  if (kind === "tool_config") {
+    return Plug01Icon;
   }
   if (kind === "seed") {
     return Plant01Icon;
@@ -203,7 +211,21 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       const scoreCount = config.scores?.length ?? 0;
       return `${scoreCount} scorers`;
     }
+    if (config.tool_alias?.trim()) {
+      return `Tool profile: ${config.tool_alias.trim()}`;
+    }
     return "Prompt/system via linked input nodes";
+  }
+
+  if (config.kind === "tool_config") {
+    const providerCount = config.mcp_providers.length;
+    const allowCount = config.allow_tools?.filter((value) => value.trim()).length ?? 0;
+    const providerLabel =
+      providerCount === 1 ? "1 MCP server" : `${providerCount} MCP servers`;
+    if (allowCount === 0) {
+      return `${providerLabel} · all tools allowed`;
+    }
+    return `${providerLabel} · ${allowCount} allowed tools`;
   }
 
   if (config.kind === "validator") {
@@ -283,6 +305,30 @@ function renderNodeBody(
     return <InlineCategoryBadges values={config.values ?? []} />;
   }
 
+  if (config?.kind === "tool_config") {
+    const providerNames = config.mcp_providers
+      .map((provider) => provider.name.trim())
+      .filter(Boolean);
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">{summary}</p>
+        {providerNames.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {providerNames.map((providerName) => (
+              <Badge
+                key={providerName}
+                variant="secondary"
+                className="corner-squircle font-mono text-[11px]"
+              >
+                {providerName}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return <p className="text-xs text-muted-foreground">{summary}</p>;
 }
 
@@ -355,6 +401,7 @@ function RecipeGraphNodeBase({
   const showSemanticOut =
     data.kind === "model_config" ||
     data.kind === "model_provider" ||
+    data.kind === "tool_config" ||
     data.kind === "validator";
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);

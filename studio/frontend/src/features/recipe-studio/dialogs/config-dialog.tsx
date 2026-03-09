@@ -15,6 +15,7 @@ type ConfigDialogProps = {
   categoryOptions: SamplerConfig[];
   modelConfigAliases: string[];
   modelProviderOptions: string[];
+  toolProfileAliases: string[];
   datetimeOptions: string[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
   container?: HTMLDivElement | null;
@@ -28,6 +29,7 @@ export function ConfigDialog({
   categoryOptions,
   modelConfigAliases,
   modelProviderOptions,
+  toolProfileAliases,
   datetimeOptions,
   onUpdate,
   container,
@@ -49,7 +51,7 @@ export function ConfigDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[650px] overflow-y-auto overflow-x-hidden sm:max-w-2xl shadow-border"
       >
         <DialogShell
           title={blockDefinition ? `${blockDefinition.title} block` : undefined}
@@ -65,14 +67,16 @@ export function ConfigDialog({
           </div>
         )}
         {config && (
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             {readOnly && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                 Recipe locked while execution is active.
               </div>
             )}
             <ValidationBanner config={config} />
-            <div className={readOnly ? "pointer-events-none opacity-75" : undefined}>
+            <div
+              className={readOnly ? "pointer-events-none min-w-0 opacity-75" : "min-w-0"}
+            >
               {showDropToggle && (
                 <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
                   <div>
@@ -94,6 +98,7 @@ export function ConfigDialog({
                 categoryOptions,
                 modelConfigAliases,
                 modelProviderOptions,
+                toolProfileAliases,
                 datetimeOptions,
                 onUpdate,
               )}

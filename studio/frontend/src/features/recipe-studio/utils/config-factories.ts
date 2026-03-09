@@ -10,6 +10,7 @@ import type {
   SeedSourceType,
   SamplerConfig,
   SamplerType,
+  ToolProfileConfig,
   ValidatorCodeLang,
   ValidatorType,
   ValidatorConfig,
@@ -203,10 +204,6 @@ export function makeLlmConfig(
       llmType === "structured" ? '{\n  "field": "string"\n}' : undefined,
     // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: "",
-    // biome-ignore lint/style/useNamingConvention: api schema
-    tool_configs: [],
-    // biome-ignore lint/style/useNamingConvention: ui schema
-    mcp_providers: [],
     // biome-ignore lint/style/useNamingConvention: ui schema
     image_context: {
       enabled: false,
@@ -265,6 +262,27 @@ export function makeModelConfig(
     inference_extra_body: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     skip_health_check: false,
+  };
+}
+
+export function makeToolProfileConfig(
+  id: string,
+  existing: NodeConfig[],
+): ToolProfileConfig {
+  return {
+    id,
+    kind: "tool_config",
+    name: nextName(existing, "tools"),
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    mcp_providers: [],
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    fetched_tools_by_provider: {},
+    // biome-ignore lint/style/useNamingConvention: api schema
+    allow_tools: [],
+    // biome-ignore lint/style/useNamingConvention: api schema
+    max_tool_call_turns: "5",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    timeout_sec: "",
   };
 }
 
