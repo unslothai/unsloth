@@ -123,6 +123,10 @@ function mergeRecommendedInference(
     topP: toFiniteNumber(inference?.top_p) ?? current.topP,
     topK: toFiniteNumber(inference?.top_k) ?? current.topK,
     minP: toFiniteNumber(inference?.min_p) ?? current.minP,
+    trustRemoteCode:
+      typeof inference?.trust_remote_code === "boolean"
+        ? inference.trust_remote_code
+        : current.trustRemoteCode,
   };
 }
 
