@@ -43,6 +43,11 @@ export function getAvailableVariableEntries(
       continue;
     }
 
+    if (config.kind === "validator") {
+      vars.push({ name: config.name, source: "column" });
+      continue;
+    }
+
     if (config.kind === "seed") {
       for (const col of config.seed_columns ?? []) {
         const name = col.trim();

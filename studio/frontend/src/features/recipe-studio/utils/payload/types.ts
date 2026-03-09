@@ -28,6 +28,8 @@ export type RecipePayload = {
     artifact_path?: string;
     // biome-ignore lint/style/useNamingConvention: backend schema
     merge_batches?: boolean;
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    run_name?: string | null;
   };
   ui: {
     nodes: Array<{
@@ -67,6 +69,8 @@ export type RecipePayload = {
     unstructured_file_name?: string;
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
+    // ui-only: per-node advanced accordion state
+    advanced_open_by_node?: Record<string, boolean>;
   };
 };
 

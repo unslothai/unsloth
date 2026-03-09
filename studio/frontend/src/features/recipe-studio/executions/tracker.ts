@@ -232,6 +232,12 @@ export async function trackRecipeExecution({
     const eventDataset = completedEventPayload
       ? completedEventPayload["dataset"]
       : null;
+    const eventProcessorArtifacts =
+      completedEventPayload &&
+      typeof completedEventPayload["processor_artifacts"] === "object" &&
+      completedEventPayload["processor_artifacts"] !== null
+        ? (completedEventPayload["processor_artifacts"] as Record<string, unknown>)
+        : null;
     const shouldFetchPreviewDataset = kind === "preview" && !Array.isArray(eventDataset);
     const shouldFetchAnalysis =
       !completedEventPayload ||
@@ -276,6 +282,7 @@ export async function trackRecipeExecution({
       datasetPage: 1,
       datasetPageSize: DATASET_PAGE_SIZE,
       error: null,
+      processor_artifacts: eventProcessorArtifacts ?? latestExecution.processor_artifacts,
       finishedAt: latestExecution.finishedAt ?? Date.now(),
     };
     onUpsert(latestExecution);

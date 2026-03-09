@@ -3,6 +3,7 @@ Datasets API routes
 """
 import base64
 import io
+import json
 import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,7 +31,12 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-from models.datasets import CheckFormatRequest, CheckFormatResponse
+from models.datasets import (
+    CheckFormatRequest,
+    CheckFormatResponse,
+    LocalDatasetItem,
+    LocalDatasetsResponse,
+)
 
 
 def _serialize_preview_value(value):
@@ -82,6 +88,175 @@ DATA_EXTS = (
     '.gz', '.zst',
     '.zip',
 )
+LOCAL_FILE_EXTS = ('.json', '.jsonl', '.csv', '.parquet')
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+LOCAL_DATASETS_ROOT = BACKEND_ROOT / "assets" / "datasets"
+
+
+def _safe_read_metadata(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _safe_read_rows_from_metadata(payload: dict | None) -> int | None:
+    if not payload:
+        return None
+    for key in ("actual_num_records", "target_num_records"):
+        value = payload.get(key)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _safe_read_metadata_summary(payload: dict | None) -> dict | None:
+    if not payload:
+        return None
+
+    actual_num_records = (
+        payload.get("actual_num_records")
+        if isinstance(payload.get("actual_num_records"), int)
+        else None
+    )
+    target_num_records = (
+        payload.get("target_num_records")
+        if isinstance(payload.get("target_num_records"), int)
+        else actual_num_records
+    )
+
+    columns: list[str] | None = None
+    schema = payload.get("schema")
+    if isinstance(schema, dict):
+        columns = [str(key) for key in schema.keys()]
+    if not columns:
+        stats = payload.get("column_statistics")
+        if isinstance(stats, list):
+            derived = [
+                str(item.get("column_name"))
+                for item in stats
+                if isinstance(item, dict) and item.get("column_name")
+            ]
+            columns = derived or None
+
+    parquet_files_count = None
+    file_paths = payload.get("file_paths")
+    if isinstance(file_paths, dict):
+        parquet_files = file_paths.get("parquet-files")
+        if isinstance(parquet_files, list):
+            parquet_files_count = len(parquet_files)
+
+    total_num_batches = (
+        payload.get("total_num_batches")
+        if isinstance(payload.get("total_num_batches"), int)
+        else parquet_files_count
+    )
+    num_completed_batches = (
+        payload.get("num_completed_batches")
+        if isinstance(payload.get("num_completed_batches"), int)
+        else total_num_batches
+    )
+
+    return {
+        "actual_num_records": actual_num_records,
+        "target_num_records": target_num_records,
+        "total_num_batches": total_num_batches,
+        "num_completed_batches": num_completed_batches,
+        "columns": columns,
+    }
+
+
+def _build_local_dataset_items() -> list[LocalDatasetItem]:
+    if not LOCAL_DATASETS_ROOT.exists():
+        return []
+
+    items: list[LocalDatasetItem] = []
+    for entry in LOCAL_DATASETS_ROOT.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("recipe_"):
+            continue
+        parquet_dir = entry / "parquet-files"
+        if not parquet_dir.exists() or not any(parquet_dir.glob("*.parquet")):
+            continue
+
+        rows = None
+        metadata_summary = None
+        metadata_path = entry / "metadata.json"
+        if metadata_path.exists():
+            metadata_payload = _safe_read_metadata(metadata_path)
+            rows = _safe_read_rows_from_metadata(metadata_payload)
+            metadata_summary = _safe_read_metadata_summary(metadata_payload)
+
+        try:
+            updated_at = entry.stat().st_mtime
+        except OSError:
+            updated_at = None
+
+        items.append(
+            LocalDatasetItem(
+                id=entry.name,
+                label=entry.name,
+                path=str(parquet_dir.resolve()),
+                rows=rows,
+                updated_at=updated_at,
+                metadata=metadata_summary,
+            )
+        )
+
+    items.sort(key=lambda item: item.updated_at or 0, reverse=True)
+    return items
+
+
+def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
+    from datasets import load_dataset
+
+    if dataset_path.is_dir():
+        parquet_dir = dataset_path / "parquet-files" if (dataset_path / "parquet-files").exists() else dataset_path
+        parquet_files = sorted(parquet_dir.glob("*.parquet"))
+        if parquet_files:
+            dataset = load_dataset(
+                "parquet",
+                data_files=[str(path) for path in parquet_files],
+                split=train_split,
+            )
+            total_rows = len(dataset)
+            preview_slice = dataset.select(range(min(preview_size, total_rows)))
+            return preview_slice, total_rows
+        else:
+            candidate_files: list[Path] = []
+            for ext in LOCAL_FILE_EXTS:
+                candidate_files.extend(sorted(dataset_path.glob(f"*{ext}")))
+            if not candidate_files:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
+                )
+            dataset_path = candidate_files[0]
+
+    if dataset_path.suffix in ['.json', '.jsonl']:
+        dataset = load_dataset('json', data_files=str(dataset_path), split=train_split)
+    elif dataset_path.suffix == '.csv':
+        dataset = load_dataset('csv', data_files=str(dataset_path), split=train_split)
+    elif dataset_path.suffix == '.parquet':
+        dataset = load_dataset('parquet', data_files=str(dataset_path), split=train_split)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format: {dataset_path.suffix}"
+        )
+
+    total_rows = len(dataset)
+    preview_slice = dataset.select(range(min(preview_size, total_rows)))
+    return preview_slice, total_rows
+
+
+@router.get("/local", response_model=LocalDatasetsResponse)
+def list_local_datasets(
+    current_subject: str = Depends(get_current_subject),
+) -> LocalDatasetsResponse:
+    return LocalDatasetsResponse(datasets=_build_local_dataset_items())
 
 
 @router.post("/check-format", response_model=CheckFormatResponse)
@@ -116,19 +291,12 @@ def check_format(
 
         if dataset_path.exists():
             # ── Local file ──────────────────────────────────────────
-            if dataset_path.suffix in ['.json', '.jsonl']:
-                dataset = load_dataset('json', data_files=str(dataset_path), split=request.train_split)
-            elif dataset_path.suffix == '.csv':
-                dataset = load_dataset('csv', data_files=str(dataset_path), split=request.train_split)
-            elif dataset_path.suffix == '.parquet':
-                dataset = load_dataset('parquet', data_files=str(dataset_path), split=request.train_split)
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported file format: {dataset_path.suffix}"
-                )
-            total_rows = len(dataset)
-            preview_slice = dataset.select(range(min(PREVIEW_SIZE, total_rows)))
+            train_split = request.train_split or "train"
+            preview_slice, total_rows = _load_local_preview_slice(
+                dataset_path=dataset_path,
+                train_split=train_split,
+                preview_size=PREVIEW_SIZE,
+            )
         else:
             # ── HuggingFace dataset ─────────────────────────────────
             # Tier 1: list_repo_files → load only the first data file

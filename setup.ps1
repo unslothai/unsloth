@@ -17,6 +17,7 @@ $PackageDir = Split-Path -Parent $ScriptDir
 
 # Detect if running from pip install (no studio/frontend/ dir in repo)
 $FrontendDir = Join-Path $ScriptDir "studio\frontend"
+$OxcValidatorDir = Join-Path $ScriptDir "studio\backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
 # ─────────────────────────────────────────────
@@ -597,6 +598,23 @@ if ($IsPipInstall) {
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
     Write-Host "[OK] Frontend built to studio/frontend/dist" -ForegroundColor Green
+}
+
+if (Test-Path $OxcValidatorDir) {
+    Write-Host "Installing OXC validator runtime..." -ForegroundColor Cyan
+    $prevEAP_oxc = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    Push-Location $OxcValidatorDir
+    npm install 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_oxc
+        Write-Host "[ERROR] OXC validator npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
+    Pop-Location
+    $ErrorActionPreference = $prevEAP_oxc
+    Write-Host "[OK] OXC validator runtime installed" -ForegroundColor Green
 }
 
 # ==========================================================================

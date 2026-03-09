@@ -32,6 +32,7 @@ import {
   buildSamplerColumn,
   buildSeedConfig,
   buildSeedDropProcessor,
+  buildValidatorColumn,
   pickFirstSeedConfig,
 } from "./builders";
 import type { RecipePayloadResult } from "./types";
@@ -40,8 +41,10 @@ import {
   validateModelConfigProviders,
   validateSubcategoryConfigs,
   validateTimedeltaConfigs,
+  validateValidatorConfigs,
   validateUsedProviders,
 } from "./validate";
+import { isLikelyImageValue } from "../image-preview";
 
 function pushUniqueJson(
   label: string,
@@ -61,6 +64,29 @@ function pushUniqueJson(
     seen.set(key, serialized);
     out.push(item);
   }
+}
+
+function collectAdvancedOpenByNode(
+  configs: Record<string, NodeConfig>,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const config of Object.values(configs)) {
+    if (
+      !(
+        config.kind === "sampler" ||
+        config.kind === "llm" ||
+        config.kind === "validator" ||
+        config.kind === "seed"
+      )
+    ) {
+      continue;
+    }
+    if (config.advancedOpen !== true) {
+      continue;
+    }
+    out[config.name] = true;
+  }
+  return out;
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
@@ -87,7 +113,15 @@ export function buildRecipePayload(
   const toolConfigJsonByAlias = new Map<string, string>();
   const nameSet = new Set<string>();
   const nameToConfig = new Map<string, NodeConfig>();
+  const allNameToConfig = new Map<string, NodeConfig>();
   const firstSeed = pickFirstSeedConfig(configs);
+
+  for (const config of Object.values(configs)) {
+    if (config.kind === "seed") {
+      continue;
+    }
+    allNameToConfig.set(config.name, config);
+  }
 
   for (const node of nodes) {
     const config = configs[node.id];
@@ -110,6 +144,30 @@ export function buildRecipePayload(
       continue;
     }
     if (config.kind === "llm") {
+      if (config.image_context?.enabled) {
+        const imageContext = config.image_context;
+        const columnName = imageContext.column_name.trim();
+        if (columnName) {
+          if (firstSeed?.seed_columns && firstSeed.seed_columns.length > 0) {
+            if (!firstSeed.seed_columns.includes(columnName)) {
+              errors.push(
+                `LLM ${config.name}: image context column '${columnName}' not found in seed columns.`,
+              );
+            }
+          }
+          const previewRows = firstSeed?.seed_preview_rows ?? [];
+          if (previewRows.length > 0) {
+            const hasImageLikeValue = previewRows.some((row) =>
+              isLikelyImageValue(row[columnName]),
+            );
+            if (!hasImageLikeValue) {
+              errors.push(
+                `LLM ${config.name}: image context column '${columnName}' has no image-like values in preview rows.`,
+              );
+            }
+          }
+        }
+      }
       columns.push(buildLlmColumn(config, errors));
       for (const provider of config.mcp_providers ?? []) {
         const builtProvider = buildLlmMcpProvider(provider, errors);
@@ -154,6 +212,11 @@ export function buildRecipePayload(
       nameToConfig.set(config.name, config);
       continue;
     }
+    if (config.kind === "validator") {
+      columns.push(buildValidatorColumn(config, errors, allNameToConfig));
+      nameToConfig.set(config.name, config);
+      continue;
+    }
     if (config.kind === "seed") {
       // SeedConfig is global config (seed_config); seed-dataset columns are added by DataDesigner.
       continue;
@@ -167,12 +230,13 @@ export function buildRecipePayload(
       modelProviderConfigs.push(config);
       continue;
     }
-    modelConfigs.push(buildModelConfig(config));
+    modelConfigs.push(buildModelConfig(config, errors));
     modelConfigConfigs.push(config);
   }
 
   validateSubcategoryConfigs(configs, nameToConfig, errors);
   validateTimedeltaConfigs(configs, nameToConfig, errors);
+  validateValidatorConfigs(configs, nameToConfig, errors);
   validateModelAliasLinks(modelAliases, modelConfigConfigs, errors);
   validateModelConfigProviders(
     modelConfigConfigs,
@@ -300,6 +364,7 @@ export function buildRecipePayload(
   if (seedDropProcessor) {
     recipeProcessors.push(seedDropProcessor);
   }
+  const uiAdvancedOpenByNode = collectAdvancedOpenByNode(configs);
 
   return {
     errors,
@@ -353,6 +418,10 @@ export function buildRecipePayload(
           firstSeed.unstructured_chunk_overlap !== undefined && {
             unstructured_chunk_overlap: firstSeed.unstructured_chunk_overlap,
           }),
+        ...(Object.keys(uiAdvancedOpenByNode).length > 0 && {
+          // biome-ignore lint/style/useNamingConvention: ui schema
+          advanced_open_by_node: uiAdvancedOpenByNode,
+        }),
       },
     },
   };

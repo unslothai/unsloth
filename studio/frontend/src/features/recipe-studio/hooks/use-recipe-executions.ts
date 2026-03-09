@@ -15,6 +15,7 @@ import type {
 import {
   DATASET_PAGE_SIZE,
   executionLabel,
+  normalizeRunName,
   normalizeDatasetRows,
   toErrorMessage,
   withExecutionDefaults,
@@ -50,8 +51,10 @@ type UseRecipeExecutionsResult = {
   setRunDialogOpen: (open: boolean) => void;
   previewRows: number;
   fullRows: number;
+  fullRunName: string;
   setPreviewRows: (rows: number) => void;
   setFullRows: (rows: number) => void;
+  setFullRunName: (name: string) => void;
   runErrors: string[];
   runSettings: RecipeRunSettings;
   setRunSettings: (patch: Partial<RecipeRunSettings>) => void;
@@ -109,6 +112,7 @@ export function useRecipeExecutions({
     runDialogKind,
     previewRows,
     fullRows,
+    fullRunName,
     runErrors,
     runSettings,
     previewLoading,
@@ -119,6 +123,7 @@ export function useRecipeExecutions({
     setRunDialogKind,
     setPreviewRows,
     setFullRows,
+    setFullRunName,
     setRunErrors,
     setRunSettings,
     setPreviewLoading,
@@ -133,6 +138,7 @@ export function useRecipeExecutions({
       runDialogKind: state.runDialogKind,
       previewRows: state.previewRows,
       fullRows: state.fullRows,
+      fullRunName: state.fullRunName,
       runErrors: state.runErrors,
       runSettings: state.runSettings,
       previewLoading: state.previewLoading,
@@ -143,6 +149,7 @@ export function useRecipeExecutions({
       setRunDialogKind: state.setRunDialogKind,
       setPreviewRows: state.setPreviewRows,
       setFullRows: state.setFullRows,
+      setFullRunName: state.setFullRunName,
       setRunErrors: state.setRunErrors,
       setRunSettings: state.setRunSettings,
       setPreviewLoading: state.setPreviewLoading,
@@ -238,8 +245,9 @@ export function useRecipeExecutions({
       payload: RecipePayload;
       rows: number;
       settings: RecipeRunSettings;
+      runName: string | null;
     }): Promise<boolean> => {
-      const { kind, payload, rows, settings } = input;
+      const { kind, payload, rows, settings, runName } = input;
       const setLoading = kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
 
@@ -249,6 +257,7 @@ export function useRecipeExecutions({
         kind,
         rows,
         currentSignature,
+        runName,
       });
 
       upsertAndPersist(baseExecution);
@@ -261,6 +270,7 @@ export function useRecipeExecutions({
           kind,
           rows,
           settings,
+          runName,
         });
         const createdJob = await createRecipeJob(jobPayload);
         const executionWithJob = {
@@ -309,7 +319,19 @@ export function useRecipeExecutions({
   );
 
   const runWithValidation = useCallback(
-    async (kind: RecipeExecutionKind, rows: number): Promise<boolean> => {
+    async (
+      kind: RecipeExecutionKind,
+      rows: number,
+      runName: string | null,
+    ): Promise<boolean> => {
+      const trimmedRunName = typeof runName === "string" ? runName.trim() : "";
+      if (kind === "full" && !trimmedRunName) {
+        const message = "Run name required for full runs.";
+        setRunErrors([message]);
+        toastError("Run name required", message);
+        return false;
+      }
+
       const payload = readExecutablePayload();
       if (!payload) {
         return false;
@@ -321,6 +343,7 @@ export function useRecipeExecutions({
         kind,
         rows: normalizedRows,
         settings: runSettings,
+        runName,
       });
 
       try {
@@ -345,18 +368,19 @@ export function useRecipeExecutions({
         payload,
         rows: normalizedRows,
         settings: runSettings,
+        runName,
       });
     },
     [readExecutablePayload, runExecution, runSettings, setRunErrors],
   );
 
   const runPreview = useCallback(async (): Promise<boolean> => {
-    return runWithValidation("preview", previewRows);
+    return runWithValidation("preview", previewRows, null);
   }, [previewRows, runWithValidation]);
 
   const runFull = useCallback(async (): Promise<boolean> => {
-    return runWithValidation("full", fullRows);
-  }, [fullRows, runWithValidation]);
+    return runWithValidation("full", fullRows, fullRunName);
+  }, [fullRows, fullRunName, runWithValidation]);
 
   const runFromDialog = useCallback(async (): Promise<boolean> => {
     setValidateResult(null);
@@ -388,6 +412,7 @@ export function useRecipeExecutions({
       kind: runDialogKind,
       rows: normalizedRows,
       settings: runSettings,
+      runName: runDialogKind === "full" ? normalizeRunName(fullRunName) : null,
     });
 
     setValidateLoading(true);
@@ -412,6 +437,7 @@ export function useRecipeExecutions({
       setValidateLoading(false);
     }
   }, [
+    fullRunName,
     fullRows,
     payloadErrorMessage,
     payloadResult.errors,
@@ -419,6 +445,7 @@ export function useRecipeExecutions({
     readPayload,
     runDialogKind,
     runSettings,
+    setRunErrors,
   ]);
 
   const openRunDialog = useCallback(
@@ -509,8 +536,10 @@ export function useRecipeExecutions({
     setRunDialogOpen,
     previewRows,
     fullRows,
+    fullRunName,
     setPreviewRows,
     setFullRows,
+    setFullRunName,
     runErrors,
     runSettings,
     setRunSettings,

@@ -12,16 +12,22 @@ export function validateTrainingConfig(
     return { ok: false, message: "Select a base model first." };
   }
 
-  if (config.datasetSource !== "huggingface") {
-    return {
-      ok: false,
-      message: "Only Hugging Face dataset source is enabled right now.",
-    };
+  if (config.datasetSource === "huggingface") {
+    if (!config.dataset) {
+      return { ok: false, message: "Select a Hugging Face dataset first." };
+    }
+    return { ok: true, message: null };
   }
 
-  if (!config.dataset) {
-    return { ok: false, message: "Select a Hugging Face dataset first." };
+  if (config.datasetSource === "upload") {
+    if (!config.uploadedFile) {
+      return { ok: false, message: "Select a local dataset first." };
+    }
+    return { ok: true, message: null };
   }
 
-  return { ok: true, message: null };
+  return {
+    ok: false,
+    message: "Unsupported dataset source.",
+  };
 }

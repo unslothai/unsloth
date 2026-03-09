@@ -29,6 +29,27 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "validator") {
+    const isOxc = config.validator_type === "oxc";
+    const isSql = config.code_lang.startsWith("sql:");
+    let subtype = "Python";
+    let blockType: RecipeNodeData["blockType"] = "validator_python";
+    if (isOxc) {
+      subtype = "OXC";
+      blockType = "validator_oxc";
+    } else if (isSql) {
+      subtype = "SQL";
+      blockType = "validator_sql";
+    }
+    return {
+      title: "Validator",
+      kind: "validator",
+      subtype,
+      blockType,
+      name: config.name,
+      layoutDirection,
+    };
+  }
   if (config.kind === "markdown_note") {
     return {
       title: "Note",

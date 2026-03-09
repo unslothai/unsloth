@@ -10,6 +10,9 @@ import type {
   SeedSourceType,
   SamplerConfig,
   SamplerType,
+  ValidatorCodeLang,
+  ValidatorType,
+  ValidatorConfig,
 } from "../types";
 import { nextName } from "./naming";
 
@@ -204,20 +207,17 @@ export function makeLlmConfig(
     tool_configs: [],
     // biome-ignore lint/style/useNamingConvention: ui schema
     mcp_providers: [],
-    scores:
-      llmType === "judge"
-        ? [
-            {
-              name: "Quality",
-              description: "Overall quality based on the criteria.",
-              options: [
-                { value: "1", description: "Poor" },
-                { value: "3", description: "Acceptable" },
-                { value: "5", description: "Excellent" },
-              ],
-            },
-          ]
-        : undefined,
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    image_context: {
+      enabled: false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_name: "",
+    },
+    // biome-ignore lint/style/useNamingConvention: api schema
+    with_trace: "none",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    extract_reasoning_content: false,
+    scores: llmType === "judge" ? [] : undefined,
   };
 }
 
@@ -256,9 +256,13 @@ export function makeModelConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_temperature: "0.7",
     // biome-ignore lint/style/useNamingConvention: api schema
-    inference_max_tokens: "256",
+    inference_max_tokens: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_top_p: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_timeout: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_extra_body: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     skip_health_check: false,
   };
@@ -275,6 +279,36 @@ export function makeExpressionConfig(
     drop: false,
     expr: "",
     dtype: "str",
+  };
+}
+
+export function makeValidatorConfig(
+  id: string,
+  validatorType: ValidatorType,
+  codeLang: ValidatorCodeLang,
+  existing: NodeConfig[],
+): ValidatorConfig {
+  const isSql = validatorType === "code" && codeLang.startsWith("sql:");
+  const isOxc = validatorType === "oxc";
+  let namePrefix = "validator_python";
+  if (isSql) {
+    namePrefix = "validator_sql";
+  } else if (isOxc) {
+    namePrefix = "validator_oxc";
+  }
+  return {
+    id,
+    kind: "validator",
+    name: nextName(existing, namePrefix),
+    drop: false,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    target_columns: [],
+    validator_type: validatorType,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    code_lang: codeLang,
+    oxc_validation_mode: "syntax",
+    oxc_code_shape: "auto",
+    batch_size: "10",
   };
 }
 
