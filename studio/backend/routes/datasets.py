@@ -296,7 +296,9 @@ def upload_dataset(
         raise HTTPException(status_code=400, detail="Empty upload payload")
 
     DATASET_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{uuid4().hex}_{filename}"
+    # Normalize extension to lowercase so downstream suffix checks work
+    stem = Path(filename).stem
+    stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
     stored_path.write_bytes(file_bytes)
 
