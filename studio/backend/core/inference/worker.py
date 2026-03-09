@@ -155,6 +155,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             max_seq_length=config.get("max_seq_length", 2048),
             load_in_4bit=load_in_4bit,
             hf_token=hf_token,
+            trust_remote_code=config.get("trust_remote_code", False),
         )
 
         if success:

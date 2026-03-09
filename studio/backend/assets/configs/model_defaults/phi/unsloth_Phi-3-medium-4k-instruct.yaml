@@ -3,6 +3,7 @@
 # Also applies to: "unsloth/Phi-3-medium-4k-instruct-bnb-4bit", "microsoft/Phi-3-medium-4k-instruct",
 
 training:
+  trust_remote_code: false
   max_seq_length: 2048
   # num_epochs: 4
   num_epochs: 0
@@ -42,4 +43,5 @@ logging:
   tensorboard_dir: "runs"
   log_frequency: 10
 
-
+inference:
+  trust_remote_code: false
