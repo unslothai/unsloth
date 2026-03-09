@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 export const collapseAnim = {
   initial: { height: 0, opacity: 0 },
   animate: { height: "auto" as const, opacity: 1 },

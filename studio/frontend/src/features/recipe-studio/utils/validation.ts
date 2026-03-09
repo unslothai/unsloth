@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import type { NodeConfig } from "../types";
 import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse";
 import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";

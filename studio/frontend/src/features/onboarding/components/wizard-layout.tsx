@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { Card } from "@/components/ui/card";
 import { useNavigate } from "@tanstack/react-router";
 import { motion } from "motion/react";
