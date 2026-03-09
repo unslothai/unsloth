@@ -75,12 +75,17 @@ function deriveLocalDatasetName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+function formatUpdatedDate(timestamp: number | null): string {
+  if (typeof timestamp !== "number") return "--";
+  return new Date(timestamp * 1000).toLocaleDateString();
+}
+
 export function DatasetSection() {
   const {
     dataset,
-    setDataset,
     datasetSource,
-    setDatasetSource,
+    selectHfDataset,
+    selectLocalDataset,
     datasetFormat,
     setDatasetFormat,
     datasetSubset,
@@ -90,7 +95,6 @@ export function DatasetSection() {
     datasetEvalSplit,
     setDatasetEvalSplit,
     uploadedFile,
-    setUploadedFile,
     hfToken,
     modelType,
     isVisionModel,
@@ -102,9 +106,9 @@ export function DatasetSection() {
   } = useTrainingConfigStore(
     useShallow((s) => ({
       dataset: s.dataset,
-      setDataset: s.setDataset,
       datasetSource: s.datasetSource,
-      setDatasetSource: s.setDatasetSource,
+      selectHfDataset: s.selectHfDataset,
+      selectLocalDataset: s.selectLocalDataset,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       datasetSubset: s.datasetSubset,
@@ -114,7 +118,6 @@ export function DatasetSection() {
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
-      setUploadedFile: s.setUploadedFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
       isVisionModel: s.isVisionModel,
@@ -136,6 +139,7 @@ export function DatasetSection() {
   const [localError, setLocalError] = useState<string | null>(null);
   const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
   const selectingRef = useRef(false);
+  const pendingSourceTabRef = useRef<"huggingface" | "local" | null>(null);
   const debouncedQuery = useDebouncedValue(searchQuery);
 
   useEffect(() => {
@@ -164,14 +168,24 @@ export function DatasetSection() {
 
   function handleDatasetSelect(id: string | null) {
     selectingRef.current = true;
-    setDatasetSource("huggingface");
-    setDataset(id);
+    pendingSourceTabRef.current = "huggingface";
+    selectHfDataset(id);
   }
 
   function handleLocalDatasetSelect(path: string) {
     selectingRef.current = true;
-    setDatasetSource("upload");
-    setUploadedFile(path);
+    pendingSourceTabRef.current = "local";
+    selectLocalDataset(path);
+  }
+
+  function clearSelectionForTab(tab: "huggingface" | "local") {
+    pendingSourceTabRef.current = tab;
+    if (tab === "huggingface") {
+      handleDatasetSelect(null);
+      return;
+    }
+    selectingRef.current = true;
+    selectLocalDataset(null);
   }
 
   function handleInputChange(
@@ -247,9 +261,16 @@ export function DatasetSection() {
     return ids;
   }, [localFilteredDatasets, selectedLocalId]);
 
+  const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
   const comboboxItems = pickerTab === "huggingface" ? hfResultIds : localResultIds;
   const comboboxValue =
-    pickerTab === "huggingface" ? dataset : selectedLocalId;
+    pickerTab === "huggingface"
+      ? datasetSource === "huggingface"
+        ? dataset
+        : null
+      : datasetSource === "upload"
+        ? selectedLocalId
+        : null;
   const isHfDatasetSelected =
     datasetSource === "huggingface" &&
     !!dataset &&
@@ -279,12 +300,15 @@ export function DatasetSection() {
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className="md:min-h-[470px] dark:shadow-border"
+        className="dark:shadow-border"
       >
-        <div className="flex h-full flex-col gap-4">
+        <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Load from Hub
+              Choose dataset
+              <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
+                {datasetSource === "upload" ? "Local" : "Hugging Face"}
+              </span>
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -298,8 +322,8 @@ export function DatasetSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Search Hugging Face datasets or enter a path like
-                  'username/dataset-name'.{" "}
+                  Use the popup tabs to switch between Hugging Face and local
+                  recipe outputs.{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                     target="_blank"
@@ -342,11 +366,17 @@ export function DatasetSection() {
                 filter={null}
                 value={comboboxValue}
                 onOpenChange={(open) => {
-                  if (!open) return;
                   setSearchQuery("");
+                  if (!open) {
+                    setPickerTab(pendingSourceTabRef.current ?? activeSourceTab);
+                    pendingSourceTabRef.current = null;
+                  }
                 }}
                 onValueChange={(value) => {
-                  if (!value) return;
+                  if (!value) {
+                    clearSelectionForTab(pickerTab);
+                    return;
+                  }
                   if (pickerTab === "huggingface") {
                     handleDatasetSelect(value);
                     return;
@@ -367,8 +397,13 @@ export function DatasetSection() {
                 autoHighlight={true}
               >
                 <ComboboxInput
-                  placeholder="Search datasets..."
+                  placeholder={
+                    pickerTab === "huggingface"
+                      ? "Search Hugging Face datasets..."
+                      : "Search local datasets..."
+                  }
                   className="w-full"
+                  showClear={true}
                 >
                   <InputGroupAddon>
                     <HugeiconsIcon icon={Search01Icon} className="size-4" />
@@ -505,200 +540,216 @@ export function DatasetSection() {
             {isCheckingToken && (
               <p className="text-xs text-muted-foreground">Checking token…</p>
             )}
-          </div>
-
-        <HfDatasetSubsetSplitSelectors
-          variant="studio"
-          enabled={isHfDatasetSelected}
-          datasetName={isHfDatasetSelected ? dataset : null}
-          accessToken={hfToken || undefined}
-          datasetSubset={datasetSubset}
-          setDatasetSubset={setDatasetSubset}
-          datasetSplit={datasetSplit}
-          setDatasetSplit={setDatasetSplit}
-          datasetEvalSplit={datasetEvalSplit}
-          setDatasetEvalSplit={setDatasetEvalSplit}
-        />
-
-        {datasetSource === "upload" && (
-          <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs font-medium text-muted-foreground">Dataset Metadata</p>
-              <p className="text-[10px] text-muted-foreground/80">Data Recipe Output</p>
-            </div>
-
-            {selectedLocalDataset ? (
-              <>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                  <MetadataRow
-                    label="Rows"
-                    value={
-                      typeof selectedLocalRows === "number"
-                        ? selectedLocalRows.toLocaleString()
-                        : "--"
-                    }
-                  />
-                  <MetadataRow
-                    label="Columns"
-                    value={
-                      selectedLocalColumns.length > 0
-                        ? String(selectedLocalColumns.length)
-                        : "--"
-                    }
-                  />
-                  <MetadataRow
-                    label="Batches"
-                    value={
-                      typeof selectedLocalMetadata?.num_completed_batches === "number" &&
-                      typeof selectedLocalMetadata?.total_num_batches === "number"
-                        ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
-                        : "--"
-                    }
-                  />
-                  <MetadataRow
-                    label="Updated"
-                    value={
-                      typeof selectedLocalUpdatedAt === "number"
-                        ? new Date(selectedLocalUpdatedAt * 1000).toLocaleDateString()
-                        : "--"
-                    }
-                  />
-                </div>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Select a local dataset to view metadata.
+            {pickerTab !== activeSourceTab && (
+              <p className="text-[11px] text-muted-foreground">
+                Browsing {pickerTab === "local" ? "Local datasets" : "Hugging Face"}.
+                Current selection stays {datasetSource === "upload" ? "Local" : "Hugging Face"}.
               </p>
             )}
           </div>
-        )}
 
-        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-          <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+          {isHfDatasetSelected ? (
+            <HfDatasetSubsetSplitSelectors
+              variant="studio"
+              enabled={true}
+              datasetName={dataset}
+              accessToken={hfToken || undefined}
+              datasetSubset={datasetSubset}
+              setDatasetSubset={setDatasetSubset}
+              datasetSplit={datasetSplit}
+              setDatasetSplit={setDatasetSplit}
+              datasetEvalSplit={datasetEvalSplit}
+              setDatasetEvalSplit={setDatasetEvalSplit}
             />
-            Advanced
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-3">
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  Target Format
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-foreground/70 hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-3"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Format of your training data. Auto-detect works for most
-                      datasets.{" "}
-                      <a
-                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline"
-                      >
-                        Read more
-                      </a>
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Select
-                  value={datasetFormat}
-                  onValueChange={(v) =>
-                    setDatasetFormat(v as typeof datasetFormat)
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">Auto</SelectItem>
-                    <SelectItem value="alpaca">Alpaca</SelectItem>
-                    <SelectItem value="chatml">ChatML</SelectItem>
-                    <SelectItem value="sharegpt">ShareGPT</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    Train Split Start
-                    <Tooltip>
-                      <TooltipTrigger asChild={true}>
-                        <button
-                          type="button"
-                          className="text-foreground/70 hover:text-foreground"
-                        >
-                          <HugeiconsIcon
-                            icon={InformationCircleIcon}
-                            className="size-3"
-                          />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Only train on a subset of your training split by
-                        specifying a start row index (inclusive, 0-based).
-                        Leave empty to start from the first row.
-                      </TooltipContent>
-                    </Tooltip>
-                  </span>
-                  <Input
-                    inputMode="numeric"
-                    placeholder="0"
-                    value={datasetSliceStart ?? ""}
-                    onChange={(e) =>
-                      setDatasetSliceStart(e.target.value || null)
-                    }
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    Train Split End
-                    <Tooltip>
-                      <TooltipTrigger asChild={true}>
-                        <button
-                          type="button"
-                          className="text-foreground/70 hover:text-foreground"
-                        >
-                          <HugeiconsIcon
-                            icon={InformationCircleIcon}
-                            className="size-3"
-                          />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Last row index to include from the training split
-                        (inclusive, 0-based). For example, set Start to 0 and
-                        End to 99 to train on the first 100 rows. Leave empty
-                        to use all remaining rows.
-                      </TooltipContent>
-                    </Tooltip>
-                  </span>
-                  <Input
-                    inputMode="numeric"
-                    placeholder="End"
-                    value={datasetSliceEnd ?? ""}
-                    onChange={(e) =>
-                      setDatasetSliceEnd(e.target.value || null)
-                    }
-                  />
+          ) : datasetSource === "upload" ? (
+            <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Local dataset metadata
+                  </p>
+                  <p className="text-[10px] text-muted-foreground/80">
+                    Data Recipe output. Eval split unavailable for local datasets.
+                  </p>
                 </div>
               </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
 
-          <div className="mt-auto flex flex-col gap-4">
+              {uploadedFile ? (
+                <div className="flex flex-col gap-3">
+                  <div className="rounded-md bg-background/60 px-2.5 py-2">
+                    <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      Path
+                    </p>
+                    <p className="truncate font-mono text-[11px] text-foreground" title={uploadedFile}>
+                      {uploadedFile}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                    <MetadataRow
+                      label="Rows"
+                      value={
+                        typeof selectedLocalRows === "number"
+                          ? selectedLocalRows.toLocaleString()
+                          : "--"
+                      }
+                    />
+                    <MetadataRow
+                      label="Columns"
+                      value={
+                        selectedLocalColumns.length > 0
+                          ? String(selectedLocalColumns.length)
+                          : "--"
+                      }
+                    />
+                    <MetadataRow
+                      label="Batches"
+                      value={
+                        typeof selectedLocalMetadata?.num_completed_batches === "number" &&
+                        typeof selectedLocalMetadata?.total_num_batches === "number"
+                          ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
+                          : "--"
+                      }
+                    />
+                    <MetadataRow
+                      label="Updated"
+                      value={formatUpdatedDate(selectedLocalUpdatedAt)}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Select a local dataset to view metadata.
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+            <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+              />
+              Advanced
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-3">
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    Target Format
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          className="text-foreground/70 hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            className="size-3"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Format of your training data. Auto-detect works for most
+                        datasets.{" "}
+                        <a
+                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline"
+                        >
+                          Read more
+                        </a>
+                      </TooltipContent>
+                    </Tooltip>
+                  </span>
+                  <Select
+                    value={datasetFormat}
+                    onValueChange={(v) =>
+                      setDatasetFormat(v as typeof datasetFormat)
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto</SelectItem>
+                      <SelectItem value="alpaca">Alpaca</SelectItem>
+                      <SelectItem value="chatml">ChatML</SelectItem>
+                      <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      Train Split Start
+                      <Tooltip>
+                        <TooltipTrigger asChild={true}>
+                          <button
+                            type="button"
+                            className="text-foreground/70 hover:text-foreground"
+                          >
+                            <HugeiconsIcon
+                              icon={InformationCircleIcon}
+                              className="size-3"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Only train on a subset of your training split by
+                          specifying a start row index (inclusive, 0-based).
+                          Leave empty to start from the first row.
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                    <Input
+                      inputMode="numeric"
+                      placeholder="0"
+                      value={datasetSliceStart ?? ""}
+                      onChange={(e) =>
+                        setDatasetSliceStart(e.target.value || null)
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      Train Split End
+                      <Tooltip>
+                        <TooltipTrigger asChild={true}>
+                          <button
+                            type="button"
+                            className="text-foreground/70 hover:text-foreground"
+                          >
+                            <HugeiconsIcon
+                              icon={InformationCircleIcon}
+                              className="size-3"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Last row index to include from the training split
+                          (inclusive, 0-based). For example, set Start to 0 and
+                          End to 99 to train on the first 100 rows. Leave empty
+                          to use all remaining rows.
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                    <Input
+                      inputMode="numeric"
+                      placeholder="End"
+                      value={datasetSliceEnd ?? ""}
+                      onChange={(e) =>
+                        setDatasetSliceEnd(e.target.value || null)
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          <div className="flex flex-col gap-4 pt-1">
             {selectedDatasetName ? (
               <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
                 <div className="rounded-md bg-indigo-500/10 p-1.5">
@@ -716,8 +767,13 @@ export function DatasetSection() {
                   </p>
                   <p className="text-[10px] text-muted-foreground">
                     {datasetSource === "upload" ? (
-                      selectedLocalDataset && typeof selectedLocalDataset.rows === "number" ? (
-                        `${selectedLocalDataset.rows.toLocaleString()} rows`
+                      uploadedFile ? (
+                        <>
+                          Local dataset
+                          {selectedLocalRows != null
+                            ? ` / ${selectedLocalRows.toLocaleString()} rows`
+                            : ""}
+                        </>
                       ) : (
                         "Local dataset"
                       )
@@ -730,6 +786,14 @@ export function DatasetSection() {
                     )}
                   </p>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0 text-xs"
+                  onClick={() => clearSelectionForTab(activeSourceTab)}
+                >
+                  Clear
+                </Button>
               </div>
             ) : (
               <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3.5 py-3">
