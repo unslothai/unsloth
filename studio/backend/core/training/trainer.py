@@ -1868,7 +1868,8 @@ class UnslothTrainer:
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
                 if eval_enabled:
-                    if eval_split:
+                    effective_train = train_split or "train"
+                    if eval_split and eval_split != effective_train:
                         # Explicit eval split provided - load it directly
                         print(f"Loading explicit eval split: '{eval_split}'\n")
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
@@ -1877,6 +1878,9 @@ class UnslothTrainer:
                         eval_dataset = load_dataset(**eval_load_kwargs)
                         has_separate_eval_source = True
                         print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
+                    elif eval_split and eval_split == effective_train:
+                        # Same split as training — will do 80/20 split after formatting
+                        print(f"Eval split '{eval_split}' is the same as train split — will split 80/20\n")
                     else:
                         # Auto-detect eval split from HF (returns a separate dataset, or None)
                         eval_dataset = self._auto_detect_eval_split_from_hf(
