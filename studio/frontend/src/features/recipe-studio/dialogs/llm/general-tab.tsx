@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, type RefObject, useMemo } from "react";
+import { type ReactElement, type RefObject, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
 import { isLikelyImageValue } from "../../utils/image-preview";
@@ -62,6 +62,7 @@ type LlmGeneralTabProps = {
   config: LlmConfig;
   modelConfigAliases: string[];
   modelProviderOptions: string[];
+  toolProfileAliases: string[];
   modelAliasAnchorRef: RefObject<HTMLDivElement | null>;
   onUpdate: (patch: Partial<LlmConfig>) => void;
 };
@@ -70,17 +71,20 @@ export function LlmGeneralTab({
   config,
   modelConfigAliases,
   modelProviderOptions,
+  toolProfileAliases,
   modelAliasAnchorRef,
   onUpdate,
 }: LlmGeneralTabProps): ReactElement {
   const configs = useRecipeStudioStore((state) => state.configs);
   const modelAliasId = `${config.id}-model-alias`;
+  const toolAliasId = `${config.id}-tool-alias`;
   const codeLangId = `${config.id}-code-lang`;
   const promptId = `${config.id}-prompt`;
   const outputFormatId = `${config.id}-output-format`;
   const systemPromptId = `${config.id}-system-prompt`;
   const hasModelConfigs = modelConfigAliases.length > 0;
   const hasModelProviders = modelProviderOptions.length > 0;
+  const hasToolProfiles = toolProfileAliases.length > 0;
   const validReferences = useMemo(
     () => getAvailableVariables(configs, config.id),
     [configs, config.id],
@@ -152,6 +156,7 @@ export function LlmGeneralTab({
   const traceModeId = `${config.id}-trace-mode`;
   const reasoningToggleId = `${config.id}-reasoning-content`;
   const advancedOpen = config.advancedOpen === true;
+  const toolAliasAnchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="space-y-4">
@@ -209,6 +214,53 @@ export function LlmGeneralTab({
             </ComboboxContent>
           </Combobox>
         </div>
+      </div>
+      <div className="grid gap-2">
+        <FieldLabel
+          label="Tool profile (optional)"
+          htmlFor={toolAliasId}
+          hint="Pick a shared Tool Profile block. Leave empty for no tools."
+        />
+        <div ref={toolAliasAnchorRef}>
+          <Combobox
+            items={toolProfileAliases}
+            filteredItems={toolProfileAliases}
+            filter={null}
+            value={config.tool_alias || null}
+            onValueChange={(value) => onUpdate({ tool_alias: value ?? "" })}
+            itemToStringValue={(value) => value}
+            autoHighlight={true}
+          >
+            <ComboboxInput
+              id={toolAliasId}
+              className="nodrag w-full"
+              placeholder={
+                hasToolProfiles ? "Pick tool profile or type" : "No tool profiles yet"
+              }
+              onBlur={(event) => {
+                const inputValue = event.target.value;
+                if (inputValue !== (config.tool_alias ?? "")) {
+                  onUpdate({ tool_alias: inputValue });
+                }
+              }}
+            />
+            <ComboboxContent anchor={toolAliasAnchorRef}>
+              <ComboboxEmpty>No tool profiles found</ComboboxEmpty>
+              <ComboboxList>
+                {(alias: string) => (
+                  <ComboboxItem key={alias} value={alias}>
+                    {alias}
+                  </ComboboxItem>
+                )}
+              </ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        </div>
+        {!hasToolProfiles && (
+          <p className="text-xs text-muted-foreground">
+            Add a Tool Profile block to configure MCP servers and allowed tools.
+          </p>
+        )}
       </div>
       {config.llm_type === "code" && (
         <div className="grid gap-2">

@@ -6,6 +6,7 @@ export {
   makeModelProviderConfig,
   makeSamplerConfig,
   makeSeedConfig,
+  makeToolProfileConfig,
   makeValidatorConfig,
 } from "./config-factories";
 export {

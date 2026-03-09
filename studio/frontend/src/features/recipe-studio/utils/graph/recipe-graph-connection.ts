@@ -58,7 +58,11 @@ function syncSubcategoryMapping(
 }
 
 function isModelInfraNode(config: NodeConfig): boolean {
-  return config.kind === "model_provider" || config.kind === "model_config";
+  return (
+    config.kind === "model_provider" ||
+    config.kind === "model_config" ||
+    config.kind === "tool_config"
+  );
 }
 
 function isSemanticLane(connection: Connection): boolean {
@@ -80,6 +84,7 @@ function isDataLane(connection: Connection): boolean {
 type SingleRefRelation =
   | "provider"
   | "model_alias"
+  | "tool_alias"
   | "reference_column_name"
   | "subcategory_parent"
   | "validator_target_columns";
@@ -93,6 +98,9 @@ function getSingleRefRelation(
   }
   if (source.kind === "model_config" && target.kind === "llm") {
     return "model_alias";
+  }
+  if (source.kind === "tool_config" && target.kind === "llm") {
+    return "tool_alias";
   }
   if (
     source.kind === "sampler" &&
@@ -134,6 +142,9 @@ function isCompetingIncomingEdge(
   if (relation === "model_alias") {
     return source.kind === "model_config";
   }
+  if (relation === "tool_alias") {
+    return source.kind === "tool_config";
+  }
   if (relation === "subcategory_parent") {
     return isCategoryConfig(source);
   }
@@ -146,7 +157,8 @@ function isCompetingIncomingEdge(
 function isModelSemanticRelation(source: NodeConfig, target: NodeConfig): boolean {
   return (
     (source.kind === "model_provider" && target.kind === "model_config") ||
-    (source.kind === "model_config" && target.kind === "llm")
+    (source.kind === "model_config" && target.kind === "llm") ||
+    (source.kind === "tool_config" && target.kind === "llm")
   );
 }
 
@@ -376,6 +388,10 @@ export function applyRecipeConnection(
   }
   if (source.kind === "model_config" && target.kind === "llm") {
     const next = { ...target, model_alias: source.name };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (source.kind === "tool_config" && target.kind === "llm") {
+    const next = { ...target, tool_alias: source.name };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (

@@ -22,6 +22,7 @@ const DONE_UPSTREAM_KINDS: ReadonlySet<NodeConfig["kind"]> = new Set([
   "llm",
   "model_config",
   "model_provider",
+  "tool_config",
 ]);
 
 export type GraphRuntimeVisualState = {

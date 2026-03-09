@@ -20,6 +20,9 @@ function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
   if (source.kind === "model_config" && target.kind === "llm") {
     return true;
   }
+  if (source.kind === "tool_config" && target.kind === "llm") {
+    return true;
+  }
   if (
     source.kind === "llm" &&
     source.llm_type === "code" &&
@@ -162,6 +165,9 @@ export function buildEdges(
     }
     if (config.kind === "llm" && config.model_alias) {
       addEdgeByName(config.model_alias, config.name);
+    }
+    if (config.kind === "llm" && config.tool_alias) {
+      addEdgeByName(config.tool_alias, config.name);
     }
     if (config.kind === "validator") {
       for (const targetColumn of config.target_columns ?? []) {

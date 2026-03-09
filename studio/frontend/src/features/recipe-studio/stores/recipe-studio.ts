@@ -95,6 +95,7 @@ type RecipeStudioState = {
   addLlmNode: (type: LlmType, position?: XYPosition, openDialog?: boolean) => void;
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
+  addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
   addValidatorNode: (
     type: "validator_python" | "validator_sql" | "validator_oxc",
@@ -249,7 +250,8 @@ function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): b
     source &&
       target &&
       ((source.kind === "model_provider" && target.kind === "model_config") ||
-        (source.kind === "model_config" && target.kind === "llm")),
+        (source.kind === "model_config" && target.kind === "llm") ||
+        (source.kind === "tool_config" && target.kind === "llm")),
   );
 }
 
@@ -520,6 +522,49 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         );
         edges = next.edges;
         configs = next.configs;
+      }
+      if (unboundLlms.length === 1) {
+        const next = connectSemantic(
+          edges,
+          configs,
+          context.newNodeId,
+          unboundLlms[0].id,
+          state.layoutDirection,
+        );
+        edges = next.edges;
+        configs = next.configs;
+      }
+      return { ...added, nodes, edges, configs };
+    }),
+  addToolProfileNode: (position, openDialog = true) =>
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      const added = buildAddedNodeState(
+        state,
+        "llm",
+        "tool_config",
+        position,
+        openDialog,
+      );
+      const context = getAddedNodeContext(added);
+      if (!context) {
+        return added;
+      }
+      let { nodes, configs } = context;
+      let edges = state.edges;
+      const unboundLlms = Object.values(configs).filter(
+        (config) => config.kind === "llm" && !(config.tool_alias?.trim()),
+      );
+      if (!position && unboundLlms.length > 0) {
+        nodes = placeNodeNear(
+          nodes,
+          context.newNodeId,
+          unboundLlms[0].id,
+          state.layoutDirection,
+          "before",
+        );
       }
       if (unboundLlms.length === 1) {
         const next = connectSemantic(
