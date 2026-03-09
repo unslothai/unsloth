@@ -61,6 +61,16 @@ function stripApiKeys(value: unknown): unknown {
     }
     output[key] = stripApiKeys(entry);
   }
+  if (
+    output.provider_type === "stdio" &&
+    output.env &&
+    typeof output.env === "object" &&
+    !Array.isArray(output.env)
+  ) {
+    output.env = Object.fromEntries(
+      Object.keys(output.env as Record<string, unknown>).map((envKey) => [envKey, ""]),
+    );
+  }
   return output;
 }
 

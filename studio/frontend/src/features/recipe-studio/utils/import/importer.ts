@@ -252,6 +252,46 @@ function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
   return noteNodes;
 }
 
+function parseUiToolProfileNodes(input: unknown): Map<string, Record<string, string[]>> {
+  const toolProfiles = new Map<string, Record<string, string[]>>();
+  if (!Array.isArray(input)) {
+    return toolProfiles;
+  }
+  for (const node of input) {
+    if (!isRecord(node)) {
+      continue;
+    }
+    const nodeType = readString(node.node_type) ?? readString(node.type);
+    if (nodeType !== "tool_config") {
+      continue;
+    }
+    const name = readString(node.name) ?? readString(node.id);
+    if (!name?.trim()) {
+      continue;
+    }
+    const rawToolsByProvider = isRecord(node.tools_by_provider)
+      ? node.tools_by_provider
+      : null;
+    if (!rawToolsByProvider) {
+      continue;
+    }
+    const toolsByProvider = Object.fromEntries(
+      Object.entries(rawToolsByProvider).flatMap(([providerName, tools]) => {
+        const trimmedName = providerName.trim();
+        if (!trimmedName || !Array.isArray(tools)) {
+          return [];
+        }
+        const values = Array.from(
+          new Set(tools.map((value) => String(value).trim()).filter(Boolean)),
+        );
+        return values.length > 0 ? [[trimmedName, values]] : [];
+      }),
+    );
+    toolProfiles.set(name.trim(), toolsByProvider);
+  }
+  return toolProfiles;
+}
+
 function parseAdvancedOpenByNode(input: unknown): Record<string, boolean> {
   if (!isRecord(input)) {
     return {};
@@ -292,6 +332,7 @@ function buildToolProfileConfig(
   toolConfig: LlmToolConfig,
   toolConfigsByAlias: Map<string, LlmToolConfig>,
   mcpProvidersByName: Map<string, LlmMcpProviderConfig>,
+  fetchedToolsByProfileName: Map<string, Record<string, string[]>>,
   id: string,
 ): ToolProfileConfig {
   const canonical = toolConfigsByAlias.get(toolConfig.tool_alias) ?? toolConfig;
@@ -303,6 +344,8 @@ function buildToolProfileConfig(
     mcp_providers: canonical.providers
       .map((providerName) => mcpProvidersByName.get(providerName))
       .flatMap((provider) => (provider ? [cloneMcpProvider(provider)] : [])),
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    fetched_tools_by_provider: fetchedToolsByProfileName.get(canonical.tool_alias) ?? {},
     // biome-ignore lint/style/useNamingConvention: api schema
     allow_tools: [...(canonical.allow_tools ?? [])],
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -370,6 +413,7 @@ export function importRecipePayload(input: string): ImportResult {
   );
   const uiAdvancedOpenByNode = parseAdvancedOpenByNode(ui?.advanced_open_by_node);
   const uiMarkdownNotes = parseUiMarkdownNoteNodes(ui?.nodes);
+  const uiToolProfilesByName = parseUiToolProfileNodes(ui?.nodes);
 
   for (const note of uiMarkdownNotes) {
     const id = `n${nextId}`;
@@ -470,6 +514,7 @@ export function importRecipePayload(input: string): ImportResult {
       toolConfig,
       toolConfigsByAlias,
       mcpProvidersByName,
+      uiToolProfilesByName,
       id,
     );
     if (nameToId.has(config.name)) {

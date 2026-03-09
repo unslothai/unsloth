@@ -181,6 +181,8 @@ export type ToolProfileConfig = {
   name: string;
   // biome-ignore lint/style/useNamingConvention: ui schema
   mcp_providers: LlmMcpProviderConfig[];
+  // biome-ignore lint/style/useNamingConvention: ui schema
+  fetched_tools_by_provider?: Record<string, string[]>;
   // biome-ignore lint/style/useNamingConvention: api schema
   allow_tools?: string[];
   // biome-ignore lint/style/useNamingConvention: api schema
