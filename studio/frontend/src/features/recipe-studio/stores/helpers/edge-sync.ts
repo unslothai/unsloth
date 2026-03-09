@@ -1,9 +1,12 @@
 import { type Edge, addEdge } from "@xyflow/react";
 import type {
+  LayoutDirection,
   ModelConfig,
   NodeConfig,
   SamplerConfig,
+  ValidatorConfig,
 } from "../../types";
+import { applyRecipeConnection } from "../../utils/graph";
 import { isCategoryConfig, isSubcategoryConfig } from "../../utils";
 import { HANDLE_IDS } from "../../utils/handles";
 
@@ -30,13 +33,17 @@ function addRecipeEdge(edges: Edge[], source: string, target: string): Edge[] {
   );
 }
 
-function addSemanticEdge(edges: Edge[], source: string, target: string): Edge[] {
+function addValidatorSemanticEdge(
+  edges: Edge[],
+  source: string,
+  target: string,
+): Edge[] {
   return addEdge(
     {
       source,
       target,
-      sourceHandle: HANDLE_IDS.semanticOut,
-      targetHandle: HANDLE_IDS.semanticIn,
+      sourceHandle: HANDLE_IDS.dataOut,
+      targetHandle: HANDLE_IDS.dataIn,
       type: "semantic",
     },
     edges,
@@ -66,6 +73,7 @@ export function syncEdgesForConfigPatch(
   patch: Partial<NodeConfig>,
   configs: Record<string, NodeConfig>,
   edges: Edge[],
+  layoutDirection: LayoutDirection,
 ): Edge[] {
   let nextEdges = edges;
 
@@ -88,6 +96,9 @@ export function syncEdgesForConfigPatch(
   );
   if (current.kind === "model_config" && hasProviderPatch) {
     const nextProvider = (patch as Partial<ModelConfig>).provider ?? "";
+    if (nextProvider.trim() === current.provider.trim()) {
+      return nextEdges;
+    }
     nextEdges = removeTargetEdgesBySource(
       nextEdges,
       configs,
@@ -97,7 +108,18 @@ export function syncEdgesForConfigPatch(
     if (nextProvider) {
       const providerId = findNodeIdByName(configs, nextProvider);
       if (providerId) {
-        nextEdges = addSemanticEdge(nextEdges, providerId, current.id);
+        const result = applyRecipeConnection(
+          {
+            source: providerId,
+            sourceHandle: HANDLE_IDS.semanticOut,
+            target: current.id,
+            targetHandle: HANDLE_IDS.semanticIn,
+          },
+          configs,
+          nextEdges,
+          layoutDirection,
+        );
+        nextEdges = result.edges;
       }
     }
   }
@@ -145,6 +167,9 @@ export function syncEdgesForConfigPatch(
   if (current.kind === "llm" && hasModelAliasPatch) {
     const nextAlias =
       (patch as Partial<NodeConfig> & { model_alias?: string }).model_alias ?? "";
+    if (nextAlias.trim() === current.model_alias.trim()) {
+      return nextEdges;
+    }
     nextEdges = removeTargetEdgesBySource(
       nextEdges,
       configs,
@@ -154,7 +179,54 @@ export function syncEdgesForConfigPatch(
     if (nextAlias) {
       const modelConfigId = findNodeIdByName(configs, nextAlias);
       if (modelConfigId) {
-        nextEdges = addSemanticEdge(nextEdges, modelConfigId, current.id);
+        const result = applyRecipeConnection(
+          {
+            source: modelConfigId,
+            sourceHandle: HANDLE_IDS.semanticOut,
+            target: current.id,
+            targetHandle: HANDLE_IDS.semanticIn,
+          },
+          configs,
+          nextEdges,
+          layoutDirection,
+        );
+        nextEdges = result.edges;
+      }
+    }
+  }
+
+  const hasValidatorTargetsPatch = Object.prototype.hasOwnProperty.call(
+    patch,
+    "target_columns",
+  );
+  if (current.kind === "validator" && hasValidatorTargetsPatch) {
+    const nextTargets =
+      ((patch as Partial<ValidatorConfig>).target_columns ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean);
+    nextEdges = nextEdges.filter((edge) => {
+      if (edge.source !== current.id && edge.target !== current.id) {
+        return true;
+      }
+      const otherId = edge.source === current.id ? edge.target : edge.source;
+      const other = configs[otherId];
+      return !(
+        other &&
+        other.kind === "llm" &&
+        other.llm_type === "code"
+      );
+    });
+    const nextTargetName = nextTargets[0];
+    if (nextTargetName) {
+      const targetId = findNodeIdByName(configs, nextTargetName);
+      const target = targetId ? configs[targetId] : null;
+      if (
+        targetId &&
+        target &&
+        target.kind === "llm" &&
+        target.llm_type === "code"
+      ) {
+        nextEdges = addValidatorSemanticEdge(nextEdges, targetId, current.id);
       }
     }
   }

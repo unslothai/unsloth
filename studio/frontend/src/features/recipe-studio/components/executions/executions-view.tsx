@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   RecipeExecutionRecord,
 } from "../../execution-types";
@@ -25,12 +26,9 @@ import {
   formatCellValue,
   formatDuration,
   formatPercent,
-  formatStatus,
-  formatTimestamp,
-  isExpandableCellValue,
+  hasExpandableTextCell,
   parseAnalysisColumns,
   parseModelUsageRows,
-  statusTone,
   truncateCellValue,
 } from "./executions-view-helpers";
 
@@ -51,6 +49,10 @@ export function ExecutionsView({
   onCancelExecution,
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
+  const formatEta = (value: number | null | undefined): string =>
+    typeof value === "number" && Number.isFinite(value)
+      ? `${value.toLocaleString()} s`
+      : "--";
   const [detailTab, setDetailTab] = useState("overview");
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
@@ -119,10 +121,33 @@ export function ExecutionsView({
       header: name,
       cell: ({ getValue, row }) => {
         const rawValue = getValue();
+        const imagePreview = resolveImagePreview(rawValue);
+        if (imagePreview?.kind === "ready") {
+          return (
+            <div className="max-w-[32rem]">
+              <img
+                src={imagePreview.src}
+                alt={`${name} preview`}
+                loading="lazy"
+                className="h-24 w-auto max-w-[260px] rounded-md border border-border/60 bg-muted/20 object-contain"
+              />
+            </div>
+          );
+        }
+        if (imagePreview?.kind === "too_large") {
+          return (
+            <div className="max-w-[32rem]">
+              <p className="text-xs text-muted-foreground">
+                Image too large to preview
+              </p>
+            </div>
+          );
+        }
         const value = formatCellValue(rawValue);
         const rowExpanded = Boolean(expandedDatasetRows[row.id]);
-        const rowHasExpandableCell = visibleDatasetColumnNames.some((columnName) =>
-          isExpandableCellValue(formatCellValue(row.original[columnName])),
+        const rowHasExpandableCell = hasExpandableTextCell(
+          row.original,
+          visibleDatasetColumnNames,
         );
         const showTruncated = rowHasExpandableCell && !rowExpanded;
 
@@ -259,9 +284,32 @@ export function ExecutionsView({
     return formatDuration(selectedExecution.createdAt, selectedExecution.finishedAt);
   }, [selectedExecution]);
   const showSummaryCards = selectedExecution?.status === "completed";
-  const showProgressPanel =
-    selectedExecution?.status === "completed" ||
-    (selectedExecution ? isExecutionInProgress(selectedExecution.status) : false);
+  const hasProgressSnapshot = Boolean(
+    selectedExecution?.progress &&
+      (typeof selectedExecution.progress.done === "number" ||
+        typeof selectedExecution.progress.total === "number" ||
+        typeof selectedExecution.progress.percent === "number" ||
+        typeof selectedExecution.progress.rate === "number" ||
+        typeof selectedExecution.progress.eta_sec === "number"),
+  ) || Boolean(
+    selectedExecution?.column_progress &&
+      (typeof selectedExecution.column_progress.done === "number" ||
+        typeof selectedExecution.column_progress.total === "number" ||
+        typeof selectedExecution.column_progress.percent === "number"),
+  ) || Boolean(
+    selectedExecution?.batch &&
+      (typeof selectedExecution.batch.idx === "number" ||
+        typeof selectedExecution.batch.total === "number"),
+  );
+  const selectedStatus = selectedExecution?.status ?? null;
+  const isSelectedExecutionInProgress = selectedStatus
+    ? isExecutionInProgress(selectedStatus)
+    : false;
+  const showProgressPanel = Boolean(selectedExecution) && (
+    selectedStatus === "completed" ||
+    isSelectedExecutionInProgress ||
+    hasProgressSnapshot
+  );
   const progressComplete = selectedExecution?.status === "completed";
   const progressPercent = selectedExecution?.progress?.percent ?? (progressComplete ? 100 : 0);
   const batchTotal = selectedExecution?.batch?.total ?? null;
@@ -305,49 +353,13 @@ export function ExecutionsView({
       />
       <section className="min-w-0 flex-1 overflow-auto p-4">
         {!selectedExecution ? (
-          <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+          <div className="rounded-xl border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
             Select an execution.
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span className="font-medium capitalize">{selectedExecution.kind} execution</span>
-              <Badge
-                variant="secondary"
-                className={cn("capitalize", statusTone(selectedExecution.status))}
-              >
-                {formatStatus(selectedExecution.status)}
-              </Badge>
-              <span>{selectedExecution.rows} rows</span>
-              <span>Started {formatTimestamp(selectedExecution.createdAt)}</span>
-              <span>
-                Duration {formatDuration(selectedExecution.createdAt, selectedExecution.finishedAt)}
-              </span>
-              {selectedExecution.stage && (
-                <span>
-                  Stage: {selectedExecution.stage}
-                  {selectedExecution.current_column
-                    ? ` | Column: ${selectedExecution.current_column}`
-                    : ""}
-                </span>
-              )}
-              {showBatchProgress && (
-                <span>
-                  Batch {batchIdx ?? "--"}/{batchTotal}
-                </span>
-              )}
-              {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
-            </div>
-
             {showProgressPanel && (
-              <div
-                className={cn(
-                  "space-y-3 rounded-xl border p-3",
-                  progressComplete
-                    ? "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/25"
-                    : "border-amber-200 bg-amber-50/50 dark:border-amber-900/50 dark:bg-amber-950/25",
-                )}
-              >
+              <div className="space-y-3 rounded-2xl border shadow-border border-border/60 bg-card/55 p-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <HugeiconsIcon
@@ -359,51 +371,29 @@ export function ExecutionsView({
                           : "text-amber-700 dark:text-amber-300",
                       )}
                     />
-                    <p
-                      className={cn(
-                        "text-sm font-semibold",
-                        progressComplete
-                          ? "text-emerald-900 dark:text-emerald-100"
-                          : "text-amber-900 dark:text-amber-100",
-                      )}
-                    >
-                      {progressComplete ? "Run completed" : "Run in progress"}
+                    <p className="text-sm font-semibold text-foreground">
+                      Progress
                     </p>
                   </div>
-                  <p
-                    className={cn(
-                      "text-xs",
-                      progressComplete
-                        ? "text-emerald-800 dark:text-emerald-200"
-                        : "text-amber-800 dark:text-amber-200",
-                    )}
-                  >
-                    {formatPercent(progressPercent)}
+                  <p className="text-xs text-muted-foreground">{formatPercent(progressPercent)}</p>
+                </div>
+                <Progress value={progressPercent} className="h-1" />
+                <div className="grid gap-2 text-xs md:grid-cols-4">
+                  <p className="text-muted-foreground">
+                    Done: <span className="text-foreground">{selectedExecution.progress?.done ?? "--"}</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    Total: <span className="text-foreground">{selectedExecution.progress?.total ?? "--"}</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    Rate: <span className="text-foreground">{selectedExecution.progress?.rate ?? "--"} rec/s</span>
+                  </p>
+                  <p className="text-muted-foreground">
+                    ETA: <span className="text-foreground">{formatEta(selectedExecution.progress?.eta_sec)}</span>
                   </p>
                 </div>
-                <Progress value={progressPercent} />
-                <div
-                  className={cn(
-                    "grid gap-2 text-xs md:grid-cols-4",
-                    progressComplete
-                      ? "text-emerald-900 dark:text-emerald-100"
-                      : "text-amber-900 dark:text-amber-100",
-                  )}
-                >
-                  <p>Done: {selectedExecution.progress?.done ?? "--"}</p>
-                  <p>Total: {selectedExecution.progress?.total ?? "--"}</p>
-                  <p>Rate: {selectedExecution.progress?.rate ?? "--"} rec/s</p>
-                  <p>ETA: {selectedExecution.progress?.eta_sec ?? "--"} s</p>
-                </div>
                 {selectedExecution.current_column && selectedExecution.column_progress && (
-                  <p
-                    className={cn(
-                      "text-xs",
-                      progressComplete
-                        ? "text-emerald-900 dark:text-emerald-100"
-                        : "text-amber-900 dark:text-amber-100",
-                    )}
-                  >
+                  <p className="text-xs text-muted-foreground">
                     Column {selectedExecution.current_column}:{" "}
                     {selectedExecution.column_progress.done ?? "--"}/
                     {selectedExecution.column_progress.total ?? "--"} (
@@ -411,17 +401,11 @@ export function ExecutionsView({
                   </p>
                 )}
                 {showBatchProgress && (
-                  <p
-                    className={cn(
-                      "text-xs",
-                      progressComplete
-                        ? "text-emerald-900 dark:text-emerald-100"
-                        : "text-amber-900 dark:text-amber-100",
-                    )}
-                  >
+                  <p className="text-xs text-muted-foreground">
                     Processed batch: {batchIdx ?? "--"}/{batchTotal}
                   </p>
                 )}
+                {isStale && <Badge variant="outline">Recipe changed since this run</Badge>}
               </div>
             )}
 
@@ -439,118 +423,115 @@ export function ExecutionsView({
               </div>
             )}
 
-            {(selectedExecution.status === "completed" ||
-              isExecutionInProgress(selectedExecution.status)) && (
-              <Tabs value={detailTab} onValueChange={setDetailTab}>
-                <div className="flex items-center justify-between gap-2">
-                  <TabsList>
-                    <TabsTrigger value="overview">Overview</TabsTrigger>
-                    <TabsTrigger value="columns">Columns</TabsTrigger>
-                    <TabsTrigger value="data">Data</TabsTrigger>
-                    <TabsTrigger value="raw">Raw</TabsTrigger>
-                  </TabsList>
-                  {canCancel && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onCancelExecution(selectedExecution.id)}
-                    >
-                      Cancel
-                    </Button>
-                  )}
-                </div>
-                <TabsContent value="overview">
-                  <ExecutionOverviewTab
-                    execution={selectedExecution}
-                    showSummaryCards={showSummaryCards}
-                    recordsMetric={recordsMetric}
-                    totalMetric={totalMetric}
-                    runDuration={runDuration}
-                    columnCount={columnCount}
-                    llmColumnCount={llmColumnCount}
-                    nullRate={nullRate}
-                    sideEffects={sideEffects}
-                    lowUniquenessColumns={lowUniquenessColumns}
-                    modelUsageRows={modelUsageRows}
-                    terminalLines={terminalLines}
-                    terminalRef={terminalRef}
-                    onTerminalScroll={(event) => {
-                      const element = event.currentTarget;
-                      const distanceFromBottom =
-                        element.scrollHeight - element.scrollTop - element.clientHeight;
-                      shouldStickTerminalToBottomRef.current =
-                        distanceFromBottom <= TERMINAL_STICKY_BOTTOM_THRESHOLD_PX;
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent value="columns">
-                  <ExecutionColumnsTab analysisColumns={analysisColumns} />
-                </TabsContent>
-                <TabsContent value="data">
-                  <ExecutionDataTab
-                    execution={selectedExecution}
-                    datasetColumnNames={datasetColumnNames}
-                    hiddenDatasetColumns={hiddenDatasetColumns}
-                    canPageDataset={canPageDataset}
-                    currentDatasetPage={currentDatasetPage}
-                    totalPages={totalPages}
-                    tableColumns={tableColumns}
-                    datasetRowsForTable={datasetRowsForTable}
-                    visibleDatasetColumnNames={visibleDatasetColumnNames}
-                    expandedDatasetRows={expandedDatasetRows}
-                    selectedExecutionIdSafe={selectedExecutionIdSafe}
-                    onSetHiddenColumns={(updater) => {
+            <Tabs value={detailTab} onValueChange={setDetailTab}>
+              <div className="flex items-center justify-between gap-2">
+                <TabsList className="border border-border/60 bg-card/40">
+                  <TabsTrigger value="overview">Overview</TabsTrigger>
+                  <TabsTrigger value="columns">Columns</TabsTrigger>
+                  <TabsTrigger value="data">Data</TabsTrigger>
+                  <TabsTrigger value="raw">Raw</TabsTrigger>
+                </TabsList>
+                {canCancel && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onCancelExecution(selectedExecution.id)}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+              <TabsContent value="overview">
+                <ExecutionOverviewTab
+                  execution={selectedExecution}
+                  showSummaryCards={showSummaryCards}
+                  recordsMetric={recordsMetric}
+                  totalMetric={totalMetric}
+                  runDuration={runDuration}
+                  columnCount={columnCount}
+                  llmColumnCount={llmColumnCount}
+                  nullRate={nullRate}
+                  sideEffects={sideEffects}
+                  lowUniquenessColumns={lowUniquenessColumns}
+                  modelUsageRows={modelUsageRows}
+                  terminalLines={terminalLines}
+                  terminalRef={terminalRef}
+                  onTerminalScroll={(event) => {
+                    const element = event.currentTarget;
+                    const distanceFromBottom =
+                      element.scrollHeight - element.scrollTop - element.clientHeight;
+                    shouldStickTerminalToBottomRef.current =
+                      distanceFromBottom <= TERMINAL_STICKY_BOTTOM_THRESHOLD_PX;
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="columns">
+                <ExecutionColumnsTab analysisColumns={analysisColumns} />
+              </TabsContent>
+              <TabsContent value="data">
+                <ExecutionDataTab
+                  execution={selectedExecution}
+                  datasetColumnNames={datasetColumnNames}
+                  hiddenDatasetColumns={hiddenDatasetColumns}
+                  canPageDataset={canPageDataset}
+                  currentDatasetPage={currentDatasetPage}
+                  totalPages={totalPages}
+                  tableColumns={tableColumns}
+                  datasetRowsForTable={datasetRowsForTable}
+                  visibleDatasetColumnNames={visibleDatasetColumnNames}
+                  expandedDatasetRows={expandedDatasetRows}
+                  selectedExecutionIdSafe={selectedExecutionIdSafe}
+                  onSetHiddenColumns={(updater) => {
+                    const selectedId = selectedExecution.id;
+                    setHiddenDatasetColumnsByExecution((current) => {
+                      const currentColumns = current[selectedId] ?? [];
+                      return {
+                        ...current,
+                        [selectedId]: updater(currentColumns),
+                      };
+                    });
+                  }}
+                  onPrevPage={() => {
+                    if (selectedExecution.kind === "preview") {
                       const selectedId = selectedExecution.id;
-                      setHiddenDatasetColumnsByExecution((current) => {
-                        const currentColumns = current[selectedId] ?? [];
-                        return {
-                          ...current,
-                          [selectedId]: updater(currentColumns),
-                        };
-                      });
-                    }}
-                    onPrevPage={() => {
-                      if (selectedExecution.kind === "preview") {
-                        const selectedId = selectedExecution.id;
-                        setPreviewDatasetPageByExecution((current) => ({
-                          ...current,
-                          [selectedId]: Math.max(1, currentDatasetPage - 1),
-                        }));
-                        return;
-                      }
-                      onLoadDatasetPage(selectedExecution.id, currentDatasetPage - 1);
-                    }}
-                    onNextPage={() => {
-                      if (selectedExecution.kind === "preview") {
-                        const selectedId = selectedExecution.id;
-                        setPreviewDatasetPageByExecution((current) => ({
-                          ...current,
-                          [selectedId]: Math.min(totalPages, currentDatasetPage + 1),
-                        }));
-                        return;
-                      }
-                      onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
-                    }}
-                    onToggleRowExpanded={(rowId) => {
-                      setExpandedDatasetRowsByExecution((current) => {
-                        const rows = current[selectedExecution.id] ?? {};
-                        return {
-                          ...current,
-                          [selectedExecution.id]: {
-                            ...rows,
-                            [rowId]: !rows[rowId],
-                          },
-                        };
-                      });
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent value="raw">
-                  <ExecutionRawTab rawExecution={rawExecution} />
-                </TabsContent>
-              </Tabs>
-            )}
+                      setPreviewDatasetPageByExecution((current) => ({
+                        ...current,
+                        [selectedId]: Math.max(1, currentDatasetPage - 1),
+                      }));
+                      return;
+                    }
+                    onLoadDatasetPage(selectedExecution.id, currentDatasetPage - 1);
+                  }}
+                  onNextPage={() => {
+                    if (selectedExecution.kind === "preview") {
+                      const selectedId = selectedExecution.id;
+                      setPreviewDatasetPageByExecution((current) => ({
+                        ...current,
+                        [selectedId]: Math.min(totalPages, currentDatasetPage + 1),
+                      }));
+                      return;
+                    }
+                    onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
+                  }}
+                  onToggleRowExpanded={(rowId) => {
+                    setExpandedDatasetRowsByExecution((current) => {
+                      const rows = current[selectedExecution.id] ?? {};
+                      return {
+                        ...current,
+                        [selectedExecution.id]: {
+                          ...rows,
+                          [rowId]: !rows[rowId],
+                        },
+                      };
+                    });
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="raw">
+                <ExecutionRawTab rawExecution={rawExecution} />
+              </TabsContent>
+            </Tabs>
           </div>
         )}
       </section>

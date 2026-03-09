@@ -1,4 +1,13 @@
-import type { ModelConfig, ModelProviderConfig, NodeConfig } from "../../types";
+import type {
+  ModelConfig,
+  ModelProviderConfig,
+  NodeConfig,
+  ValidatorCodeLang,
+  ValidatorConfig,
+} from "../../types";
+import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
+import { isOxcCodeShape } from "../validators/oxc-code-shape";
+import { isOxcValidationMode } from "../validators/oxc-mode";
 
 export function validateSubcategoryConfigs(
   configs: Record<string, NodeConfig>,
@@ -103,6 +112,68 @@ export function validateUsedProviders(
     }
     if (!provider.provider_type.trim()) {
       errors.push(`Model provider ${provider.name}: provider_type is required.`);
+    }
+  }
+}
+
+export function validateValidatorConfigs(
+  configs: Record<string, NodeConfig>,
+  nameToConfig: Map<string, NodeConfig>,
+  errors: string[],
+): void {
+  for (const config of Object.values(configs)) {
+    if (config.kind !== "validator") {
+      continue;
+    }
+    const target = (config as ValidatorConfig).target_columns[0]?.trim();
+    if (!target) {
+      continue;
+    }
+    const targetConfig = nameToConfig.get(target);
+    if (!targetConfig) {
+      errors.push(`Validator ${config.name}: target '${target}' not found.`);
+      continue;
+    }
+    if (targetConfig.kind !== "llm" || targetConfig.llm_type !== "code") {
+      errors.push(`Validator ${config.name}: target '${target}' must be LLM Code.`);
+      continue;
+    }
+    if (
+      config.validator_type === "oxc" &&
+      !VALIDATOR_OXC_CODE_LANGS.includes(
+        (targetConfig.code_lang ?? "").trim() as ValidatorCodeLang,
+      )
+    ) {
+      errors.push(
+        `Validator ${config.name}: target '${target}' must use javascript/typescript/jsx/tsx.`,
+      );
+      continue;
+    }
+    if (
+      config.validator_type === "oxc" &&
+      !isOxcValidationMode(config.oxc_validation_mode)
+    ) {
+      errors.push(
+        `Validator ${config.name}: oxc_validation_mode '${config.oxc_validation_mode}' is invalid.`,
+      );
+      continue;
+    }
+    if (
+      config.validator_type === "oxc" &&
+      !isOxcCodeShape(config.oxc_code_shape)
+    ) {
+      errors.push(
+        `Validator ${config.name}: oxc_code_shape '${config.oxc_code_shape}' is invalid.`,
+      );
+      continue;
+    }
+    if (
+      config.validator_type !== "oxc" &&
+      (targetConfig.code_lang ?? "").trim() !== config.code_lang.trim()
+    ) {
+      errors.push(
+        `Validator ${config.name}: code_lang '${config.code_lang}' must match target '${target}' (${targetConfig.code_lang ?? "unknown"}).`,
+      );
     }
   }
 }

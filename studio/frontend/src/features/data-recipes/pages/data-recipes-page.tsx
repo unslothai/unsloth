@@ -24,7 +24,7 @@ import {
 import { ShineBorder } from "@/components/ui/shine-border";
 import { toastError } from "@/shared/toast";
 import {
-  AiChat02Icon,
+  Album02Icon,
   ArrowDown01Icon,
   CodeIcon,
   CookBookIcon,
@@ -60,20 +60,20 @@ type TemplateCard = {
 
 const TEMPLATE_CARDS: TemplateCard[] = [
   {
-    title: "Structured Outputs + Jinja Expressions",
+    title: "Instruction from Answer",
     description:
-      "Support ticket triage dataset with structured JSON outputs and Jinja if/else refs.",
-    icon: FunctionIcon,
-    difficulty: "Advanced",
-    learningBadges: ["Structured LLM", "Expression", "Jinja"],
+      "Start from seed answer fields and generate matching user instructions for SFT pairs.",
+    icon: Plant01Icon,
+    difficulty: "Easy",
+    learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
     surfaceClassName:
-      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/30 dark:via-sky-400/14 dark:to-cyan-950/16",
+      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/30 dark:via-green-400/14 dark:to-emerald-950/16",
     shineColor: [
-      "rgb(6 182 212 / 0.45)",
-      "rgb(56 189 248 / 0.4)",
-      "rgb(34 211 238 / 0.45)",
+      "rgb(16 185 129 / 0.45)",
+      "rgb(34 197 94 / 0.4)",
+      "rgb(52 211 153 / 0.45)",
     ],
-    learningRecipeId: "structured-outputs-jinja",
+    learningRecipeId: "instruction-from-answer",
   },
   {
     title: "PDF Document QA",
@@ -92,20 +92,20 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "pdf-grounded-qa",
   },
   {
-    title: "Instruction from Answer",
+    title: "OCR Document Extraction",
     description:
-      "Start from seed answer fields and generate matching user instructions for SFT pairs.",
-    icon: Plant01Icon,
-    difficulty: "Easy",
-    learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
+      "Use image context from seed data to generate OCR-style extraction outputs.",
+    icon: Album02Icon,
+    difficulty: "Starter",
+    learningBadges: ["Vision", "LLM Text", "Image Context"],
     surfaceClassName:
-      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/30 dark:via-green-400/14 dark:to-emerald-950/16",
+      "from-lime-500/15 via-emerald-500/5 to-transparent dark:from-lime-400/30 dark:via-emerald-400/14 dark:to-lime-950/16",
     shineColor: [
-      "rgb(16 185 129 / 0.45)",
-      "rgb(34 197 94 / 0.4)",
-      "rgb(52 211 153 / 0.45)",
+      "rgb(132 204 22 / 0.45)",
+      "rgb(16 185 129 / 0.4)",
+      "rgb(74 222 128 / 0.45)",
     ],
-    learningRecipeId: "instruction-from-answer",
+    learningRecipeId: "ocr-document-extraction",
   },
   {
     title: "Text to Python",
@@ -140,20 +140,20 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "text-to-sql",
   },
   {
-    title: "Multi-Turn Chat",
+    title: "Structured Outputs + Jinja Expressions",
     description:
-      "Role-based multi-turn conversations for assistant behavior, memory, and response quality.",
-    icon: AiChat02Icon,
-    difficulty: "Easy",
-    learningBadges: ["Structured LLM", "LLM Text"],
+      "Support ticket triage dataset with structured JSON outputs and Jinja if/else refs.",
+    icon: FunctionIcon,
+    difficulty: "Advanced",
+    learningBadges: ["Structured LLM", "Expression", "Jinja"],
     surfaceClassName:
-      "from-rose-500/15 via-pink-500/5 to-transparent dark:from-rose-400/30 dark:via-pink-400/14 dark:to-rose-950/16",
+      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/30 dark:via-sky-400/14 dark:to-cyan-950/16",
     shineColor: [
-      "rgb(244 63 94 / 0.45)",
-      "rgb(236 72 153 / 0.4)",
-      "rgb(251 113 133 / 0.45)",
+      "rgb(6 182 212 / 0.45)",
+      "rgb(56 189 248 / 0.4)",
+      "rgb(34 211 238 / 0.45)",
     ],
-    learningRecipeId: "conversation",
+    learningRecipeId: "structured-outputs-jinja",
   },
 ];
 
@@ -207,7 +207,10 @@ function LearningRecipeCards({
           loadingTemplateId === template.learningRecipeId;
         const isDisabled = !isReady || isLoading || Boolean(loadingTemplateId);
         const visibleLearningBadges = template.learningBadges.slice(0, 4);
-        const extraLearningBadgeCount = Math.max(0, template.learningBadges.length - 4);
+        const extraLearningBadgeCount = Math.max(
+          0,
+          template.learningBadges.length - 4,
+        );
         return (
           <button
             key={template.title}
@@ -259,15 +262,21 @@ function LearningRecipeCards({
                       </Badge>
                     ))}
                     {extraLearningBadgeCount > 0 ? (
-                      <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
+                      <Badge
+                        variant="outline"
+                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                      >
                         +{extraLearningBadgeCount}
                       </Badge>
                     ) : null}
-                    {!isReady ? (
-                      <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">
+                    {isReady ? null : (
+                      <Badge
+                        variant="secondary"
+                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                      >
                         Soon
                       </Badge>
-                    ) : null}
+                    )}
                   </>
                 )}
               </div>

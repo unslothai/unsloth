@@ -7,6 +7,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -23,6 +24,7 @@ unsloth_compiled_cache/
 outputs/
 exports/
 /datasets/
+studio/backend/assets/datasets/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors
@@ -53,6 +55,7 @@ firebase-debug.log
 # Other
 resources/
 tmp/
+**/node_modules/
 auth.db
 studio/frontend/package-lock.json
 

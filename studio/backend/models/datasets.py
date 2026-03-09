@@ -1,8 +1,9 @@
 """
 Dataset-related Pydantic models for API requests and responses.
 """
-from pydantic import BaseModel, model_validator
-from typing import Any, Optional, Dict, List
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class CheckFormatRequest(BaseModel):
@@ -38,3 +39,23 @@ class CheckFormatResponse(BaseModel):
     preview_samples: Optional[List[Dict]] = None
     total_rows: Optional[int] = None
     warning: Optional[str] = None
+
+
+class LocalDatasetItem(BaseModel):
+    class Metadata(BaseModel):
+        actual_num_records: Optional[int] = None
+        target_num_records: Optional[int] = None
+        total_num_batches: Optional[int] = None
+        num_completed_batches: Optional[int] = None
+        columns: Optional[List[str]] = None
+
+    id: str
+    label: str
+    path: str
+    rows: Optional[int] = None
+    updated_at: Optional[float] = None
+    metadata: Optional[Metadata] = None
+
+
+class LocalDatasetsResponse(BaseModel):
+    datasets: List[LocalDatasetItem] = Field(default_factory=list)

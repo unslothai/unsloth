@@ -18,6 +18,7 @@ type ConfigDialogProps = {
   datetimeOptions: string[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
   container?: HTMLDivElement | null;
+  readOnly?: boolean;
 };
 
 export function ConfigDialog({
@@ -30,11 +31,13 @@ export function ConfigDialog({
   datetimeOptions,
   onUpdate,
   container,
+  readOnly = false,
 }: ConfigDialogProps): ReactElement {
   const blockDefinition = getBlockDefinitionForConfig(config);
   const showDropToggle =
     config?.kind === "sampler" ||
     config?.kind === "llm" ||
+    config?.kind === "validator" ||
     config?.kind === "expression" ||
     (config?.kind === "seed" &&
       (config.seed_source_type ?? "hf") === "unstructured");
@@ -63,30 +66,38 @@ export function ConfigDialog({
         )}
         {config && (
           <div className="space-y-4">
-            <ValidationBanner config={config} />
-            {showDropToggle && (
-              <div className="flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
-                <div>
-                  <p className="text-sm font-semibold">Drop from final dataset</p>
-                  <p className="text-xs text-muted-foreground">
-                    Keep for generation but omit from exported rows.
-                  </p>
-                </div>
-                <Switch
-                  checked={config.drop ?? false}
-                  onCheckedChange={(value) => onUpdate(config.id, { drop: value })}
-                />
+            {readOnly && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Recipe locked while execution is active.
               </div>
             )}
-            {renderBlockDialog(
-              config,
-              open,
-              categoryOptions,
-              modelConfigAliases,
-              modelProviderOptions,
-              datetimeOptions,
-              onUpdate,
-            )}
+            <ValidationBanner config={config} />
+            <div className={readOnly ? "pointer-events-none opacity-75" : undefined}>
+              {showDropToggle && (
+                <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
+                  <div>
+                    <p className="text-sm font-semibold">Drop from final dataset</p>
+                    <p className="text-xs text-muted-foreground">
+                      Keep for generation but omit from exported rows.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.drop ?? false}
+                    disabled={readOnly}
+                    onCheckedChange={(value) => onUpdate(config.id, { drop: value })}
+                  />
+                </div>
+              )}
+              {renderBlockDialog(
+                config,
+                open,
+                categoryOptions,
+                modelConfigAliases,
+                modelProviderOptions,
+                datetimeOptions,
+                onUpdate,
+              )}
+            </div>
           </div>
         )}
         <DialogFooter>

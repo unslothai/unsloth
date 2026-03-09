@@ -57,7 +57,7 @@ export function ExecutionOverviewTab({
       {showSummaryCards && (
         <div className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
-            <div className="h-full rounded-lg bg-muted/20 p-3">
+            <div className="h-full rounded-xl border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">Run summary</p>
                 <HugeiconsIcon
@@ -82,11 +82,11 @@ export function ExecutionOverviewTab({
                 </p>
                 <p className="flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">Final stage</span>
-                  <span className="font-semibold">{execution.stage ?? "--"}</span>
+                  <span className="truncate font-semibold">{execution.stage ?? "--"}</span>
                 </p>
               </div>
             </div>
-            <div className="h-full rounded-lg bg-muted/20 p-3">
+            <div className="h-full rounded-xl border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">Insights</p>
                 <HugeiconsIcon
@@ -104,7 +104,7 @@ export function ExecutionOverviewTab({
                   <span className="font-semibold">{nullRate?.toFixed(1) ?? "--"}%</span>
                 </p>
                 <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Dropped columns</span>
+                  <span className="text-muted-foreground">Side-effect columns</span>
                   <span className="font-semibold">{formatMetricValue(sideEffects.length)}</span>
                 </p>
                 {sideEffects.length > 0 && (
@@ -128,12 +128,12 @@ export function ExecutionOverviewTab({
                   <div className="pt-0.5">
                     <div className="flex flex-wrap gap-1.5">
                       {lowUniquenessColumns.slice(0, 3).map((name) => (
-                        <Badge key={name} variant="secondary">
+                        <Badge key={name} variant="outline">
                           {name}
                         </Badge>
                       ))}
                       {lowUniquenessColumns.length > 3 && (
-                        <Badge variant="secondary">
+                        <Badge variant="outline">
                           +{lowUniquenessColumns.length - 3} more
                         </Badge>
                       )}
@@ -143,7 +143,7 @@ export function ExecutionOverviewTab({
               </div>
             </div>
           </div>
-          <div className="rounded-lg bg-muted/20 p-3">
+          <div className="rounded-xl border border-border/60 bg-card/55 p-3">
             <div className="mb-2 flex items-center justify-between">
               <p className="text-xs text-muted-foreground">Model usage</p>
               <HugeiconsIcon icon={Flag02Icon} className="size-4 text-muted-foreground" />
@@ -151,7 +151,7 @@ export function ExecutionOverviewTab({
             {modelUsageRows.length === 0 ? (
               <p className="text-xs text-muted-foreground">No model usage yet.</p>
             ) : (
-              <div className="overflow-hidden rounded-md border">
+              <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50">
                 <Table>
                   <TableHeader>
                     <TableRow>

@@ -13,7 +13,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { CookBookIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import {
+  AlertCircleIcon,
+  CheckmarkCircle02Icon,
+  CookBookIcon,
+  SparklesIcon,
+  TestTube01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
 import type { RecipeExecutionKind } from "../execution-types";
@@ -26,6 +34,8 @@ type RunDialogProps = {
   kind: RecipeExecutionKind;
   onKindChange: (kind: RecipeExecutionKind) => void;
   rows: number;
+  fullRunName: string;
+  onFullRunNameChange: (name: string) => void;
   onRowsChange: (rows: number) => void;
   settings: RecipeRunSettings;
   onSettingsChange: (patch: Partial<RecipeRunSettings>) => void;
@@ -170,21 +180,43 @@ function ValidationResultPanel({
 
   return (
     <div
-      className={
+      className={cn(
+        "space-y-3 rounded-2xl border p-4 shadow-border backdrop-blur-sm",
         validateResult.valid
-          ? "space-y-1 rounded-xl border border-emerald-300 bg-emerald-50 p-3"
-          : "space-y-1 rounded-xl border border-destructive/30 bg-destructive/5 p-3"
-      }
+          ? "border-emerald-300/70 bg-emerald-50/80 dark:border-emerald-900/60 dark:bg-emerald-950/30"
+          : "border-destructive/30 bg-destructive/5",
+      )}
     >
-      <p
-        className={
-          validateResult.valid
-            ? "text-xs font-semibold uppercase text-emerald-700"
-            : "text-xs font-semibold uppercase text-destructive"
-        }
-      >
-        {validateResult.valid ? "Validation passed" : "Validation failed"}
-      </p>
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full border",
+            validateResult.valid
+              ? "border-emerald-300/70 bg-emerald-500/10 text-emerald-700 dark:border-emerald-900/60 dark:text-emerald-300"
+              : "border-destructive/30 bg-destructive/10 text-destructive",
+          )}
+        >
+          <HugeiconsIcon
+            icon={validateResult.valid ? CheckmarkCircle02Icon : AlertCircleIcon}
+            className="size-4"
+          />
+        </div>
+        <div className="min-w-0 flex-1 space-y-1">
+          <p
+            className={cn(
+              "text-sm font-semibold",
+              validateResult.valid ? "text-emerald-700 dark:text-emerald-300" : "text-destructive",
+            )}
+          >
+            {validateResult.valid ? "Recipe looks good" : "Recipe needs attention"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {validateResult.valid
+              ? "Validation passed. You can start the run when ready."
+              : "Fix the issues below, then validate again."}
+          </p>
+        </div>
+      </div>
       {!validateResult.valid && validateResult.errors.length > 0 && (
         <div className="space-y-1">
           {validateResult.errors.map((error) => (
@@ -207,6 +239,8 @@ export function RunDialog({
   kind,
   onKindChange,
   rows,
+  fullRunName,
+  onFullRunNameChange,
   onRowsChange,
   settings,
   onSettingsChange,
@@ -220,6 +254,8 @@ export function RunDialog({
 }: RunDialogProps): ReactElement {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const kindLabel = kind === "preview" ? "Preview" : "Full run";
+  const normalizedFullRunName = fullRunName.trim();
+  const isFullRunNameMissing = kind === "full" && normalizedFullRunName.length === 0;
   const rowHint =
     kind === "preview"
       ? "How many sample rows to generate for a quick check."
@@ -249,6 +285,8 @@ export function RunDialog({
   const [shutdownRateDraft, setShutdownRateDraft] = useState(
     String(settings.shutdownErrorRate),
   );
+  const showBatchingHint =
+    kind === "full" && rows >= 1000 && !settings.batchEnabled;
 
   useEffect(() => {
     if (!open) {
@@ -285,17 +323,40 @@ export function RunDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle sm:max-w-2xl shadow-border"
+        className="corner-squircle border-border/70 bg-background/95 sm:max-w-2xl shadow-border backdrop-blur-xl"
       >
-        <DialogHeader>
+        <DialogHeader className="space-y-2">
           <DialogTitle>{kindLabel} settings</DialogTitle>
           <p className="text-sm text-muted-foreground">
             Configure run size and performance knobs for this execution.
           </p>
         </DialogHeader>
 
-        <div className="flex items-center justify-between text-sm">
-          <span className="font-medium text-foreground">Preview mode</span>
+        {showBatchingHint && (
+          <div className="flex items-start gap-3 rounded-2xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-border dark:border-amber-900/60 dark:bg-amber-950/30">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-amber-300/70 bg-amber-500/10 text-amber-700 dark:border-amber-900/60 dark:text-amber-300">
+              <HugeiconsIcon icon={SparklesIcon} className="size-4" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+                Bigger runs usually feel smoother with batching on
+              </p>
+              <p className="text-xs leading-relaxed text-amber-900/80 dark:text-amber-100/80">
+                You&apos;re generating {rows.toLocaleString()} records. Turning on batching
+                usually makes larger runs easier to manage and more resilient if
+                something goes wrong mid-run.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between rounded-2xl border border-border/70 bg-card/60 px-4 py-3 text-sm shadow-border">
+          <div className="space-y-0.5">
+            <span className="font-medium text-foreground">Preview mode</span>
+            <p className="text-xs text-muted-foreground">
+              Turn this off for a full dataset run.
+            </p>
+          </div>
           <Switch
             checked={kind === "preview"}
             onCheckedChange={(checked) =>
@@ -303,6 +364,29 @@ export function RunDialog({
             }
           />
         </div>
+
+        {kind === "full" && (
+          <div className="grid gap-2">
+            <FieldLabel
+              label="Run name"
+              htmlFor="run-name"
+              hint="Optional label shown in executions list."
+            />
+            <Input
+              id="run-name"
+              type="text"
+              value={fullRunName}
+              onChange={(event) => onFullRunNameChange(event.target.value)}
+              placeholder="Sprint dataset v2"
+              aria-invalid={isFullRunNameMissing}
+            />
+            {isFullRunNameMissing ? (
+              <p className="text-xs text-destructive">
+                Run name is required before starting a full run.
+              </p>
+            ) : null}
+          </div>
+        )}
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="grid gap-2">
@@ -363,9 +447,14 @@ export function RunDialog({
         </div>
 
         {kind === "full" && (
-          <div className="space-y-3">
+          <div className="space-y-3 rounded-2xl border border-border/70 bg-card/60 p-4 shadow-border">
             <div className="flex items-center justify-between gap-3 text-sm">
-              <span className="font-medium">Enable batching</span>
+              <div className="space-y-0.5">
+                <span className="font-medium">Enable batching</span>
+                <p className="text-xs text-muted-foreground">
+                  Split big runs into manageable chunks.
+                </p>
+              </div>
               <Switch
                 checked={settings.batchEnabled}
                 onCheckedChange={(checked) =>
@@ -395,9 +484,12 @@ export function RunDialog({
                   }
                 />
                 <div className="flex items-center justify-between gap-3 text-sm">
-                  <span className="font-medium">
-                    Merge batches to one parquet
-                  </span>
+                  <div className="space-y-0.5">
+                    <span className="font-medium">Merge batches to one parquet</span>
+                    <p className="text-xs text-muted-foreground">
+                      Combine chunk outputs into one final file when done.
+                    </p>
+                  </div>
                   <Switch
                     checked={settings.mergeBatches}
                     onCheckedChange={(checked) =>
@@ -420,7 +512,7 @@ export function RunDialog({
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent className="mt-3 space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 rounded-2xl border border-border/70 bg-card/60 p-4 shadow-border md:grid-cols-2">
               <DraftInputField
                 id="run-non-inference-workers"
                 label="CPU workers"
@@ -515,7 +607,13 @@ export function RunDialog({
                   )
                 }
               />
-              <div className="flex items-center gap-3 text-sm text-foreground">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2">
+                <div className="space-y-0.5">
+                  <p className="font-medium">Keep running through failures</p>
+                  <p className="text-xs text-muted-foreground">
+                    Recommended for longer runs when you want maximum output.
+                  </p>
+                </div>
                 <Switch
                   checked={settings.disableEarlyShutdown}
                   onCheckedChange={(checked) =>
@@ -524,17 +622,19 @@ export function RunDialog({
                     })
                   }
                 />
-                Disable early shutdown
               </div>
             </div>
           </CollapsibleContent>
         </Collapsible>
 
         {errors.length > 0 && (
-          <div className="max-h-44 space-y-1 overflow-y-auto rounded-xl border border-destructive/30 bg-destructive/5 p-3">
-            <p className="text-xs font-semibold uppercase text-destructive">
-              Run checks
-            </p>
+          <div className="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-destructive/30 bg-destructive/5 p-4 shadow-border">
+            <div className="flex items-center gap-2">
+              <HugeiconsIcon icon={AlertCircleIcon} className="size-4 text-destructive" />
+              <Badge variant="outline" className="rounded-full text-[10px] text-destructive">
+                Run checks
+              </Badge>
+            </div>
             {errors.map((error) => (
               <p key={error} className="text-xs text-destructive">
                 {error}
@@ -551,6 +651,7 @@ export function RunDialog({
             variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={loading}
+            className="corner-squircle border-border/70 bg-card/70"
           >
             Cancel
           </Button>
@@ -559,11 +660,17 @@ export function RunDialog({
             variant="outline"
             onClick={onValidate}
             disabled={loading || validateLoading}
+            className="corner-squircle border-border/70 bg-card/70"
           >
             <HugeiconsIcon icon={TestTube01Icon} className="size-3.5" />
             {validateLoading ? "Validating..." : "Validate recipe"}
           </Button>
-          <Button type="button" onClick={onRun} disabled={loading}>
+          <Button
+            type="button"
+            onClick={onRun}
+            disabled={loading || isFullRunNameMissing}
+            className="corner-squircle"
+          >
             <HugeiconsIcon icon={CookBookIcon} className="size-3.5" />
             {loading ? "Starting..." : `Start ${kindLabel.toLowerCase()}`}
           </Button>

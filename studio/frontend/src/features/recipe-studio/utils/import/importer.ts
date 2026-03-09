@@ -5,7 +5,10 @@ import type {
   MarkdownNoteConfig,
   NodeConfig,
   RecipeProcessorConfig,
+  SeedConfig,
+  SamplerConfig,
   SeedSourceType,
+  ValidatorConfig,
 } from "../../types";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
@@ -39,6 +42,7 @@ type UiInput = {
   unstructured_file_name?: unknown;
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
+  advanced_open_by_node?: unknown;
 };
 
 type UiMarkdownNoteNode = {
@@ -256,6 +260,42 @@ function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
   return noteNodes;
 }
 
+function parseAdvancedOpenByNode(input: unknown): Record<string, boolean> {
+  if (!isRecord(input)) {
+    return {};
+  }
+  const out: Record<string, boolean> = {};
+  for (const [nameRaw, value] of Object.entries(input)) {
+    const name = nameRaw.trim();
+    if (!name || typeof value !== "boolean") {
+      continue;
+    }
+    out[name] = value;
+  }
+  return out;
+}
+
+type AdvancedOpenConfig = LlmConfig | SamplerConfig | SeedConfig | ValidatorConfig;
+
+function isAdvancedOpenConfig(config: NodeConfig): config is AdvancedOpenConfig {
+  return (
+    config.kind === "llm" ||
+    config.kind === "sampler" ||
+    config.kind === "seed" ||
+    config.kind === "validator"
+  );
+}
+
+function applyAdvancedOpen(
+  config: NodeConfig,
+  advancedOpenByNode: Record<string, boolean>,
+): void {
+  if (!isAdvancedOpenConfig(config)) {
+    return;
+  }
+  config.advancedOpen = advancedOpenByNode[config.name] === true;
+}
+
 function attachLlmTooling(
   config: LlmConfig,
   toolConfigsByAlias: Map<string, LlmToolConfig>,
@@ -336,6 +376,7 @@ export function importRecipePayload(input: string): ImportResult {
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
   );
+  const uiAdvancedOpenByNode = parseAdvancedOpenByNode(ui?.advanced_open_by_node);
   const uiMarkdownNotes = parseUiMarkdownNoteNodes(ui?.nodes);
 
   for (const note of uiMarkdownNotes) {
@@ -364,7 +405,9 @@ export function importRecipePayload(input: string): ImportResult {
       preferredSourceType: uiSeedSourceType,
       seed_columns: uiSeedColumns,
       seed_drop_columns:
-        uiSeedDropColumns ?? payloadSeedDropColumns,
+        uiSeedDropColumns && uiSeedDropColumns.length > 0
+          ? uiSeedDropColumns
+          : payloadSeedDropColumns,
       seed_preview_rows: uiSeedPreviewRows,
       local_file_name: uiLocalFileName,
       unstructured_file_name: uiUnstructuredFileName,
@@ -372,6 +415,7 @@ export function importRecipePayload(input: string): ImportResult {
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
     });
     if (seedConfig) {
+      applyAdvancedOpen(seedConfig, uiAdvancedOpenByNode);
       if (nameToId.has(seedConfig.name)) {
         errors.push(`Duplicate column name: ${seedConfig.name}.`);
       } else {
@@ -441,6 +485,7 @@ export function importRecipePayload(input: string): ImportResult {
     if (config.kind === "llm") {
       attachLlmTooling(config, toolConfigsByAlias, mcpProvidersByName);
     }
+    applyAdvancedOpen(config, uiAdvancedOpenByNode);
     if (nameToId.has(config.name)) {
       errors.push(`Duplicate column name: ${config.name}.`);
       return;

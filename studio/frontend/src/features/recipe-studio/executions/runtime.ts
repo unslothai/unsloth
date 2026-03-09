@@ -87,6 +87,11 @@ export function applyExecutionStatusSnapshot(
     rows: status.rows ?? execution.rows,
     stage: status.stage ?? execution.stage,
     current_column: status.current_column ?? null,
+    completed_columns: Array.isArray(status.completed_columns)
+      ? status.completed_columns.filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0,
+        )
+      : execution.completed_columns,
     progress: (normalizeObject(status.progress) as RecipeExecutionRecord["progress"]) ?? null,
     column_progress:
       (normalizeObject(status.column_progress) as RecipeExecutionRecord["column_progress"]) ??
@@ -109,6 +114,7 @@ export function createBaseExecutionRecord(input: {
   kind: RecipeExecutionKind;
   rows: number;
   currentSignature: string;
+  runName?: string | null;
 }): RecipeExecutionRecord {
   const createdAt = Date.now();
   return {
@@ -116,6 +122,7 @@ export function createBaseExecutionRecord(input: {
     recipeId: input.recipeId,
     jobId: null,
     kind: input.kind,
+    run_name: input.runName ?? null,
     status: "pending",
     rows: input.rows,
     createdAt,
@@ -123,6 +130,7 @@ export function createBaseExecutionRecord(input: {
     recipeSignature: input.currentSignature,
     stage: "pending",
     current_column: null,
+    completed_columns: [],
     progress: null,
     column_progress: null,
     batch: null,

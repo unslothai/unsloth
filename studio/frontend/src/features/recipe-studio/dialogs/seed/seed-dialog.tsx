@@ -34,12 +34,12 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { cn } from "@/lib/utils";
 import { inspectSeedDataset, inspectSeedUpload } from "../../api";
+import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   SeedConfig,
   SeedSamplingStrategy,
@@ -102,6 +102,29 @@ function truncatePreviewValue(value: string): string {
   return `${value.slice(0, PREVIEW_TRUNCATE_AT)}…`;
 }
 
+function getPreviewEmptyStateCopy(mode: SeedConfig["seed_source_type"]): {
+  title: string;
+  description: string;
+} {
+  if (mode === "local") {
+    return {
+      title: "No local preview yet",
+      description: "Choose a CSV/JSON/JSONL file, then click Load to fetch 10 rows.",
+    };
+  }
+  if (mode === "unstructured") {
+    return {
+      title: "No chunk preview yet",
+      description:
+        "Choose a TXT/PDF/DOCX file, then click Load to extract + preview chunk_text rows.",
+    };
+  }
+  return {
+    title: "No dataset preview yet",
+    description: "Pick a Hugging Face dataset and click Load to fetch 10 sample rows.",
+  };
+}
+
 function parseChunkNumber(
   value: string | undefined,
   fallback: number,
@@ -137,22 +160,6 @@ function resolveChunking(config: SeedConfig): {
   return { chunkSize, chunkOverlap };
 }
 
-async function chunkText(
-  input: string,
-  chunkSize: number,
-  chunkOverlap: number,
-): Promise<string[]> {
-  const text = input.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (!text) return [];
-
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize,
-    chunkOverlap,
-  });
-  const chunks = await splitter.splitText(text);
-  return chunks.map((chunk) => chunk.trim()).filter(Boolean);
-}
-
 async function fileToBase64Payload(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -185,16 +192,34 @@ async function extractUnstructuredText(file: File): Promise<string> {
   throw new Error("Unsupported unstructured file type");
 }
 
+async function toUnstructuredUploadFile(file: File): Promise<File> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".txt") || lower.endsWith(".md")) {
+    return file;
+  }
+
+  const text = (await extractUnstructuredText(file)).trim();
+  if (!text) {
+    throw new Error("No text found in file.");
+  }
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const stem = file.name.replace(/\.(pdf|docx)$/i, "") || "unstructured_seed";
+  return new File([normalized], `${stem}.txt`, {
+    type: "text/plain",
+  });
+}
+
 export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactElement {
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedOpen = config.advancedOpen === true;
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
   const [expandedPreviewRows, setExpandedPreviewRows] = useState<Record<number, boolean>>({});
   const [localFile, setLocalFile] = useState<File | null>(null);
   const [unstructuredFile, setUnstructuredFile] = useState<File | null>(null);
 
   const mode = config.seed_source_type ?? "hf";
+  const previewEmpty = getPreviewEmptyStateCopy(mode);
 
   useEffect(() => {
     setInspectError(null);
@@ -252,7 +277,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         const response = await inspectSeedDataset({
           dataset_name: datasetName,
           hf_token: config.hf_token?.trim() || undefined,
-          subset: undefined,
+          split: config.hf_split?.trim() || undefined,
+          subset: config.hf_subset?.trim() || undefined,
           preview_size: 10,
         });
         onUpdate({
@@ -262,8 +288,8 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             response.columns.includes(name),
           ),
           seed_preview_rows: response.preview_rows ?? [],
-          hf_split: "",
-          hf_subset: "",
+          hf_split: response.split ?? "",
+          hf_subset: response.subset ?? "",
           local_file_name: "",
           unstructured_file_name: "",
         });
@@ -310,27 +336,19 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         throw new Error("File too large (max 50MB).");
       }
 
-      const text = await extractUnstructuredText(unstructuredFile);
       const { chunkSize, chunkOverlap } = resolveChunking(config);
-      const chunks = await chunkText(text, chunkSize, chunkOverlap);
-      if (chunks.length === 0) {
-        throw new Error("No text found in file.");
+      const uploadFile = await toUnstructuredUploadFile(unstructuredFile);
+      if (uploadFile.size > MAX_UPLOAD_BYTES) {
+        throw new Error("Processed text is too large (max 50MB).");
       }
-      const jsonl = chunks
-        .map((chunk) => JSON.stringify({ chunk_text: chunk }))
-        .join("\n");
-      const stem =
-        unstructuredFile.name.replace(/\.(pdf|docx|txt)$/i, "") ||
-        "unstructured_seed";
-      const jsonlFile = new File([jsonl], `${stem}.jsonl`, {
-        type: "application/json",
-      });
-
-      const payload = await fileToBase64Payload(jsonlFile);
+      const payload = await fileToBase64Payload(uploadFile);
       const response = await inspectSeedUpload({
-        filename: jsonlFile.name,
+        filename: uploadFile.name,
         content_base64: payload,
         preview_size: 10,
+        seed_source_type: "unstructured",
+        unstructured_chunk_size: chunkSize,
+        unstructured_chunk_overlap: chunkOverlap,
       });
       onUpdate({
         hf_path: response.resolved_path,
@@ -392,6 +410,16 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const selectedSeedDropSet = useMemo(
     () => new Set(selectedSeedDropColumns),
     [selectedSeedDropColumns],
+  );
+  const rowHasExpandableText = useCallback(
+    (row: Record<string, unknown>): boolean =>
+      previewColumns.some((columnName) => {
+        if (resolveImagePreview(row[columnName])) {
+          return false;
+        }
+        return isExpandablePreviewValue(stringifyCell(row[columnName]));
+      }),
+    [previewColumns],
   );
 
   return (
@@ -538,7 +566,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Chunking uses chunk_text only. Max 50MB.
+                File is converted to text, then chunked server-side into chunk_text rows. Max 50MB.
               </p>
               {(unstructuredFile?.name ||
                 config.unstructured_file_name?.trim()) && (
@@ -590,7 +618,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             </div>
           )}
 
-          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+          <Collapsible
+            open={advancedOpen}
+            onOpenChange={(openState) => onUpdate({ advancedOpen: openState })}
+          >
             <CollapsibleTrigger asChild={true}>
               <button
                 type="button"
@@ -749,12 +780,14 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             <div className="flex w-full items-center justify-center">
               <Empty className="max-w-lg">
                 <EmptyHeader>
-                  <EmptyTitle>Seed preview</EmptyTitle>
+                  <EmptyTitle>{previewEmpty.title}</EmptyTitle>
                   <EmptyDescription>
-                    Use the load button next to the source input to fetch 10 rows.
+                    {previewEmpty.description}
                   </EmptyDescription>
                 </EmptyHeader>
-                <EmptyContent />
+                <EmptyContent className="text-xs text-muted-foreground">
+                  Preview appears here after loading source metadata.
+                </EmptyContent>
               </Empty>
             </div>
           ) : (
@@ -778,15 +811,11 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                       <TableRow
                         key={`row-${rowIdx}`}
                         className={cn(
-                          previewColumns.some((col) =>
-                            isExpandablePreviewValue(stringifyCell(row[col])),
-                          ) && "cursor-pointer hover:bg-primary/[0.06]",
+                          rowHasExpandableText(row) && "cursor-pointer hover:bg-primary/[0.06]",
                           expandedPreviewRows[rowIdx] && "bg-primary/[0.05]",
                         )}
                         onClick={() => {
-                          const canExpand = previewColumns.some((col) =>
-                            isExpandablePreviewValue(stringifyCell(row[col])),
-                          );
+                          const canExpand = rowHasExpandableText(row);
                           if (!canExpand) {
                             return;
                           }
@@ -802,10 +831,22 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
                             className="max-w-[260px] whitespace-pre-wrap break-words text-xs"
                           >
                             {(() => {
+                              const imagePreview = resolveImagePreview(row[col]);
+                              if (imagePreview?.kind === "ready") {
+                                return (
+                                  <img
+                                    src={imagePreview.src}
+                                    alt={`${col} preview`}
+                                    loading="lazy"
+                                    className="h-20 w-auto max-w-[220px] rounded-md border border-border/60 bg-muted/20 object-contain"
+                                  />
+                                );
+                              }
+                              if (imagePreview?.kind === "too_large") {
+                                return "Image too large to preview";
+                              }
                               const value = stringifyCell(row[col]);
-                              const rowHasExpandableCell = previewColumns.some((columnName) =>
-                                isExpandablePreviewValue(stringifyCell(row[columnName])),
-                              );
+                              const rowHasExpandableCell = rowHasExpandableText(row);
                               const rowExpanded = Boolean(expandedPreviewRows[rowIdx]);
                               return rowHasExpandableCell && !rowExpanded
                                 ? truncatePreviewValue(value)
