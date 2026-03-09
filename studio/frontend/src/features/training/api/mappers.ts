@@ -36,6 +36,7 @@ export function buildTrainingStartPayload(
     hf_token: config.hfToken.trim() || null,
     load_in_4bit: adapterMethod ? isQloraMethod : false,
     max_seq_length: config.contextLength,
+    trust_remote_code: config.trustRemoteCode ?? false,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,

@@ -211,6 +211,7 @@ class ExportOrchestrator:
         checkpoint_path: str,
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
+        trust_remote_code: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -225,6 +226,7 @@ class ExportOrchestrator:
             "checkpoint_path": checkpoint_path,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
+            "trust_remote_code": trust_remote_code,
         }
 
         # Always kill existing subprocess and spawn fresh.

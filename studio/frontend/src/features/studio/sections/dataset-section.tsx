@@ -37,6 +37,7 @@ import {
 } from "@/hooks";
 import {
   HfDatasetSubsetSplitSelectors,
+  uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -52,7 +53,8 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
@@ -72,7 +74,11 @@ function deriveLocalDatasetName(path: string): string {
   const parts = normalized.split("/").filter(Boolean);
   const parquetIndex = parts.lastIndexOf("parquet-files");
   if (parquetIndex > 0) return parts[parquetIndex - 1];
-  return parts[parts.length - 1] ?? path;
+  const basename = parts[parts.length - 1] ?? path;
+  // Strip UUID prefix from uploaded files (format: {32hex}_{original})
+  const uuidPrefixMatch = basename.match(/^[a-f0-9]{32}_(.+)$/);
+  if (uuidPrefixMatch) return uuidPrefixMatch[1];
+  return basename;
 }
 
 function formatUpdatedDate(timestamp: number | null): string {
@@ -286,6 +292,8 @@ export function DatasetSection() {
     if (datasetSource !== "upload") return;
     if (!uploadedFile) return;
     if (selectedLocalDataset) return;
+    // Don't clear if this is a direct file upload (not a recipe directory)
+    if (isLikelyLocalDatasetRef(uploadedFile)) return;
     selectLocalDataset(null);
   }, [
     datasetSource,
@@ -320,10 +328,48 @@ export function DatasetSection() {
   const selectedLocalUpdatedAt = selectedLocalDataset?.updated_at ?? null;
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
     hfResults.length,
   );
+
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleUploadButtonClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const MAX_SIZE_BYTES = 512 * 1024 * 1024;
+    if (file.size > MAX_SIZE_BYTES) {
+      toast.error("File too large", {
+        description: "Maximum upload size is 512 MB.",
+      });
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      const uploaded = await uploadTrainingDataset(file);
+
+      selectLocalDataset(uploaded.stored_path);
+
+      toast.success("Dataset uploaded", {
+        description: uploaded.filename,
+      });
+    } catch (error) {
+      toast.error("Upload failed", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   return (
     <div data-tour="studio-dataset" className="col-span-1 xl:col-span-4">
@@ -596,7 +642,7 @@ export function DatasetSection() {
               datasetEvalSplit={datasetEvalSplit}
               setDatasetEvalSplit={setDatasetEvalSplit}
             />
-          ) : datasetSource === "upload" ? (
+          ) : datasetSource === "upload" && selectedLocalDataset ? (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
@@ -609,45 +655,39 @@ export function DatasetSection() {
                 </div>
               </div>
 
-              {uploadedFile ? (
-                <div className="flex flex-col gap-3">
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                    <MetadataRow
-                      label="Rows"
-                      value={
-                        typeof selectedLocalRows === "number"
-                          ? selectedLocalRows.toLocaleString()
-                          : "--"
-                      }
-                    />
-                    <MetadataRow
-                      label="Columns"
-                      value={
-                        selectedLocalColumns.length > 0
-                          ? String(selectedLocalColumns.length)
-                          : "--"
-                      }
-                    />
-                    <MetadataRow
-                      label="Batches"
-                      value={
-                        typeof selectedLocalMetadata?.num_completed_batches === "number" &&
-                        typeof selectedLocalMetadata?.total_num_batches === "number"
-                          ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
-                          : "--"
-                      }
-                    />
-                    <MetadataRow
-                      label="Updated"
-                      value={formatUpdatedDate(selectedLocalUpdatedAt)}
-                    />
-                  </div>
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <MetadataRow
+                    label="Rows"
+                    value={
+                      typeof selectedLocalRows === "number"
+                        ? selectedLocalRows.toLocaleString()
+                        : "--"
+                    }
+                  />
+                  <MetadataRow
+                    label="Columns"
+                    value={
+                      selectedLocalColumns.length > 0
+                        ? String(selectedLocalColumns.length)
+                        : "--"
+                    }
+                  />
+                  <MetadataRow
+                    label="Batches"
+                    value={
+                      typeof selectedLocalMetadata?.num_completed_batches === "number" &&
+                      typeof selectedLocalMetadata?.total_num_batches === "number"
+                        ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
+                        : "--"
+                    }
+                  />
+                  <MetadataRow
+                    label="Updated"
+                    value={formatUpdatedDate(selectedLocalUpdatedAt)}
+                  />
                 </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Select a local dataset to view metadata.
-                </p>
-              )}
+              </div>
             </div>
           ) : null}
 
@@ -839,9 +879,15 @@ export function DatasetSection() {
                 variant="outline"
                 size="sm"
                 className="cursor-pointer gap-1.5"
+                disabled={isUploading}
+                onClick={handleUploadButtonClick}
               >
-                <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                Upload
+                {isUploading ? (
+                  <Spinner className="size-3.5" />
+                ) : (
+                  <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                )}
+                {isUploading ? "Uploading..." : "Upload"}
               </Button>
               <Button
                 variant="outline"
@@ -855,6 +901,15 @@ export function DatasetSection() {
               </Button>
             </div>
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.jsonl,.csv,.parquet"
+            className="hidden"
+            onChange={(event) => {
+              void handleDatasetFileChange(event);
+            }}
+          />
       </div>
       </SectionCard>
     </div>

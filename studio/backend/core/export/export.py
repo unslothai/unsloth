@@ -138,7 +138,8 @@ class ExportBackend:
     def load_checkpoint(self,
                        checkpoint_path: str,
                        max_seq_length: int = 2048,
-                       load_in_4bit: bool = True) -> Tuple[bool, str]:
+                       load_in_4bit: bool = True,
+                       trust_remote_code: bool = False) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
 
@@ -178,6 +179,7 @@ class ExportBackend:
                     dtype=None,
                     auto_model=CsmForConditionalGeneration,
                     load_in_4bit=False,
+                    trust_remote_code=trust_remote_code,
                 )
 
             elif self._audio_type == 'whisper':
@@ -189,6 +191,7 @@ class ExportBackend:
                     dtype=None,
                     load_in_4bit=False,
                     auto_model=WhisperForConditionalGeneration,
+                    trust_remote_code=trust_remote_code,
                 )
 
             elif self._audio_type == 'snac':
@@ -198,6 +201,7 @@ class ExportBackend:
                     max_seq_length=max_seq_length,
                     dtype=None,
                     load_in_4bit=load_in_4bit,
+                    trust_remote_code=trust_remote_code,
                 )
 
             elif self._audio_type == 'bicodec':
@@ -208,6 +212,7 @@ class ExportBackend:
                     max_seq_length=max_seq_length,
                     dtype=torch.float32,
                     load_in_4bit=False,
+                    trust_remote_code=trust_remote_code,
                 )
 
             elif self._audio_type == 'dac':
@@ -217,6 +222,7 @@ class ExportBackend:
                     model_name=checkpoint_path,
                     max_seq_length=max_seq_length,
                     load_in_4bit=False,
+                    trust_remote_code=trust_remote_code,
                 )
 
             elif self.is_vision:
@@ -226,6 +232,7 @@ class ExportBackend:
                     max_seq_length=max_seq_length,
                     dtype=None,
                     load_in_4bit=load_in_4bit,
+                    trust_remote_code=trust_remote_code,
                 )
                 tokenizer = processor  # For vision models, processor acts as tokenizer
 
@@ -236,6 +243,7 @@ class ExportBackend:
                     max_seq_length=max_seq_length,
                     dtype=None,
                     load_in_4bit=load_in_4bit,
+                    trust_remote_code=trust_remote_code,
                 )
 
             # Check if PEFT model

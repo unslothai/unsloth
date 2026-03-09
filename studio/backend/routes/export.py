@@ -102,6 +102,7 @@ async def load_checkpoint(
             checkpoint_path=request.checkpoint_path,
             max_seq_length=request.max_seq_length,
             load_in_4bit=request.load_in_4bit,
+            trust_remote_code=request.trust_remote_code,
         )
 
         if not success:

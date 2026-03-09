@@ -329,9 +329,11 @@ class UnslothTrainer:
                    load_in_4bit: bool = True,
                    hf_token: Optional[str] = None,
                    is_dataset_image: bool = False,
-                   is_dataset_audio: bool = False) -> bool:
+                   is_dataset_audio: bool = False,
+                   trust_remote_code: bool = False) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
+        self.trust_remote_code = trust_remote_code  # For AutoProcessor etc. used during training
         try:
             if self.model is not None:
                 del self.model
@@ -377,6 +379,9 @@ class UnslothTrainer:
             else:
                 self.is_audio = self._audio_type is not None
                 self.is_audio_vlm = False
+
+            if not self.is_audio and not self.is_audio_vlm:
+                self._cuda_audio_used = False
 
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
             vision = is_vision_model(model_name) if not self.is_audio else False
@@ -450,6 +455,7 @@ class UnslothTrainer:
                     auto_model=CsmForConditionalGeneration,
                     load_in_4bit=False,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -465,6 +471,7 @@ class UnslothTrainer:
                     whisper_language="English",
                     whisper_task="transcribe",
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 # Configure generation settings (notebook lines 100-105)
                 self.model.generation_config.language = "<|en|>"
@@ -481,6 +488,7 @@ class UnslothTrainer:
                     dtype=None,
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -514,6 +522,7 @@ class UnslothTrainer:
                     dtype=torch.float32,  # Spark-TTS requires float32
                     load_in_4bit=False,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded Spark-TTS (bicodec) model")
 
@@ -525,6 +534,7 @@ class UnslothTrainer:
                     max_seq_length=max_seq_length,
                     load_in_4bit=False,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -538,6 +548,7 @@ class UnslothTrainer:
                     dtype=None,
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -549,6 +560,7 @@ class UnslothTrainer:
                     dtype=None,  # Auto-detect
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded vision model")
 
@@ -568,6 +580,7 @@ class UnslothTrainer:
                     dtype=None,  # Auto-detect
                     load_in_4bit=load_in_4bit,
                     token=hf_token,
+                    trust_remote_code=trust_remote_code,
                 )
                 logger.info("Loaded text model")
 
@@ -588,7 +601,7 @@ class UnslothTrainer:
                 self._source_code_retried = True
                 print(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(model_name, max_seq_length, load_in_4bit, hf_token,
-                                       is_dataset_image, is_dataset_audio)
+                                       is_dataset_image, is_dataset_audio, trust_remote_code)
             error_msg = str(e)
             error_lower = error_msg.lower()
             if any(k in error_lower for k in ("gated repo", "access to it at", "401", "403", "unauthorized", "forbidden")):
@@ -987,7 +1000,10 @@ class UnslothTrainer:
         from datasets import Audio
         import torch
 
-        processor = AutoProcessor.from_pretrained(self.model_name)
+        processor = AutoProcessor.from_pretrained(
+            self.model_name,
+            trust_remote_code=getattr(self, "trust_remote_code", False),
+        )
 
         # Strip pad_to_multiple_of from tokenizer init_kwargs — fine-tuned models
         # (e.g. keanteng/sesame-csm-elise) save it in tokenizer_config.json, and
@@ -1786,18 +1802,20 @@ class UnslothTrainer:
             eval_enabled = eval_steps is not None and eval_steps > 0
 
             if local_datasets:
-                # Load local datasets
-                all_data = []
+                # Load local datasets using load_dataset() so the result is
+                # Arrow-backed (has cache files).  Dataset.from_list() creates
+                # an in-memory dataset with no cache, which forces num_proc=1
+                # during tokenization/map because sharding requires Arrow files.
+                all_files: list[str] = []
                 for dataset_file in local_datasets:
                     # dataset_file may already be an absolute path from routes/training.py
                     if os.path.isabs(dataset_file):
                         file_path = dataset_file
                     else:
                         # Fallback: try relative to assets/datasets
-                        file_path = _ASSETS_DATASETS_ROOT / dataset_file
+                        file_path = str(_ASSETS_DATASETS_ROOT / dataset_file)
 
                     file_path_obj = Path(file_path)
-                    file_path_str = str(file_path_obj)
 
                     if file_path_obj.is_dir():
                         parquet_dir = (
@@ -1807,36 +1825,41 @@ class UnslothTrainer:
                         )
                         parquet_files = sorted(parquet_dir.glob("*.parquet"))
                         if parquet_files:
-                            for parquet_file in parquet_files:
-                                df = pd.read_parquet(parquet_file)
-                                all_data.extend(df.to_dict("records"))
+                            all_files.extend(str(p) for p in parquet_files)
                             continue
+                        # Fall through to single-file detection for dirs with json/csv
+                        candidates: list[Path] = []
+                        for ext in ('.json', '.jsonl', '.csv', '.parquet'):
+                            candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
+                        if candidates:
+                            all_files.extend(str(c) for c in candidates)
+                            continue
+                        raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                    else:
+                        all_files.append(str(file_path_obj))
 
-                    if file_path_str.endswith('.json'):
-                        with open(file_path_obj, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            if isinstance(data, list):
-                                all_data.extend(data)
-                            else:
-                                all_data.append(data)
-                    elif file_path_str.endswith('.csv'):
-                        df = pd.read_csv(file_path_obj)
-                        all_data.extend(df.to_dict('records'))
-                    elif file_path_str.endswith('.parquet'):
-                        df = pd.read_parquet(file_path_obj)
-                        all_data.extend(df.to_dict('records'))
-                        continue
+                if all_files:
+                    # Determine loader type from the first file extension
+                    first_ext = Path(all_files[0]).suffix.lower()
+                    if first_ext in ('.json', '.jsonl'):
+                        loader = 'json'
+                    elif first_ext == '.csv':
+                        loader = 'csv'
+                    elif first_ext == '.parquet':
+                        loader = 'parquet'
+                    else:
+                        raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
 
-                if all_data:
-                    dataset = Dataset.from_list(all_data)
+                    dataset = load_dataset(loader, data_files=all_files, split='train')
 
                     # Check if stopped during dataset loading
                     if self.should_stop:
                         print("Stopped during dataset loading\n")
                         return None
 
-                    self._update_progress(status_message=f"Loaded {len(all_data)} samples from local files")
-                    print(f"Loaded {len(all_data)} samples from local files\n")
+                    self._update_progress(status_message=f"Loaded {len(dataset)} samples from local files")
+                    print(f"Loaded {len(dataset)} samples from local files\n")
+                    print(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
             elif dataset_source:
                 # Load from Hugging Face
@@ -1855,7 +1878,8 @@ class UnslothTrainer:
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
                 if eval_enabled:
-                    if eval_split:
+                    effective_train = train_split or "train"
+                    if eval_split and eval_split != effective_train:
                         # Explicit eval split provided - load it directly
                         print(f"Loading explicit eval split: '{eval_split}'\n")
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
@@ -1864,6 +1888,9 @@ class UnslothTrainer:
                         eval_dataset = load_dataset(**eval_load_kwargs)
                         has_separate_eval_source = True
                         print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
+                    elif eval_split and eval_split == effective_train:
+                        # Same split as training — will do 80/20 split after formatting
+                        print(f"Eval split '{eval_split}' is the same as train split — will split 80/20\n")
                     else:
                         # Auto-detect eval split from HF (returns a separate dataset, or None)
                         eval_dataset = self._auto_detect_eval_split_from_hf(
@@ -2360,6 +2387,7 @@ class UnslothTrainer:
                 "dataset_num_proc": 1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else safe_num_proc(max(1, os.cpu_count() // 4)),
                 "max_seq_length": training_args.get('max_seq_length', 2048),
             }
+            print(f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})")
 
             # On Windows with transformers 5.x, disable DataLoader multiprocessing
             # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
