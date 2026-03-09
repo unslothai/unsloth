@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { type ReactElement, useRef } from "react";
 import type { LlmConfig } from "../../types";
 import { LlmGeneralTab } from "./general-tab";

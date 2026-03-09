@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+# Copyright © 2025 Unsloth AI
+
 """
 Shared pytest configuration for the backend test suite.
 Ensures that the backend root is on sys.path so that

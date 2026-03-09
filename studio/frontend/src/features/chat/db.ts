@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { MessageRecord, ThreadRecord } from "./types";
