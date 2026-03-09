@@ -19,12 +19,14 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.training import get_training_backend
+    from utils.models.model_config import load_model_defaults
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
+    from utils.models.model_config import load_model_defaults
 
 # Auth
 from auth.authentication import get_current_subject
@@ -193,6 +195,14 @@ async def start_training(
             "tensorboard_dir": request.tensorboard_dir or "",
             "trust_remote_code": request.trust_remote_code,
         }
+
+        # Resolve trust_remote_code: use True if either the request or YAML config says so.
+        if not training_kwargs["trust_remote_code"]:
+            model_defaults = load_model_defaults(request.model_name)
+            yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
+            if yaml_trust:
+                logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
+                training_kwargs["trust_remote_code"] = True
 
         # Free GPU memory: shut down any running inference/export subprocesses
         # before training starts (they'd compete for VRAM otherwise)
