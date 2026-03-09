@@ -253,9 +253,7 @@ function InlineSidebar({
         className={cn(
           "bg-muted/70 text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
           !collapsed &&
-          (side === "left"
-            ? "border-r border-sidebar-border/70"
-            : "border-l border-sidebar-border/70"),
+          side === "right" && "border-l border-sidebar-border/70",
           collapsed ? "w-0" : "w-(--sidebar-width)",
         )}
       >
