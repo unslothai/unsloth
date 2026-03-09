@@ -255,6 +255,29 @@ function ChartTooltipContent({
             const key = `${nameKey || item.name || item.dataKey || "value"}`;
             const itemConfig = getPayloadConfigFromPayload(config, item, key);
             const indicatorColor = color || item.payload.fill || item.color;
+            let customContent: React.ReactNode = null;
+            let formattedValue: React.ReactNode =
+              item.value != null && typeof item.value !== "object"
+                ? String(item.value)
+                : item.value;
+            let formattedLabel: React.ReactNode = itemConfig?.label || item.name;
+
+            if (formatter && item?.value !== undefined && item.name) {
+              const result = formatter(
+                item.value,
+                item.name,
+                item,
+                index,
+                item.payload,
+              );
+
+              if (Array.isArray(result)) {
+                formattedValue = result[0];
+                formattedLabel = result[1];
+              } else {
+                customContent = result;
+              }
+            }
 
             return (
               <div
@@ -264,9 +287,7 @@ function ChartTooltipContent({
                   indicator === "dot" && "items-center",
                 )}
               >
-                {formatter && item?.value !== undefined && item.name ? (
-                  formatter(item.value, item.name, item, index, item.payload)
-                ) : (
+                {customContent ?? (
                   <>
                     {itemConfig?.icon ? (
                       <itemConfig.icon />
@@ -294,19 +315,17 @@ function ChartTooltipContent({
                     )}
                     <div
                       className={cn(
-                        "flex flex-1 justify-between leading-none",
+                        "flex flex-1 justify-between gap-3 leading-none",
                         nestLabel ? "items-end" : "items-center",
                       )}
                     >
                       <div className="grid gap-1.5">
                         {nestLabel ? tooltipLabel : null}
-                        <span className="text-muted-foreground">
-                          {itemConfig?.label || item.name}
-                        </span>
+                        <span className="text-muted-foreground">{formattedLabel}</span>
                       </div>
-                      {item.value && (
+                      {formattedValue != null && (
                         <span className="text-foreground font-mono font-medium tabular-nums">
-                          {item.value.toLocaleString()}
+                          {formattedValue}
                         </span>
                       )}
                     </div>

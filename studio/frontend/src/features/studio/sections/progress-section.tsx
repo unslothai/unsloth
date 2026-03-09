@@ -15,11 +15,16 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Progress } from "@/components/ui/progress";
+import { OPTIMIZER_OPTIONS } from "@/config/training";
+import { setTrainingCompareHandoff } from "@/features/chat";
 import {
-  useTrainingConfigStore,
   useTrainingActions,
+  useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { useGpuUtilization } from "@/hooks";
+import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
   DashboardSpeed01Icon,
@@ -30,13 +35,28 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { useGpuUtilization } from "@/hooks";
-import { setTrainingCompareHandoff } from "@/features/chat";
-import { OPTIMIZER_OPTIONS } from "@/config/training";
-import { formatDuration, formatNumber, phaseColors, phaseLabel } from "./progress-section-lib";
+import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
+import {
+  formatDuration,
+  formatNumber,
+  phaseColors,
+  phaseLabel,
+} from "./progress-section-lib";
+
+type ConfigGroup = {
+  section: string;
+  rows: [string, string | number | null | undefined][];
+};
+
+function configRow(
+  label: string,
+  value: string | number | null | undefined,
+): [string, string | number | null | undefined] {
+  return [label, value];
+}
 
 export function ProgressSection(): ReactElement {
   const navigate = useNavigate();
@@ -94,12 +114,12 @@ export function ProgressSection(): ReactElement {
   const pct =
     runtime.totalSteps > 0
       ? Math.min(
-        100,
-        Math.max(
-          0,
-          Math.round((runtime.currentStep / runtime.totalSteps) * 100),
-        ),
-      )
+          100,
+          Math.max(
+            0,
+            Math.round((runtime.currentStep / runtime.totalSteps) * 100),
+          ),
+        )
       : Math.round(runtime.progressPercent);
 
   const elapsed = runtime.elapsedSeconds;
@@ -110,15 +130,26 @@ export function ProgressSection(): ReactElement {
   const eta = runtime.etaSeconds ?? derivedEta;
 
   const stepsPerSecond =
-    elapsed != null && elapsed > 0
-      ? runtime.currentStep / elapsed
-      : null;
+    elapsed != null && elapsed > 0 ? runtime.currentStep / elapsed : null;
   const showHalfwayHint =
     runtime.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = runtime.phase === "completed";
-  const handleCompareInChat = () => {
+  const handleCompareInChat = async () => {
     setTrainingCompareHandoff(config.selectedModel);
-    void navigate({ to: "/chat" });
+    await navigate({ to: "/chat" });
+  };
+  const requestStop = async (saveCheckpoint: boolean) => {
+    setStopRequested(true);
+    setStopDialogOpen(false);
+    useTrainingRuntimeStore.getState().setStopRequested(true);
+    try {
+      const ok = await stopTrainingRun(saveCheckpoint);
+      if (!ok) {
+        setStopRequested(false);
+      }
+    } catch {
+      setStopRequested(false);
+    }
   };
 
   const stoppedLoss = getDisplayMetric(
@@ -133,37 +164,37 @@ export function ProgressSection(): ReactElement {
   );
   const stoppedGradNorm = runtime.isTrainingRunning
     ? runtime.currentGradNorm
-    : lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm;
+    : (lastNonZeroValue(runtime.gradNormHistory) ?? runtime.currentGradNorm);
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === config.optimizerType)?.label ??
     config.optimizerType;
 
-  const configItems = [
+  const configItems: ConfigGroup[] = [
     {
       section: "Hyperparams",
       rows: [
-        ["Epochs", config.epochs],
-        ["Batch size", config.batchSize],
-        ["Learning rate", config.learningRate],
-        ["Optimizer", optimizerLabel],
-        ["Max steps", config.maxSteps],
-        ["Context length", config.contextLength],
-        ["Warmup steps", config.warmupSteps],
+        configRow("Epochs", config.epochs),
+        configRow("Batch size", config.batchSize),
+        configRow("Learning rate", config.learningRate),
+        configRow("Optimizer", optimizerLabel),
+        configRow("Max steps", config.maxSteps),
+        configRow("Context length", config.contextLength),
+        configRow("Warmup steps", config.warmupSteps),
       ],
     },
     ...(config.trainingMethod !== "full"
       ? [
-        {
-          section: "LoRA",
-          rows: [
-            ["Rank", config.loraRank],
-            ["Alpha", config.loraAlpha],
-            ["Dropout", config.loraDropout],
-            ["Variant", config.loraVariant],
-          ],
-        },
-      ]
+          {
+            section: "LoRA",
+            rows: [
+              configRow("Rank", config.loraRank),
+              configRow("Alpha", config.loraAlpha),
+              configRow("Dropout", config.loraDropout),
+              configRow("Variant", config.loraVariant),
+            ],
+          },
+        ]
       : []),
   ];
 
@@ -173,182 +204,76 @@ export function ProgressSection(): ReactElement {
       title="Training Progress"
       description={runtime.message || "Live training metrics"}
       accent="emerald"
-      className="shadow-border ring-1 ring-border"
+      className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
-        <div className="flex items-center gap-2">
-          <Popover>
-            <PopoverTrigger asChild={true}>
-              <button
-                type="button"
-                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
-              >
-                <HugeiconsIcon icon={Notebook01Icon} className="size-4" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-64" align="end">
-              <div className="flex flex-col gap-3">
-                <p className="text-xs font-semibold">Training Config</p>
-                {configItems.map((group) => (
-                  <div key={group.section} className="flex flex-col gap-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      {group.section}
-                    </p>
-                    {group.rows.map(([label, value]) => (
-                      <div
-                        key={String(label)}
-                        className="flex justify-between text-xs"
-                      >
-                        <span className="text-muted-foreground">
-                          {String(label)}
-                        </span>
-                        <span className="font-medium tabular-nums">
-                          {String(value)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
-            <Button
-              data-tour="studio-training-stop"
-              variant="destructive"
-              size="sm"
-              className={`h-7 px-3 text-xs ${stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
-              onClick={() => setStopDialogOpen(true)}
-              disabled={!runtime.isTrainingRunning || stopRequested}
-            >
-              <HugeiconsIcon icon={StopIcon} className="size-3" />
-              {stopRequested ? "Stopping…" : "Stop"}
-            </Button>
-            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
-              <AlertDialogHeader>
-                <AlertDialogTitle>Stop Training</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Choose how you want to stop the current training run.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Continue Training</AlertDialogCancel>
-                <AlertDialogAction
-                  variant="destructive"
-                  onClick={() => {
-                    setStopRequested(true);
-                    setStopDialogOpen(false);
-                    useTrainingRuntimeStore.getState().setStopRequested(true);
-                    void stopTrainingRun(false).then((ok) => {
-                      if (!ok) setStopRequested(false);
-                    });
-                  }}
-                >
-                  Cancel Training
-                </AlertDialogAction>
-                <AlertDialogAction
-                  onClick={() => {
-                    setStopRequested(true);
-                    setStopDialogOpen(false);
-                    useTrainingRuntimeStore.getState().setStopRequested(true);
-                    void stopTrainingRun(true).then((ok) => {
-                      if (!ok) setStopRequested(false);
-                    });
-                  }}
-                >
-                  Stop and Save
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
+        <TrainingHeaderActions
+          configItems={configItems}
+          isTrainingRunning={runtime.isTrainingRunning}
+          onOpenStopDialog={setStopDialogOpen}
+          onRequestStop={requestStop}
+          stopDialogOpen={stopDialogOpen}
+          stopRequested={stopRequested}
+        />
       }
     >
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
         <div className="flex flex-col gap-4">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${phaseColors[runtime.phase]}`}
+              className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${phaseColors[runtime.phase]}`}
             >
               {phaseLabel[runtime.phase]}
             </span>
             <span className="text-[10px] tabular-nums text-muted-foreground">
               Epoch {runtime.currentEpoch.toFixed(2)}
             </span>
+            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+              {pct}% complete
+            </span>
           </div>
 
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-2">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
                 Step {runtime.currentStep} / {runtime.totalSteps || "--"}
               </span>
               <span>{pct}%</span>
             </div>
-            <div className="h-2.5 w-full rounded-full bg-muted overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
+            <Progress value={pct} className="h-2 bg-foreground/[0.05]" />
           </div>
 
-          {(showHalfwayHint || showCompletedHint) && (
-            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/8 p-3">
-              <p className="text-xs font-medium text-emerald-900 dark:text-emerald-200">
-                {showCompletedHint
-                  ? "Training done. Next step: compare base vs fine-tuned outputs."
-                  : "Halfway done. Training is past 50%."}
-              </p>
-              {showCompletedHint && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button size="xs" onClick={handleCompareInChat}>
-                    Compare in Chat
-                  </Button>
-                  <Button asChild={true} size="xs" variant="outline">
-                    <Link to="/export">Export Model</Link>
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
+          <MilestoneCallout
+            showCompletedHint={showCompletedHint}
+            showHalfwayHint={showHalfwayHint}
+            onCompareInChat={handleCompareInChat}
+          />
 
           {runtime.error && (
-            <p className="text-xs text-red-500 leading-relaxed">{runtime.error}</p>
+            <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
+              {runtime.error}
+            </p>
           )}
 
-          <div className="flex flex-wrap items-baseline gap-4">
-            <div>
-              <p className="text-xs text-muted-foreground">Loss</p>
-              <p className="text-3xl font-bold tabular-nums tracking-tight">
-                {stoppedLoss.toFixed(4)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">LR</p>
-              <p className="text-lg font-semibold tabular-nums">
-                {stoppedLr.toExponential(2)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Grad Norm</p>
-              <p className="text-lg font-semibold tabular-nums">
-                {formatNumber(stoppedGradNorm, 3)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Model</p>
-              <p className="text-lg font-semibold truncate max-w-[140px]">
-                {config.selectedModel ?? "--"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Method</p>
-              <p className="text-lg font-semibold">
-                {config.trainingMethod.toUpperCase()}
-              </p>
-            </div>
+          <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-5">
+            <MetricStat
+              label="Loss"
+              valueClassName="text-2xl font-bold tracking-tight"
+            >
+              {stoppedLoss.toFixed(4)}
+            </MetricStat>
+            <MetricStat label="LR">{stoppedLr.toExponential(2)}</MetricStat>
+            <MetricStat label="Grad Norm">
+              {formatNumber(stoppedGradNorm, 3)}
+            </MetricStat>
+            <MetricStat label="Model" valueClassName="truncate">
+              {config.selectedModel ?? "--"}
+            </MetricStat>
+            <MetricStat label="Method">
+              {config.trainingMethod.toUpperCase()}
+            </MetricStat>
           </div>
 
-          <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>Elapsed: {formatDuration(elapsed)}</span>
             <span>ETA: {formatDuration(eta)}</span>
             <span>
@@ -363,8 +288,13 @@ export function ProgressSection(): ReactElement {
         </div>
 
         <div className="flex flex-col gap-3">
-          <p className="text-xs font-medium text-muted-foreground">GPU Monitor</p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-muted-foreground">
+              GPU Monitor
+            </p>
+            <span className="text-[11px] text-muted-foreground">Live</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
             <GpuStat
               label="Utilization"
               icon={
@@ -373,32 +303,215 @@ export function ProgressSection(): ReactElement {
                   className="size-3.5"
                 />
               }
-              value={gpu.gpu_utilization_pct != null ? `${gpu.gpu_utilization_pct}%` : "--"}
+              value={
+                gpu.gpu_utilization_pct != null
+                  ? `${gpu.gpu_utilization_pct}%`
+                  : "--"
+              }
               pct={gpu.gpu_utilization_pct ?? 0}
             />
             <GpuStat
               label="Temperature"
-              icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
-              value={gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"}
+              icon={
+                <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
+              }
+              value={
+                gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"
+              }
               pct={gpu.temperature_c ?? 0}
               max={100}
             />
             <GpuStat
               label="VRAM"
               icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-              value={gpu.vram_used_gb != null && gpu.vram_total_gb != null ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB` : "--"}
+              value={
+                gpu.vram_used_gb != null && gpu.vram_total_gb != null
+                  ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB`
+                  : "--"
+              }
               pct={gpu.vram_utilization_pct ?? 0}
             />
             <GpuStat
               label="Power"
               icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-              value={gpu.power_draw_w != null ? (gpu.power_limit_w != null ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W` : `${gpu.power_draw_w} W`) : "--"}
+              value={
+                gpu.power_draw_w != null
+                  ? gpu.power_limit_w != null
+                    ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W`
+                    : `${gpu.power_draw_w} W`
+                  : "--"
+              }
               pct={gpu.power_utilization_pct ?? 0}
             />
           </div>
         </div>
       </div>
     </SectionCard>
+  );
+}
+
+function TrainingHeaderActions({
+  configItems,
+  isTrainingRunning,
+  onOpenStopDialog,
+  onRequestStop,
+  stopDialogOpen,
+  stopRequested,
+}: {
+  configItems: ConfigGroup[];
+  isTrainingRunning: boolean;
+  onOpenStopDialog: (open: boolean) => void;
+  onRequestStop: (saveCheckpoint: boolean) => Promise<void>;
+  stopDialogOpen: boolean;
+  stopRequested: boolean;
+}): ReactElement {
+  return (
+    <div className="flex items-center gap-2">
+      <Popover>
+        <PopoverTrigger asChild={true}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Open training config"
+          >
+            <HugeiconsIcon icon={Notebook01Icon} className="size-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-72" align="end">
+          <div className="flex flex-col gap-3">
+            <p className="text-xs font-semibold">Training Config</p>
+            {configItems.map((group) => (
+              <div key={group.section} className="flex flex-col gap-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {group.section}
+                </p>
+                {group.rows.map(([label, value]) => (
+                  <div key={label} className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span className="font-medium tabular-nums">
+                      {String(value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+      <ChartSettingsSheet />
+      <AlertDialog open={stopDialogOpen} onOpenChange={onOpenStopDialog}>
+        <Button
+          data-tour="studio-training-stop"
+          variant="destructive"
+          size="sm"
+          className={cn(
+            "h-8 rounded-full px-3.5 text-xs shadow-sm",
+            stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+          )}
+          onClick={() => onOpenStopDialog(true)}
+          disabled={!isTrainingRunning || stopRequested}
+        >
+          <HugeiconsIcon icon={StopIcon} className="size-3" />
+          {stopRequested ? "Stopping…" : "Stop"}
+        </Button>
+        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop Training</AlertDialogTitle>
+            <AlertDialogDescription>
+              Choose how you want to stop the current training run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Continue Training</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => onRequestStop(false)}
+            >
+              Cancel Training
+            </AlertDialogAction>
+            <AlertDialogAction onClick={() => onRequestStop(true)}>
+              Stop and Save
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function MilestoneCallout({
+  showCompletedHint,
+  showHalfwayHint,
+  onCompareInChat,
+}: {
+  showCompletedHint: boolean;
+  showHalfwayHint: boolean;
+  onCompareInChat: () => Promise<void>;
+}): ReactElement | null {
+  if (!(showHalfwayHint || showCompletedHint)) {
+    return null;
+  }
+
+  return (
+    <div className="corner-squircle rounded-2xl border border-border/60 bg-muted/30 px-3 py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          {!showCompletedHint && (
+            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+              Milestone
+            </p>
+          )}
+          <p
+            className={cn(
+              "text-xs text-foreground/85",
+              !showCompletedHint && "mt-1",
+            )}
+          >
+            {showCompletedHint
+              ? "Training done. Next step: compare base vs fine-tuned outputs."
+              : "Halfway done. Training is past 50%."}
+          </p>
+        </div>
+        {!showCompletedHint && (
+          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            50%+
+          </span>
+        )}
+      </div>
+      {showCompletedHint && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button size="xs" onClick={onCompareInChat}>
+            Compare in Chat
+          </Button>
+          <Button asChild={true} size="xs" variant="outline">
+            <Link to="/export">Export Model</Link>
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricStat({
+  label,
+  children,
+  valueClassName,
+}: {
+  label: string;
+  children: ReactNode;
+  valueClassName?: string;
+}): ReactElement {
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p
+        className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
+      >
+        {children}
+      </p>
+    </div>
   );
 }
 
@@ -436,7 +549,7 @@ function GpuStat({
   pct: number;
   max?: number;
 }): ReactElement {
-  const clamped = Math.min(pct, max ?? 100);
+  const clamped = Math.max(0, Math.min(pct, max ?? 100));
   let barColor = "bg-red-500";
   if (clamped < 60) {
     barColor = "bg-emerald-500";
@@ -445,7 +558,7 @@ function GpuStat({
   }
 
   return (
-    <div className="flex flex-col gap-1.5 rounded-xl bg-muted/50 p-3">
+    <div className="corner-squircle flex flex-col gap-2 rounded-2xl border border-border/50 bg-background/60 p-3">
       <div className="flex items-center justify-between text-xs">
         <span className="flex items-center gap-1.5 text-muted-foreground">
           {icon}
@@ -453,7 +566,7 @@ function GpuStat({
         </span>
         <span className="font-medium tabular-nums">{value}</span>
       </div>
-      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-muted/80">
         <div
           className={`h-full rounded-full ${barColor} transition-all duration-300`}
           style={{ width: `${clamped}%` }}
