@@ -18,6 +18,7 @@ import threading
 import math
 import logging
 import time
+from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
 import pandas as pd
@@ -30,6 +31,9 @@ from trl import SFTTrainer, SFTConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_ASSETS_DATASETS_ROOT = _BACKEND_ROOT / "assets" / "datasets"
 
 
 @dataclass
@@ -1803,20 +1807,38 @@ class UnslothTrainer:
                         file_path = dataset_file
                     else:
                         # Fallback: try relative to assets/datasets
-                        script_dir = Path(__file__).parent.parent
-                        assets_datasets_dir = script_dir / "assets" / "datasets"
-                        file_path = assets_datasets_dir / dataset_file
-                    
-                    if str(file_path).endswith('.json'):
-                        with open(file_path, 'r', encoding='utf-8') as f:
+                        file_path = _ASSETS_DATASETS_ROOT / dataset_file
+
+                    file_path_obj = Path(file_path)
+                    file_path_str = str(file_path_obj)
+
+                    if file_path_obj.is_dir():
+                        parquet_dir = (
+                            file_path_obj / "parquet-files"
+                            if (file_path_obj / "parquet-files").exists()
+                            else file_path_obj
+                        )
+                        parquet_files = sorted(parquet_dir.glob("*.parquet"))
+                        if parquet_files:
+                            for parquet_file in parquet_files:
+                                df = pd.read_parquet(parquet_file)
+                                all_data.extend(df.to_dict("records"))
+                            continue
+
+                    if file_path_str.endswith('.json'):
+                        with open(file_path_obj, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                             if isinstance(data, list):
                                 all_data.extend(data)
                             else:
                                 all_data.append(data)
-                    elif str(file_path).endswith('.csv'):
-                        df = pd.read_csv(file_path)
+                    elif file_path_str.endswith('.csv'):
+                        df = pd.read_csv(file_path_obj)
                         all_data.extend(df.to_dict('records'))
+                    elif file_path_str.endswith('.parquet'):
+                        df = pd.read_parquet(file_path_obj)
+                        all_data.extend(df.to_dict('records'))
+                        continue
 
                 if all_data:
                     dataset = Dataset.from_list(all_data)

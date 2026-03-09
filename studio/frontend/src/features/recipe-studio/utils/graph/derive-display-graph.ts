@@ -24,6 +24,12 @@ type DisplayGraphInput = {
   layoutDirection: LayoutDirection;
   auxNodePositions: Record<string, XYPosition>;
   llmAuxVisibility: Record<string, boolean>;
+  runtime?: {
+    runningNodeId: string | null;
+    doneNodeIds: Set<string>;
+    activeEdgeIds: Set<string>;
+    executionLocked: boolean;
+  };
 };
 
 export type DisplayGraph = {
@@ -31,27 +37,55 @@ export type DisplayGraph = {
   edges: Edge[];
 };
 
+function isAuxEdge(edge: Edge): boolean {
+  return edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+}
+
 function normalizeEdge(
   edge: Edge,
   configs: Record<string, NodeConfig>,
   layoutDirection: LayoutDirection,
+  activeEdgeIds: Set<string>,
+  runningNodeId: string | null,
+  doneNodeIds: Set<string>,
 ): Edge {
-  const baseStyle = { stroke: "var(--foreground)", strokeWidth: 2 };
-  const isAux = edge.source.startsWith("aux-") || edge.target.startsWith("aux-");
+  const isActiveByRuntimeTarget =
+    Boolean(runningNodeId) &&
+    edge.target === runningNodeId &&
+    !isAuxEdge(edge);
+  const isActiveEdge = activeEdgeIds.has(edge.id) || isActiveByRuntimeTarget;
+  const isAux = isAuxEdge(edge);
   if (isAux) {
     return {
       ...edge,
       type: "canvas",
-      data: { ...(edge.data ?? {}), path: "smoothstep" },
-      style: { ...baseStyle, ...(edge.style ?? {}) },
+      data: { ...(edge.data ?? {}), path: "smoothstep", active: isActiveEdge },
+      animated: isActiveEdge,
     };
   }
 
-  const source = configs[edge.source];
-  const target = configs[edge.target];
-  const semantic = Boolean(source && target) && isSemanticRelation(source, target);
-  const sourceHandleNormalized = normalizeRecipeHandleId(edge.sourceHandle);
-  const targetHandleNormalized = normalizeRecipeHandleId(edge.targetHandle);
+  const isActiveReversedRuntimeEdge =
+    Boolean(runningNodeId) &&
+    isActiveEdge &&
+    edge.source === runningNodeId &&
+    doneNodeIds.has(edge.target);
+  const displayEdge = isActiveReversedRuntimeEdge
+    ? {
+        ...edge,
+        source: edge.target,
+        target: edge.source,
+        sourceHandle: getDefaultDataSourceHandle(layoutDirection),
+        targetHandle: getDefaultDataTargetHandle(layoutDirection),
+      }
+    : edge;
+
+  const source = configs[displayEdge.source];
+  const target = configs[displayEdge.target];
+  const semantic =
+    displayEdge.type === "semantic" ||
+    (Boolean(source && target) && isSemanticRelation(source, target));
+  const sourceHandleNormalized = normalizeRecipeHandleId(displayEdge.sourceHandle);
+  const targetHandleNormalized = normalizeRecipeHandleId(displayEdge.targetHandle);
   const semanticSourceDefault =
     source?.kind === "llm"
       ? getDefaultDataSourceHandle(layoutDirection)
@@ -74,6 +108,13 @@ function normalizeEdge(
       isDataTargetHandle(targetHandleNormalized)
         ? targetHandleNormalized ?? semanticTargetDefault
         : semanticTargetDefault;
+    // LLM nodes only expose data lane handles; coerce legacy semantic handles.
+    if (source?.kind === "llm" && isSemanticSourceHandle(sourceHandle)) {
+      sourceHandle = semanticSourceDefault;
+    }
+    if (target?.kind === "llm" && isSemanticTargetHandle(targetHandle)) {
+      targetHandle = semanticTargetDefault;
+    }
   } else {
     sourceHandle = isDataSourceHandle(sourceHandleNormalized)
       ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
@@ -84,12 +125,14 @@ function normalizeEdge(
   }
 
   return {
-    ...edge,
+    ...displayEdge,
     type: semantic ? "semantic" : "canvas",
-    data: semantic ? edge.data : { ...(edge.data ?? {}), path: "smoothstep" },
+    data: semantic
+      ? { ...(displayEdge.data ?? {}), active: isActiveEdge }
+      : { ...(displayEdge.data ?? {}), path: "smoothstep", active: isActiveEdge },
     sourceHandle,
     targetHandle,
-    style: { ...baseStyle, ...(edge.style ?? {}) },
+    animated: isActiveEdge,
   };
 }
 
@@ -228,7 +271,7 @@ function pickAuxTargetHandle(
 ): string {
   const occupied = new Set<HandleSide>();
   for (const edge of edges) {
-    if (edge.source.startsWith("aux-") || edge.target.startsWith("aux-")) {
+    if (isAuxEdge(edge)) {
       continue;
     }
     if (edge.target === llmId) {
@@ -361,18 +404,41 @@ export function deriveDisplayGraph({
   layoutDirection,
   auxNodePositions,
   llmAuxVisibility,
+  runtime,
 }: DisplayGraphInput): DisplayGraph {
+  const executionLocked = runtime?.executionLocked ?? false;
+  const runningNodeId = runtime?.runningNodeId ?? null;
+  const doneNodeIds = runtime?.doneNodeIds ?? new Set<string>();
+  const activeEdgeIds = runtime?.activeEdgeIds ?? new Set<string>();
   const displayNodes = nodes.map((node) => {
     const hasWidth =
       typeof node.width === "number" ||
       typeof node.style?.width === "number" ||
       (typeof node.style?.width === "string" &&
         Number.isFinite(Number.parseFloat(node.style.width)));
+    const runtimeState: "idle" | "running" | "done" =
+      node.id === runningNodeId
+        ? "running"
+        : doneNodeIds.has(node.id)
+          ? "done"
+          : "idle";
     if (hasWidth) {
-      return node;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          runtimeState,
+          executionLocked,
+        },
+      };
     }
     return {
       ...node,
+      data: {
+        ...node.data,
+        runtimeState,
+        executionLocked,
+      },
       style: { ...node.style, width: DEFAULT_NODE_WIDTH },
     };
   });
@@ -407,6 +473,7 @@ export function deriveDisplayGraph({
           llmId: config.id,
           field: "system_prompt",
           title: "System Prompt",
+          executionLocked,
         },
       });
     }
@@ -419,6 +486,7 @@ export function deriveDisplayGraph({
           llmId: config.id,
           field: "prompt",
           title: "Prompt",
+          executionLocked,
         },
       });
     }
@@ -431,6 +499,7 @@ export function deriveDisplayGraph({
             kind: "llm-judge-score",
             llmId: config.id,
             scoreIndex,
+            executionLocked,
           },
         });
       });
@@ -537,7 +606,14 @@ export function deriveDisplayGraph({
   return {
     nodes: [...displayNodes, ...auxNodes],
     edges: [...edges, ...auxEdges].map((edge) =>
-      normalizeEdge(edge, configs, layoutDirection),
+      normalizeEdge(
+        edge,
+        configs,
+        layoutDirection,
+        activeEdgeIds,
+        runningNodeId,
+        doneNodeIds,
+      ),
     ),
   };
 }

@@ -81,6 +81,9 @@ const NODE_META = {
   llm: {
     tone: "bg-sky-50 text-sky-600 border-sky-100",
   },
+  validator: {
+    tone: "bg-rose-50 text-rose-600 border-rose-100",
+  },
   expression: {
     tone: "bg-indigo-50 text-indigo-600 border-indigo-100",
   },
@@ -97,6 +100,8 @@ const NODE_META = {
     tone: "bg-orange-50 text-orange-600 border-orange-100",
   },
 } as const;
+const USER_NODE_TONE =
+  "bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900/60";
 
 const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   category: Tag01Icon,
@@ -127,6 +132,9 @@ function resolveNodeIcon(
   }
   if (kind === "llm" && blockType in LLM_ICONS) {
     return LLM_ICONS[blockType as LlmType];
+  }
+  if (kind === "validator") {
+    return Shield02Icon;
   }
   if (kind === "expression") {
     return FunctionIcon;
@@ -196,6 +204,14 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       return `${scoreCount} scorers`;
     }
     return "Prompt/system via linked input nodes";
+  }
+
+  if (config.kind === "validator") {
+    const target = config.target_columns[0]?.trim();
+    if (target) {
+      return `Target: ${target}`;
+    }
+    return "Pick LLM code target";
   }
 
   if (config.kind === "seed") {
@@ -288,6 +304,8 @@ function RecipeGraphNodeBase({
     (state) => state.setLlmAuxVisibility,
   );
   const updateNodeInternals = useUpdateNodeInternals();
+  const executionLocked = Boolean(data.executionLocked);
+  const runtimeState = data.runtimeState ?? "idle";
 
   useEffect(() => {
     updateNodeInternals(id);
@@ -329,12 +347,15 @@ function RecipeGraphNodeBase({
 
   const showDataHandles =
     data.kind === "llm" ||
+    data.kind === "validator" ||
     data.kind === "expression" ||
     data.kind === "sampler" ||
     data.kind === "seed";
-  const showSemanticIn = data.kind === "model_config";
+  const showSemanticIn = data.kind === "model_config" || data.kind === "validator";
   const showSemanticOut =
-    data.kind === "model_config" || data.kind === "model_provider";
+    data.kind === "model_config" ||
+    data.kind === "model_provider" ||
+    data.kind === "validator";
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(config, summary, updateConfig);
   const canShowLlmAux =
@@ -342,9 +363,34 @@ function RecipeGraphNodeBase({
     (Boolean(config.prompt.trim()) ||
       Boolean(config.system_prompt.trim()) ||
       Boolean((config.scores?.length ?? 0) > 0));
+  const iconTone =
+    config?.kind === "sampler" &&
+    (config.sampler_type === "person" ||
+      config.sampler_type === "person_from_faker")
+      ? USER_NODE_TONE
+      : meta.tone;
+  const runtimeNodeTone =
+    runtimeState === "running"
+      ? "border-primary/70 ring-2 ring-primary/20 shadow-md"
+      : runtimeState === "done"
+        ? "border-emerald-500/60 ring-1 ring-emerald-500/20"
+        : "";
 
   return (
-    <BaseNode className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm">
+    <BaseNode
+      className={cn(
+        "corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm",
+        runtimeNodeTone,
+      )}
+    >
+      {runtimeState === "running" && config?.kind === "llm" && (
+        <div className="pointer-events-none absolute -top-7 right-2 z-20">
+          <span
+            className="block size-6 animate-spin rounded-full border-[3px] border-primary/90 border-t-transparent bg-background"
+            aria-label="Running"
+          />
+        </div>
+      )}
       <NodeResizer
         isVisible={selected}
         minWidth={MIN_NODE_WIDTH}
@@ -362,7 +408,7 @@ function RecipeGraphNodeBase({
           <div
             className={cn(
               "corner-squircle flex size-7 items-center justify-center rounded-md border",
-              meta.tone,
+              iconTone,
             )}
           >
             <HugeiconsIcon icon={icon} className="size-3.5" />
@@ -383,6 +429,7 @@ function RecipeGraphNodeBase({
               size="xs"
               variant="ghost"
               className="nodrag"
+              disabled={executionLocked}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -397,6 +444,7 @@ function RecipeGraphNodeBase({
             size="xs"
             variant="ghost"
             className="nodrag"
+            disabled={executionLocked}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -408,7 +456,12 @@ function RecipeGraphNodeBase({
         </div>
       </BaseNodeHeader>
 
-      <BaseNodeContent className="gap-2 px-3 py-2">
+      <BaseNodeContent
+        className={cn(
+          "gap-2 px-3 py-2",
+          executionLocked && "pointer-events-none opacity-85",
+        )}
+      >
         {nodeBody}
       </BaseNodeContent>
 

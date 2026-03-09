@@ -6,6 +6,7 @@ import {
   listModels,
   loadModel,
   unloadModel,
+  validateModel,
 } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { LoadModelResponse } from "../types/api";
@@ -192,6 +193,17 @@ export function useChatModelRuntime() {
       const displayName = model?.name || lora?.name || modelId;
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
+      const previousCheckpoint = currentCheckpoint;
+      const previousVariant =
+        useChatRuntimeStore.getState().activeGgufVariant ?? null;
+      const previousModel = previousCheckpoint
+        ? models.find((entry) => entry.id === previousCheckpoint)
+        : undefined;
+      const previousLora = previousCheckpoint
+        ? loras.find((entry) => entry.id === previousCheckpoint)
+        : undefined;
+      const previousIsLora =
+        previousModel?.isLora ?? (previousLora ? true : false);
       const loadingDescription = [
         currentCheckpoint ? "Unloading previous model first." : null,
         extraLoadingDescription ?? null,
@@ -204,26 +216,61 @@ export function useChatModelRuntime() {
       setLoadingModel({ id: modelId, displayName });
       try {
         async function performLoad(): Promise<void> {
+          let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
-          if (currentCheckpoint) {
-            await unloadModel({ model_path: currentCheckpoint });
+          try {
+            // Lightweight pre-flight validation: avoid unloading a working model
+            // if the new identifier is clearly invalid (e.g. bad HF id / path).
+            await validateModel({
+              model_path: modelId,
+              hf_token: null,
+              max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
+              load_in_4bit: true,
+              is_lora: isLora,
+              gguf_variant: ggufVariant ?? null,
+            });
+
+            if (currentCheckpoint) {
+              await unloadModel({ model_path: currentCheckpoint });
+              previousWasUnloaded = true;
+            }
+
+            const paramsBeforeLoad = useChatRuntimeStore.getState().params;
+            const loadResponse = await loadModel({
+              model_path: modelId,
+              hf_token: null,
+              max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
+              load_in_4bit: true,
+              is_lora: isLora,
+              gguf_variant: ggufVariant ?? null,
+              trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
+            });
+
+            const currentParams = useChatRuntimeStore.getState().params;
+            setParams(
+              mergeRecommendedInference(currentParams, loadResponse, modelId),
+            );
+            await refresh();
+          } catch (error) {
+            // If we unloaded a previous model and the new load failed, attempt a rollback.
+            if (previousWasUnloaded && previousCheckpoint) {
+              try {
+                await loadModel({
+                  model_path: previousCheckpoint,
+                  hf_token: null,
+                  max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
+                  load_in_4bit: true,
+                  is_lora: previousIsLora,
+                  gguf_variant: previousVariant,
+                });
+                await refresh();
+              } catch {
+                // If rollback also fails, surface the original error.
+              }
+            }
+            throw error;
           }
-
-          const currentParams = useChatRuntimeStore.getState().params;
-          const loadResponse = await loadModel({
-            model_path: modelId,
-            hf_token: null,
-            max_seq_length: DEFAULT_MODEL_MAX_SEQ_LENGTH,
-            load_in_4bit: true,
-            is_lora: isLora,
-            gguf_variant: ggufVariant ?? null,
-            trust_remote_code: currentParams.trustRemoteCode ?? false,
-          });
-
-          const paramsAfterLoad = useChatRuntimeStore.getState().params;
-          setParams(mergeRecommendedInference(paramsAfterLoad, loadResponse, modelId));
-          await refresh();
         }
 
         const loadPromise = performLoad().finally(() => {

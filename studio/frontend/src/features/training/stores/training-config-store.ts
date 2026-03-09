@@ -197,6 +197,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
       };
 
+      const resetDatasetState = (): Partial<TrainingConfigStore> => ({
+        datasetSubset: null,
+        datasetSplit: null,
+        datasetEvalSplit: null,
+        datasetManualMapping: emptyManualMapping(),
+        datasetSliceStart: null,
+        datasetSliceEnd: null,
+        isDatasetImage: null,
+        isDatasetAudio: false,
+        isCheckingDataset: false,
+      });
+
       return {
         ...initialState,
         setStep: (step) => set({ currentStep: step }),
@@ -252,6 +264,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setTrainingMethod: (trainingMethod) => set({ trainingMethod }),
         setHfToken: (hfToken) => set({ hfToken }),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
+        selectHfDataset: (dataset) => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "huggingface",
+            dataset,
+            uploadedFile: null,
+            ...resetDatasetState(),
+          });
+        },
+        selectLocalDataset: (uploadedFile) => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "upload",
+            dataset: null,
+            uploadedFile,
+            ...resetDatasetState(),
+          });
+        },
         setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
         setDataset: (dataset) => {
           _datasetCheckController?.abort();
@@ -266,6 +300,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSliceStart: null,
             datasetSliceEnd: null,
             isDatasetImage: null,
+            isDatasetAudio: false,
             isCheckingDataset: false,
           });
         },
@@ -279,6 +314,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
+            isDatasetAudio: false,
             isCheckingDataset: false,
           });
         },
@@ -287,6 +323,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
+            isDatasetAudio: false,
             isCheckingDataset: false,
           });
 
@@ -323,8 +360,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ datasetManualMapping }),
         setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
-        setUploadedFile: (uploadedFile) =>
-          set({ uploadedFile, datasetSliceStart: null, datasetSliceEnd: null }),
+        setUploadedFile: (uploadedFile) => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            uploadedFile,
+            datasetSubset: null,
+            datasetSplit: null,
+            datasetEvalSplit: null,
+            datasetManualMapping: emptyManualMapping(),
+            datasetSliceStart: null,
+            datasetSliceEnd: null,
+            isDatasetImage: null,
+            isDatasetAudio: false,
+            isCheckingDataset: false,
+          });
+        },
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
         setLearningRate: (learningRate) => set({ learningRate }),

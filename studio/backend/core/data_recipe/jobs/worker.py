@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 import shutil
 import time
 import traceback
+import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..jsonable import to_jsonable
+from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
 
@@ -34,6 +37,27 @@ class _QueueLogHandler(logging.Handler):
             pass
 
 
+def _slugify_run_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_only).strip("-").lower()
+    if not slug:
+        return ""
+    return slug[:80].strip("-")
+
+
+def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Path) -> str:
+    fallback = f"recipe_{job_id}"
+    slug = _slugify_run_name(run_name or "")
+    base_name = f"recipe_{slug}" if slug else fallback
+    candidate = base_name
+    suffix = 2
+    while (artifact_root / candidate).exists():
+        candidate = f"{base_name}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def run_job_process(
     *,
     event_queue,
@@ -53,7 +77,13 @@ def run_job_process(
         job_id = str(run.get("_job_id") or "").strip()
         if not job_id:
             job_id = f"{int(time.time())}"
-        dataset_name = f"recipe_{job_id}"
+        run_name_raw = run.get("run_name")
+        run_name = run_name_raw if isinstance(run_name_raw, str) else None
+        dataset_name = _build_dataset_name(
+            run_name=run_name,
+            job_id=job_id,
+            artifact_root=_ARTIFACT_ROOT,
+        )
         merge_batches = bool(run.get("merge_batches"))
         _ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
         run_config_raw = run.get("run_config") or {}
@@ -84,7 +114,7 @@ def run_job_process(
             dataset = (
                 []
                 if results.dataset is None
-                else to_jsonable(results.dataset.to_dict(orient="records"))
+                else to_preview_jsonable(results.dataset.to_dict(orient="records"))
             )
             processor_artifacts = (
                 None
@@ -142,4 +172,40 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     dataframe = read_parquet_dataset(parquet_dir)
     shutil.rmtree(parquet_dir)
     parquet_dir.mkdir(parents=True, exist_ok=True)
-    dataframe.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    merged_file = parquet_dir / "batch_00000.parquet"
+    dataframe.to_parquet(merged_file, index=False)
+    _rewrite_merged_metadata(
+        base_dataset_path=base_dataset_path,
+        parquet_file=merged_file,
+    )
+
+
+def _rewrite_merged_metadata(*, base_dataset_path: Path, parquet_file: Path) -> None:
+    metadata_path = base_dataset_path / "metadata.json"
+    if not metadata_path.exists():
+        return
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return
+
+    if not isinstance(metadata, dict):
+        return
+
+    relative_parquet_path = str(parquet_file.relative_to(base_dataset_path))
+    file_paths = metadata.get("file_paths")
+    if not isinstance(file_paths, dict):
+        file_paths = {}
+    file_paths["parquet-files"] = [relative_parquet_path]
+    metadata["file_paths"] = file_paths
+    metadata["total_num_batches"] = 1
+    metadata["num_completed_batches"] = 1
+
+    try:
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        return

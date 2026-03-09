@@ -2,8 +2,8 @@
   "recipe": {
     "model_providers": [
       {
-        "name": "provider_1",
-        "endpoint": "https://openrouter.ai/api/v1",
+        "name": "vllm",
+        "endpoint": "",
         "provider_type": "openai",
         "extra_headers": {},
         "extra_body": {}
@@ -12,12 +12,11 @@
     "mcp_providers": [],
     "model_configs": [
       {
-        "alias": "model_1",
-        "model": "mistralai/ministral-8b-2512",
-        "provider": "provider_1",
+        "alias": "sql-pro",
+        "model": "",
+        "provider": "vllm",
         "inference_parameters": {
-          "temperature": 0.7,
-          "max_tokens": 2048
+          "temperature": 0.7
         }
       }
     ],
@@ -93,19 +92,35 @@
         "column_type": "llm-text",
         "name": "sql_prompt",
         "drop": false,
-        "model_alias": "model_1",
+        "model_alias": "sql-pro",
         "prompt": "Generate one natural-language SQL task.\nContext:\n- Domain: {{ domain }}\n- Topic: {{ topic }}\n- Task type: {{ sql_task_type }}\nRules:\n- Must start exactly with: \"{{ instruction_phrase }}\"\n- Make it specific and practical.\n- Mention expected business outcome.\n- Keep it 1-2 sentences.\n- Do not include SQL code.\n- Output only the instruction text.",
         "system_prompt": "You create clear, realistic business SQL tasks for training data.\n",
-        "with_trace": "none"
+        "with_trace": "none",
+        "extract_reasoning_content": false
       },
       {
         "column_type": "llm-code",
         "name": "sql",
         "drop": false,
-        "model_alias": "model_1",
+        "model_alias": "sql-pro",
         "prompt": "Write SQL for this instruction:\n{{ sql_prompt }}\nReturn ONE SQL script with this exact structure:\n-- SCHEMA\n[CREATE TABLE statements]\n[INSERT statements with sample rows]\n-- QUERY\n[final SELECT query solving the instruction]\nRules:\n- Use 2-3 tables max.\n- Use realistic snake_case names.\n- Include 5-8 rows of sample data per table.\n- Query must match task type \"{{ sql_task_type }}\".\n- Use only tables/columns you created.\n- No markdown fences.\n- No explanation text outside SQL comments shown above.",
         "system_prompt": "You are an expert SQL engineer. Produce correct, runnable SQL only.\n",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
         "code_lang": "sql:ansi"
+      },
+      {
+        "column_type": "validation",
+        "name": "sql-validator",
+        "drop": false,
+        "target_columns": [
+          "sql"
+        ],
+        "validator_type": "code",
+        "validator_params": {
+          "code_lang": "sql:ansi"
+        },
+        "batch_size": 10
       }
     ],
     "processors": []
@@ -120,57 +135,9 @@
   "ui": {
     "nodes": [
       {
-        "id": "provider_1",
-        "x": -1092.2003193114556,
-        "y": 715.157165665104,
-        "width": 400
-      },
-      {
-        "id": "model_1",
-        "x": -546.1001596557278,
-        "y": 681.8114012018752,
-        "width": 400
-      },
-      {
-        "id": "domain",
-        "x": -18.379173679952572,
-        "y": 137.70260329000595,
-        "width": 400
-      },
-      {
-        "id": "topic",
-        "x": -18.6022437080035,
-        "y": 373.0271253737222,
-        "width": 400
-      },
-      {
-        "id": "sql_task_type",
-        "x": 477.85851567876665,
-        "y": 137.4202046707293,
-        "width": 400
-      },
-      {
-        "id": "instruction_phrase",
-        "x": -477.8585156787667,
-        "y": 138.42770371608808,
-        "width": 400
-      },
-      {
-        "id": "sql_prompt",
-        "x": -18.188598798124787,
-        "y": 701.5157165665104,
-        "width": 400
-      },
-      {
-        "id": "sql",
-        "x": -18.188598798124758,
-        "y": 950.647309355259,
-        "width": 400
-      },
-      {
         "id": "note_1",
-        "x": -103.00586025666547,
-        "y": -332.088439142397,
+        "x": 338,
+        "y": 1020,
         "width": 600,
         "node_type": "markdown_note",
         "name": "note_1",
@@ -180,8 +147,8 @@
       },
       {
         "id": "note_2",
-        "x": 517.0372102151987,
-        "y": 600.4949327304814,
+        "x": 1675.8410596026492,
+        "y": 1644.2185430463576,
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_2",
@@ -191,25 +158,79 @@
       },
       {
         "id": "note_3",
-        "x": 12.635681904967385,
-        "y": 1224.7626182706356,
+        "x": 2198.980132450331,
+        "y": 1723.1456953642385,
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_3",
-        "markdown": "The **LLM Code** block (`sql`) generates SQL script from `{{ sql_prompt }}`.\n\n##### In this recipe it returns:\n\n- schema section (`CREATE TABLE`)\n- sample seed rows (`INSERT`)\n- final query (`SELECT`)\n\n##### Current status:\n\n- SQL validation block is **not** included yet in this learning recipe\n- We will add SQL validation later",
+        "markdown": "The **LLM Code** block (`sql`) generates SQL script from `{{ sql_prompt }}`.\n\n##### In this recipe it returns:\n\n- schema section (`CREATE TABLE`)\n- sample seed rows (`INSERT`)\n- final query (`SELECT`)\n",
         "note_color": "#DBEAFE",
         "note_opacity": "35"
       },
       {
         "id": "note_4",
-        "x": -1044,
-        "y": 108.64730935525904,
+        "x": 1264,
+        "y": 1037,
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_4",
         "markdown": "Sampler columns are useful during generation, but often noisy in final output.\n\nSet helper columns to **drop=true** (like in this recipe), keep only output columns you want to export.\n\n#### Final keep we have set here:\n\n- `sql_prompt`\n- `sql`\n\n",
         "note_color": "#DBEAFE",
         "note_opacity": "35"
+      },
+      {
+        "id": "vllm",
+        "x": 1939.5364238410598,
+        "y": 781.25,
+        "width": 400
+      },
+      {
+        "id": "sql-pro",
+        "x": 1939.5364238410593,
+        "y": 975.25,
+        "width": 400
+      },
+      {
+        "id": "domain",
+        "x": 680,
+        "y": 1495,
+        "width": 400
+      },
+      {
+        "id": "topic",
+        "x": 1160,
+        "y": 1413,
+        "width": 400
+      },
+      {
+        "id": "sql_task_type",
+        "x": 1160,
+        "y": 1577,
+        "width": 400
+      },
+      {
+        "id": "instruction_phrase",
+        "x": 100,
+        "y": 1495,
+        "width": 400
+      },
+      {
+        "id": "sql_prompt",
+        "x": 1672.6490066225165,
+        "y": 1457.6854304635763,
+        "width": 400
+      },
+      {
+        "id": "sql",
+        "x": 2194.9006622516554,
+        "y": 1457.110927152318,
+        "width": 400
+      },
+      {
+        "id": "sql-validator",
+        "x": 2682.5827814569534,
+        "y": 1491.0413907284767,
+        "width": 400
       }
     ],
     "edges": [
@@ -217,8 +238,8 @@
         "from": "domain",
         "to": "topic",
         "type": "canvas",
-        "source_handle": "data-out-bottom",
-        "target_handle": "data-in-top"
+        "source_handle": "data-out",
+        "target_handle": "data-in"
       },
       {
         "from": "domain",
@@ -238,36 +259,50 @@
         "from": "topic",
         "to": "sql_prompt",
         "type": "canvas",
-        "source_handle": "data-out-bottom",
-        "target_handle": "data-in-top"
+        "source_handle": "data-out",
+        "target_handle": "data-in"
       },
       {
         "from": "sql_prompt",
         "to": "sql",
         "type": "canvas",
-        "source_handle": "data-out-bottom",
-        "target_handle": "data-in-top"
-      },
-      {
-        "from": "provider_1",
-        "to": "model_1",
-        "type": "semantic",
-        "source_handle": "semantic-out",
-        "target_handle": "semantic-in"
-      },
-      {
-        "from": "model_1",
-        "to": "sql_prompt",
-        "type": "semantic",
-        "source_handle": "semantic-out",
+        "source_handle": "data-out",
         "target_handle": "data-in"
       },
       {
-        "from": "model_1",
+        "from": "vllm",
+        "to": "sql-pro",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      },
+      {
+        "from": "sql-pro",
         "to": "sql",
         "type": "semantic",
         "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "sql",
+        "to": "sql-validator",
+        "type": "semantic",
+        "source_handle": "data-out",
         "target_handle": "data-in"
+      },
+      {
+        "from": "sql-pro",
+        "to": "sql_prompt",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "sql_prompt",
+        "to": "sql_task_type",
+        "type": "canvas",
+        "source_handle": "data-out-left",
+        "target_handle": "data-in-right"
       }
     ],
     "layout_direction": "LR"
