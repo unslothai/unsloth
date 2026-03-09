@@ -1819,7 +1819,7 @@ class UnslothTrainer:
                         for ext in ('.json', '.jsonl', '.csv', '.parquet'):
                             candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
                         if candidates:
-                            all_files.append(str(candidates[0]))
+                            all_files.extend(str(c) for c in candidates)
                             continue
                         raise ValueError(f"No supported data files in directory: {file_path_obj}")
                     else:
