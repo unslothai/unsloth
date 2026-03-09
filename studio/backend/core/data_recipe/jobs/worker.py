@@ -18,9 +18,9 @@ from typing import Any
 from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
+from utils.paths import ensure_dir, recipe_datasets_root
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[5]
-_ARTIFACT_ROOT = _PROJECT_ROOT / "studio" / "backend" / "assets" / "datasets"
+_ARTIFACT_ROOT = recipe_datasets_root()
 
 
 class _QueueLogHandler(logging.Handler):
@@ -103,7 +103,7 @@ def run_job_process(
             artifact_root=_ARTIFACT_ROOT,
         )
         merge_batches = bool(run.get("merge_batches"))
-        _ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+        ensure_dir(_ARTIFACT_ROOT)
         run_config_raw = run.get("run_config") or {}
 
         builder = build_config_builder(recipe)

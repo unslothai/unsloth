@@ -38,6 +38,12 @@ from models.datasets import (
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
+from utils.paths import (
+    dataset_uploads_root,
+    ensure_dir,
+    recipe_datasets_root,
+    resolve_dataset_path,
+)
 
 
 def _serialize_preview_value(value):
@@ -87,9 +93,8 @@ _ARCHIVE_EXTS = ('.tar', '.tar.gz', '.tgz', '.gz', '.zst', '.zip', '.txt')
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = ('.json', '.jsonl', '.csv', '.parquet')
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_DATASETS_ROOT = BACKEND_ROOT / "assets" / "datasets"
-DATASET_UPLOAD_DIR = LOCAL_DATASETS_ROOT / "uploads"
+LOCAL_DATASETS_ROOT = recipe_datasets_root()
+DATASET_UPLOAD_DIR = dataset_uploads_root()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -273,7 +278,7 @@ async def upload_dataset(
         )
 
     max_size_bytes = 512 * 1024 * 1024
-    DATASET_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_dir(DATASET_UPLOAD_DIR)
     stem = Path(filename).stem
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
@@ -329,7 +334,7 @@ def check_format(
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
-        dataset_path = Path(request.dataset_name)
+        dataset_path = resolve_dataset_path(request.dataset_name)
         total_rows = None
 
         if dataset_path.exists():
