@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Sheet,
@@ -152,6 +153,8 @@ function BlockSheetButton({
   draggable = false,
   onDragStart,
   trailing = "chevron",
+  disabled = false,
+  badge,
 }: {
   icon: typeof Database02Icon;
   title: string;
@@ -161,24 +164,38 @@ function BlockSheetButton({
   draggable?: boolean;
   onDragStart?: (event: ReactDragEvent<HTMLButtonElement>) => void;
   trailing?: "chevron" | "drag" | "none";
+  disabled?: boolean;
+  badge?: string;
 }): ReactElement {
   return (
     <button
       type="button"
-      onClick={onClick}
-      draggable={draggable}
-      onDragStart={onDragStart}
-      className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition hover:bg-muted/35 ${
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      draggable={disabled ? false : draggable}
+      onDragStart={disabled ? undefined : onDragStart}
+      className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition ${
+        disabled ? "cursor-not-allowed opacity-60" : "hover:bg-muted/35"
+      } ${
         isActive
           ? "border-emerald-500"
-          : "border-transparent hover:border-border/60"
+          : disabled
+            ? "border-transparent"
+            : "border-transparent hover:border-border/60"
       } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
       <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
       </div>
       <div className="flex-1">
-        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-semibold text-foreground">{title}</p>
+          {badge ? (
+            <Badge variant="outline" className="rounded-full text-[10px]">
+              {badge}
+            </Badge>
+          ) : null}
+        </div>
         <p className="text-[11px] text-muted-foreground">{description}</p>
       </div>
       {trailing === "chevron" ? (
@@ -428,8 +445,12 @@ export function BlockSheet({
                     trailing={
                       item.kind === "expression" || item.kind === "note"
                         ? "drag"
-                        : "chevron"
+                        : item.kind === "processor"
+                          ? "none"
+                          : "chevron"
                     }
+                    disabled={item.kind === "processor"}
+                    badge={item.kind === "processor" ? "Work in progress" : undefined}
                     onClick={() => {
                       if (item.kind === "processor") {
                         setSheetOpen(false);
