@@ -2,10 +2,12 @@
 Datasets API routes
 """
 import base64
+import binascii
 import io
 import json
 import sys
 from pathlib import Path
+from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 import logging
 
@@ -36,6 +38,8 @@ from models.datasets import (
     CheckFormatResponse,
     LocalDatasetItem,
     LocalDatasetsResponse,
+    UploadDatasetRequest,
+    UploadDatasetResponse,
 )
 
 
@@ -89,6 +93,10 @@ DATA_EXTS = (
     '.zip',
 )
 LOCAL_FILE_EXTS = ('.json', '.jsonl', '.csv', '.parquet')
+LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
+DATASET_UPLOAD_DIR = (
+    Path.home() / ".cache" / "unsloth" / "training" / "dataset-uploads"
+)
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_DATASETS_ROOT = BACKEND_ROOT / "assets" / "datasets"
 
@@ -250,6 +258,53 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     total_rows = len(dataset)
     preview_slice = dataset.select(range(min(preview_size, total_rows)))
     return preview_slice, total_rows
+
+
+def _sanitize_filename(filename: str) -> str:
+    name = Path(filename).name.strip().replace("\x00", "")
+    if not name:
+        return "dataset_upload"
+    return name
+
+
+def _decode_base64_payload(content_base64: str) -> bytes:
+    raw = content_base64.strip()
+    if "," in raw and raw.lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        return base64.b64decode(raw, validate=True)
+    except binascii.Error as exc:
+        raise HTTPException(status_code=400, detail="Invalid base64 payload") from exc
+
+
+@router.post("/upload", response_model=UploadDatasetResponse)
+def upload_dataset(
+    payload: UploadDatasetRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> UploadDatasetResponse:
+    filename = _sanitize_filename(payload.filename)
+    ext = Path(filename).suffix.lower()
+    if ext not in LOCAL_UPLOAD_EXTS:
+        allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Allowed: {allowed}",
+        )
+
+    file_bytes = _decode_base64_payload(payload.content_base64)
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty upload payload")
+
+    max_size_bytes = 512 * 1024 * 1024
+    if len(file_bytes) > max_size_bytes:
+        raise HTTPException(status_code=413, detail="File too large (max 512MB)")
+
+    DATASET_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid4().hex}_{filename}"
+    stored_path = DATASET_UPLOAD_DIR / stored_name
+    stored_path.write_bytes(file_bytes)
+
+    return UploadDatasetResponse(filename=filename, stored_path=str(stored_path))
 
 
 @router.get("/local", response_model=LocalDatasetsResponse)

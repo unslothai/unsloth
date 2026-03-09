@@ -1,6 +1,7 @@
 import type {
   CheckFormatResponse,
   LocalDatasetsResponse,
+  UploadDatasetResponse,
 } from "../types/datasets";
 import { authFetch } from "@/features/auth";
 
@@ -34,6 +35,32 @@ export async function checkDatasetFormat({
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || `Request failed (${res.status})`);
+  }
+
+  return res.json();
+}
+
+type UploadDatasetArgs = {
+  filename: string;
+  contentBase64: string;
+};
+
+export async function uploadTrainingDataset({
+  filename,
+  contentBase64,
+}: UploadDatasetArgs): Promise<UploadDatasetResponse> {
+  const res = await authFetch("/api/datasets/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename,
+      content_base64: contentBase64,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `Upload failed (${res.status})`);
   }
 
   return res.json();
