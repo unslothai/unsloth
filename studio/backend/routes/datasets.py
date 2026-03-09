@@ -295,10 +295,6 @@ def upload_dataset(
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty upload payload")
 
-    max_size_bytes = 512 * 1024 * 1024
-    if len(file_bytes) > max_size_bytes:
-        raise HTTPException(status_code=413, detail="File too large (max 512MB)")
-
     DATASET_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     stored_name = f"{uuid4().hex}_{filename}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
