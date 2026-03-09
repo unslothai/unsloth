@@ -78,7 +78,7 @@ def train(
         )
         raise typer.Exit(code=2)
 
-    from studio.backend.core.training import UnslothTrainer
+    from studio.backend.core.training.trainer import UnslothTrainer
 
     trainer = UnslothTrainer()
 
@@ -98,18 +98,20 @@ def train(
         typer.echo("Model preparation failed", err=True)
         raise typer.Exit(code=1)
 
-    ds = trainer.load_and_format_dataset(
+    result = trainer.load_and_format_dataset(
         dataset_source=cfg.data.dataset or "",
         format_type=cfg.data.format_type,
         local_datasets=cfg.data.local_dataset,
     )
-    if ds is None:
+    if result is None:
         typer.echo("Dataset load failed", err=True)
         raise typer.Exit(code=1)
 
+    ds, eval_ds = result
+
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
-    started = trainer.start_training(dataset=ds, **training_kwargs)
+    started = trainer.start_training(dataset=ds, eval_dataset=eval_ds, **training_kwargs)
 
     if not started:
         typer.echo("Training failed to start", err=True)
