@@ -3,6 +3,9 @@ import type { LossHistoryItem, OutlierMode, SmoothedLossItem } from "./types";
 export const CHART_SYNC_ID = "train-metrics-sync";
 export const MAX_RENDER_POINTS = 800;
 export const DEFAULT_VISIBLE_POINTS = 160;
+export const CHART_CONTAINER_CLASS = "h-[220px] w-full";
+export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
+export const DEFAULT_Y_AXIS_WIDTH = 41;
 const TRAILING_ZEROES_RE = /\.?0+$/;
 const NEGATIVE_ZERO_RE = /^-0$/;
 
@@ -42,6 +45,32 @@ export function formatMetric(value: number): string {
     decimals = 6;
   } else {
     decimals = 8;
+  }
+
+  return value
+    .toFixed(decimals)
+    .replace(TRAILING_ZEROES_RE, "")
+    .replace(NEGATIVE_ZERO_RE, "0");
+}
+
+export function formatAxisMetric(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  const abs = Math.abs(value);
+  let decimals = 4;
+
+  if (abs >= 1000) {
+    decimals = 0;
+  } else if (abs >= 100) {
+    decimals = 1;
+  } else if (abs >= 1) {
+    decimals = 3;
+  } else if (abs >= 0.01) {
+    decimals = 4;
+  } else {
+    decimals = 5;
   }
 
   return value
