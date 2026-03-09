@@ -59,6 +59,7 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
         "top_p": model_inference.get("top_p", default_inference.get("top_p", 0.95)),
         "top_k": model_inference.get("top_k", default_inference.get("top_k", -1)),
         "min_p": model_inference.get("min_p", default_inference.get("min_p", 0.01)),
+        "trust_remote_code": model_inference.get("trust_remote_code", default_inference.get("trust_remote_code", False)),
     }
     
     return inference_config

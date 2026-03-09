@@ -50,6 +50,8 @@ export async function loadCheckpoint(params: {
   checkpoint_path: string;
   max_seq_length?: number;
   load_in_4bit?: boolean;
+  /** Allow loading models with custom code. Only enable for checkpoints you trust. */
+  trust_remote_code?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/load-checkpoint", {
     method: "POST",
