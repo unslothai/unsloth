@@ -40,22 +40,15 @@ export async function checkDatasetFormat({
   return res.json();
 }
 
-type UploadDatasetArgs = {
-  filename: string;
-  contentBase64: string;
-};
+export async function uploadTrainingDataset(
+  file: File,
+): Promise<UploadDatasetResponse> {
+  const form = new FormData();
+  form.append("file", file);
 
-export async function uploadTrainingDataset({
-  filename,
-  contentBase64,
-}: UploadDatasetArgs): Promise<UploadDatasetResponse> {
   const res = await authFetch("/api/datasets/upload", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      filename,
-      content_base64: contentBase64,
-    }),
+    body: form,
   });
 
   if (!res.ok) {

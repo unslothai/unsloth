@@ -2,13 +2,12 @@
 Datasets API routes
 """
 import base64
-import binascii
 import io
 import json
 import sys
 from pathlib import Path
 from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 import logging
 
 # Add backend directory to path
@@ -38,7 +37,6 @@ from models.datasets import (
     CheckFormatResponse,
     LocalDatasetItem,
     LocalDatasetsResponse,
-    UploadDatasetRequest,
     UploadDatasetResponse,
 )
 
@@ -267,22 +265,12 @@ def _sanitize_filename(filename: str) -> str:
     return name
 
 
-def _decode_base64_payload(content_base64: str) -> bytes:
-    raw = content_base64.strip()
-    if "," in raw and raw.lower().startswith("data:"):
-        raw = raw.split(",", 1)[1]
-    try:
-        return base64.b64decode(raw, validate=True)
-    except binascii.Error as exc:
-        raise HTTPException(status_code=400, detail="Invalid base64 payload") from exc
-
-
 @router.post("/upload", response_model=UploadDatasetResponse)
-def upload_dataset(
-    payload: UploadDatasetRequest,
+async def upload_dataset(
+    file: UploadFile,
     current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    filename = _sanitize_filename(payload.filename)
+    filename = _sanitize_filename(file.filename or "dataset_upload")
     ext = Path(filename).suffix.lower()
     if ext not in LOCAL_UPLOAD_EXTS:
         allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
@@ -291,16 +279,25 @@ def upload_dataset(
             detail=f"Unsupported file type: {ext}. Allowed: {allowed}",
         )
 
-    file_bytes = _decode_base64_payload(payload.content_base64)
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="Empty upload payload")
-
+    max_size_bytes = 512 * 1024 * 1024
     DATASET_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    # Normalize extension to lowercase so downstream suffix checks work
     stem = Path(filename).stem
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
-    stored_path.write_bytes(file_bytes)
+
+    # Stream file to disk in chunks to avoid holding entire file in memory
+    size = 0
+    with open(stored_path, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_size_bytes:
+                stored_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="File too large (max 512MB)")
+            f.write(chunk)
+
+    if size == 0:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Empty upload payload")
 
     return UploadDatasetResponse(filename=filename, stored_path=str(stored_path))
 
