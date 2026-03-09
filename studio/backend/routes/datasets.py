@@ -253,7 +253,9 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
 
 
 @router.get("/local", response_model=LocalDatasetsResponse)
-def list_local_datasets() -> LocalDatasetsResponse:
+def list_local_datasets(
+    current_subject: str = Depends(get_current_subject),
+) -> LocalDatasetsResponse:
     return LocalDatasetsResponse(datasets=_build_local_dataset_items())
 
 
