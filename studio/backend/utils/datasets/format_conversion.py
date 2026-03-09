@@ -443,8 +443,10 @@ def convert_to_vlm_format(
                     idx = futures[future]
                     try:
                         batch_results[idx] = future.result()
-                    except Exception:
+                    except Exception as e:
                         failed_count += 1
+                        if failed_count == 1:
+                            print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
 
             converted_list.extend(r for r in batch_results if r is not None)
 
@@ -463,8 +465,11 @@ def convert_to_vlm_format(
         for sample in pbar:
             try:
                 converted_list.append(_convert_single_sample(sample))
-            except Exception:
+            except Exception as e:
                 failed_count += 1
+                if failed_count == 1:
+                    # Log the first failure to aid debugging
+                    print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
             pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
         pbar.close()
 
