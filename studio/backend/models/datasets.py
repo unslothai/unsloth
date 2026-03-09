@@ -41,6 +41,12 @@ class CheckFormatResponse(BaseModel):
     warning: Optional[str] = None
 
 
+class UploadDatasetResponse(BaseModel):
+    """Response with stored dataset path for training."""
+    filename: str = Field(..., description="Original filename")
+    stored_path: str = Field(..., description="Absolute path stored on backend")
+
+
 class LocalDatasetItem(BaseModel):
     class Metadata(BaseModel):
         actual_num_records: Optional[int] = None
