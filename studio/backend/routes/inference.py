@@ -430,7 +430,7 @@ async def get_status(
 
 
 @router.post("/audio/generate")
-async def generate_audio(payload: ChatCompletionRequest, request: Request):
+async def generate_audio(payload: ChatCompletionRequest, request: Request, current_subject: str = Depends(get_current_subject)):
     """
     Generate audio (TTS) from the latest user message.
     Returns a JSON response with base64-encoded WAV audio.
