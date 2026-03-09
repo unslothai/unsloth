@@ -17,9 +17,9 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
-# Detect if running from pip install (no studio/frontend/ dir in repo)
-$FrontendDir = Join-Path $ScriptDir "studio\frontend"
-$OxcValidatorDir = Join-Path $ScriptDir "studio\backend\core\data_recipe\oxc-validator"
+# Detect if running from pip install (no frontend/ dir in studio)
+$FrontendDir = Join-Path $ScriptDir "frontend"
+$OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
 # ─────────────────────────────────────────────
@@ -587,7 +587,7 @@ if ($IsPipInstall) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
         Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host "   Try running 'npm install' manually in studio/frontend/ to see errors" -ForegroundColor Yellow
+        Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
         exit 1
     }
     npm run build 2>&1 | Out-Null
@@ -599,7 +599,7 @@ if ($IsPipInstall) {
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
-    Write-Host "[OK] Frontend built to studio/frontend/dist" -ForegroundColor Green
+    Write-Host "[OK] Frontend built to frontend/dist" -ForegroundColor Green
 }
 
 if (Test-Path $OxcValidatorDir) {
@@ -648,8 +648,8 @@ if (-not $PythonCmd) {
 Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
 # Always create a .venv for isolation -- even for pip installs.
-# Created in the current working directory (where user ran the command).
-$VenvDir = Join-Path (Get-Location) ".venv"
+# Created in the repo root (parent of studio/).
+$VenvDir = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv"
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
@@ -722,7 +722,7 @@ $ErrorActionPreference = $prevEAP
 # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
 Write-Host ""
 Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
-$VenvT5Dir = Join-Path $PSScriptRoot ".venv_t5"
+$VenvT5Dir = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv_t5"
 if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
@@ -956,10 +956,10 @@ if (Test-Path $LlamaServerBin) {
 # Add shell aliases (PowerShell profile + cmd batch files)
 # ============================================
 Write-Host ""
-$RepoDir = $PSScriptRoot
+$RepoDir = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $RepoDir ".venv\Scripts\python.exe"
 $CliScript = Join-Path $RepoDir "cli.py"
-$FrontendDist = Join-Path $RepoDir "studio\frontend\dist"
+$FrontendDist = Join-Path $PSScriptRoot "frontend\dist"
 $AliasAdded = $false
 
 # --- PowerShell profile: add functions ---
