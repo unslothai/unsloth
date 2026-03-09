@@ -195,6 +195,41 @@ export function syncEdgesForConfigPatch(
     }
   }
 
+  const hasToolAliasPatch = Object.prototype.hasOwnProperty.call(
+    patch,
+    "tool_alias",
+  );
+  if (current.kind === "llm" && hasToolAliasPatch) {
+    const nextAlias =
+      (patch as Partial<NodeConfig> & { tool_alias?: string }).tool_alias ?? "";
+    if (nextAlias.trim() === (current.tool_alias ?? "").trim()) {
+      return nextEdges;
+    }
+    nextEdges = removeTargetEdgesBySource(
+      nextEdges,
+      configs,
+      current.id,
+      (source) => Boolean(source && source.kind === "tool_config"),
+    );
+    if (nextAlias) {
+      const toolConfigId = findNodeIdByName(configs, nextAlias);
+      if (toolConfigId) {
+        const result = applyRecipeConnection(
+          {
+            source: toolConfigId,
+            sourceHandle: HANDLE_IDS.semanticOut,
+            target: current.id,
+            targetHandle: HANDLE_IDS.semanticIn,
+          },
+          configs,
+          nextEdges,
+          layoutDirection,
+        );
+        nextEdges = result.edges;
+      }
+    }
+  }
+
   const hasValidatorTargetsPatch = Object.prototype.hasOwnProperty.call(
     patch,
     "target_columns",

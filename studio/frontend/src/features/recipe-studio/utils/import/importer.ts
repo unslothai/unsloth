@@ -8,6 +8,7 @@ import type {
   SeedConfig,
   SamplerConfig,
   SeedSourceType,
+  ToolProfileConfig,
   ValidatorConfig,
 } from "../../types";
 import { buildEdges } from "./edges";
@@ -216,15 +217,6 @@ function parseToolConfigs(input: unknown): Map<string, LlmToolConfig> {
   return toolConfigs;
 }
 
-function cloneToolConfig(config: LlmToolConfig): LlmToolConfig {
-  return {
-    ...config,
-    providers: [...config.providers],
-    // biome-ignore lint/style/useNamingConvention: api schema
-    allow_tools: [...(config.allow_tools ?? [])],
-  };
-}
-
 function cloneMcpProvider(config: LlmMcpProviderConfig): LlmMcpProviderConfig {
   return {
     ...config,
@@ -296,28 +288,28 @@ function applyAdvancedOpen(
   config.advancedOpen = advancedOpenByNode[config.name] === true;
 }
 
-function attachLlmTooling(
-  config: LlmConfig,
+function buildToolProfileConfig(
+  toolConfig: LlmToolConfig,
   toolConfigsByAlias: Map<string, LlmToolConfig>,
   mcpProvidersByName: Map<string, LlmMcpProviderConfig>,
-): void {
-  const toolAlias = config.tool_alias?.trim();
-  if (!toolAlias) {
-    config.tool_alias = "";
-    config.tool_configs = [];
-    config.mcp_providers = [];
-    return;
-  }
-  const toolConfig = toolConfigsByAlias.get(toolAlias);
-  if (!toolConfig) {
-    config.tool_configs = [];
-    config.mcp_providers = [];
-    return;
-  }
-  config.tool_configs = [cloneToolConfig(toolConfig)];
-  config.mcp_providers = toolConfig.providers
-    .map((providerName) => mcpProvidersByName.get(providerName))
-    .flatMap((provider) => (provider ? [cloneMcpProvider(provider)] : []));
+  id: string,
+): ToolProfileConfig {
+  const canonical = toolConfigsByAlias.get(toolConfig.tool_alias) ?? toolConfig;
+  return {
+    id,
+    kind: "tool_config",
+    name: canonical.tool_alias,
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    mcp_providers: canonical.providers
+      .map((providerName) => mcpProvidersByName.get(providerName))
+      .flatMap((provider) => (provider ? [cloneMcpProvider(provider)] : [])),
+    // biome-ignore lint/style/useNamingConvention: api schema
+    allow_tools: [...(canonical.allow_tools ?? [])],
+    // biome-ignore lint/style/useNamingConvention: api schema
+    max_tool_call_turns: canonical.max_tool_call_turns ?? "5",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    timeout_sec: canonical.timeout_sec ?? "",
+  };
 }
 
 export function importRecipePayload(input: string): ImportResult {
@@ -471,6 +463,23 @@ export function importRecipePayload(input: string): ImportResult {
     });
   }
 
+  for (const toolConfig of toolConfigsByAlias.values()) {
+    const id = `n${nextId}`;
+    nextId += 1;
+    const config = buildToolProfileConfig(
+      toolConfig,
+      toolConfigsByAlias,
+      mcpProvidersByName,
+      id,
+    );
+    if (nameToId.has(config.name)) {
+      errors.push(`Duplicate column name: ${config.name}.`);
+      continue;
+    }
+    nameToId.set(config.name, config.id);
+    configs.push(config);
+  }
+
   recipe.columns.forEach((column, index) => {
     if (!isRecord(column)) {
       errors.push(`Column ${index + 1}: invalid object.`);
@@ -481,9 +490,6 @@ export function importRecipePayload(input: string): ImportResult {
     const config = parseColumn(column, id, errors);
     if (!config) {
       return;
-    }
-    if (config.kind === "llm") {
-      attachLlmTooling(config, toolConfigsByAlias, mcpProvidersByName);
     }
     applyAdvancedOpen(config, uiAdvancedOpenByNode);
     if (nameToId.has(config.name)) {

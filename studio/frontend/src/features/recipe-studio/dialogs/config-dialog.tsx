@@ -15,6 +15,7 @@ type ConfigDialogProps = {
   categoryOptions: SamplerConfig[];
   modelConfigAliases: string[];
   modelProviderOptions: string[];
+  toolProfileAliases: string[];
   datetimeOptions: string[];
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void;
   container?: HTMLDivElement | null;
@@ -28,6 +29,7 @@ export function ConfigDialog({
   categoryOptions,
   modelConfigAliases,
   modelProviderOptions,
+  toolProfileAliases,
   datetimeOptions,
   onUpdate,
   container,
@@ -96,6 +98,7 @@ export function ConfigDialog({
                 categoryOptions,
                 modelConfigAliases,
                 modelProviderOptions,
+                toolProfileAliases,
                 datetimeOptions,
                 onUpdate,
               )}

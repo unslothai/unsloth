@@ -71,6 +71,7 @@ type BlockSheetProps = {
   onAddLlm: (type: LlmType) => void;
   onAddModelProvider: () => void;
   onAddModelConfig: () => void;
+  onAddToolProfile: () => void;
   onAddExpression: () => void;
   onAddValidator: (
     type: "validator_python" | "validator_sql" | "validator_oxc",
@@ -225,6 +226,7 @@ export function BlockSheet({
   onAddLlm,
   onAddModelProvider,
   onAddModelConfig,
+  onAddToolProfile,
   onAddExpression,
   onAddValidator,
   onAddMarkdownNote,
@@ -331,6 +333,10 @@ export function BlockSheet({
       }
       if (type === "model_config") {
         onAddModelConfig();
+        return;
+      }
+      if (type === "tool_config") {
+        onAddToolProfile();
         return;
       }
       onAddLlm(type as LlmType);

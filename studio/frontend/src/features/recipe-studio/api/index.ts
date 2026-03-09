@@ -124,6 +124,25 @@ export type ValidateResponse = {
   raw_detail?: string | null;
 };
 
+export type McpToolsListRequest = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  mcp_providers: Record<string, unknown>[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  timeout_sec?: number;
+};
+
+export type McpToolsProviderResult = {
+  name: string;
+  tools: string[];
+  error?: string | null;
+};
+
+export type McpToolsListResponse = {
+  providers: McpToolsProviderResult[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  duplicate_tools: Record<string, string[]>;
+};
+
 async function parseErrorResponse(response: Response): Promise<string> {
   const text = (await response.text()).trim();
   if (!text) {
@@ -261,6 +280,12 @@ export async function inspectSeedUpload(
   return postJson<SeedInspectResponse>("/seed/inspect-upload", payload);
 }
 
+export async function listMcpTools(
+  payload: McpToolsListRequest,
+): Promise<McpToolsListResponse> {
+  return postJson<McpToolsListResponse>("/mcp/tools", payload);
+}
+
 export async function streamRecipeJobEvents(options: {
   jobId: string;
   signal: AbortSignal;
@@ -322,4 +347,4 @@ export async function streamRecipeJobEvents(options: {
   }
 }
 
-// NOTE: tools + seed inspect/preview endpoints removed from harness.
+// NOTE: preview endpoints removed from harness.
