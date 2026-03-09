@@ -162,8 +162,8 @@ export function ExportPage() {
     // For other formats, nest under training-run/checkpoint
     const saveDir =
       exportMethod === "gguf"
-        ? `./exports/${(baseModelName.split("/").pop() ?? selectedModelIdx ?? "model")}-finetune-gguf`
-        : `./exports/${selectedModelIdx ?? "model"}/${checkpoint}`;
+        ? `${baseModelName.split("/").pop() ?? selectedModelIdx ?? "model"}-finetune-gguf`
+        : `${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`

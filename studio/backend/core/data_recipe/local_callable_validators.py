@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import json
+import os
 import structlog
-from loggers import get_logger
 import subprocess
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from loggers import get_logger
+from utils.paths import ensure_dir, oxc_validator_tmp_root
 
 logger = get_logger(__name__)
 
@@ -236,6 +239,12 @@ def _run_oxc_batch(
         "codes": code_values,
     }
     try:
+        tmp_dir = ensure_dir(oxc_validator_tmp_root())
+        env = dict(os.environ)
+        tmp_dir_str = str(tmp_dir)
+        env["TMPDIR"] = tmp_dir_str
+        env["TMP"] = tmp_dir_str
+        env["TEMP"] = tmp_dir_str
         proc = subprocess.run(
             ["node", str(_OXC_RUNNER_PATH)],
             cwd=str(_OXC_TOOL_DIR),
@@ -243,6 +252,7 @@ def _run_oxc_batch(
             text=True,
             capture_output=True,
             check=False,
+            env=env,
         )
     except (OSError, ValueError) as exc:
         logger.warning("OXC subprocess launch failed: %s", exc)

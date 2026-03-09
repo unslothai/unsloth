@@ -570,11 +570,16 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
     import torchaudio
     import tempfile
     import os
+    from utils.paths import ensure_dir, tmp_root
 
     raw = base64.b64decode(b64)
     # torchaudio.load needs a file path or file-like object with format hint
     # Write to a temp file so torchaudio can auto-detect the format
-    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        suffix=".audio",
+        delete=False,
+        dir=str(ensure_dir(tmp_root())),
+    ) as tmp:
         tmp.write(raw)
         tmp_path = tmp.name
     try:
