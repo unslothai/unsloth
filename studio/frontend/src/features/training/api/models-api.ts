@@ -22,6 +22,7 @@ interface BackendTrainingDefaults {
   packing?: boolean;
   train_on_completions?: boolean;
   gradient_checkpointing?: "none" | "true" | "unsloth";
+  trust_remote_code?: boolean;
 }
 
 interface BackendLoraDefaults {
