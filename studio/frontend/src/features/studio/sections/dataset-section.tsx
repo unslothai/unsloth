@@ -604,21 +604,13 @@ export function DatasetSection() {
                     Local dataset metadata
                   </p>
                   <p className="text-[10px] text-muted-foreground/80">
-                    Data Recipe output. Eval split unavailable for local datasets.
+                    Data Recipe output.
                   </p>
                 </div>
               </div>
 
               {uploadedFile ? (
                 <div className="flex flex-col gap-3">
-                  <div className="rounded-md bg-background/60 px-2.5 py-2">
-                    <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                      Path
-                    </p>
-                    <p className="truncate font-mono text-[11px] text-foreground" title={uploadedFile}>
-                      {uploadedFile}
-                    </p>
-                  </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                     <MetadataRow
                       label="Rows"
