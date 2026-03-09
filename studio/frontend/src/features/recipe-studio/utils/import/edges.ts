@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import type { Edge } from "@xyflow/react";
 import type { LayoutDirection, NodeConfig } from "../../types";
 import {

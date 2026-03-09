@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
 import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
 import type { StepNumber } from "@/types/training";
 import { create } from "zustand";
