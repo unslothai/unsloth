@@ -18,6 +18,8 @@ All internal utilities have been moved to separate modules:
 - model_mappings: TEMPLATE_TO_MODEL_MAPPER
 """
 
+import json
+
 # Import from modular files
 from .format_detection import (
     detect_dataset_format,
@@ -269,7 +271,20 @@ def _apply_template_mapping(
             row_values = {}
             for col in all_columns:
                 val = examples[col][i]
-                str_val = str(val) if val is not None else ""
+
+                # Handle complex types (dicts, lists) — extract
+                # useful text instead of raw repr
+                if isinstance(val, dict):
+                    # Common pattern: {"text": [...]} in QA datasets
+                    if "text" in val:
+                        inner = val["text"]
+                        str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
+                    else:
+                        str_val = json.dumps(val, ensure_ascii=False)
+                elif isinstance(val, list):
+                    str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
+                else:
+                    str_val = str(val) if val is not None else ""
 
                 # Apply label mapping if this column has one
                 if col in label_mapping and isinstance(label_mapping[col], dict):
@@ -288,7 +303,8 @@ def _apply_template_mapping(
             if user_template:
                 try:
                     user_content = user_template.format(**row_values)
-                except (KeyError, IndexError):
+                except (KeyError, IndexError, ValueError):
+                    # ValueError: stray { } in column values
                     user_content = user_template
                 convo.append({"role": "user", "content": user_content})
 
@@ -296,7 +312,7 @@ def _apply_template_mapping(
             if assistant_template:
                 try:
                     asst_content = assistant_template.format(**row_values)
-                except (KeyError, IndexError):
+                except (KeyError, IndexError, ValueError):
                     asst_content = assistant_template
                 convo.append({"role": "assistant", "content": asst_content})
 
