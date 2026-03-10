@@ -63,6 +63,7 @@ export interface ModelConfigResponse {
   is_vision: boolean;
   is_lora: boolean;
   base_model?: string | null;
+  model_type?: "text" | "vision" | "tts" | "embeddings" | null;
 }
 
 export interface LocalModelInfo {
