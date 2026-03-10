@@ -15,6 +15,9 @@
 __all__ = [
     "INT_TO_FLOAT_MAPPER",
     "FLOAT_TO_INT_MAPPER",
+    "MAP_TO_UNSLOTH_16bit",
+    "FLOAT_TO_FP8_BLOCK_MAPPER",
+    "FLOAT_TO_FP8_ROW_MAPPER",
 ]
 
 __INT_TO_FLOAT_MAPPER = \
@@ -114,7 +117,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-1.1-7b-it",
         "google/gemma-1.1-7b-it",
     ),
-    "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
+    "unsloth/Starling-LM-7B-beta" : (
         "unsloth/Starling-LM-7B-beta",
         "Nexusflow/Starling-LM-7B-beta",
     ),
@@ -233,21 +236,35 @@ __INT_TO_FLOAT_MAPPER = \
         "meta-llama/Meta-Llama-3.1-8B",
         "unsloth/Meta-Llama-3.1-8B-bnb-4bit",
     ),
-    "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit" : (
-        "unsloth/Meta-Llama-3.1-8B-Instruct",
-        "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-    ),
+    "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "RedHatAI/Llama-3.1-8B-Instruct-FP8",
+            "unsloth/Llama-3.1-8B-Instruct-FP8-Block",
+            "unsloth/Llama-3.1-8B-Instruct-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Meta-Llama-3.1-8B-Instruct",
+            "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+        ),
+    },
     "unsloth/Llama-3.1-8B-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.1-8B",
         "meta-llama/Llama-3.1-8B",
         "unsloth/Llama-3.1-8B-bnb-4bit",
     ),
-    "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit" : (
-        "unsloth/Llama-3.1-8B-Instruct",
-        "meta-llama/Llama-3.1-8B-Instruct",
-        "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",
-    ),
+    "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "RedHatAI/Llama-3.1-8B-Instruct-FP8",
+            "unsloth/Llama-3.1-8B-Instruct-FP8-Block",
+            "unsloth/Llama-3.1-8B-Instruct-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Llama-3.1-8B-Instruct",
+            "meta-llama/Llama-3.1-8B-Instruct",
+            "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",
+        ),
+    },
     "unsloth/Meta-Llama-3.1-70B-bnb-4bit" : (
         "unsloth/Meta-Llama-3.1-70B",
         "meta-llama/Meta-Llama-3.1-70B",
@@ -474,16 +491,30 @@ __INT_TO_FLOAT_MAPPER = \
         "meta-llama/Llama-3.2-3B",
         "unsloth/Llama-3.2-3B-bnb-4bit",
     ),
-    "unsloth/Llama-3.2-1B-Instruct-unsloth-bnb-4bit" : (
-        "unsloth/Llama-3.2-1B-Instruct",
-        "meta-llama/Llama-3.2-1B-Instruct",
-        "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
-    ),
-    "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit" : (
-        "unsloth/Llama-3.2-3B-Instruct",
-        "meta-llama/Llama-3.2-3B-Instruct",
-        "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
-    ),
+    "unsloth/Llama-3.2-1B-Instruct-unsloth-bnb-4bit" : {
+        "8": (
+            "RedHatAI/Llama-3.2-1B-Instruct-FP8",
+            "unsloth/Llama-3.2-1B-Instruct-FP8-Block",
+            "unsloth/Llama-3.2-1B-Instruct-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Llama-3.2-1B-Instruct",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+        ),
+    },
+    "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit" : {
+        "8": (
+            "RedHatAI/Llama-3.2-3B-Instruct-FP8",
+            "unsloth/Llama-3.2-3B-Instruct-FP8-Block",
+            "unsloth/Llama-3.2-3B-Instruct-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Llama-3.2-3B-Instruct",
+            "meta-llama/Llama-3.2-3B-Instruct",
+            "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
+        ),
+    },
     "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit" : (
         "unsloth/Llama-3.1-Nemotron-70B-Instruct",
         "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
@@ -561,10 +592,18 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/QwQ-32B-Preview",
         "Qwen/QwQ-32B-Preview",
     ),
-    "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" : (
-        "unsloth/Llama-3.3-70B-Instruct",
-        "meta-llama/Llama-3.3-70B-Instruct",
-    ),
+    "unsloth/Llama-3.3-70B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "RedHatAI/Llama-3.3-70B-Instruct-FP8",
+            "unsloth/Llama-3.3-70B-Instruct-FP8-Block",
+            "unsloth/Llama-3.3-70B-Instruct-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Llama-3.3-70B-Instruct",
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "unsloth/Llama-3.3-70B-Instruct-bnb-4bit",
+        ),
+    },
     "unsloth/phi-4-unsloth-bnb-4bit" : (
         "unsloth/phi-4",
         "microsoft/phi-4",
@@ -617,6 +656,11 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-VL-7B-Instruct",
         "Qwen/Qwen2.5-VL-7B-Instruct",
         "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Qwen2.5-VL-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen2.5-VL-32B-Instruct",
+        "Qwen/Qwen2.5-VL-32B-Instruct",
+        "unsloth/Qwen2.5-VL-32B-Instruct-bnb-4bit",
     ),
     "unsloth/Qwen2.5-VL-72B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-VL-72B-Instruct",
@@ -728,6 +772,132 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Mistral-Small-3.1-24B-Base-2503",
         "unsloth/Mistral-Small-3.1-24B-Base-2503-bnb-4bit",
     ),
+    "unsloth/Qwen3-0.6B-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-0.6B-FP8",
+            "unsloth/Qwen3-0.6B-FP8",
+            "unsloth/Qwen3-0.6B-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-0.6B",
+            "Qwen/Qwen3-0.6B",
+            "unsloth/Qwen3-0.6B-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-1.7B-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-1.7B-FP8",
+            "unsloth/Qwen3-1.7B-FP8",
+            "unsloth/Qwen3-1.7B-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-1.7B",
+            "Qwen/Qwen3-1.7B",
+            "unsloth/Qwen3-1.7B-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-4B-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-4B-FP8",
+            "unsloth/Qwen3-4B-FP8",
+            "unsloth/Qwen3-4B-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-4B",
+            "Qwen/Qwen3-4B",
+            "unsloth/Qwen3-4B-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-8B-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-8B-FP8",
+            "unsloth/Qwen3-8B-FP8",
+            "unsloth/Qwen3-8B-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-8B",
+            "Qwen/Qwen3-8B",
+            "unsloth/Qwen3-8B-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-14B-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-14B-FP8",
+            "unsloth/Qwen3-14B-FP8",
+            "unsloth/Qwen3-14B-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-14B",
+            "Qwen/Qwen3-14B",
+            "unsloth/Qwen3-14B-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-32B-FP8",
+            "unsloth/Qwen3-32B-FP8",
+            "unsloth/Qwen3-32B-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-32B",
+            "Qwen/Qwen3-32B",
+            "unsloth/Qwen3-32B-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-30B-A3B",
+        "Qwen/Qwen3-30B-A3B",
+        "unsloth/Qwen3-30B-A3B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-0.6B-Base-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-0.6B-Base",
+        "Qwen/Qwen3-0.6B-Base",
+        "unsloth/Qwen3-0.6B-Base-bnb-4bit",
+    ),
+    "unsloth/Qwen3-1.7B-Base-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-1.7B-Base",
+        "Qwen/Qwen3-1.7B-Base",
+        "unsloth/Qwen3-1.7B-Base-bnb-4bit",
+    ),
+    "unsloth/Qwen3-4B-Base-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-4B-Base",
+        "Qwen/Qwen3-4B-Base",
+        "unsloth/Qwen3-4B-Base-bnb-4bit",
+    ),
+    "unsloth/Qwen3-8B-Base-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-8B-Base",
+        "Qwen/Qwen3-8B-Base",
+        "unsloth/Qwen3-8B-Base-bnb-4bit",
+    ),
+    "unsloth/Qwen3-14B-Base-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-14B-Base",
+        "Qwen/Qwen3-14B-Base",
+        "unsloth/Qwen3-14B-Base-bnb-4bit",
+    ),
+    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit" : (
+        "unsloth/Qwen3-30B-A3B-Base",
+        "Qwen/Qwen3-30B-A3B-Base",
+    ),
+    "unsloth/phi-4-reasoning-unsloth-bnb-4bit" : (
+        "unsloth/phi-4-reasoning",
+        "microsoft/Phi-4-reasoning",
+        "unsloth/phi-4-reasoning-bnb-4bit",
+    ),
+    "unsloth/phi-4-reasoning-plus-unsloth-bnb-4bit" : (
+        "unsloth/phi-4-reasoning-plus",
+        "microsoft/Phi-4-reasoning-plus",
+        "unsloth/phi-4-reasoning-plus-bnb-4bit",
+    ),
+    "unsloth/phi-4-mini-reasoning-unsloth-bnb-4bit" : (
+        "unsloth/phi-4-mini-reasoning",
+        "microsoft/Phi-4-mini-reasoning",
+        "unsloth/phi-4-mini-reasoning-bnb-4bit",
+    ),
+    "unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit" : (
+        "unsloth/Phi-4-mini-instruct",
+        "microsoft/Phi-4-mini-instruct",
+        "unsloth/Phi-4-mini-instruct-bnb-4bit",
+    ),
     "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit" : (
         "unsloth/orpheus-3b-0.1-pretrained",
         "canopylabs/orpheus-3b-0.1-pretrained",
@@ -738,34 +908,507 @@ __INT_TO_FLOAT_MAPPER = \
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
     ),
+    "unsloth/csm-1b" : (
+        "unsloth/csm-1b",
+        "sesame/csm-1b",
+    ),
+    "unsloth/whisper-large-v3" : (
+        "unsloth/whisper-large-v3",
+        "openai/whisper-large-v3",
+    ),
+    "unsloth/whisper-large-v3-turbo" : (
+        "unsloth/whisper-large-v3-turbo",
+        "openai/whisper-large-v3-turbo",
+    ),
+    "unsloth/whisper-small" : (
+        "unsloth/whisper-small",
+        "openai/whisper-small",
+    ),
+    "unsloth/CrisperWhisper" : (
+        "unsloth/CrisperWhisper",
+        "nyrahealth/CrisperWhisper",
+    ),
+    "unsloth/Llasa-1B" : (
+        "unsloth/Llasa-1B",
+        "HKUSTAudio/Llasa-1B",
+    ),
+    "unsloth/Spark-TTS-0.5B" : (
+        "unsloth/Spark-TTS-0.5B",
+        "SparkAudio/Spark-TTS-0.5B",
+    ),
+    "unsloth/Llama-OuteTTS-1.0-1B" : (
+        "unsloth/Llama-OuteTTS-1.0-1B",
+        "OuteAI/Llama-OuteTTS-1.0-1B",
+    ),
+    "unsloth/medgemma-4b-it-unsloth-bnb-4bit" : (
+        "unsloth/medgemma-4b-it",
+        "google/medgemma-4b-it",
+        "unsloth/medgemma-4b-it-bnb-4bit",
+    ),
+    "unsloth/medgemma-27b-text-it-unsloth-bnb-4bit" : (
+        "unsloth/medgemma-27b-text-it",
+        "google/medgemma-27b-text-it",
+        "unsloth/medgemma-27b-text-it-bnb-4bit",
+    ),
+    "unsloth/Devstral-Small-2505-unsloth-bnb-4bit" : (
+        "unsloth/Devstral-Small-2505",
+        "mistralai/Devstral-Small-2505",
+        "unsloth/Devstral-Small-2505-bnb-4bit",
+    ),
+    "unsloth/DeepSeek-R1-0528-Qwen3-8B-unsloth-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-0528-Qwen3-8B",
+        "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+        "unsloth/DeepSeek-R1-0528-Qwen3-8B-bnb-4bit",
+    ),
+    "unsloth/Magistral-Small-2506-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2506",
+        "mistralai/Magistral-Small-2506",
+        "unsloth/Magistral-Small-2506-bnb-4bit",
+    ),
+    "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-FP8",
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-FP8",
+        ),
+        "16" : (
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506",
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
+        ),
+    },
+    "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E4B-it",
+        "google/gemma-3n-E4B-it",
+        "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E2B-it",
+        "google/gemma-3n-E2B-it",
+        "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E4B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E4B",
+        "google/gemma-3n-E4B",
+        "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E2B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E2B",
+        "google/gemma-3n-E2B",
+        "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
+    ),
+    "unsloth/Devstral-Small-2507-unsloth-bnb-4bit" : (
+        "unsloth/Devstral-Small-2507",
+        "mistralai/Devstral-Small-2507",
+        "unsloth/Devstral-Small-2507-bnb-4bit",
+    ),
+    "unsloth/Qwen3-30B-A3B-Thinking-2507" : (
+        "unsloth/Qwen3-30B-A3B-Thinking-2507",
+        "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    ),
+    "unsloth/Qwen3-30B-A3B-Instruct-2507" : (
+        "unsloth/Qwen3-30B-A3B-Instruct-2507",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    ),
+    "unsloth/Qwen3-Coder-30B-A3B-Instruct" : (
+        "unsloth/Qwen3-Coder-30B-A3B-Instruct",
+        "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    ),
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit" : (
+        "unsloth/gpt-oss-20b",
+        "openai/gpt-oss-20b",
+        "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    ),
+    "unsloth/gpt-oss-120b-unsloth-bnb-4bit" : (
+        "unsloth/gpt-oss-120b",
+        "openai/gpt-oss-120b",
+        "unsloth/gpt-oss-120b-unsloth-bnb-4bit",
+    ),
+    "unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-4B-Instruct-2507-FP8",
+            "unsloth/Qwen3-4B-Instruct-2507-FP8",
+            "unsloth/Qwen3-4B-Instruct-2507-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-4B-Instruct-2507",
+            "Qwen/Qwen3-4B-Instruct-2507",
+            "unsloth/Qwen3-4B-Instruct-2507-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-4B-Thinking-2507-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-4B-Thinking-2507-FP8",
+            "unsloth/Qwen3-4B-Thinking-2507-FP8",
+            "unsloth/Qwen3-4B-Thinking-2507-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-4B-Thinking-2507",
+            "Qwen/Qwen3-4B-Thinking-2507",
+            "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
+        ),
+    },
+    "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-270m-it",
+        "google/gemma-3-270m-it",
+        "unsloth/gemma-3-270m-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-270m-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-270m",
+        "google/gemma-3-270m",
+        "unsloth/gemma-3-270m-bnb-4bit",
+    ),
+    "unsloth/Magistral-Small-2507-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2507",
+        "mistralai/Magistral-Small-2507",
+        "unsloth/Magistral-Small-2507-bnb-4bit",
+    ),
+    "unsloth/Magistral-Small-2509-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Magistral-Small-2509",
+            "unsloth/Magistral-Small-2509-FP8-Dynamic",
+            "unsloth/Magistral-Small-2509-FP8-Dynamic",
+        ),
+        "16" : (
+            "unsloth/Magistral-Small-2509",
+            "mistralai/Magistral-Small-2509",
+            "unsloth/Magistral-Small-2509-bnb-4bit",
+        ),
+    },
+    "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
+        "unsloth/Apertus-70B-Instruct-2509",
+        "swiss-ai/Apertus-70B-2509",
+        "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit",
+    ),
+    "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit" : (
+        "unsloth/Apertus-8B-Instruct-2509",
+        "swiss-ai/Apertus-8B-2509",
+        "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-micro-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-micro",
+        "ibm-granite/granite-4.0-micro",
+        "unsloth/granite-4.0-micro-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-micro-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-micro",
+        "ibm-granite/granite-4.0-h-micro",
+        "unsloth/granite-4.0-h-micro-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-micro-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-micro-base",
+        "ibm-granite/granite-4.0-micro-base",
+        "unsloth/granite-4.0-micro-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-micro-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-micro-base",
+        "ibm-granite/granite-4.0-h-micro-base",
+        "unsloth/granite-4.0-h-micro-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-tiny" : (
+        "unsloth/granite-4.0-h-tiny",
+        "ibm-granite/granite-4.0-h-tiny",
+    ),
+    "unsloth/granite-4.0-h-small" : (
+        "unsloth/granite-4.0-h-small",
+        "ibm-granite/granite-4.0-h-small",
+    ),
+    "unsloth/granite-4.0-h-tiny-base" : (
+        "unsloth/granite-4.0-h-tiny-base",
+        "ibm-granite/granite-4.0-h-tiny-base",
+    ),
+    "unsloth/granite-4.0-h-small-base" : (
+        "unsloth/granite-4.0-h-small-base",
+        "ibm-granite/granite-4.0-h-small-base",
+    ),
+    "unsloth/Qwen3-VL-4B-Thinking-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-4B-Thinking-FP8",
+            "unsloth/Qwen3-VL-4B-Thinking-FP8",
+            "unsloth/Qwen3-VL-4B-Thinking-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-4B-Thinking",
+            "Qwen/Qwen3-VL-4B-Thinking",
+            "unsloth/Qwen3-VL-4B-Thinking-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-8B-Thinking-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-8B-Thinking-FP8",
+            "unsloth/Qwen3-VL-8B-Thinking-FP8",
+            "unsloth/Qwen3-VL-8B-Thinking-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-8B-Thinking",
+            "Qwen/Qwen3-VL-8B-Thinking",
+            "unsloth/Qwen3-VL-8B-Thinking-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-4B-Instruct-FP8",
+            "unsloth/Qwen3-VL-4B-Instruct-FP8",
+            "unsloth/Qwen3-VL-4B-Instruct-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-4B-Instruct",
+            "Qwen/Qwen3-VL-4B-Instruct",
+            "unsloth/Qwen3-VL-4B-Instruct-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-8B-Instruct-FP8",
+            "unsloth/Qwen3-VL-8B-Instruct-FP8",
+            "unsloth/Qwen3-VL-8B-Instruct-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-8B-Instruct",
+            "Qwen/Qwen3-VL-8B-Instruct",
+            "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-2B-Thinking-FP8",
+            "unsloth/Qwen3-VL-2B-Thinking-FP8",
+            "unsloth/Qwen3-VL-2B-Thinking-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-2B-Thinking",
+            "Qwen/Qwen3-VL-2B-Thinking",
+            "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-32B-Thinking-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-32B-Thinking-FP8",
+            "unsloth/Qwen3-VL-32B-Thinking-FP8",
+            "unsloth/Qwen3-VL-32B-Thinking-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-32B-Thinking",
+            "Qwen/Qwen3-VL-32B-Thinking",
+            "unsloth/Qwen3-VL-32B-Thinking-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-2B-Instruct-FP8",
+            "unsloth/Qwen3-VL-2B-Instruct-FP8",
+            "unsloth/Qwen3-VL-2B-Instruct-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-2B-Instruct",
+            "Qwen/Qwen3-VL-2B-Instruct",
+            "unsloth/Qwen3-VL-2B-Instruct-bnb-4bit",
+        ),
+    },
+    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : {
+        "8" : (
+            "Qwen/Qwen3-VL-32B-Instruct-FP8",
+            "unsloth/Qwen3-VL-32B-Instruct-FP8",
+            "unsloth/Qwen3-VL-32B-Instruct-FP8",
+        ),
+        "16" : (
+            "unsloth/Qwen3-VL-32B-Instruct",
+            "Qwen/Qwen3-VL-32B-Instruct",
+            "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
+        ),
+    },
+    "unsloth/granite-4.0-350m-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-350m-base",
+        "ibm-granite/granite-4.0-350m-base",
+        "unsloth/granite-4.0-350m-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-350m-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-350m",
+        "ibm-granite/granite-4.0-350m",
+        "unsloth/granite-4.0-350m-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-350m-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-350m-base",
+        "ibm-granite/granite-4.0-h-350m-base",
+        "unsloth/granite-4.0-h-350m-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-350m-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-350m",
+        "ibm-granite/granite-4.0-h-350m",
+        "unsloth/granite-4.0-h-350m-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-1b-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-1b-base",
+        "ibm-granite/granite-4.0-1b-base",
+        "unsloth/granite-4.0-1b-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-1b-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-1b",
+        "ibm-granite/granite-4.0-1b",
+        "unsloth/granite-4.0-1b-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-1b-base-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-1b-base",
+        "ibm-granite/granite-4.0-h-1b-base",
+        "unsloth/granite-4.0-h-1b-base-bnb-4bit",
+    ),
+    "unsloth/granite-4.0-h-1b-unsloth-bnb-4bit" : (
+        "unsloth/granite-4.0-h-1b",
+        "ibm-granite/granite-4.0-h-1b",
+        "unsloth/granite-4.0-h-1b-bnb-4bit",
+    ),
+    "unsloth/gpt-oss-safeguard-20b" : (
+        "unsloth/gpt-oss-safeguard-20b",
+        "openai/gpt-oss-safeguard-20b",
+    ),
+    "unsloth/gpt-oss-safeguard-120b" : (
+        "unsloth/gpt-oss-safeguard-120b",
+        "openai/gpt-oss-safeguard-120b",
+    ),
+    "unsloth/functiongemma-270m-it-unsloth-bnb-4bit" : (
+        "unsloth/functiongemma-270m-it",
+        "google/functiongemma-270m-it",
+        "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
+    ),
+    # Ministral 3 models
+    "unsloth/Ministral-3-3B-Instruct-2512-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Ministral-3-3B-Instruct-2512",
+            "unsloth/Ministral-3-3B-Instruct-2512-FP8",
+            "unsloth/Ministral-3-3B-Instruct-2512-FP8",
+        ),
+        "16" : (
+            "unsloth/Ministral-3-3B-Instruct-2512",
+            "mistralai/Ministral-3-3B-Instruct-2512",
+            "unsloth/Ministral-3-3B-Instruct-2512-bnb-4bit",
+        ),
+    },
+    "unsloth/Ministral-3-3B-Base-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-3B-Base-2512",
+        "mistralai/Ministral-3-3B-Base-2512",
+        "unsloth/Ministral-3-3B-Base-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-3B-Reasoning-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-3B-Reasoning-2512",
+        "mistralai/Ministral-3-3B-Reasoning-2512",
+        "unsloth/Ministral-3-3B-Reasoning-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-8B-Instruct-2512-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Ministral-3-8B-Instruct-2512",
+            "unsloth/Ministral-3-8B-Instruct-2512-FP8",
+            "unsloth/Ministral-3-8B-Instruct-2512-FP8",
+        ),
+        "16" : (
+            "unsloth/Ministral-3-8B-Instruct-2512",
+            "mistralai/Ministral-3-8B-Instruct-2512",
+            "unsloth/Ministral-3-8B-Instruct-2512-bnb-4bit",
+        ),
+    },
+    "unsloth/Ministral-3-8B-Base-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-8B-Base-2512",
+        "mistralai/Ministral-3-8B-Base-2512",
+        "unsloth/Ministral-3-8B-Base-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-8B-Reasoning-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-8B-Reasoning-2512",
+        "mistralai/Ministral-3-8B-Reasoning-2512",
+        "unsloth/Ministral-3-8B-Reasoning-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit" : {
+        "8" : (
+            "mistralai/Ministral-3-14B-Instruct-2512",
+            "unsloth/Ministral-3-14B-Instruct-2512-FP8",
+            "unsloth/Ministral-3-14B-Instruct-2512-FP8",
+        ),
+        "16" : (
+            "unsloth/Ministral-3-14B-Instruct-2512",
+            "mistralai/Ministral-3-14B-Instruct-2512",
+            "unsloth/Ministral-3-14B-Instruct-2512-bnb-4bit",
+        ),
+    },
+    "unsloth/Ministral-3-14B-Base-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-14B-Base-2512",
+        "mistralai/Ministral-3-14B-Base-2512",
+        "unsloth/Ministral-3-14B-Base-2512-bnb-4bit",
+    ),
+    "unsloth/Ministral-3-14B-Reasoning-2512-unsloth-bnb-4bit" : (
+        "unsloth/Ministral-3-14B-Reasoning-2512",
+        "mistralai/Ministral-3-14B-Reasoning-2512",
+        "unsloth/Ministral-3-14B-Reasoning-2512-bnb-4bit",
+    ),
+    "unsloth/Kimi-K2-Instruct-BF16" : (
+        "unsloth/Kimi-K2-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
 FLOAT_TO_INT_MAPPER  = {}
 MAP_TO_UNSLOTH_16bit = {}
+FLOAT_TO_FP8_BLOCK_MAPPER = {}
+FLOAT_TO_FP8_ROW_MAPPER   = {}
+
+
+def _add_with_lower(mapper, key, value):
+    if key is None:
+        return
+    mapper[key] = value
+    mapper[key.lower()] = value
+
+
+def _add_lower_only(mapper, key, value):
+    if key is None:
+        return
+    mapper[key.lower()] = value
 
 for key, values in __INT_TO_FLOAT_MAPPER.items():
+    block, row = None, None
+    if type(values) is dict:
+        assert "16" in values
+        float16_values = values["16"]
+        # Float8 and other quantized types
+        if "8" in values:
+            float8_values = values["8"]
+            assert len(float8_values) == 3
+            official, block, row = float8_values
+            _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, key, block)
+            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, key, row)
+            _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, official + "-dynamic", block)
+            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official, row)
+            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official + "-dynamic", row)
+            for k in float8_values + float16_values:
+                _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, k, block)
+                _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, k, row)
+
+            if float8_values[1] is not None and float8_values[1].startswith("unsloth"):
+                for value in float8_values:
+                    if value is not None:
+                        _add_with_lower(MAP_TO_UNSLOTH_16bit, value, float8_values[1])
+
+            for value in float8_values:
+                if value is not None:
+                    FLOAT_TO_INT_MAPPER[value] = key
+                    FLOAT_TO_INT_MAPPER[value.lower()] = key.lower()
+        values = float16_values
     INT_TO_FLOAT_MAPPER[key] = values[0]
 
     for value in values:
         FLOAT_TO_INT_MAPPER[value] = key
-    pass
 
     # Map to Unsloth version for 16bit versions
     if len(values) == 2:
         if values[0].startswith("unsloth"):
-            MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
-        pass
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
     elif len(values) == 3:
         # Dynamic Unsloth quantization
         if values[0].startswith("unsloth"):
-            MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[2]] = values[0]
-            MAP_TO_UNSLOTH_16bit[values[2].lower()] = values[0]
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[2], values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
+            _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
         pass
-    pass
 
     # Get lowercased
     lowered_key = key.lower()
@@ -773,5 +1416,3 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
 
     for value in values:
         FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
-    pass
-pass

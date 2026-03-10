@@ -17,6 +17,10 @@ __all__ = [
     "PatchKTOTrainer",
 ]
 
-def PatchDPOTrainer(): return
 
-def PatchKTOTrainer(): return
+def PatchDPOTrainer():
+    return
+
+
+def PatchKTOTrainer():
+    return
