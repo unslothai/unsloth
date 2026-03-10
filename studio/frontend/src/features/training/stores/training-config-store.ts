@@ -130,7 +130,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // Use backend-provided model_type when available, otherwise
             // infer from is_vision (temporary until backend ships model_type).
             const inferredModelType: ModelType = modelDetails.model_type
-              ?? (modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "tts" : "text");
+              ?? (modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
             set({
               ...patch,
