@@ -8,6 +8,13 @@ This module contains functions for detecting dataset formats (Alpaca, ShareGPT, 
 detecting multimodal/VLM dataset structures, and heuristic-based column mapping.
 """
 
+import re
+
+
+def _keyword_in_column(keyword: str, col_name: str) -> bool:
+    """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
+    return re.search(r'\b' + re.escape(keyword) + r'\b', col_name, re.IGNORECASE) is not None
+
 
 def detect_dataset_format(dataset):
     """
@@ -364,11 +371,11 @@ def detect_multimodal_dataset(dataset):
     modality_types = set()
 
     # ── Image detection ─────────────────────────────────────
-    # Pass 1: column-name heuristic
+    # Pass 1: column-name heuristic (word-boundary match to avoid
+    #          false positives like 'pic' in 'topic')
     for col_name in column_names:
-        col_lower = col_name.lower()
         for keyword in image_keywords:
-            if keyword in col_lower:
+            if _keyword_in_column(keyword, col_name):
                 multimodal_columns.append(col_name)
                 modality_types.add(keyword)
                 break
@@ -384,11 +391,10 @@ def detect_multimodal_dataset(dataset):
             modality_types.add("image")
 
     # ── Audio detection ─────────────────────────────────────
-    # Pass 1: column-name heuristic
+    # Pass 1: column-name heuristic (word-boundary match)
     for col_name in column_names:
-        col_lower = col_name.lower()
         for keyword in audio_keywords:
-            if keyword in col_lower:
+            if _keyword_in_column(keyword, col_name):
                 audio_columns.append(col_name)
                 modality_types.add("audio")
                 break
@@ -608,10 +614,8 @@ def detect_vlm_dataset_structure(dataset):
         candidates = []
 
         for col in column_names:
-            col_lower = col.lower()
-
-            # Check if contains image keywords
-            if any(keyword in col_lower for keyword in image_keywords):
+            # Check if contains image keywords (word-boundary match)
+            if any(_keyword_in_column(keyword, col) for keyword in image_keywords):
                 # Verify it actually contains image data
                 sample_value = sample[col]
 
@@ -646,10 +650,8 @@ def detect_vlm_dataset_structure(dataset):
             if is_metadata_column(col):
                 continue
 
-            col_lower = col.lower()
-
-            # Check if contains text keywords
-            if any(keyword in col_lower for keyword in text_keywords):
+            # Check if contains text keywords (word-boundary match)
+            if any(_keyword_in_column(keyword, col) for keyword in text_keywords):
                 # Verify it's actually text
                 sample_value = sample[col]
 
