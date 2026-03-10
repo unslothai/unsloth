@@ -1866,10 +1866,31 @@ class UnslothTrainer:
 
             elif dataset_source:
                 # Load from Hugging Face
-                load_kwargs = {"path": dataset_source, "split": train_split or "train"}
+                split_name = train_split or "train"
+                load_kwargs = {"path": dataset_source, "split": split_name}
                 if subset:
                     load_kwargs["name"] = subset
-                dataset = load_dataset(**load_kwargs)
+
+                if dataset_slice_end is not None:
+                    # Manual slice — stream only the rows we need instead of
+                    # downloading the entire dataset.
+                    rows_to_stream = dataset_slice_end + 1
+                    print(
+                        f"[dataset-slice] Manual slice specified "
+                        f"(start={dataset_slice_start}, end={dataset_slice_end}), "
+                        f"streaming {rows_to_stream} rows\n"
+                    )
+                    stream = load_dataset(**load_kwargs, streaming=True)
+                    dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
+                    print(
+                        f"[dataset-slice] Downloaded {len(dataset)} rows "
+                        f"(requested {rows_to_stream})\n"
+                    )
+                    self._update_progress(
+                        status_message=f"Streamed {len(dataset)} rows from HuggingFace"
+                    )
+                else:
+                    dataset = load_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
                 if self.should_stop:
@@ -1877,7 +1898,7 @@ class UnslothTrainer:
                     return None
 
                 self._update_progress(status_message=f"Loaded dataset from HuggingFace: {dataset_source}")
-                print(f"Loaded dataset from Hugging Face: {dataset_source}\n")
+                print(f"Loaded dataset from Hugging Face: {dataset_source} ({len(dataset)} rows)\n")
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
                 if eval_enabled:
