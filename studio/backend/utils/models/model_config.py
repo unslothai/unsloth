@@ -919,7 +919,7 @@ def download_gguf_file(
 
 
 # Cache embedding detection results per session to avoid repeated HF API calls
-_embedding_detection_cache: Dict[str, bool] = {}
+_embedding_detection_cache: Dict[tuple, bool] = {}
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -942,12 +942,13 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         True if the model is an embedding model, False otherwise.
         Defaults to False for local paths or on errors.
     """
-    if model_name in _embedding_detection_cache:
-        return _embedding_detection_cache[model_name]
+    cache_key = (model_name, hf_token)
+    if cache_key in _embedding_detection_cache:
+        return _embedding_detection_cache[cache_key]
 
     # Local paths have no HF metadata to query
     if is_local_path(model_name):
-        _embedding_detection_cache[model_name] = False
+        _embedding_detection_cache[cache_key] = False
         return False
 
     try:
@@ -963,7 +964,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             or pipeline_tag in ("sentence-similarity", "feature-extraction")
         )
 
-        _embedding_detection_cache[model_name] = is_emb
+        _embedding_detection_cache[cache_key] = is_emb
         if is_emb:
             logger.info(
                 f"Model {model_name} detected as embedding model: "
@@ -975,7 +976,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        _embedding_detection_cache[model_name] = False
+        _embedding_detection_cache[cache_key] = False
         return False
 
 
