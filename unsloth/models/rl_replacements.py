@@ -170,6 +170,21 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
     if "with torch.inference_mode()" not in function: return function
 
+    import re
+    match = re.search(r"^([ \t]*)with torch\.inference_mode\(\):", function, flags = re.MULTILINE)
+    if match is not None:
+        indent = match.group(1)
+        nested_indent = indent + " " * 4
+        wake_block = \
+            f"{indent}if getattr(self, '_unsloth_resume_wake_vllm', False):\n"\
+            f"{nested_indent}wake_up = getattr(getattr(self, 'llm', None), 'wake_up', None)\n"\
+            f"{nested_indent}if callable(wake_up):\n"\
+            f"{nested_indent}    try: wake_up()\n"\
+            f"{nested_indent}    except Exception: pass\n"\
+            f"{nested_indent}self._unsloth_resume_wake_vllm = False\n"\
+            f"{indent}with torch.inference_mode():"
+        function = function[:match.start()] + wake_block + function[match.end():]
+
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -245,6 +260,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
     if  function_name != "compute_loss": return function
+    if "_compute_loss(" in function: return function
+    if "_get_per_token_logps_and_entropies" in function: return function
 
     def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
         if return_outputs:
@@ -307,7 +324,10 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
 # TRL warns if batch size is not a multiple of num_generations -> fix this.
 def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
-    if "divisible by the number of generations" not in RLTrainer_source: return ""
+    if \
+        "divisible by the number of generations" not in RLTrainer_source and \
+        "generation_batch_size" not in RLTrainer_source:
+        return ""
     if "num_generations" not in RLConfig_source: return ""
 
     check_batch_size = \
@@ -319,6 +339,18 @@ def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
     return check_batch_size
 pass
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
+
+
+def grpo_trainer_fix_generation_batch_size(RLTrainer_source, RLConfig_source):
+    if "generation_batch_size" not in RLConfig_source: return ""
+    if "steps_per_generation" not in RLConfig_source: return ""
+
+    check_generation_batch_size = \
+    "if generation_batch_size is not None and steps_per_generation is not None:\n"\
+    "    generation_batch_size = None\n"
+    return check_generation_batch_size
+pass
+RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_generation_batch_size)
 
 
 # Add other reward function names

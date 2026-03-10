@@ -1819,6 +1819,8 @@ class FastLlamaModel:
             llm = load_vllm(**load_vllm_kwargs)
 
             # Convert to HF format
+            if getattr(model_config, "model_name", None) is None:
+                model_config.model_name = model_name
             _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
             model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
             model.vllm_engine = llm

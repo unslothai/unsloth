@@ -717,7 +717,11 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 exec(BitsAndBytesConfig__init__, globals())
 
 if torch.cuda.device_count() == 1:
-    from accelerate.utils.dataclasses import DistributedType
+    try:
+        from accelerate.utils.dataclasses import DistributedType, FP8BackendType
+    except:
+        from accelerate.utils.dataclasses import DistributedType
+        FP8BackendType = None
     def _prepare_backend(
         self, cpu = False, sagemaker_dp = False, backend: str = None,
     ) -> tuple[str, DistributedType]:

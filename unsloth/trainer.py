@@ -153,6 +153,10 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
         if ("args" in kwargs) and (Version(trl.__version__) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
+            if isinstance(training_args, config_class):
+                kwargs["args"] = training_args
+                original_init(self, *args, **kwargs)
+                return
 
             # Get parameters that Trainer.__init__ actually expects
             trainer_params.remove('self')
