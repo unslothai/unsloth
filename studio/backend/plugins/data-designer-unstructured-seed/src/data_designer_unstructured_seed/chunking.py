@@ -8,13 +8,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from utils.paths import ensure_dir, unstructured_seed_cache_root
-
 DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
-_CACHE_DIR = unstructured_seed_cache_root()
+_CACHE_DIR = Path.home() / ".cache" / "unsloth" / "data-recipe" / "unstructured-seed-cache"
 
 
 def resolve_chunking(
@@ -87,7 +85,7 @@ def materialize_unstructured_seed_dataset(
         raise ValueError("No text found in unstructured seed source.")
 
     rows = [{"chunk_text": chunk} for chunk in chunks]
-    ensure_dir(_CACHE_DIR)
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         import pandas as pd
     except ImportError as exc:  # pragma: no cover

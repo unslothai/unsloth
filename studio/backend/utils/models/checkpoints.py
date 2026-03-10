@@ -8,7 +8,6 @@ import json
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
-from utils.paths import outputs_root, resolve_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 
 
 def scan_checkpoints(
-    outputs_dir: str = str(outputs_root()),
+    outputs_dir: str = "./outputs",
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """
     Scan outputs folder for training runs and their checkpoints.
@@ -46,7 +45,7 @@ def scan_checkpoints(
         set to the loss of the last (highest-step) intermediate checkpoint.
     """
     models = []
-    outputs_path = resolve_output_dir(outputs_dir)
+    outputs_path = Path(outputs_dir)
 
     if not outputs_path.exists():
         logger.warning(f"Outputs directory not found: {outputs_dir}")

@@ -30,21 +30,13 @@ from datasets import Dataset, load_dataset
 from utils.models import is_vision_model, detect_audio_type
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
-from utils.paths import ensure_dir, resolve_dataset_path, resolve_output_dir, resolve_tensorboard_dir
 from trl import SFTTrainer, SFTConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-
-def _build_report_targets(training_args) -> list[str] | str:
-    report_to: list[str] = []
-    if training_args.get("enable_wandb", False):
-        report_to.append("wandb")
-    if training_args.get("enable_tensorboard", False):
-        report_to.append("tensorboard")
-    return report_to or "none"
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_ASSETS_DATASETS_ROOT = _BACKEND_ROOT / "assets" / "datasets"
 
 
 @dataclass
@@ -213,13 +205,8 @@ class UnslothTrainer:
             "lr_scheduler_type": lr_scheduler_type,
             "seed": random_seed,
             "output_dir": output_dir,
-            "report_to": _build_report_targets(training_args),
+            "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
         }
-
-        if training_args.get("enable_tensorboard", False):
-            config["logging_dir"] = str(
-                resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
-            )
 
         # max_steps vs epochs
         if max_steps_val and max_steps_val > 0:
@@ -1542,7 +1529,6 @@ class UnslothTrainer:
         import numpy as np
         import soundfile as sf
         from datasets import Dataset as HFDataset
-        from utils.paths import ensure_dir, tmp_root
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -1639,18 +1625,10 @@ class UnslothTrainer:
                 audio_bytes = buf.getvalue()
 
                 # 1. Get word timings from Whisper
-                with tempfile.NamedTemporaryFile(
-                    suffix=".wav",
-                    delete=False,
-                    dir=str(ensure_dir(tmp_root())),
-                ) as tmp:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
                     tmp.write(audio_bytes)
                     tmp.flush()
-                    tmp_path = tmp.name
-                try:
-                    whisper_result = whisper_model.transcribe(tmp_path, word_timestamps=True)
-                finally:
-                    Path(tmp_path).unlink(missing_ok=True)
+                    whisper_result = whisper_model.transcribe(tmp.name, word_timestamps=True)
 
                 normalized_transcript = text_normalizations(text)
                 words_with_timings = []
@@ -1838,7 +1816,7 @@ class UnslothTrainer:
                         file_path = dataset_file
                     else:
                         # Fallback: try relative to assets/datasets
-                        file_path = str(resolve_dataset_path(dataset_file))
+                        file_path = str(_ASSETS_DATASETS_ROOT / dataset_file)
 
                     file_path_obj = Path(file_path)
 
@@ -2091,7 +2069,7 @@ class UnslothTrainer:
                        dataset: Dataset,
                        eval_dataset: Dataset = None,
                        eval_steps: float = 0.00,
-                       output_dir: str | None = None,
+                       output_dir: str = "./outputs",
                        num_epochs: int = 3,
                        learning_rate: float = 5e-5,
                        batch_size: int = 2,
@@ -2108,7 +2086,7 @@ class UnslothTrainer:
                        wandb_project: str = "unsloth-training",
                        wandb_token: str = None,
                        enable_tensorboard: bool = False,
-                       tensorboard_dir: str | None = None,
+                       tensorboard_dir: str = "runs",
                        **kwargs) -> bool:
         """Start training in a separate thread"""
 
@@ -2196,8 +2174,8 @@ class UnslothTrainer:
                 wandb.init(project=training_args.get('wandb_project', 'unsloth-training'))
 
             # Create output directory
-            output_dir = str(resolve_output_dir(training_args.get("output_dir")))
-            ensure_dir(Path(output_dir))
+            output_dir = training_args.get('output_dir', './outputs')
+            os.makedirs(output_dir, exist_ok=True)
 
             # ========== AUDIO TRAINER BRANCH ==========
             if self._audio_type == 'csm':
@@ -2407,15 +2385,11 @@ class UnslothTrainer:
                 "weight_decay": training_args.get('weight_decay', 0.01),
                 "seed": training_args.get('random_seed', 3407),
                 "output_dir": output_dir,
-                "report_to": _build_report_targets(training_args),
+                "report_to": ["wandb"] if training_args.get('enable_wandb', False) else "none",
                 "include_num_input_tokens_seen": True,  # Enable token counting
                 "dataset_num_proc": 1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else safe_num_proc(max(1, os.cpu_count() // 4)),
                 "max_seq_length": training_args.get('max_seq_length', 2048),
             }
-            if training_args.get("enable_tensorboard", False):
-                config_args["logging_dir"] = str(
-                    resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
-                )
             print(f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})")
 
             # On Windows with transformers 5.x, disable DataLoader multiprocessing

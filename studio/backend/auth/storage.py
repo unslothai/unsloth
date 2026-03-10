@@ -7,11 +7,10 @@ SQLite storage for authentication data (user credentials + JWT secret).
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Tuple
 
-from utils.paths import auth_db_path, ensure_dir
-
-DB_PATH = auth_db_path()
+DB_PATH = Path(__file__).parent / "auth.db"
 
 
 def _hash_token(token: str) -> str:
@@ -21,7 +20,6 @@ def _hash_token(token: str) -> str:
 
 def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
-    ensure_dir(DB_PATH.parent)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute(
@@ -258,3 +256,4 @@ def revoke_user_refresh_tokens(username: str) -> None:
         conn.commit()
     finally:
         conn.close()
+

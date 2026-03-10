@@ -18,7 +18,6 @@ from data_designer_unstructured_seed.chunking import (
     resolve_chunking,
 )
 from core.data_recipe.jsonable import to_preview_jsonable
-from utils.paths import ensure_dir, seed_uploads_root
 
 from models.data_recipe import (
     SeedInspectRequest,
@@ -32,7 +31,7 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_UPLOAD_EXTS = {".txt", ".md"}
-SEED_UPLOAD_DIR = seed_uploads_root()
+SEED_UPLOAD_DIR = Path.home() / ".cache" / "unsloth" / "data-recipe" / "seed-uploads"
 
 
 def _serialize_preview_value(value: Any) -> Any:
@@ -305,7 +304,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     if len(file_bytes) > max_size_bytes:
         raise HTTPException(status_code=413, detail="file too large (max 50MB)")
 
-    ensure_dir(SEED_UPLOAD_DIR)
+    SEED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     stored_name = f"{uuid4().hex}_{filename}"
     stored_path = SEED_UPLOAD_DIR / stored_name
     stored_path.write_bytes(file_bytes)
