@@ -100,8 +100,6 @@ export interface TrainingConfigActions {
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setDatasetAdvisorFields: (fields: {
     systemPrompt?: string;
-    userTemplate?: string;
-    assistantTemplate?: string;
     labelMapping?: Record<string, Record<string, string>>;
     notification?: string | null;
   }) => void;

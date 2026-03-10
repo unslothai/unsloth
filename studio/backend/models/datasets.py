@@ -59,8 +59,6 @@ class AiAssistMappingResponse(BaseModel):
     warning: Optional[str] = None
     # Conversion advisor fields
     system_prompt: Optional[str] = None
-    user_template: Optional[str] = None
-    assistant_template: Optional[str] = None
     label_mapping: Optional[Dict[str, Dict[str, str]]] = None
     dataset_type: Optional[str] = None
     is_conversational: Optional[bool] = None

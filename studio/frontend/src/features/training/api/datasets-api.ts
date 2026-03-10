@@ -77,8 +77,6 @@ export type AiAssistMappingResponse = {
   warning?: string | null;
   // Conversion advisor fields
   system_prompt?: string | null;
-  user_template?: string | null;
-  assistant_template?: string | null;
   label_mapping?: Record<string, Record<string, string>> | null;
   dataset_type?: string | null;
   is_conversational?: boolean | null;
