@@ -60,6 +60,7 @@ export interface TrainingConfigState {
   logFrequency: number;
   isCheckingVision: boolean;
   isVisionModel: boolean;
+  isEmbeddingModel: boolean;
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;

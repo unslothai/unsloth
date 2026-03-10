@@ -54,6 +54,7 @@ from .responses import (
     TrainingMetricsResponse,
     LoRABaseModelResponse,
     VisionCheckResponse,
+    EmbeddingCheckResponse,
 )
 from .data_recipe import (
     RecipePayload,
@@ -108,6 +109,7 @@ __all__ = [
     "TrainingMetricsResponse",
     "LoRABaseModelResponse",
     "VisionCheckResponse",
+    "EmbeddingCheckResponse",
     # Data recipe
     "RecipePayload",
     "PreviewResponse",

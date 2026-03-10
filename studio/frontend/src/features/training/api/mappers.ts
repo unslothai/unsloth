@@ -25,6 +25,7 @@ export function buildTrainingStartPayload(
 ): TrainingStartRequest {
   const adapterMethod = config.trainingMethod !== "full";
   const isQloraMethod = config.trainingMethod === "qlora";
+  const isEmbedding = config.isEmbeddingModel;
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
   const localDatasets =
     config.datasetSource === "upload" && config.uploadedFile
@@ -53,14 +54,14 @@ export function buildTrainingStartPayload(
     learning_rate: String(config.learningRate),
     batch_size: config.batchSize,
     gradient_accumulation_steps: config.gradientAccumulation,
-    warmup_steps: config.warmupSteps,
-    warmup_ratio: null,
+    warmup_steps: isEmbedding ? null : config.warmupSteps,
+    warmup_ratio: isEmbedding ? 0.03 : null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     random_seed: config.randomSeed,
-    packing: config.packing,
+    packing: isEmbedding ? false : config.packing,
     optim: config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
@@ -71,13 +72,14 @@ export function buildTrainingStartPayload(
     gradient_checkpointing: config.gradientCheckpointing,
     use_rslora: config.loraVariant === "rslora",
     use_loftq: config.loraVariant === "loftq",
-    train_on_completions: config.trainOnCompletions,
+    train_on_completions: isEmbedding ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
-    is_dataset_image: !!config.isDatasetImage,
-    is_dataset_audio: config.isDatasetAudio,
+    is_dataset_image: isEmbedding ? false : !!config.isDatasetImage,
+    is_dataset_audio: isEmbedding ? false : config.isDatasetAudio,
+    is_embedding: isEmbedding,
     enable_wandb: config.enableWandb,
     wandb_token: config.enableWandb ? config.wandbToken.trim() || null : null,
     wandb_project: config.enableWandb
