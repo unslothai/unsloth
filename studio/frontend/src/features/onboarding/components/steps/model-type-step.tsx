@@ -38,7 +38,7 @@ const TYPE_TOOLTIPS: Record<ModelType, string> = {
   text: "Fine-tune large language models for text generation",
 };
 
-const COMING_SOON: ModelType[] = ["audio", "embeddings"];
+const COMING_SOON: ModelType[] = [];
 
 export function ModelTypeStep(): ReactElement {
   const { modelType, setModelType } = useTrainingConfigStore(
