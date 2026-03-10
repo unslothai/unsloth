@@ -7,6 +7,8 @@ Pydantic schemas for Model Management API
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
 
+ModelType = Literal["text", "vision", "audio", "embeddings"]
+
 
 class CheckpointInfo(BaseModel):
     """Information about a discovered checkpoint directory."""
@@ -60,6 +62,7 @@ class ModelDetails(BaseModel):
     is_audio: bool = Field(False, description="Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description="Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description="Whether model accepts audio input (ASR)")
+    model_type: Optional[ModelType] = Field(None, description="Collapsed model modality: text, vision, audio, or embeddings")
     base_model: Optional[str] = Field(None, description="Base model if this is a LoRA adapter")
 
 
