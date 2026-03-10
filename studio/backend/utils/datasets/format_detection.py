@@ -672,7 +672,7 @@ def detect_vlm_dataset_structure(dataset):
             return 75
 
         if isinstance(sample_value, str):
-            # URL strings are directly resolvable — prefer over bare filenames
+            # URL strings
             if sample_value.startswith(("http://", "https://")):
                 return 70 if not is_metadata_column(col) else 55
             # Bare file path
@@ -682,8 +682,31 @@ def detect_vlm_dataset_structure(dataset):
 
         return 0
 
+    def _probe_image_candidate(col, sample_value):
+        """Quick probe to check if an image candidate is actually reachable.
+        Returns True if likely valid, False if definitely broken."""
+        import os
+
+        # PIL / dict — already loaded, always valid
+        if not isinstance(sample_value, str):
+            return True
+
+        # Local file — check it exists
+        if not sample_value.startswith(("http://", "https://")):
+            return os.path.exists(sample_value)  # bare filenames return False here, that's OK
+
+        # URL — quick HEAD request with short timeout
+        try:
+            import urllib.request
+            req = urllib.request.Request(sample_value, method="HEAD")
+            resp = urllib.request.urlopen(req, timeout=3)
+            return resp.status < 400
+        except Exception:
+            return False
+
     def find_image_column():
-        """Find image column by keyword match + value-based fallback."""
+        """Find image column by keyword match + value-based fallback.
+        When multiple candidates exist, probes them to find one that works."""
         candidates = []
 
         # Pass 1: keyword-matched columns
@@ -706,12 +729,24 @@ def detect_vlm_dataset_structure(dataset):
                 # Slightly penalise non-keyword columns so keyword matches win on ties
                 candidates.append((col, max(score - 5, 1)))
 
-        # Return highest priority candidate
-        if candidates:
-            candidates.sort(key=lambda x: x[1], reverse=True)
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # Single candidate or top candidate is PIL/dict — no probing needed
+        if len(candidates) == 1 or candidates[0][1] >= 75:
             return candidates[0][0]
 
-        return None
+        # Multiple string-based candidates — probe to find one that actually works
+        for col, score in candidates:
+            sample_value = sample[col]
+            if _probe_image_candidate(col, sample_value):
+                return col
+
+        # Nothing probed successfully — return highest-scored anyway and let
+        # conversion handle the error (it may still resolve via hf_hub_download)
+        return candidates[0][0]
 
     def find_text_column():
         """Find text column by filtering out metadata and checking keywords."""
