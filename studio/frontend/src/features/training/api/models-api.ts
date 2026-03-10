@@ -61,8 +61,8 @@ export interface ModelConfigResponse {
   model_name?: string | null;
   config?: BackendModelConfig | null;
   is_vision: boolean;
+  is_audio: boolean;
   is_lora: boolean;
-  is_audio?: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;
 }
