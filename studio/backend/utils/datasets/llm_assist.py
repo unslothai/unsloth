@@ -538,17 +538,18 @@ def _run_multi_pass_advisor(
                 ),
             }
 
-        # ── Pass 2: Conversion templates ──
-        print("🤖 Pass 2: Generating conversion templates...", flush=True)
+        # ── Pass 2: Map columns to roles ──
+        print("🤖 Pass 2: Mapping columns to roles...", flush=True)
         t2 = time.monotonic()
         messages2 = [
             {
                 "role": "system",
                 "content": (
-                    "You convert non-conversational datasets into user/assistant pairs "
-                    "for LLM fine-tuning. The user message is the INPUT (what the model "
-                    "receives). The assistant message is the OUTPUT (what the model should "
-                    "generate). You MUST have both. Respond with ONLY valid JSON."
+                    "You map dataset columns to conversation roles for LLM fine-tuning. "
+                    "Each column becomes either 'user' (the INPUT the model receives) or "
+                    "'assistant' (the OUTPUT the model should generate). "
+                    "There MUST be at least one user column AND at least one assistant column. "
+                    "Respond with ONLY valid JSON."
                 ),
             },
             {
@@ -562,38 +563,27 @@ def _run_multi_pass_advisor(
                     SAMPLE DATA:
                     {samples_text}
 
-                    Split the columns into INPUT (user_template) and OUTPUT (assistant_template).
-                    Templates use ONLY {{column_name}} placeholders, NEVER actual data values.
+                    Assign each column to a role: "user" (INPUT) or "assistant" (OUTPUT).
 
-                    EXAMPLES of correct templates for different dataset types:
+                    EXAMPLES:
                     - Summarization (columns: document, summary):
-                      user_template: "{{document}}"
-                      assistant_template: "{{summary}}"
                       column_roles: {{"document": "user", "summary": "assistant"}}
                     - NLI (columns: premise, hypothesis, label):
-                      user_template: "Premise: {{premise}}\\nHypothesis: {{hypothesis}}"
-                      assistant_template: "{{label_name}}"
                       column_roles: {{"premise": "user", "hypothesis": "user", "label": "assistant"}}
+                      label_mapping: {{"label": {{"0": "entailment", "1": "neutral", "2": "contradiction"}}}}
                     - Translation (columns: en, fr):
-                      user_template: "{{en}}"
-                      assistant_template: "{{fr}}"
                       column_roles: {{"en": "user", "fr": "assistant"}}
                     - QA (columns: question, context, answer):
-                      user_template: "Context: {{context}}\\nQuestion: {{question}}"
-                      assistant_template: "{{answer}}"
                       column_roles: {{"context": "user", "question": "user", "answer": "assistant"}}
 
                     RULES:
-                    - There MUST be at least one column as "user" AND at least one as "assistant".
-                    - NEVER put the output/target column in the user template.
-                    - If a column has integer labels, provide a label_mapping for ALL integer values.
-                    - When label_mapping exists for a column, use {{column_name}} in assistant_template
-                      (the mapping is applied automatically).
+                    - There MUST be at least one "user" AND at least one "assistant" column.
+                    - The output/target column MUST be "assistant", never "user".
+                    - If a column has integer labels (0, 1, 2...), provide label_mapping with ALL values.
+                    - Ignore ID or metadata columns (do not include them).
 
                     Respond with JSON:
                     {{
-                        "user_template": "<INPUT template with {{column}} placeholders>",
-                        "assistant_template": "<OUTPUT template with {{column}} placeholders>",
                         "column_roles": {{"<col>": "user or assistant"}},
                         "label_mapping": {{"<col>": {{"0": "<label>", "1": "<label>"}}}},
                         "notes": "<brief note>"
@@ -608,20 +598,15 @@ def _run_multi_pass_advisor(
             logger.warning(f"Advisor Pass 2 failed to produce JSON: {raw2[:200]}")
             return None
 
-        # ── Extract conversion strategy from Pass 2 ──
-        user_tpl = pass2.get("user_template", "")
-        asst_tpl = pass2.get("assistant_template", "")
+        # ── Extract and validate column roles from Pass 2 ──
+        column_roles = pass2.get("column_roles", {})
         label_map = pass2.get("label_mapping", {})
 
-        # Sanity check: assistant_template must reference at least one column
-        has_asst_col = any(
-            f"{{{col}}}" in asst_tpl or f"{{{col}_name}}" in asst_tpl
-            for col in columns
-        )
-        if not has_asst_col and asst_tpl:
-            # LLM put literal text instead of a placeholder — reject
+        # Validate: must have at least one user AND one assistant
+        roles_present = set(column_roles.values())
+        if "user" not in roles_present or "assistant" not in roles_present:
             print(
-                f"🤖 Pass 2 sanity fail: assistant_template has no column placeholders: {asst_tpl!r}",
+                f"🤖 Pass 2 sanity fail: missing user or assistant role: {column_roles}",
                 flush=True,
             )
             return None  # triggers fallback to simple classification
@@ -643,6 +628,10 @@ def _run_multi_pass_advisor(
                         pairs = ", ".join(f"{k} = {v}" for k, v in mapping.items())
                         label_info += f"\nLabel mapping for '{col}': {pairs}"
 
+            # Describe the role assignments for context
+            user_cols = [c for c, r in column_roles.items() if r == "user"]
+            asst_cols = [c for c, r in column_roles.items() if r == "assistant"]
+
             messages3 = [
                 {
                     "role": "system",
@@ -660,9 +649,8 @@ def _run_multi_pass_advisor(
                         Dataset type: {dtype}
                         Description: {pass1.get('task_description') or pass1.get('description', '')}
 
-                        The training examples will look like:
-                        User: {user_tpl}
-                        Assistant: {asst_tpl}
+                        The user (INPUT) columns are: {user_cols}
+                        The assistant (OUTPUT) columns are: {asst_cols}
                         {label_info}
 
                         Write a system prompt that clearly describes the task the model should
@@ -689,28 +677,17 @@ def _run_multi_pass_advisor(
                     sys_prompt = raw_sys
 
         # Build suggested_mapping (column → role, for the frontend dropdowns)
-        # Include ALL columns referenced in templates
         suggested_mapping = {}
-        column_roles = pass2.get("column_roles", {})
         for col, role in column_roles.items():
             if col in columns and role in ("user", "assistant", "system"):
                 suggested_mapping[col] = role
-
-        # Infer roles from template placeholders for any columns not yet mapped
-        for col in columns:
-            if col in suggested_mapping:
-                continue
-            if f"{{{col}}}" in user_tpl or f"{{{col}_name}}" in user_tpl:
-                suggested_mapping[col] = "user"
-            elif f"{{{col}}}" in asst_tpl or f"{{{col}_name}}" in asst_tpl:
-                suggested_mapping[col] = "assistant"
 
         # Build user notification from Pass 1 classification
         desc = pass1.get("task_description") or pass1.get("description", "")
         note_parts = [f"This is a {dtype} dataset (not conversational)."]
         if desc:
             note_parts.append(desc)
-        note_parts.append("Columns have been converted into a conversation format. You can adjust the mapping if needed.")
+        note_parts.append("Columns have been mapped to conversation roles. You can adjust the mapping if needed.")
         user_notification = " ".join(note_parts)
 
         total_time = time.monotonic() - t0
@@ -724,8 +701,6 @@ def _run_multi_pass_advisor(
             "success": True,
             "suggested_mapping": suggested_mapping,
             "system_prompt": sys_prompt,
-            "user_template": user_tpl,
-            "assistant_template": asst_tpl,
             "label_mapping": label_map if label_map else None,
             "dataset_type": dtype,
             "is_conversational": is_conv,

@@ -235,29 +235,56 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
 
 
+def _extract_column_value(val, col: str, label_mapping: dict) -> str:
+    """Extract a string value from a column, handling complex types and label mapping."""
+    # Handle complex types (dicts, lists) — extract useful text instead of raw repr
+    if isinstance(val, dict):
+        # Common pattern: {"text": [...]} in QA datasets
+        if "text" in val:
+            inner = val["text"]
+            str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
+        else:
+            str_val = json.dumps(val, ensure_ascii=False)
+    elif isinstance(val, list):
+        str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
+    else:
+        str_val = str(val) if val is not None else ""
+
+    # Apply label mapping if this column has one
+    if col in label_mapping and isinstance(label_mapping[col], dict):
+        str_val = label_mapping[col].get(str_val, str_val)
+
+    return str_val
+
+
 def _apply_template_mapping(
     dataset, column_roles: dict, meta: dict, batch_size: int = 1000
 ):
     """
-    Apply template-based mapping for non-conversational datasets.
+    Apply advisor-driven mapping for non-conversational datasets.
 
-    Uses ``__system_prompt``, ``__user_template``, ``__assistant_template``,
-    and ``__label_mapping`` metadata keys to construct conversations with
-    proper context and formatting.
+    Groups columns by their assigned role (user/assistant), concatenates
+    values within each role into a single message, and injects an optional
+    system prompt.  Label mapping is applied to convert integer labels
+    to human-readable strings.
 
     Returns:
         Dataset with single 'conversations' column
     """
     system_prompt = meta.get("__system_prompt", "")
-    user_template = meta.get("__user_template", "")
-    assistant_template = meta.get("__assistant_template", "")
     label_mapping = meta.get("__label_mapping", {})  # {col: {int_str: label_str}}
 
-    all_columns = list(dataset.column_names)
+    # Group columns by canonical chatml role
+    role_groups: dict[str, list[str]] = {"user": [], "assistant": []}
+    for col, role in column_roles.items():
+        canonical = _TO_CHATML.get(role, role)
+        if canonical in role_groups:
+            role_groups[canonical].append(col)
+
     import logging as _log
     _log.getLogger(__name__).info(
-        f"Applying template mapping: sys={bool(system_prompt)}, "
-        f"user_tpl={bool(user_template)}, asst_tpl={bool(assistant_template)}, "
+        f"Applying role mapping: sys={bool(system_prompt)}, "
+        f"user_cols={role_groups['user']}, asst_cols={role_groups['assistant']}, "
         f"label_map={list(label_mapping.keys())}"
     )
 
@@ -267,54 +294,29 @@ def _apply_template_mapping(
         for i in range(num):
             convo = []
 
-            # Build value dict for template interpolation
-            row_values = {}
-            for col in all_columns:
-                val = examples[col][i]
-
-                # Handle complex types (dicts, lists) — extract
-                # useful text instead of raw repr
-                if isinstance(val, dict):
-                    # Common pattern: {"text": [...]} in QA datasets
-                    if "text" in val:
-                        inner = val["text"]
-                        str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
-                    else:
-                        str_val = json.dumps(val, ensure_ascii=False)
-                elif isinstance(val, list):
-                    str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
-                else:
-                    str_val = str(val) if val is not None else ""
-
-                # Apply label mapping if this column has one
-                if col in label_mapping and isinstance(label_mapping[col], dict):
-                    mapped = label_mapping[col].get(str_val, str_val)
-                    row_values[col] = mapped
-                    row_values[f"{col}_name"] = mapped
-                else:
-                    row_values[col] = str_val
-                    row_values[f"{col}_name"] = str_val
-
-            # System prompt (static string, not from any column)
+            # System prompt (generated, static across all rows)
             if system_prompt:
                 convo.append({"role": "system", "content": system_prompt})
 
-            # User message from template
-            if user_template:
-                try:
-                    user_content = user_template.format(**row_values)
-                except (KeyError, IndexError, ValueError):
-                    # ValueError: stray { } in column values
-                    user_content = user_template
-                convo.append({"role": "user", "content": user_content})
+            # User message: concatenate all user-role column values
+            user_parts = []
+            for col in role_groups["user"]:
+                if col in examples:
+                    user_parts.append(
+                        _extract_column_value(examples[col][i], col, label_mapping)
+                    )
+            if user_parts:
+                convo.append({"role": "user", "content": "\n".join(user_parts)})
 
-            # Assistant message from template
-            if assistant_template:
-                try:
-                    asst_content = assistant_template.format(**row_values)
-                except (KeyError, IndexError, ValueError):
-                    asst_content = assistant_template
-                convo.append({"role": "assistant", "content": asst_content})
+            # Assistant message: concatenate all assistant-role column values
+            asst_parts = []
+            for col in role_groups["assistant"]:
+                if col in examples:
+                    asst_parts.append(
+                        _extract_column_value(examples[col][i], col, label_mapping)
+                    )
+            if asst_parts:
+                convo.append({"role": "assistant", "content": "\n".join(asst_parts)})
 
             conversations.append(convo)
         return {"conversations": conversations}
