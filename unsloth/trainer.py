@@ -303,7 +303,13 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
             # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
             # So we only create config class if the previous init was not TrainingArguments
-            if not isinstance(training_args, TrainingArguments):
+            if isinstance(training_args, config_class):
+                import copy
+
+                config = copy.deepcopy(training_args)
+                for key, value in additional_config_kwargs.items():
+                    setattr(config, key, value)
+            elif not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
                 config = training_args

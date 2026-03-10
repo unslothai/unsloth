@@ -102,6 +102,7 @@ def _maybe_prepare_vllm_for_resume(trainer):
         llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
 
     sleep_fn = getattr(llm, "sleep", None)
+    slept = False
     if callable(sleep_fn):
         try:
             sleep_mode = int(os.environ.get("VLLM_SLEEP_MODE", "1"))
@@ -116,8 +117,10 @@ def _maybe_prepare_vllm_for_resume(trainer):
         try:
             if signature is not None and len(signature.parameters) == 0:
                 sleep_fn()
+                slept = True
             else:
                 sleep_fn(sleep_mode)
+                slept = True
         except Exception as error:
             logger.warning_once(
                 f"Unsloth: vLLM sleep() failed during resume cleanup: {error}"
@@ -128,6 +131,9 @@ def _maybe_prepare_vllm_for_resume(trainer):
     for _ in range(3):
         gc.collect()
         torch.cuda.empty_cache()
+
+    if slept:
+        trainer._unsloth_resume_wake_vllm = True
 
 
 def _patch_resume_from_checkpoint_memory(trainer_class):
