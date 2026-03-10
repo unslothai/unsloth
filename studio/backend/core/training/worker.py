@@ -230,12 +230,12 @@ def run_training_process(
         # [DEBUG] Print first sample before model is loaded
         try:
             sample = dataset[0] if len(dataset) > 0 else None
-            logger.info(f"[DEBUG] Dataset loaded BEFORE model. First sample keys: {list(sample.keys()) if sample else 'empty'}")
+            print(f"\n[DEBUG] Dataset loaded BEFORE model. First sample keys: {list(sample.keys()) if sample else 'empty'}", flush=True)
             if sample:
                 preview = {k: str(v)[:200] for k, v in sample.items()}
-                logger.info(f"[DEBUG] First sample preview: {preview}")
+                print(f"[DEBUG] First sample preview: {preview}\n", flush=True)
         except Exception as e:
-            logger.info(f"[DEBUG] Could not preview first sample: {e}")
+            print(f"[DEBUG] Could not preview first sample: {e}", flush=True)
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)
