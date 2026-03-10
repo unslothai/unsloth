@@ -89,6 +89,13 @@ function formatUpdatedDate(timestamp: number | null): string {
   return new Date(timestamp * 1000).toLocaleDateString();
 }
 
+function normalizeSliceInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 export function DatasetSection() {
   const {
     dataset,
@@ -641,6 +648,19 @@ export function DatasetSection() {
               datasetEvalSplit={datasetEvalSplit}
               setDatasetEvalSplit={setDatasetEvalSplit}
             />
+          ) : !selectedDatasetName ? (
+            <HfDatasetSubsetSplitSelectors
+              variant="studio"
+              enabled={false}
+              datasetName={null}
+              accessToken={hfToken || undefined}
+              datasetSubset={datasetSubset}
+              setDatasetSubset={setDatasetSubset}
+              datasetSplit={datasetSplit}
+              setDatasetSplit={setDatasetSplit}
+              datasetEvalSplit={datasetEvalSplit}
+              setDatasetEvalSplit={setDatasetEvalSplit}
+            />
           ) : datasetSource === "upload" && selectedLocalDataset ? (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -770,11 +790,14 @@ export function DatasetSection() {
                       </Tooltip>
                     </span>
                     <Input
+                      type="number"
                       inputMode="numeric"
+                      min={0}
+                      step={1}
                       placeholder="0"
                       value={datasetSliceStart ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceStart(e.target.value || null)
+                        setDatasetSliceStart(normalizeSliceInput(e.target.value))
                       }
                     />
                   </div>
@@ -802,11 +825,14 @@ export function DatasetSection() {
                       </Tooltip>
                     </span>
                     <Input
+                      type="number"
                       inputMode="numeric"
+                      min={0}
+                      step={1}
                       placeholder="End"
                       value={datasetSliceEnd ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceEnd(e.target.value || null)
+                        setDatasetSliceEnd(normalizeSliceInput(e.target.value))
                       }
                     />
                   </div>
