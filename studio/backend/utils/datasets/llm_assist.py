@@ -16,13 +16,18 @@ Architecture:
 import json
 import logging
 import os
+import re
+import textwrap
+import time
 from itertools import islice
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HELPER_MODEL_REPO = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+DEFAULT_HELPER_MODEL_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "Q8_0"
+
+README_MAX_CHARS = 1500
 
 
 def precache_helper_gguf():
@@ -325,3 +330,435 @@ def llm_generate_dataset_warning(
 
     print(f"🤖 LLM-generated warning: {warning}")
     return warning
+
+
+# ─── Dataset Conversion Advisor ──────────────────────────────────────
+
+
+def _parse_json_response(text: str) -> Optional[dict]:
+    """Parse JSON from LLM response, handling markdown fences and noise."""
+    if not text:
+        return None
+
+    cleaned = text.strip()
+
+    # Strip markdown code fences
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        end = -1 if lines[-1].strip().startswith("```") else len(lines)
+        cleaned = "\n".join(lines[1:end]).strip()
+
+    # Try direct parse
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+
+    # Greedy match for outermost {...}
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        try:
+            obj = json.loads(match.group())
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def _generate_with_backend(
+    backend, messages: list[dict], max_tokens: int = 512
+) -> str:
+    """Run one chat completion on an already-loaded backend. Returns raw text."""
+    cumulative = ""
+    for text in backend.generate_chat_completion(
+        messages=messages,
+        temperature=0.1,
+        top_p=0.9,
+        top_k=20,
+        max_tokens=max_tokens,
+        repetition_penalty=1.0,
+    ):
+        cumulative = text
+    return cumulative.strip()
+
+
+def fetch_hf_dataset_card(
+    dataset_name: str, hf_token: Optional[str] = None
+) -> tuple[Optional[str], Optional[dict]]:
+    """
+    Fetch HF dataset card (README) and metadata.
+
+    Returns:
+        (readme_text, metadata_dict) or (None, None) on failure.
+    """
+    try:
+        from huggingface_hub import DatasetCard
+
+        card = DatasetCard.load(dataset_name, token=hf_token)
+        readme = card.text or ""
+
+        # Truncate at sentence boundary
+        if len(readme) > README_MAX_CHARS:
+            cut = readme[:README_MAX_CHARS].rfind(".")
+            if cut > README_MAX_CHARS // 2:
+                readme = readme[: cut + 1] + "\n[...truncated]"
+            else:
+                readme = readme[:README_MAX_CHARS] + "\n[...truncated]"
+
+        # Extract metadata from YAML frontmatter
+        metadata = {}
+        if card.data:
+            for key in (
+                "task_categories", "task_ids", "language",
+                "size_categories", "tags", "license", "pretty_name",
+            ):
+                val = getattr(card.data, key, None)
+                if val is not None:
+                    metadata[key] = val
+
+        logger.info(f"Fetched dataset card: {len(readme)} chars, {len(metadata)} metadata fields")
+        return readme, metadata
+
+    except Exception as e:
+        logger.warning(f"Could not fetch dataset card for {dataset_name}: {e}")
+        return None, None
+
+
+def _run_multi_pass_advisor(
+    columns: list[str],
+    samples: list[dict],
+    dataset_name: Optional[str] = None,
+    dataset_card: Optional[str] = None,
+    dataset_metadata: Optional[dict] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Multi-pass LLM analysis: classify → convert → validate.
+
+    Keeps model loaded across all passes. Returns combined result dict or None.
+    """
+    if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
+        return None
+
+    repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
+    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
+
+    backend = None
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend()
+        print(f"🤖 Loading advisor model: {repo} ({variant})...")
+        t0 = time.monotonic()
+
+        ok = backend.load_model(
+            hf_repo=repo,
+            hf_variant=variant,
+            model_identifier=f"advisor:{repo}:{variant}",
+            is_vision=False,
+            n_ctx=2048,
+            n_gpu_layers=-1,
+        )
+        if not ok:
+            logger.warning("Advisor model failed to start")
+            return None
+
+        print(f"🤖 Advisor model loaded in {time.monotonic() - t0:.1f}s")
+
+        # ── Format samples ──
+        samples_text = ""
+        for i, row in enumerate(samples[:5], 1):
+            parts = [f"  {col}: {str(row.get(col, ''))[:200]}" for col in columns]
+            samples_text += f"Row {i}:\n" + "\n".join(parts) + "\n"
+
+        metadata_str = (
+            json.dumps(dataset_metadata, indent=2, default=str)[:500]
+            if dataset_metadata else "N/A"
+        )
+        card_excerpt = (dataset_card or "")[:1200] or "N/A"
+
+        # ── Pass 1: Classify ──
+        print("🤖 Pass 1: Classifying dataset...", flush=True)
+        t1 = time.monotonic()
+        messages1 = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a dataset analyst specializing in HuggingFace datasets for LLM fine-tuning. "
+                    "You classify datasets and determine if they can be used directly for conversational "
+                    "fine-tuning or if they need conversion. Respond with ONLY valid JSON, no explanation."
+                ),
+            },
+            {
+                "role": "user",
+                "content": textwrap.dedent(f"""\
+                    Analyze this HuggingFace dataset and classify it.
+
+                    DATASET CARD (excerpt):
+                    {card_excerpt}
+
+                    METADATA:
+                    {metadata_str}
+
+                    COLUMNS: {columns}
+
+                    SAMPLE DATA:
+                    {samples_text}
+
+                    Respond with a JSON object:
+                    {{
+                        "dataset_type": "<type like: nli, classification, summarization, qa, translation, etc.>",
+                        "is_conversational": <true if already has user/assistant message structure, false otherwise>,
+                        "needs_conversion": <true if columns need to be reorganized into conversation format>,
+                        "description": "<1-2 sentence description of what this dataset is for>",
+                        "task_description": "<what a model fine-tuned on this should do>"
+                    }}"""),
+            },
+        ]
+        raw1 = _generate_with_backend(backend, messages1, max_tokens=256)
+        pass1 = _parse_json_response(raw1)
+        print(f"🤖 Pass 1 done ({time.monotonic() - t1:.1f}s): {pass1}", flush=True)
+
+        if not pass1:
+            logger.warning(f"Advisor Pass 1 failed to produce JSON: {raw1[:200]}")
+            return None
+
+        # If dataset is already conversational, skip passes 2-3
+        if pass1.get("is_conversational") and not pass1.get("needs_conversion"):
+            return {
+                "success": True,
+                "dataset_type": pass1.get("dataset_type"),
+                "is_conversational": True,
+                "user_notification": (
+                    "This dataset is already in conversational format. "
+                    "No conversion needed — columns can be mapped directly."
+                ),
+            }
+
+        # ── Pass 2: Conversion strategy ──
+        print("🤖 Pass 2: Generating conversion strategy...", flush=True)
+        t2 = time.monotonic()
+        messages2 = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a dataset conversion specialist for LLM fine-tuning. "
+                    "You design strategies to convert non-conversational datasets into "
+                    "user/assistant conversation format. Respond with ONLY valid JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": textwrap.dedent(f"""\
+                    This dataset was classified as:
+                    {json.dumps(pass1, indent=2)}
+
+                    COLUMNS: {columns}
+
+                    SAMPLE DATA:
+                    {samples_text}
+
+                    Design a conversion strategy to turn this into conversation format for fine-tuning.
+                    The strategy should create a system prompt, a user message template, and an assistant message template.
+
+                    For the user template, use {{column_name}} placeholders for column values.
+                    For the assistant template, use {{column_name}} placeholders.
+                    If a column has integer values that represent categories, provide a label mapping.
+
+                    Respond with a JSON object:
+                    {{
+                        "system_prompt": "<system prompt for the fine-tuned model>",
+                        "user_template": "<template for user message using {{column}} placeholders>",
+                        "assistant_template": "<template for assistant message using {{column}} placeholders>",
+                        "column_roles": {{
+                            "<column_name>": "<role: user|assistant|system|template_var>"
+                        }},
+                        "label_mapping": {{
+                            "<column_name>": {{"0": "<string label>", "1": "<string label>"}}
+                        }},
+                        "notes": "<any important notes about this conversion>"
+                    }}"""),
+            },
+        ]
+        raw2 = _generate_with_backend(backend, messages2, max_tokens=512)
+        pass2 = _parse_json_response(raw2)
+        print(f"🤖 Pass 2 done ({time.monotonic() - t2:.1f}s): {pass2}", flush=True)
+
+        if not pass2:
+            logger.warning(f"Advisor Pass 2 failed to produce JSON: {raw2[:200]}")
+            return None
+
+        # ── Pass 3: Validate ──
+        # Apply templates to samples for concrete examples
+        sys_prompt = pass2.get("system_prompt", "")
+        user_tpl = pass2.get("user_template", "")
+        asst_tpl = pass2.get("assistant_template", "")
+        label_map = pass2.get("label_mapping", {})
+
+        examples_text = ""
+        for i, row in enumerate(samples[:2], 1):
+            row_vals = {}
+            for col in columns:
+                val = str(row.get(col, ""))
+                # Apply label mapping
+                if col in label_map and val in label_map[col]:
+                    row_vals[col] = label_map[col][val]
+                    row_vals[f"{col}_name"] = label_map[col][val]
+                else:
+                    row_vals[col] = val
+                    row_vals[f"{col}_name"] = val
+
+            try:
+                user_msg = user_tpl.format(**row_vals)
+            except (KeyError, IndexError):
+                user_msg = user_tpl
+            try:
+                asst_msg = asst_tpl.format(**row_vals)
+            except (KeyError, IndexError):
+                asst_msg = asst_tpl
+
+            examples_text += f"Example {i}:\n  System: {sys_prompt}\n  User: {user_msg}\n  Assistant: {asst_msg}\n\n"
+
+        print("🤖 Pass 3: Validating conversion...", flush=True)
+        t3 = time.monotonic()
+        messages3 = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a dataset quality reviewer for LLM fine-tuning. "
+                    "Review converted training examples and suggest improvements. "
+                    "Respond with ONLY valid JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": textwrap.dedent(f"""\
+                    Review these converted training examples. The original dataset is:
+                    {pass1.get('dataset_type', 'unknown')} — {pass1.get('description', '')}
+
+                    CONVERTED EXAMPLES:
+                    {examples_text}
+
+                    Review the quality and generate a brief user-facing notification.
+
+                    Respond with a JSON object:
+                    {{
+                        "quality_score": <1-10>,
+                        "is_acceptable": <true/false>,
+                        "revised_system_prompt": "<improved system prompt if needed, or null>",
+                        "user_notification": "<friendly 2-3 sentence message for the training studio UI>"
+                    }}"""),
+            },
+        ]
+        raw3 = _generate_with_backend(backend, messages3, max_tokens=512)
+        pass3 = _parse_json_response(raw3)
+        print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {pass3}", flush=True)
+
+        # ── Combine results ──
+        final_sys_prompt = sys_prompt
+        if pass3 and pass3.get("revised_system_prompt"):
+            final_sys_prompt = pass3["revised_system_prompt"]
+
+        # Build suggested_mapping (column → role, for the frontend dropdowns)
+        suggested_mapping = {}
+        column_roles = pass2.get("column_roles", {})
+        for col, role in column_roles.items():
+            if col in columns and role in ("user", "assistant", "system"):
+                suggested_mapping[col] = role
+
+        # Ensure at least user + assistant in mapping
+        if "user" not in set(suggested_mapping.values()):
+            # Try to infer from templates
+            for col in columns:
+                if f"{{{col}}}" in user_tpl and col not in suggested_mapping:
+                    suggested_mapping[col] = "user"
+                    break
+        if "assistant" not in set(suggested_mapping.values()):
+            for col in columns:
+                if f"{{{col}}}" in asst_tpl and col not in suggested_mapping:
+                    suggested_mapping[col] = "assistant"
+                    break
+
+        user_notification = None
+        if pass3:
+            user_notification = pass3.get("user_notification")
+
+        return {
+            "success": True,
+            "suggested_mapping": suggested_mapping,
+            "system_prompt": final_sys_prompt,
+            "user_template": user_tpl,
+            "assistant_template": asst_tpl,
+            "label_mapping": label_map if label_map else None,
+            "dataset_type": pass1.get("dataset_type"),
+            "is_conversational": pass1.get("is_conversational", False),
+            "user_notification": user_notification,
+        }
+
+    except Exception as e:
+        logger.warning(f"Advisor multi-pass failed: {e}")
+        return None
+
+    finally:
+        if backend is not None:
+            try:
+                backend.unload_model()
+                print("🤖 Advisor model unloaded")
+            except Exception:
+                pass
+
+
+def llm_conversion_advisor(
+    column_names: list[str],
+    samples: list[dict],
+    dataset_name: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Full conversion advisor: fetch HF card → multi-pass LLM analysis.
+
+    Falls back to simple llm_classify_columns() if the multi-pass advisor fails.
+
+    Returns:
+        Dict with keys: success, suggested_mapping, system_prompt, user_template,
+        assistant_template, label_mapping, dataset_type, is_conversational,
+        user_notification. Or None on complete failure.
+    """
+    # Fetch HF dataset card if this looks like a HF dataset (has a slash)
+    dataset_card = None
+    dataset_metadata = None
+    if dataset_name and "/" in dataset_name:
+        dataset_card, dataset_metadata = fetch_hf_dataset_card(dataset_name, hf_token)
+
+    # Try multi-pass advisor
+    result = _run_multi_pass_advisor(
+        columns=column_names,
+        samples=samples,
+        dataset_name=dataset_name,
+        dataset_card=dataset_card,
+        dataset_metadata=dataset_metadata,
+    )
+
+    if result and result.get("success"):
+        print(f"🤖 Conversion advisor succeeded: type={result.get('dataset_type')}")
+        return result
+
+    # Fallback: simple column classification
+    logger.info("Advisor failed, falling back to simple column classification")
+    simple_mapping = llm_classify_columns(column_names, samples)
+    if simple_mapping:
+        return {
+            "success": True,
+            "suggested_mapping": {
+                col: role for col, role in simple_mapping.items()
+                if role in ("user", "assistant", "system")
+            },
+            "dataset_type": None,
+            "is_conversational": None,
+            "user_notification": None,
+        }
+
+    return None

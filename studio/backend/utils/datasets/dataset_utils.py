@@ -196,12 +196,23 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     Accepts chatml (user/assistant/system), sharegpt (human/gpt/system), and
     alpaca (instruction/input/output) role names — all normalised to chatml output.
 
+    If the mapping contains ``__``-prefixed metadata keys (from the conversion
+    advisor), routes to template-based conversion instead of simple role mapping.
+
     Returns:
         Dataset with single 'conversations' column
     """
+    # Split metadata from column roles
+    meta = {k: v for k, v in mapping.items() if k.startswith("__")}
+    column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
+
+    if meta:
+        return _apply_template_mapping(dataset, column_roles, meta, batch_size)
+
+    # ── Simple mode (original logic) ──
     # Pre-compute: group columns by canonical chatml role
     role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
-    for col_name, role in mapping.items():
+    for col_name, role in column_roles.items():
         canonical = _TO_CHATML.get(role)
         if canonical:
             role_groups[canonical].append(col_name)
@@ -220,6 +231,82 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
         return {"conversations": conversations}
 
     return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+
+
+def _apply_template_mapping(
+    dataset, column_roles: dict, meta: dict, batch_size: int = 1000
+):
+    """
+    Apply template-based mapping for non-conversational datasets.
+
+    Uses ``__system_prompt``, ``__user_template``, ``__assistant_template``,
+    and ``__label_mapping`` metadata keys to construct conversations with
+    proper context and formatting.
+
+    Returns:
+        Dataset with single 'conversations' column
+    """
+    system_prompt = meta.get("__system_prompt", "")
+    user_template = meta.get("__user_template", "")
+    assistant_template = meta.get("__assistant_template", "")
+    label_mapping = meta.get("__label_mapping", {})  # {col: {int_str: label_str}}
+
+    all_columns = list(dataset.column_names)
+    import logging as _log
+    _log.getLogger(__name__).info(
+        f"Applying template mapping: sys={bool(system_prompt)}, "
+        f"user_tpl={bool(user_template)}, asst_tpl={bool(assistant_template)}, "
+        f"label_map={list(label_mapping.keys())}"
+    )
+
+    def _convert(examples):
+        num = len(next(iter(examples.values())))
+        conversations = []
+        for i in range(num):
+            convo = []
+
+            # Build value dict for template interpolation
+            row_values = {}
+            for col in all_columns:
+                val = examples[col][i]
+                str_val = str(val) if val is not None else ""
+
+                # Apply label mapping if this column has one
+                if col in label_mapping and isinstance(label_mapping[col], dict):
+                    mapped = label_mapping[col].get(str_val, str_val)
+                    row_values[col] = mapped
+                    row_values[f"{col}_name"] = mapped
+                else:
+                    row_values[col] = str_val
+                    row_values[f"{col}_name"] = str_val
+
+            # System prompt (static string, not from any column)
+            if system_prompt:
+                convo.append({"role": "system", "content": system_prompt})
+
+            # User message from template
+            if user_template:
+                try:
+                    user_content = user_template.format(**row_values)
+                except (KeyError, IndexError):
+                    user_content = user_template
+                convo.append({"role": "user", "content": user_content})
+
+            # Assistant message from template
+            if assistant_template:
+                try:
+                    asst_content = assistant_template.format(**row_values)
+                except (KeyError, IndexError):
+                    asst_content = assistant_template
+                convo.append({"role": "assistant", "content": asst_content})
+
+            conversations.append(convo)
+        return {"conversations": conversations}
+
+    return dataset.map(
+        _convert, batched=True, batch_size=batch_size,
+        remove_columns=dataset.column_names,
+    )
 
 
 def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):

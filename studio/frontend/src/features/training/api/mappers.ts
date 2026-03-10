@@ -30,8 +30,24 @@ export function buildTrainingStartPayload(
     config.datasetSource === "upload" && config.uploadedFile
       ? [config.uploadedFile]
       : [];
-  const customFormatMapping =
-    Object.keys(config.datasetManualMapping).length > 0 ? config.datasetManualMapping : undefined;
+  let customFormatMapping: Record<string, unknown> | undefined =
+    Object.keys(config.datasetManualMapping).length > 0
+      ? { ...config.datasetManualMapping }
+      : undefined;
+
+  // Inject conversion advisor metadata into the mapping (__ prefix keys)
+  if (customFormatMapping && config.datasetSystemPrompt) {
+    customFormatMapping.__system_prompt = config.datasetSystemPrompt;
+    if (config.datasetUserTemplate) {
+      customFormatMapping.__user_template = config.datasetUserTemplate;
+    }
+    if (config.datasetAssistantTemplate) {
+      customFormatMapping.__assistant_template = config.datasetAssistantTemplate;
+    }
+    if (Object.keys(config.datasetLabelMapping).length > 0) {
+      customFormatMapping.__label_mapping = config.datasetLabelMapping;
+    }
+  }
 
   return {
     model_name: config.selectedModel ?? "",

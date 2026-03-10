@@ -49,13 +49,22 @@ class AiAssistMappingRequest(BaseModel):
     columns: List[str]
     samples: List[Dict[str, Any]]  # Preview rows already loaded in the dialog
     dataset_name: Optional[str] = None  # For LLM context
+    hf_token: Optional[str] = None  # For fetching dataset card
 
 
 class AiAssistMappingResponse(BaseModel):
-    """Response from LLM-assisted column classification."""
+    """Response from LLM-assisted column classification and conversion advice."""
     success: bool
     suggested_mapping: Optional[Dict[str, str]] = None
     warning: Optional[str] = None
+    # Conversion advisor fields
+    system_prompt: Optional[str] = None
+    user_template: Optional[str] = None
+    assistant_template: Optional[str] = None
+    label_mapping: Optional[Dict[str, Dict[str, str]]] = None
+    dataset_type: Optional[str] = None
+    is_conversational: Optional[bool] = None
+    user_notification: Optional[str] = None
 
 
 class UploadDatasetResponse(BaseModel):
