@@ -96,11 +96,11 @@ pipeline: merging LoRA weights, converting to GGUF, and quantizing.
 ### Save GGUF locally
 
 ```python
-# Save as GGUF with q8_0 quantization (fast conversion, good quality)
+# Save as GGUF with q4_k_m quantization (recommended for most use cases)
 model.save_pretrained_gguf(
     "my_model",
     tokenizer=tokenizer,
-    quantization_method="q8_0",
+    quantization_method="q4_k_m",
 )
 ```
 
@@ -152,7 +152,7 @@ After exporting, you can create an Ollama model:
 
 ```bash
 # Create a Modelfile
-echo 'FROM ./my_model_gguf/<model-name>.Q4_K_M.gguf' > Modelfile
+echo 'FROM ./my_model_gguf/<base-model-name>.Q4_K_M.gguf' > Modelfile
 
 # Create the Ollama model
 ollama create my-model -f Modelfile
@@ -358,7 +358,7 @@ then download using the `huggingface-cli`:
 ```bash
 # On your local machine
 pip install huggingface_hub
-huggingface-cli download your-username/my-model-gguf --local-dir ./my-model
+huggingface-cli download your-username/my-model-gguf --local-dir ./my-model-gguf
 ```
 
 ---
