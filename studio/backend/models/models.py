@@ -57,6 +57,7 @@ class ModelDetails(BaseModel):
     name: Optional[str] = Field(None, description="Display name for the model")
     config: Optional[Dict[str, Any]] = Field(None, description="Model configuration dictionary")
     is_vision: bool = Field(False, description="Whether model is a vision model")
+    is_embedding: bool = Field(False, description="Whether model is an embedding/sentence-transformer model")
     is_lora: bool = Field(False, description="Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description="Whether model is a GGUF model (llama.cpp format)")
     is_audio: bool = Field(False, description="Whether model is a TTS audio model")
