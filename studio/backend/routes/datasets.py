@@ -83,16 +83,12 @@ def _serialize_preview_rows(rows):
 # --- Endpoints ---
 
 # Recognized data-file extensions for the single-file fallback approach.
-DATA_EXTS = (
-    '.parquet',
-    '.json', '.jsonl',
-    '.csv', '.tsv',
-    '.txt',
-    '.arrow',
-    '.tar', '.tar.gz', '.tgz',
-    '.gz', '.zst',
-    '.zip',
-)
+# Tabular formats are preferred over archives for Tier 1 preview because
+# archives (e.g. images.zip) may be loaded as ImageFolder datasets with
+# synthetic columns (image/label) that don't match the real dataset schema.
+_TABULAR_EXTS = ('.parquet', '.json', '.jsonl', '.csv', '.tsv', '.arrow')
+_ARCHIVE_EXTS = ('.tar', '.tar.gz', '.tgz', '.gz', '.zst', '.zip', '.txt')
+DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = ('.json', '.jsonl', '.csv', '.parquet')
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -363,8 +359,20 @@ def check_format(
                 )
                 data_files = [f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)]
 
-                if data_files:
-                    first_file = data_files[0]
+                # Prefer tabular formats over archives (e.g. images.zip → ImageFolder
+                # with synthetic image/label columns that don't match the real schema).
+                tabular_files = [f for f in data_files if any(f.endswith(ext) for ext in _TABULAR_EXTS)]
+                candidates = tabular_files or data_files
+
+                # When a subset is specified, narrow to files whose name matches
+                # (e.g. subset="testmini" → prefer "testmini.parquet").
+                if request.subset and candidates:
+                    subset_matches = [f for f in candidates if request.subset in Path(f).stem]
+                    if subset_matches:
+                        candidates = subset_matches
+
+                if candidates:
+                    first_file = candidates[0]
                     logger.info(f"Tier 1: loading single file {first_file}")
                     load_kwargs = {
                         "path": request.dataset_name,
