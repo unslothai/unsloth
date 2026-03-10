@@ -598,94 +598,14 @@ def _run_multi_pass_advisor(
             logger.warning(f"Advisor Pass 2 failed to produce JSON: {raw2[:200]}")
             return None
 
-        # ── Pass 3: Validate ──
-        # Apply templates to samples for concrete examples
+        # ── Extract conversion strategy from Pass 2 ──
         sys_prompt = pass2.get("system_prompt", "")
         user_tpl = pass2.get("user_template", "")
         asst_tpl = pass2.get("assistant_template", "")
         label_map = pass2.get("label_mapping", {})
 
-        examples_text = ""
-        for i, row in enumerate(samples[:2], 1):
-            row_vals = {}
-            for col in columns:
-                val = str(row.get(col, ""))
-                # Apply label mapping
-                if col in label_map and val in label_map[col]:
-                    row_vals[col] = label_map[col][val]
-                    row_vals[f"{col}_name"] = label_map[col][val]
-                else:
-                    row_vals[col] = val
-                    row_vals[f"{col}_name"] = val
-
-            try:
-                user_msg = user_tpl.format(**row_vals)
-            except (KeyError, IndexError, ValueError):
-                user_msg = user_tpl
-            try:
-                asst_msg = asst_tpl.format(**row_vals)
-            except (KeyError, IndexError, ValueError):
-                asst_msg = asst_tpl
-
-            examples_text += f"Example {i}:\n  System: {sys_prompt}\n  User: {user_msg}\n  Assistant: {asst_msg}\n\n"
-
-        print("🤖 Pass 3: Validating conversion...", flush=True)
-        t3 = time.monotonic()
-        messages3 = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a dataset quality reviewer for LLM fine-tuning. "
-                    "Review converted training examples and suggest improvements. "
-                    "Respond with ONLY valid JSON."
-                ),
-            },
-            {
-                "role": "user",
-                "content": textwrap.dedent(f"""\
-                    Review these converted training examples. The original dataset is:
-                    {pass1.get('dataset_type', 'unknown')} — {pass1.get('description', '')}
-
-                    CONVERTED EXAMPLES:
-                    {examples_text}
-
-                    Review the quality and generate a brief user-facing notification.
-
-                    Respond with a JSON object:
-                    {{
-                        "quality_score": <1-10>,
-                        "is_acceptable": <true/false>,
-                        "revised_system_prompt": "<improved system prompt if needed, or null>",
-                        "user_notification": "<friendly 2-3 sentence message for the training studio UI>"
-                    }}"""),
-            },
-        ]
-        raw3 = _generate_with_backend(backend, messages3, max_tokens=512)
-        pass3 = _parse_json_response(raw3)
-        print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {pass3}", flush=True)
-
-        # ── Quality gate ──
-        if pass3 and pass3.get("quality_score") is not None:
-            score = pass3.get("quality_score", 0)
-            acceptable = pass3.get("is_acceptable", False)
-            if not acceptable or (isinstance(score, (int, float)) and score < 6):
-                print(
-                    f"🤖 Advisor rejected: quality={score}, acceptable={acceptable}. "
-                    "Falling back to simple classification.",
-                    flush=True,
-                )
-                return None  # triggers fallback in llm_conversion_advisor()
-
-        # ── Combine results ──
-        final_sys_prompt = sys_prompt
-        if pass3 and pass3.get("revised_system_prompt"):
-            revised = pass3["revised_system_prompt"]
-            # Guard against LLM returning the literal string "null"
-            if isinstance(revised, str) and revised.lower() not in ("null", "none", ""):
-                final_sys_prompt = revised
-
         # Build suggested_mapping (column → role, for the frontend dropdowns)
-        # Include ALL columns referenced in templates, not just the first per role
+        # Include ALL columns referenced in templates
         suggested_mapping = {}
         column_roles = pass2.get("column_roles", {})
         for col, role in column_roles.items():
@@ -701,19 +621,31 @@ def _run_multi_pass_advisor(
             elif f"{{{col}}}" in asst_tpl or f"{{{col}_name}}" in asst_tpl:
                 suggested_mapping[col] = "assistant"
 
-        user_notification = None
-        if pass3:
-            user_notification = pass3.get("user_notification")
+        # Build user notification from Pass 1 classification
+        dtype = pass1.get("dataset_type", "unknown")
+        desc = pass1.get("task_description") or pass1.get("description", "")
+        note_parts = [f"This is a {dtype} dataset (not conversational)."]
+        if desc:
+            note_parts.append(desc)
+        note_parts.append("Columns have been converted into a conversation format. You can adjust the mapping if needed.")
+        user_notification = " ".join(note_parts)
+
+        total_time = time.monotonic() - t0
+        print(
+            f"🤖 Advisor complete ({total_time:.1f}s): type={dtype}, "
+            f"mapping={suggested_mapping}, label_map={bool(label_map)}",
+            flush=True,
+        )
 
         return {
             "success": True,
             "suggested_mapping": suggested_mapping,
-            "system_prompt": final_sys_prompt,
+            "system_prompt": sys_prompt,
             "user_template": user_tpl,
             "assistant_template": asst_tpl,
             "label_mapping": label_map if label_map else None,
-            "dataset_type": pass1.get("dataset_type"),
-            "is_conversational": pass1.get("is_conversational", False),
+            "dataset_type": dtype,
+            "is_conversational": False,
             "user_notification": user_notification,
         }
 
