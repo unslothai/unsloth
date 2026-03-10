@@ -242,7 +242,8 @@ export function DatasetPreviewDialog({
   // Build TanStack Table columns from the column names
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!columns.length) return [];
-    return columns.map((colName) => ({
+
+    const dataCols: ColumnDef<Record<string, unknown>>[] = columns.map((colName) => ({
       accessorKey: colName,
       header: () => (
         <div className="flex flex-col gap-2">
@@ -309,12 +310,42 @@ export function DatasetPreviewDialog({
         );
       },
     }));
+
+    // Prepend generated system prompt column when advisor is active
+    if (datasetSystemPrompt) {
+      dataCols.unshift({
+        id: "__system_generated",
+        header: () => (
+          <div className="flex flex-col gap-2">
+            <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+              System <span className="text-muted-foreground font-normal">(generated)</span>
+            </span>
+            {mappingEnabled && (
+              <Badge variant="outline" className="h-6 w-fit text-[10px] px-2 py-0 border-dashed text-muted-foreground">
+                System
+              </Badge>
+            )}
+          </div>
+        ),
+        cell: () => (
+          <p
+            className="text-[13px] leading-relaxed line-clamp-6 text-muted-foreground italic"
+            title={datasetSystemPrompt}
+          >
+            {datasetSystemPrompt}
+          </p>
+        ),
+      });
+    }
+
+    return dataCols;
   }, [
     columns,
     manualMapping,
     handleRoleChange,
     mappingEnabled,
     availableRoles,
+    datasetSystemPrompt,
   ]);
 
   return (
@@ -336,7 +367,7 @@ export function DatasetPreviewDialog({
         </DialogHeader>
 
         {/* Body */}
-        <div className="flex flex-col min-h-0 flex-1 overflow-hidden px-6 pb-6">
+        <div className="flex flex-col min-h-0 flex-1 overflow-auto px-6 pb-6">
           {/* Loading */}
           {loading && (
             <div className="py-24 flex flex-col items-center justify-center gap-3">
@@ -434,7 +465,7 @@ export function DatasetPreviewDialog({
               )}
 
               {/* Data table */}
-              <div className="flex-1 min-h-0 rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
+              <div className="flex-1 min-h-[250px] rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
                 <DataTable columns={tableColumns} data={rows} />
               </div>
 

@@ -214,6 +214,7 @@ export function DatasetMappingCard({
                   <>
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                     AI Assist
+                    <Badge variant="outline" className="ml-1.5 text-[9px] px-1 py-0 h-4 font-medium">Beta</Badge>
                   </>
                 )}
               </Button>
