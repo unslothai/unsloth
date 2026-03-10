@@ -85,6 +85,21 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
 
+        warning = None
+        if requires_mapping:
+            img_col = vlm_structure.get("image_column")
+            txt_col = vlm_structure.get("text_column")
+            missing = []
+            if not img_col:
+                missing.append("image")
+            if not txt_col:
+                missing.append("text")
+            if missing:
+                warning = (
+                    f"Could not auto-detect {' or '.join(missing)} column. "
+                    "Please assign image and text columns manually."
+                )
+
         return {
             "requires_manual_mapping": requires_mapping,
             "detected_format": vlm_structure["format"],
@@ -94,6 +109,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "detected_text_column": vlm_structure.get("text_column"),
             "is_image": multimodal_info["is_image"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
+            "warning": warning,
             **audio_fields,
         }
 
@@ -168,6 +184,31 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 import logging
                 logging.getLogger(__name__).debug(f"LLM column classification skipped: {e}")
 
+            # Both heuristics and LLM failed — generate a meaningful warning
+            warning = None
+            try:
+                from .llm_assist import llm_generate_dataset_warning
+                from itertools import islice
+                sample_rows = []
+                for s in islice(dataset, 3):
+                    row = {col: str(s[col])[:150] for col in s}
+                    sample_rows.append(row)
+                warning = llm_generate_dataset_warning(
+                    issues=[
+                        f"Could not auto-detect column roles from columns: {columns}",
+                        f"Sample values: {sample_rows[0] if sample_rows else 'N/A'}",
+                    ],
+                    modality="text",
+                    column_names=columns,
+                )
+            except Exception:
+                pass
+            if not warning:
+                warning = (
+                    f"Could not auto-detect column roles for columns: {columns}. "
+                    "Please assign roles (user, assistant, etc.) manually."
+                )
+
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",
@@ -177,6 +218,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "detected_text_column": None,
                 "is_image": False,
                 "multimodal_columns": None,
+                "warning": warning,
                 **audio_fields,
             }
 
