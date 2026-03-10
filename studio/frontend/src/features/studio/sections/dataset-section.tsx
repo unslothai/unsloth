@@ -89,6 +89,13 @@ function formatUpdatedDate(timestamp: number | null): string {
   return new Date(timestamp * 1000).toLocaleDateString();
 }
 
+function normalizeSliceInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 export function DatasetSection() {
   const {
     dataset,
@@ -783,11 +790,14 @@ export function DatasetSection() {
                       </Tooltip>
                     </span>
                     <Input
+                      type="number"
                       inputMode="numeric"
+                      min={0}
+                      step={1}
                       placeholder="0"
                       value={datasetSliceStart ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceStart(e.target.value || null)
+                        setDatasetSliceStart(normalizeSliceInput(e.target.value))
                       }
                     />
                   </div>
@@ -815,11 +825,14 @@ export function DatasetSection() {
                       </Tooltip>
                     </span>
                     <Input
+                      type="number"
                       inputMode="numeric"
+                      min={0}
+                      step={1}
                       placeholder="End"
                       value={datasetSliceEnd ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceEnd(e.target.value || null)
+                        setDatasetSliceEnd(normalizeSliceInput(e.target.value))
                       }
                     />
                   </div>
