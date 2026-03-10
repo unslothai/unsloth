@@ -946,10 +946,12 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
 
-    # Local paths have no HF metadata to query
+    # Local paths: check for sentence-transformer marker file (modules.json)
     if is_local_path(model_name):
-        _embedding_detection_cache[cache_key] = False
-        return False
+        local_dir = normalize_path(model_name)
+        is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
 
     try:
         from huggingface_hub import model_info as hf_model_info
