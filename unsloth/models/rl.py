@@ -93,7 +93,6 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 
 
-
 def _maybe_prepare_vllm_for_resume(trainer):
     if not torch.cuda.is_available():
         return
@@ -122,10 +121,12 @@ def _maybe_prepare_vllm_for_resume(trainer):
         trainer._unsloth_resume_wake_vllm = True
 
     import gc
+
     for _ in range(3):
         gc.collect()
         torch.cuda.empty_cache()
-pass
+
+
 
 
 def _patch_resume_from_checkpoint_memory(trainer_class):
@@ -143,11 +144,13 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
         if resume_from_checkpoint:
             _maybe_prepare_vllm_for_resume(self)
         return original_train(self, *args, **kwargs)
-    pass
+
 
     _unsloth_train_with_resume_guard._unsloth_resume_guard = True
     trainer_class.train = _unsloth_train_with_resume_guard
-pass
+
+
+
 
 def PatchRL(FastLanguageModel):
     try:
@@ -1766,13 +1769,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                     f"\n{' '*8}else:\n"
                 )
         else:
-            new_vllm_part = \
-                f"\n{' '*8}if {args}.use_vllm:\n"\
-                f"{' '*12}self.llm = model.vllm_engine\n"\
-                f"{' '*12}self.guided_decoding_regex = getattr(args, 'vllm_guided_decoding_regex', None)\n"\
-                f"{' '*12}self._last_loaded_step = 0\n"\
-                f"{' '*12}self.accelerator.wait_for_everyone()\n"\
+            new_vllm_part = (
+                f"\n{' '*8}if {args}.use_vllm:\n"
+                f"{' '*12}self.llm = model.vllm_engine\n"
+                f"{' '*12}self.guided_decoding_regex = getattr(args, 'vllm_guided_decoding_regex', None)\n"
+                f"{' '*12}self._last_loaded_step = 0\n"
+                f"{' '*12}self.accelerator.wait_for_everyone()\n"
                 f"\n{' '*8}else:\n"
+            )
 
         if trl_version >= Version("0.18.0"):
             # Replace LLM init with already existing vLLM engine for colocate mode

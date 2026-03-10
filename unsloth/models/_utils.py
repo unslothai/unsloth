@@ -1490,6 +1490,7 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
         from accelerate.utils.dataclasses import DistributedType, FP8BackendType
     except:
         from accelerate.utils.dataclasses import DistributedType
+
         FP8BackendType = None
 
     def _prepare_backend(self, *args, **kwargs):
