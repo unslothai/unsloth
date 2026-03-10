@@ -271,15 +271,19 @@ class LlamaCppBackend:
                         if gguf_files:
                             gguf_filename = gguf_files[0]
                             # For split GGUFs (e.g. model-Q8_0-00001-of-00003.gguf)
-                            # discover siblings by shared prefix instead of
-                            # trusting all variant matches to be shards.
-                            shard_pat = re.compile(r'^(.*)-\d{5}-of-\d{5}\.gguf$')
+                            # discover siblings by exact basename + total match
+                            # so "model-Q8_0-v2-*" isn't pulled in as a sibling.
+                            shard_pat = re.compile(r'^(.*)-\d{5}-of-(\d{5})\.gguf$')
                             m = shard_pat.match(gguf_filename)
                             if m:
                                 prefix = m.group(1)
+                                total = m.group(2)
+                                sibling_pat = re.compile(
+                                    r'^' + re.escape(prefix) + r'-\d{5}-of-' + re.escape(total) + r'\.gguf$'
+                                )
                                 gguf_extra_shards = [
                                     f for f in gguf_files[1:]
-                                    if f.startswith(prefix + "-") and shard_pat.match(f)
+                                    if sibling_pat.match(f)
                                 ]
                     except Exception as e:
                         logger.warning(f"Could not list repo files: {e}")
