@@ -228,22 +228,17 @@ def run_training_process(
             eval_dataset = None
 
         # [DEBUG] Print first sample before model is loaded
+        # dataset is a dict {"dataset": <Dataset>, "detected_format": ..., ...}
+        # or a raw Dataset for audio paths
         try:
-            print(f"\n[DEBUG] Dataset loaded BEFORE model. type={type(dataset).__name__}, len={len(dataset) if hasattr(dataset, '__len__') else '?'}", flush=True)
-            if hasattr(dataset, 'column_names'):
-                print(f"[DEBUG] Dataset columns: {dataset.column_names}", flush=True)
-            # Try multiple access patterns
-            try:
-                sample = dataset[0]
-            except Exception:
-                sample = next(iter(dataset)) if hasattr(dataset, '__iter__') else None
-            if sample:
-                preview = {k: str(v)[:200] for k, v in (sample.items() if hasattr(sample, 'items') else enumerate([sample]))}
-                print(f"[DEBUG] First sample: {preview}\n", flush=True)
+            ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
+            print(f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}", flush=True)
+            print(f"[DEBUG] Columns: {ds.column_names}", flush=True)
+            sample = ds[0]
+            preview = {k: str(v)[:300] for k, v in sample.items()}
+            print(f"[DEBUG] First sample: {preview}\n", flush=True)
         except Exception as e:
-            import traceback
             print(f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)
