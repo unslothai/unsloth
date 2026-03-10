@@ -189,7 +189,11 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
     if wandb_project:
         try:
             import wandb
-            label = "CCE+compile" if use_cce else "Baseline+compile"
+            import mlx.core as mx
+            # Add suffix to distinguish mlx-cce vs regular mlx in W&B
+            has_fast_cce = hasattr(mx, "fast") and hasattr(mx.fast, "cce_loss")
+            cce_suffix = " (mlx-cce)" if has_fast_cce else " (mlx)"
+            label = ("CCE+compile" if use_cce else "Baseline+compile") + cce_suffix
             run = wandb.init(
                 project=wandb_project,
                 name=f"{display_name} ({label})",
