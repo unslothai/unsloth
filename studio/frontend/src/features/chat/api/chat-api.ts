@@ -49,11 +49,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
-  const query = outputsDir
-    ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
-    : "";
-  const response = await authFetch(`/api/models/loras${query}`);
+export async function listLoras(outputsDir = "./outputs"): Promise<ListLorasResponse> {
+  const query = new URLSearchParams({ outputs_dir: outputsDir }).toString();
+  const response = await authFetch(`/api/models/loras?${query}`);
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 

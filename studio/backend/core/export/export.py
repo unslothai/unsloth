@@ -21,7 +21,6 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
-from utils.paths import ensure_dir, outputs_root, resolve_export_dir, resolve_output_dir
 from core.inference import get_inference_backend
 
 logger = logging.getLogger(__name__)
@@ -129,7 +128,7 @@ class ExportBackend:
             logger.error(f"Error during memory cleanup: {e}")
             return False
 
-    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, List[Tuple[str, str]]]]:
+    def scan_checkpoints(self, outputs_dir: str = "./outputs") -> List[Tuple[str, List[Tuple[str, str]]]]:
         """
         Scan outputs folder for training runs and their checkpoints.
 
@@ -326,9 +325,8 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
-                ensure_dir(Path(save_directory))
+                os.makedirs(save_directory, exist_ok=True)
 
                 self.current_model.save_pretrained_merged(
                     save_directory,
@@ -388,9 +386,8 @@ class ExportBackend:
         try:
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
-                ensure_dir(Path(save_directory))
+                os.makedirs(save_directory, exist_ok=True)
 
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
@@ -478,7 +475,6 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
                 # Resolve to absolute path so unsloth's relative-path internals
                 # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
                 # all resolve against the repo root cwd, NOT the export directory.
@@ -486,7 +482,7 @@ class ExportBackend:
                 logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
                 # Create the directory if it doesn't exist
-                ensure_dir(Path(abs_save_dir))
+                os.makedirs(abs_save_dir, exist_ok=True)
 
                 # On WSL, patch out sudo check before llama.cpp build
                 _apply_wsl_sudo_patch()
@@ -586,9 +582,8 @@ class ExportBackend:
         try:
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
-                ensure_dir(Path(save_directory))
+                os.makedirs(save_directory, exist_ok=True)
 
                 self.current_model.save_pretrained(save_directory)
                 self.current_tokenizer.save_pretrained(save_directory)
