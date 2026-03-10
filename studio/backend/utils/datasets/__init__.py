@@ -31,6 +31,7 @@ from .format_conversion import (
     convert_alpaca_to_chatml,
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
+    convert_sharegpt_with_images_to_vlm_format,
 )
 
 # Chat templates
@@ -81,6 +82,7 @@ __all__ = [
     "convert_alpaca_to_chatml",
     "convert_to_vlm_format",
     "convert_llava_to_vlm_format",
+    "convert_sharegpt_with_images_to_vlm_format",
     # Templates
     "apply_chat_template_to_dataset",
     "get_dataset_info_summary",
