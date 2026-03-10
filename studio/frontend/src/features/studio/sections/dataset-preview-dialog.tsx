@@ -68,6 +68,7 @@ export function DatasetPreviewDialog({
   const {
     manualMapping, setManualMapping, datasetFormat,
     setDatasetAdvisorFields, datasetAdvisorNotification,
+    datasetSystemPrompt, datasetUserTemplate, datasetAssistantTemplate,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       manualMapping: s.datasetManualMapping,
@@ -75,6 +76,9 @@ export function DatasetPreviewDialog({
       datasetFormat: s.datasetFormat,
       setDatasetAdvisorFields: s.setDatasetAdvisorFields,
       datasetAdvisorNotification: s.datasetAdvisorNotification,
+      datasetSystemPrompt: s.datasetSystemPrompt,
+      datasetUserTemplate: s.datasetUserTemplate,
+      datasetAssistantTemplate: s.datasetAssistantTemplate,
     })),
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
@@ -423,6 +427,9 @@ export function DatasetPreviewDialog({
                   isAiLoading={isAiLoading}
                   aiError={aiError}
                   advisorNotification={datasetAdvisorNotification}
+                  advisorSystemPrompt={datasetSystemPrompt || undefined}
+                  advisorUserTemplate={datasetUserTemplate || undefined}
+                  advisorAssistantTemplate={datasetAssistantTemplate || undefined}
                 />
               )}
 

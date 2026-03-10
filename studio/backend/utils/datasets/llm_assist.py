@@ -562,7 +562,8 @@ def _run_multi_pass_advisor(
                     {samples_text}
 
                     Design a conversion strategy to turn this into conversation format for fine-tuning.
-                    The strategy should create a system prompt, a user message template, and an assistant message template.
+                    The strategy should create a user message template and an assistant message template.
+                    Optionally include a system prompt ONLY if the task is ambiguous from the data alone.
 
                     RULES:
                     - Use {{column_name}} placeholders in templates to reference column values.
@@ -574,10 +575,13 @@ def _run_multi_pass_advisor(
                     - The assistant template should produce the expected model output.
                     - column_roles: mark columns used in the user template as "user",
                       columns used in the assistant template as "assistant".
+                    - system_prompt: set to null if the user/assistant templates alone
+                      make the task clear. Only provide one when extra context is needed
+                      (e.g. persona, domain expertise, output format constraints).
 
                     Respond with a JSON object:
                     {{
-                        "system_prompt": "<system prompt describing what the model should do>",
+                        "system_prompt": "<system prompt or null if not needed>",
                         "user_template": "<template for user message using {{column}} placeholders>",
                         "assistant_template": "<template for assistant response using {{column_name}} placeholders>",
                         "column_roles": {{
@@ -599,7 +603,12 @@ def _run_multi_pass_advisor(
             return None
 
         # ── Extract conversion strategy from Pass 2 ──
-        sys_prompt = pass2.get("system_prompt", "")
+        raw_sys = pass2.get("system_prompt")
+        # LLM may return the literal string "null" or None
+        sys_prompt = (
+            raw_sys if isinstance(raw_sys, str) and raw_sys.lower() not in ("null", "none", "")
+            else ""
+        )
         user_tpl = pass2.get("user_template", "")
         asst_tpl = pass2.get("assistant_template", "")
         label_map = pass2.get("label_mapping", {})
