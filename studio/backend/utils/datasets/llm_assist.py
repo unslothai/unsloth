@@ -47,17 +47,19 @@ def precache_helper_gguf():
         files = api.list_repo_files(repo, repo_type="model")
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
-        target = None
+        # Find all GGUF files matching the variant (may be split into shards)
         variant_lower = variant.lower().replace("-", "_")
-        for f in gguf_files:
-            if variant_lower in f.lower().replace("-", "_"):
-                target = f
-                break
+        matching = sorted(
+            f for f in gguf_files
+            if variant_lower in f.lower().replace("-", "_")
+        )
 
-        if target:
-            logger.info(f"Pre-caching helper GGUF: {repo}/{target}")
-            hf_hub_download(repo_id=repo, filename=target)
-            logger.info(f"Helper GGUF cached: {target}")
+        if matching:
+            logger.info(f"Pre-caching helper GGUF: {repo}/{matching[0]}"
+                        + (f" (+{len(matching) - 1} shards)" if len(matching) > 1 else ""))
+            for target in matching:
+                hf_hub_download(repo_id=repo, filename=target)
+            logger.info(f"Helper GGUF cached: {len(matching)} file(s)")
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
     except Exception as e:
