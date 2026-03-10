@@ -689,17 +689,15 @@ def format_and_template_dataset(
                         "errors": [],
                     }
                 except Exception as e:
-                    errors.append(f"Failed to apply user VLM mapping: {e}")
-                    return {
-                        "dataset": dataset,
-                        "detected_format": "user_mapped",
-                        "final_format": "vlm_conversion_failed",
-                        "is_vlm": True,
-                        "success": False,
-                        "requires_manual_mapping": True,
-                        "warnings": warnings,
-                        "errors": errors,
-                    }
+                    # User mapping failed — fall back to auto-detection instead
+                    # of giving up (handles stale cached mappings gracefully)
+                    warnings.append(
+                        f"User VLM mapping (image='{user_vlm_image_column}', "
+                        f"text='{user_vlm_text_column}') failed: {e} — "
+                        f"falling back to auto-detection"
+                    )
+                    print(f"⚠️ User VLM mapping failed, falling back to auto-detection...")
+                    custom_format_mapping = None  # clear so auto-detection runs below
             else:
                 errors.append(
                     f"Invalid VLM mapping: need 'image' and 'text' roles. Got: {custom_format_mapping}"
