@@ -130,7 +130,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             **audio_fields,
         }
 
-    # LLM flow
+    # Text / LLM flow
     detected = detect_dataset_format(dataset)
 
     # If format is unknown, try heuristic detection
@@ -149,66 +149,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
         else:
-            # Heuristic failed — try LLM-assisted column classification
-            try:
-                from .llm_assist import llm_classify_columns
-                from itertools import islice
-
-                sample_rows = []
-                for s in islice(dataset, 5):
-                    row = {col: str(s[col])[:200] for col in s}
-                    sample_rows.append(row)
-
-                llm_mapping = llm_classify_columns(
-                    column_names=columns,
-                    samples=sample_rows,
-                )
-                if llm_mapping:
-                    # Keep only conversation roles, not metadata
-                    conversation_mapping = {
-                        col: role for col, role in llm_mapping.items()
-                        if role in ("user", "assistant", "system")
-                    }
-                    return {
-                        "requires_manual_mapping": False,
-                        "detected_format": "llm_assisted",
-                        "columns": columns,
-                        "suggested_mapping": conversation_mapping,
-                        "detected_image_column": None,
-                        "detected_text_column": None,
-                        "is_image": False,
-                        "multimodal_columns": None,
-                        **audio_fields,
-                    }
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).debug(f"LLM column classification skipped: {e}")
-
-            # Both heuristics and LLM failed — generate a meaningful warning
-            warning = None
-            try:
-                from .llm_assist import llm_generate_dataset_warning
-                from itertools import islice
-                sample_rows = []
-                for s in islice(dataset, 3):
-                    row = {col: str(s[col])[:150] for col in s}
-                    sample_rows.append(row)
-                warning = llm_generate_dataset_warning(
-                    issues=[
-                        f"Could not auto-detect column roles from columns: {columns}",
-                        f"Sample values: {sample_rows[0] if sample_rows else 'N/A'}",
-                    ],
-                    modality="text",
-                    column_names=columns,
-                )
-            except Exception:
-                pass
-            if not warning:
-                warning = (
-                    f"Could not auto-detect column roles for columns: {columns}. "
-                    "Please assign roles (user, assistant, etc.) manually."
-                )
-
+            # Heuristic failed — user must map manually (or use AI Assist)
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",
@@ -218,7 +159,10 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "detected_text_column": None,
                 "is_image": False,
                 "multimodal_columns": None,
-                "warning": warning,
+                "warning": (
+                    f"Could not auto-detect column roles for columns: {columns}. "
+                    "Please assign roles manually, or use AI Assist."
+                ),
                 **audio_fields,
             }
 

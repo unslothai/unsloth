@@ -44,6 +44,20 @@ class CheckFormatResponse(BaseModel):
     warning: Optional[str] = None
 
 
+class AiAssistMappingRequest(BaseModel):
+    """Request for LLM-assisted column classification (user-triggered)."""
+    columns: List[str]
+    samples: List[Dict[str, Any]]  # Preview rows already loaded in the dialog
+    dataset_name: Optional[str] = None  # For LLM context
+
+
+class AiAssistMappingResponse(BaseModel):
+    """Response from LLM-assisted column classification."""
+    success: bool
+    suggested_mapping: Optional[Dict[str, str]] = None
+    warning: Optional[str] = None
+
+
 class UploadDatasetResponse(BaseModel):
     """Response with stored dataset path for training."""
     filename: str = Field(..., description="Original filename")

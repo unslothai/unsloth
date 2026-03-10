@@ -62,6 +62,43 @@ export async function uploadTrainingDataset(
   return res.json();
 }
 
+// ── AI Assist ────────────────────────────────────────────────────────
+
+type AiAssistMappingArgs = {
+  columns: string[];
+  samples: Record<string, unknown>[];
+  datasetName?: string | null;
+};
+
+export type AiAssistMappingResponse = {
+  success: boolean;
+  suggested_mapping?: Record<string, string> | null;
+  warning?: string | null;
+};
+
+export async function aiAssistMapping({
+  columns,
+  samples,
+  datasetName,
+}: AiAssistMappingArgs): Promise<AiAssistMappingResponse> {
+  const res = await authFetch("/api/datasets/ai-assist-mapping", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      columns,
+      samples: samples.slice(0, 5),
+      dataset_name: datasetName || undefined,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `AI assist failed (${res.status})`);
+  }
+
+  return res.json();
+}
+
 export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
   const res = await authFetch("/api/datasets/local");
   if (!res.ok) {
