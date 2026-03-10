@@ -14,6 +14,7 @@ import type { CheckFormatResponse } from "@/features/training/types/datasets";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Loader2, Sparkles } from "lucide-react";
 
 const CHATML_ROLES = ["system", "user", "assistant"] as const;
 const ALPACA_ROLES = ["instruction", "input", "output"] as const;
@@ -96,6 +97,9 @@ export function DatasetMappingCard({
   isVlm = false,
   isAudio = false,
   format,
+  onAiAssist,
+  isAiLoading = false,
+  aiError,
 }: {
   mapping: Record<string, string>;
   mappingOk: boolean;
@@ -103,6 +107,9 @@ export function DatasetMappingCard({
   isVlm?: boolean;
   isAudio?: boolean;
   format?: string;
+  onAiAssist?: () => void;
+  isAiLoading?: boolean;
+  aiError?: string | null;
 }) {
   const entries = Object.entries(mapping);
   const requiredLabel = isAudio
@@ -180,6 +187,32 @@ export function DatasetMappingCard({
             <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-200/80">
               Use the dropdowns in the column headers to assign roles.
             </p>
+          )}
+          {!mappingOk && onAiAssist && (
+            <div className="mt-3 flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onAiAssist}
+                disabled={isAiLoading}
+                className="cursor-pointer bg-white/60 dark:bg-transparent"
+              >
+                {isAiLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Analyzing columns...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    AI Assist
+                  </>
+                )}
+              </Button>
+              {aiError && (
+                <p className="text-xs text-amber-700 dark:text-amber-300">{aiError}</p>
+              )}
+            </div>
           )}
         </div>
       </div>

@@ -78,19 +78,6 @@ export function useTrainingActions() {
           });
         }
 
-        // Auto-save LLM/heuristic suggested mapping so training receives it
-        // as custom_format_mapping (avoids re-detecting during training).
-        if (!check.requires_manual_mapping && check.suggested_mapping) {
-          const hint: Record<string, string> = {};
-          const table = ROLE_REMAP[config.datasetFormat];
-          for (const [col, role] of Object.entries(check.suggested_mapping)) {
-            hint[col] = table ? (table[role] ?? role) : role;
-          }
-          if (Object.keys(hint).length > 0) {
-            useTrainingConfigStore.getState().setDatasetManualMapping(hint);
-          }
-        }
-
         if (check.requires_manual_mapping && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};
