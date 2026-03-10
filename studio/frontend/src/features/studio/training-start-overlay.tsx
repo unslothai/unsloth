@@ -31,7 +31,7 @@ export function TrainingStartOverlay({
   message,
   currentStep,
 }: TrainingStartOverlayProps): ReactElement {
-  const { stopTrainingRun } = useTrainingActions();
+  const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
@@ -77,7 +77,11 @@ export function TrainingStartOverlay({
                     setCancelDialogOpen(false);
                     useTrainingRuntimeStore.getState().setStopRequested(true);
                     void stopTrainingRun(false).then((ok) => {
-                      if (!ok) setCancelRequested(false);
+                      if (ok) {
+                        void dismissTrainingRun();
+                      } else {
+                        setCancelRequested(false);
+                      }
                     });
                   }}
                 >
