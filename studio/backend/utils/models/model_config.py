@@ -7,7 +7,15 @@ Model and LoRA configuration handling
 from transformers import AutoConfig
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from utils.paths import normalize_path, is_local_path, is_model_cached
+from utils.paths import (
+    normalize_path,
+    is_local_path,
+    is_model_cached,
+    outputs_root,
+    exports_root,
+    resolve_output_dir,
+    resolve_export_dir,
+)
 from utils.utils import without_hf_auth
 import logging
 import os
@@ -894,7 +902,7 @@ def download_gguf_file(
     return local_path
 
 
-def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
+def scan_trained_loras(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str]]:
     """
     Scan outputs folder for trained LoRA adapters.
 
@@ -908,7 +916,7 @@ def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
         ]
     """
     trained_loras = []
-    outputs_path = Path(outputs_dir)
+    outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
         logger.warning(f"Outputs directory not found: {outputs_dir}")
@@ -937,7 +945,7 @@ def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
         logger.error(f"Error scanning outputs folder: {e}")
         return []
 
-def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str, str, Optional[str]]]:
+def scan_exported_models(exports_dir: str = str(exports_root())) -> List[Tuple[str, str, str, Optional[str]]]:
     """
     Scan exports folder for exported models (merged, LoRA, GGUF).
 
@@ -950,7 +958,7 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
         export_type: "lora" | "merged" | "gguf"
     """
     results = []
-    exports_path = Path(exports_dir)
+    exports_path = resolve_export_dir(exports_dir)
 
     if not exports_path.exists():
         return results
@@ -1038,7 +1046,7 @@ def scan_exported_models(exports_dir: str = "./exports") -> List[Tuple[str, str,
                 # Fallback: read base model from the original training run's
                 # adapter_config.json in ./outputs/{run_name}/
                 if not base_model:
-                    outputs_adapter_cfg = Path("./outputs") / run_dir.name / "adapter_config.json"
+                    outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
                         if outputs_adapter_cfg.exists():
                             cfg = json.loads(outputs_adapter_cfg.read_text())
