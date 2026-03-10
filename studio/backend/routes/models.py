@@ -60,11 +60,20 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
-from models.models import GgufVariantDetail, GgufVariantsResponse
+from models.models import GgufVariantDetail, GgufVariantsResponse, ModelType
 from models.responses import LoRABaseModelResponse, VisionCheckResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def derive_model_type(is_vision: bool, audio_type: Optional[str]) -> ModelType:
+    """Collapse individual capability flags into a single model modality string."""
+    if audio_type is not None:
+        return "audio"
+    if is_vision:
+        return "vision"
+    return "text"
 
 # Configure logger
 if not logger.handlers:
@@ -224,14 +233,17 @@ async def list_models(
         # Get loaded models
         loaded_models = []
         for model_name, model_data in inference_backend.models.items():
+            _is_vision = model_data.get("is_vision", False)
+            _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
                 id=model_name,
                 name=model_name.split("/")[-1] if "/" in model_name else model_name,
-                is_vision=model_data.get("is_vision", False),
+                is_vision=_is_vision,
                 is_lora=model_data.get("is_lora", False),
                 is_audio=model_data.get("is_audio", False),
-                audio_type=model_data.get("audio_type"),
+                audio_type=_audio_type,
                 has_audio_input=model_data.get("has_audio_input", False),
+                model_type=derive_model_type(_is_vision, _audio_type),
             )
             loaded_models.append(model_info)
         
@@ -309,6 +321,7 @@ async def get_model_config(
             is_audio=audio_type is not None,
             audio_type=audio_type,
             has_audio_input=is_audio_input_type(audio_type),
+            model_type=derive_model_type(is_vision, audio_type),
             base_model=base_model,
         )
         
