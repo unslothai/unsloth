@@ -455,6 +455,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 2. Load model ──
     _send_status(event_queue, "Loading embedding model...")
     try:
+        hf_token = config.get("hf_token", "")
+        hf_token = hf_token if hf_token and hf_token.strip() else None
         max_seq_length = config.get("max_seq_length", 512)
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = (training_type == "LoRA/QLoRA")
@@ -463,6 +465,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             model_name=model_name,
             max_seq_length=max_seq_length,
             full_finetuning=not use_lora,
+            token=hf_token,
         )
     except Exception as e:
         event_queue.put({
