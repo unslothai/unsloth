@@ -249,17 +249,22 @@ class LlamaCppBackend:
                     )
 
                 # Determine the filename from the variant (e.g., "Q4_K_M" -> find matching file)
+                # For split GGUFs (e.g., *-00001-of-00003.gguf) we must download ALL shards.
                 gguf_filename = None
+                gguf_extra_shards: list[str] = []
                 if hf_variant:
                     # Try common naming patterns
                     try:
                         from huggingface_hub import list_repo_files
                         files = list_repo_files(hf_repo, token=hf_token)
                         variant_lower = hf_variant.lower()
-                        for f in files:
-                            if f.endswith(".gguf") and variant_lower in f.lower():
-                                gguf_filename = f
-                                break
+                        matching = sorted(
+                            f for f in files
+                            if f.endswith(".gguf") and variant_lower in f.lower()
+                        )
+                        if matching:
+                            gguf_filename = matching[0]  # first shard (or single file)
+                            gguf_extra_shards = matching[1:]  # remaining shards if split
                     except Exception as e:
                         logger.warning(f"Could not list repo files: {e}")
 
@@ -269,13 +274,23 @@ class LlamaCppBackend:
                         repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                         gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
-                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}")
+                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}"
+                            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""))
                 try:
                     local_path = hf_hub_download(
                         repo_id=hf_repo,
                         filename=gguf_filename,
                         token=hf_token,
                     )
+                    # Download remaining shards for split GGUFs — llama-server
+                    # auto-discovers them when they are in the same directory.
+                    for shard in gguf_extra_shards:
+                        logger.info(f"Downloading GGUF shard: {shard}")
+                        hf_hub_download(
+                            repo_id=hf_repo,
+                            filename=shard,
+                            token=hf_token,
+                        )
                 except Exception as e:
                     raise RuntimeError(
                         f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
