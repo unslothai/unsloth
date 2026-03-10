@@ -641,6 +641,19 @@ export function DatasetSection() {
               datasetEvalSplit={datasetEvalSplit}
               setDatasetEvalSplit={setDatasetEvalSplit}
             />
+          ) : !selectedDatasetName ? (
+            <HfDatasetSubsetSplitSelectors
+              variant="studio"
+              enabled={false}
+              datasetName={null}
+              accessToken={hfToken || undefined}
+              datasetSubset={datasetSubset}
+              setDatasetSubset={setDatasetSubset}
+              datasetSplit={datasetSplit}
+              setDatasetSplit={setDatasetSplit}
+              datasetEvalSplit={datasetEvalSplit}
+              setDatasetEvalSplit={setDatasetEvalSplit}
+            />
           ) : datasetSource === "upload" && selectedLocalDataset ? (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
               <div className="mb-3 flex items-center justify-between gap-3">

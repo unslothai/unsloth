@@ -56,6 +56,8 @@ export function HfDatasetSubsetSplitSelectors({
   } = useHfDatasetSplits(enabled ? datasetName : null, datasetSubset, {
     accessToken,
   });
+  const showPlaceholderDropdowns =
+    variant === "studio" && !enabled && !datasetName;
 
   // Auto-select subset and split in one pass to avoid racing effects
   useEffect(() => {
@@ -83,12 +85,48 @@ export function HfDatasetSubsetSplitSelectors({
     setDatasetSplit,
   ]);
 
-  if (!enabled || !datasetName) return null;
-
   const showDropdowns = !isLoading && !error && hfSubsets.length > 0;
 
   return (
     <>
+      {showPlaceholderDropdowns && (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SelectorDropdown
+              variant={variant}
+              label="Subset"
+              tooltip="Select which subset (config) of the dataset to use."
+              value={null}
+              onChange={setDatasetSubset}
+              options={[]}
+              placeholder="Select a subset..."
+              disabled={true}
+            />
+            <SelectorDropdown
+              variant={variant}
+              label="Train Split"
+              tooltip="Select which split to use for training."
+              value={null}
+              onChange={setDatasetSplit}
+              options={[]}
+              placeholder="Select a split..."
+              disabled={true}
+            />
+          </div>
+          <SelectorDropdown
+            variant={variant}
+            label="Eval Split"
+            tooltip="Select which split to use for evaluation. None means no evaluation during training."
+            value={null}
+            onChange={setDatasetEvalSplit}
+            options={[]}
+            placeholder="None"
+            allowNone
+            disabled={true}
+          />
+        </>
+      )}
+
       {isLoading && (
         <div
           className={
@@ -184,6 +222,7 @@ function SelectorDropdown({
   options,
   placeholder,
   allowNone = false,
+  disabled = false,
 }: {
   variant: "wizard" | "studio";
   label: string;
@@ -193,7 +232,11 @@ function SelectorDropdown({
   options: string[];
   placeholder: string;
   allowNone?: boolean;
+  disabled?: boolean;
 }) {
+  const selectValue =
+    value ?? (allowNone && !disabled ? "_none" : undefined);
+
   if (variant === "wizard") {
     return (
       <Field>
@@ -217,8 +260,9 @@ function SelectorDropdown({
           </Tooltip>
         </FieldLabel>
         <Select
-          value={value ?? "_none"}
+          value={selectValue}
           onValueChange={(v) => onChange(v === "_none" ? null : v)}
+          disabled={disabled}
         >
           <SelectTrigger className="w-full">
             <SelectValue placeholder={placeholder} />
@@ -260,8 +304,9 @@ function SelectorDropdown({
         </Tooltip>
       </span>
       <Select
-        value={value ?? "_none"}
+        value={selectValue}
         onValueChange={(v) => onChange(v === "_none" ? null : v)}
+        disabled={disabled}
       >
         <SelectTrigger className="w-full">
           <SelectValue placeholder={placeholder} />
