@@ -555,8 +555,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         slice_start = config.get("dataset_slice_start")
         slice_end = config.get("dataset_slice_end")
         if slice_start is not None or slice_end is not None:
-            start = slice_start or 0
-            end = slice_end or len(dataset)
+            start = slice_start if slice_start is not None else 0
+            end = slice_end if slice_end is not None else len(dataset)
             dataset = dataset.select(range(start, min(end + 1, len(dataset))))
 
         logger.info(f"Embedding dataset loaded: {len(dataset)} samples")
