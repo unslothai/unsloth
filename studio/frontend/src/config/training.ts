@@ -53,9 +53,9 @@ export const MODEL_TYPES: ReadonlyArray<{
       description: "Image understanding models",
     },
     {
-      value: "tts",
-      label: "TTS",
-      description: "Text-to-speech models",
+      value: "audio",
+      label: "Audio",
+      description: "Audio and speech models",
     },
     {
       value: "embeddings",
@@ -128,6 +128,6 @@ export const DEFAULT_HYPERPARAMS = {
 export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
   text: "text-generation",
   vision: "image-text-to-text",
-  tts: "text-to-speech",
+  audio: "text-to-speech",
   embeddings: "feature-extraction",
 };
