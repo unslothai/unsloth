@@ -609,6 +609,15 @@ def _run_multi_pass_advisor(
         if not is_conv:
             print("🤖 Pass 3: Generating system prompt...", flush=True)
             t3 = time.monotonic()
+
+            # Format label mapping info for the prompt
+            label_info = ""
+            if label_map:
+                for col, mapping in label_map.items():
+                    if isinstance(mapping, dict) and mapping:
+                        pairs = ", ".join(f"{k} = {v}" for k, v in mapping.items())
+                        label_info += f"\nLabel mapping for '{col}': {pairs}"
+
             messages3 = [
                 {
                     "role": "system",
@@ -629,13 +638,15 @@ def _run_multi_pass_advisor(
                         The training examples will look like:
                         User: {user_tpl}
                         Assistant: {asst_tpl}
+                        {label_info}
 
                         Write a system prompt that clearly describes the task the model should
                         perform. The system prompt should:
                         - Explain what kind of input the model will receive
                         - Explain what output is expected
+                        - If there are categorical labels, explain what each label means
                         - Be specific to this dataset's task (not generic)
-                        - Be 1-3 sentences
+                        - Be 2-4 sentences
 
                         Respond with a JSON object:
                         {{
