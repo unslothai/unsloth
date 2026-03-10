@@ -229,13 +229,21 @@ def run_training_process(
 
         # [DEBUG] Print first sample before model is loaded
         try:
-            sample = dataset[0] if len(dataset) > 0 else None
-            print(f"\n[DEBUG] Dataset loaded BEFORE model. First sample keys: {list(sample.keys()) if sample else 'empty'}", flush=True)
+            print(f"\n[DEBUG] Dataset loaded BEFORE model. type={type(dataset).__name__}, len={len(dataset) if hasattr(dataset, '__len__') else '?'}", flush=True)
+            if hasattr(dataset, 'column_names'):
+                print(f"[DEBUG] Dataset columns: {dataset.column_names}", flush=True)
+            # Try multiple access patterns
+            try:
+                sample = dataset[0]
+            except Exception:
+                sample = next(iter(dataset)) if hasattr(dataset, '__iter__') else None
             if sample:
-                preview = {k: str(v)[:200] for k, v in sample.items()}
-                print(f"[DEBUG] First sample preview: {preview}\n", flush=True)
+                preview = {k: str(v)[:200] for k, v in (sample.items() if hasattr(sample, 'items') else enumerate([sample]))}
+                print(f"[DEBUG] First sample: {preview}\n", flush=True)
         except Exception as e:
-            print(f"[DEBUG] Could not preview first sample: {e}", flush=True)
+            import traceback
+            print(f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)
