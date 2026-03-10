@@ -86,10 +86,23 @@ def run_worker(model_name, display_name, use_lora, use_cce, wandb_project=None):
     # Store use_cce flag on the model so it can be passed during forward
     model._use_cce = use_cce
 
+    # Check if mx.fast.cce_loss is available (for mlx-cce)
+    # If available, we need to explicitly disable for baseline
+    import mlx.core as mx
+    has_fast_cce = hasattr(mx, "fast") and hasattr(mx.fast, "cce_loss")
+
+    # If mx.fast.cce_loss exists, CCE is auto-enabled by default
+    # For baseline, we need to explicitly disable it
+    if has_fast_cce and not use_cce:
+        # Force disable CCE for baseline by passing explicit flag
+        use_cce_for_call = False
+    else:
+        use_cce_for_call = use_cce
+
     # Wrap __call__ to inject use_cce
     _original_call = model.__call__
     def _call_with_cce(*args, **kwargs):
-        kwargs["use_cce"] = use_cce
+        kwargs["use_cce"] = use_cce_for_call
         return _original_call(*args, **kwargs)
     model.__call__ = _call_with_cce
 
