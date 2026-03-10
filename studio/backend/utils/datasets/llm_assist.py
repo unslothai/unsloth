@@ -487,15 +487,20 @@ def _run_multi_pass_advisor(
             {
                 "role": "system",
                 "content": (
-                    "You are a dataset analyst specializing in HuggingFace datasets for LLM fine-tuning. "
-                    "You classify datasets and determine if they can be used directly for conversational "
-                    "fine-tuning or if they need conversion. Respond with ONLY valid JSON, no explanation."
+                    "You are a dataset analyst. Your job is to look at a HuggingFace dataset "
+                    "and figure out what kind of data it contains and whether it is already in "
+                    "a conversational format suitable for LLM fine-tuning. A dataset is "
+                    '"conversational" if it already has columns like "messages", "conversations", '
+                    'or multiturn "user"/"assistant" pairs. Some datasets are NOT conversational '
+                    "— they are things like summarization, question answering, translation, "
+                    "classification, etc. Those need conversion. You must respond with ONLY a "
+                    "valid JSON object. Do not write any explanation before or after the JSON."
                 ),
             },
             {
                 "role": "user",
                 "content": textwrap.dedent(f"""\
-                    Analyze this HuggingFace dataset and classify it.
+                    Look at this HuggingFace dataset and classify it.
 
                     DATASET CARD (excerpt):
                     {card_excerpt}
@@ -505,17 +510,19 @@ def _run_multi_pass_advisor(
 
                     COLUMNS: {columns}
 
-                    SAMPLE DATA:
+                    SAMPLE DATA (first 3 rows):
                     {samples_text}
 
-                    Respond with a JSON object:
+                    Based on the above, respond with this exact JSON structure:
                     {{
-                        "dataset_type": "<type like: nli, classification, summarization, qa, translation, etc.>",
-                        "is_conversational": <true if already has user/assistant message structure, false otherwise>,
-                        "needs_conversion": <true if columns need to be reorganized into conversation format>,
-                        "description": "<1-2 sentence description of what this dataset is for>",
-                        "task_description": "<what a model fine-tuned on this should do>"
-                    }}"""),
+                        "dataset_type": "<one of: summarization, question_answering, translation, classification, natural_language_inference, instruction_following, conversational, code_generation, other>",
+                        "is_conversational": <true if the dataset already has message/conversation columns, false otherwise>,
+                        "needs_conversion": <true if it needs to be converted into user/assistant turns, false if it is already conversational>,
+                        "description": "<one sentence describing what this dataset contains>",
+                        "task_description": "<one sentence describing the task: what input goes in and what output comes out>"
+                    }}
+
+                    Respond with ONLY the JSON object. No markdown, no explanation."""),
             },
         ]
         raw1 = _generate_with_backend(backend, messages1, max_tokens=256)
@@ -545,49 +552,76 @@ def _run_multi_pass_advisor(
             {
                 "role": "system",
                 "content": (
-                    "You map dataset columns to conversation roles for LLM fine-tuning. "
-                    "Each column becomes either 'user' (the INPUT the model receives) or "
-                    "'assistant' (the OUTPUT the model should generate). "
-                    "There MUST be at least one user column AND at least one assistant column. "
-                    "Respond with ONLY valid JSON."
+                    "You are a data preparation assistant. Your job is to assign each column "
+                    "in a dataset to a conversation role for LLM fine-tuning. There are exactly "
+                    "two roles:\n"
+                    '- "user" = This column contains INPUT that the model will receive as a prompt.\n'
+                    '- "assistant" = This column contains OUTPUT that the model should learn to generate.\n\n'
+                    "CRITICAL RULES:\n"
+                    "1. There MUST be at least one column assigned to \"user\" AND at least one "
+                    "column assigned to \"assistant\". Never assign all columns to the same role.\n"
+                    "2. The column that contains the TARGET or OUTPUT or ANSWER or LABEL must "
+                    "ALWAYS be assigned to \"assistant\". This is the thing the model should learn "
+                    "to produce.\n"
+                    "3. The columns that contain the SOURCE or INPUT or CONTEXT or QUESTION must "
+                    "be assigned to \"user\". This is what the model receives.\n"
+                    '4. Metadata columns like "id", "index", "source", "url", "date" should be '
+                    'set to "skip".\n\n'
+                    "You must respond with ONLY a valid JSON object."
                 ),
             },
             {
                 "role": "user",
                 "content": textwrap.dedent(f"""\
-                    Dataset classification:
+                    Here is a dataset that has been classified:
+
+                    CLASSIFICATION:
                     {json.dumps(pass1, indent=2)}
 
-                    COLUMNS: {columns}
+                    COLUMNS AVAILABLE: {columns}
 
-                    SAMPLE DATA:
+                    SAMPLE DATA (first 3 rows):
                     {samples_text}
 
-                    Assign each column to a role: "user" (INPUT) or "assistant" (OUTPUT).
+                    Your task: assign each column to either "user", "assistant", or "skip".
 
-                    EXAMPLES:
-                    - Summarization (columns: document, summary):
-                      column_roles: {{"document": "user", "summary": "assistant"}}
-                    - NLI (columns: premise, hypothesis, label):
-                      column_roles: {{"premise": "user", "hypothesis": "user", "label": "assistant"}}
-                      label_mapping: {{"label": {{"0": "entailment", "1": "neutral", "2": "contradiction"}}}}
-                    - Translation (columns: en, fr):
-                      column_roles: {{"en": "user", "fr": "assistant"}}
-                    - QA (columns: question, context, answer):
-                      column_roles: {{"context": "user", "question": "user", "answer": "assistant"}}
+                    Here are worked examples to guide you:
 
-                    RULES:
-                    - There MUST be at least one "user" AND at least one "assistant" column.
-                    - The output/target column MUST be "assistant", never "user".
-                    - If a column has integer labels (0, 1, 2...), provide label_mapping with ALL values.
-                    - Ignore ID or metadata columns (do not include them).
+                    Example 1 — Summarization dataset with columns ["document", "summary"]:
+                      "document" is the input text → "user"
+                      "summary" is the output the model should generate → "assistant"
+                      Result: {{"document": "user", "summary": "assistant"}}
 
-                    Respond with JSON:
+                    Example 2 — Question answering dataset with columns ["context", "question", "answer"]:
+                      "context" is input → "user"
+                      "question" is input → "user"
+                      "answer" is what the model should generate → "assistant"
+                      Result: {{"context": "user", "question": "user", "answer": "assistant"}}
+
+                    Example 3 — Classification dataset with columns ["text", "label"]:
+                      "text" is input → "user"
+                      "label" is the output the model should predict → "assistant"
+                      Result: {{"text": "user", "label": "assistant"}}
+
+                    Example 4 — Translation dataset with columns ["en", "fr"]:
+                      "en" is the source language (input) → "user"
+                      "fr" is the target language (output) → "assistant"
+                      Result: {{"en": "user", "fr": "assistant"}}
+
+                    Now apply this logic to the actual dataset columns listed above.
+
+                    Respond with this exact JSON structure:
                     {{
-                        "column_roles": {{"<col>": "user or assistant"}},
-                        "label_mapping": {{"<col>": {{"0": "<label>", "1": "<label>"}}}},
-                        "notes": "<brief note>"
-                    }}"""),
+                        "column_roles": {{
+                            "<column_name>": "<user|assistant|skip>"
+                        }},
+                        "label_mapping": <if any column contains integer labels (like 0, 1, 2), provide a mapping like {{"label": {{"0": "entailment", "1": "neutral", "2": "contradiction"}}}}, otherwise null>,
+                        "notes": "<brief explanation of why you assigned roles this way>"
+                    }}
+
+                    REMEMBER: There must be at least one "user" column AND at least one "assistant" column. If all columns are "user", you made a mistake — the output/target column should be "assistant".
+
+                    Respond with ONLY the JSON object."""),
             },
         ]
         raw2 = _generate_with_backend(backend, messages2, max_tokens=512)
@@ -600,7 +634,7 @@ def _run_multi_pass_advisor(
 
         # ── Extract and validate column roles from Pass 2 ──
         column_roles = pass2.get("column_roles", {})
-        label_map = pass2.get("label_mapping", {})
+        label_map = pass2.get("label_mapping") or {}  # may be null
 
         # Validate: must have at least one user AND one assistant
         roles_present = set(column_roles.values())
@@ -631,50 +665,40 @@ def _run_multi_pass_advisor(
             # Describe the role assignments for context
             user_cols = [c for c, r in column_roles.items() if r == "user"]
             asst_cols = [c for c, r in column_roles.items() if r == "assistant"]
+            task_desc = pass1.get("task_description") or pass1.get("description", "")
 
             messages3 = [
                 {
-                    "role": "system",
-                    "content": (
-                        "You are an expert at writing system prompts for LLM fine-tuning. "
-                        "Your task is to write a clear, concise system prompt that tells "
-                        "the model what task it is performing. Respond with ONLY valid JSON."
-                    ),
-                },
-                {
                     "role": "user",
                     "content": textwrap.dedent(f"""\
-                        A non-conversational dataset is being converted for fine-tuning.
+                        I am building a fine-tuning dataset for an LLM. I need you to write a \
+                        system prompt that will be included in every training example to tell \
+                        the model what task it is performing.
 
-                        Dataset type: {dtype}
-                        Description: {pass1.get('task_description') or pass1.get('description', '')}
-
-                        The user (INPUT) columns are: {user_cols}
-                        The assistant (OUTPUT) columns are: {asst_cols}
+                        Here is the task information:
+                        - Dataset type: {dtype}
+                        - Task description: {task_desc}
+                        - The USER (input) columns are: {user_cols}
+                        - The ASSISTANT (output) columns are: {asst_cols}
                         {label_info}
 
-                        Write a system prompt that clearly describes the task the model should
-                        perform. The system prompt should:
-                        - Explain what kind of input the model will receive
-                        - Explain what output is expected
-                        - If there are categorical labels, explain what each label means
-                        - Be specific to this dataset's task (not generic)
-                        - Be 2-4 sentences
+                        Write a system prompt that:
+                        1. Explains what task the model is performing in plain language
+                        2. Describes what input it will receive
+                        3. Describes what output it should produce
+                        4. Is 2-4 sentences long
 
-                        Respond with a JSON object:
-                        {{
-                            "system_prompt": "<the system prompt>"
-                        }}"""),
+                        Write ONLY the system prompt text. No quotes, no labels, no explanation around it."""),
                 },
             ]
             raw3 = _generate_with_backend(backend, messages3, max_tokens=256)
-            pass3 = _parse_json_response(raw3)
-            print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {pass3}", flush=True)
+            print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}", flush=True)
 
-            if pass3:
-                raw_sys = pass3.get("system_prompt")
-                if isinstance(raw_sys, str) and raw_sys.lower() not in ("null", "none", ""):
-                    sys_prompt = raw_sys
+            if raw3:
+                # Pass 3 returns raw text, not JSON — clean it up
+                cleaned = raw3.strip().strip('"').strip("'").strip()
+                if len(cleaned) >= 20 and cleaned.lower() not in ("null", "none", ""):
+                    sys_prompt = cleaned
 
         # Build suggested_mapping (column → role, for the frontend dropdowns)
         suggested_mapping = {}
