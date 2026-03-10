@@ -609,7 +609,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "learning_rate": lr_value,
         "fp16": not is_bfloat16_supported(),
         "bf16": is_bfloat16_supported(),
-        "logging_steps": max(1, log_frequency) if log_frequency else 1,
+        "logging_steps": 1,
         "report_to": ["wandb"] if config.get("enable_wandb") else "none",
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
