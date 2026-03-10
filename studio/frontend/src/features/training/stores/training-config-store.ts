@@ -2,7 +2,7 @@
 // Copyright © 2025 Unsloth AI
 
 import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
-import type { StepNumber } from "@/types/training";
+import type { ModelType, StepNumber } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -127,8 +127,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions = false;
             }
 
+            // Use backend-provided model_type when available, otherwise
+            // infer from is_vision (temporary until backend ships model_type).
+            const inferredModelType: ModelType = modelDetails.model_type
+              ?? (modelDetails.is_vision ? "vision" : "text");
+
             set({
               ...patch,
+              modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isLoadingModelDefaults: false,
               isCheckingVision: false,
@@ -153,6 +159,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({
+                  modelType: isVision ? "vision" : "text",
                   isVisionModel: isVision,
                   isCheckingVision: false,
                 });
