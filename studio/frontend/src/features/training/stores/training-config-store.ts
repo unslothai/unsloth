@@ -165,6 +165,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             set({
               isLoadingModelDefaults: false,
+              isEmbeddingModel: false,
               isAudioModel: false,
               modelDefaultsError:
                 error instanceof Error
@@ -179,13 +180,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 set({
                   modelType: isVision ? "vision" : "text",
                   isVisionModel: isVision,
+                  isEmbeddingModel: false,
                   isAudioModel: false,
                   isCheckingVision: false,
                 });
               })
               .catch(() => {
                 if (get().selectedModel !== modelName) return;
-                set({ isCheckingVision: false, isAudioModel: false });
+                set({ isCheckingVision: false, isEmbeddingModel: false, isAudioModel: false });
               });
           });
       };
