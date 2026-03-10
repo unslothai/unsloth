@@ -200,6 +200,11 @@ def generate_smart_vlm_instruction(
             dataset_name=dataset_name,
         )
         if llm_result and llm_result.get("instruction"):
+            import logging
+            logging.getLogger(__name__).info(
+                f"[DEBUG] LLM-assisted VLM instruction generated: "
+                f"'{llm_result['instruction']}' (confidence={llm_result.get('confidence', 'N/A')})"
+            )
             return {
                 "instruction": llm_result["instruction"],
                 "instruction_column": None,
