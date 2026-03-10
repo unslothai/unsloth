@@ -661,30 +661,50 @@ def detect_vlm_dataset_structure(dataset):
 
         return False
 
+    def _score_image_candidate(col, sample_value):
+        """Score a candidate image column by how resolvable its value is."""
+        # PIL Image object (highest priority - already loaded)
+        if hasattr(sample_value, 'size') and hasattr(sample_value, 'mode'):
+            return 100
+
+        # Dict with image data (bytes/path from HF Image feature)
+        if isinstance(sample_value, dict) and ('bytes' in sample_value or 'path' in sample_value):
+            return 75
+
+        if isinstance(sample_value, str):
+            # URL strings are directly resolvable — prefer over bare filenames
+            if sample_value.startswith(("http://", "https://")):
+                return 70 if not is_metadata_column(col) else 55
+            # Bare file path
+            if is_metadata_column(col):
+                return 30
+            return 50
+
+        return 0
+
     def find_image_column():
-        """Find image column by filtering out metadata and checking keywords."""
+        """Find image column by keyword match + value-based fallback."""
         candidates = []
 
+        # Pass 1: keyword-matched columns
         for col in column_names:
-            # Check if contains image keywords (word-boundary match)
             if any(_keyword_in_column(keyword, col) for keyword in image_keywords):
-                # Verify it actually contains image data
                 sample_value = sample[col]
+                score = _score_image_candidate(col, sample_value)
+                if score > 0:
+                    candidates.append((col, score))
 
-                # PIL Image object (highest priority - even if name suggests metadata)
-                if hasattr(sample_value, 'size') and hasattr(sample_value, 'mode'):
-                    candidates.append((col, 100))  # High priority - actual PIL Image
-
-                # String (could be path) - but lower priority if name is metadata-like
-                elif isinstance(sample_value, str):
-                    if is_metadata_column(col):
-                        candidates.append((col, 30))  # Lower priority for metadata names
-                    else:
-                        candidates.append((col, 50))  # Medium priority
-
-                # Dict with image data
-                elif isinstance(sample_value, dict) and ('bytes' in sample_value or 'path' in sample_value):
-                    candidates.append((col, 75))  # High-medium priority
+        # Pass 2: value-based fallback — find columns with image URLs/paths
+        # even if the column name doesn't match image keywords
+        already = {c[0] for c in candidates}
+        for col in column_names:
+            if col in already:
+                continue
+            sample_value = sample[col]
+            if _is_image_value(sample_value):
+                score = _score_image_candidate(col, sample_value)
+                # Slightly penalise non-keyword columns so keyword matches win on ties
+                candidates.append((col, max(score - 5, 1)))
 
         # Return highest priority candidate
         if candidates:
