@@ -64,7 +64,7 @@ export interface ModelConfigResponse {
   is_lora: boolean;
   is_audio?: boolean;
   base_model?: string | null;
-  model_type?: "text" | "vision" | "tts" | "embeddings" | null;
+  model_type?: "text" | "vision" | "audio" | "embeddings" | null;
 }
 
 export interface LocalModelInfo {

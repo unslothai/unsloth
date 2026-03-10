@@ -118,7 +118,7 @@ const BOOSTED_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
     "image-to-text",
     "image-captioning",
   ]),
-  tts: new Set([
+  audio: new Set([
     "text-to-speech",
     "text-to-audio",
     "automatic-speech-recognition",
@@ -195,7 +195,7 @@ const CURATED_EMPTY_QUERY_DATASET_IDS: Partial<Record<ModelType, string[]>> = {
     "lmms-lab/VQAv2",
     "hezarai/parsynth-ocr-200k",
   ],
-  tts: [
+  audio: [
     "MrDragonFox/Elise",
     "keithito/lj_speech",
     "parler-tts/mls_eng_10k",
@@ -242,7 +242,7 @@ const INCOMPATIBLE_TASKS_BY_MODEL: Record<ModelType, Set<string>> = {
     "audio-to-audio",
     "automatic-speech-recognition",
   ]),
-  tts: new Set([
+  audio: new Set([
     "text-to-image",
     "image-to-image",
     "image-to-video",
