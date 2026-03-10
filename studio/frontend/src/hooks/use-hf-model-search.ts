@@ -25,6 +25,13 @@ const EXCLUDED_TAGS = new Set([
   "ctranslate2",
 ]);
 
+// Embedding / sentence-transformer models ship with onnx/openvino as additional
+// export formats — they should not be excluded by the tag check above.
+const EMBEDDING_TAGS = new Set([
+  "sentence-transformers",
+  "feature-extraction",
+]);
+
 function withPopularitySort(
   input: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
@@ -56,7 +63,8 @@ function makeMapModel(excludeGguf: boolean) {
       safetensors?: { total: number };
       tags?: string[];
     };
-    if (m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
+    const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
+    if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
       return null;
     }
     if (excludeGguf && m.tags?.includes("gguf")) {
