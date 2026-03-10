@@ -387,7 +387,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
+            message = f"Unsloth: Sample packing skipped ({reason} detected)."
             print(message)
 
         packing_active = False

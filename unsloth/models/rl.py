@@ -127,8 +127,6 @@ def _maybe_prepare_vllm_for_resume(trainer):
         torch.cuda.empty_cache()
 
 
-
-
 def _patch_resume_from_checkpoint_memory(trainer_class):
     original_train = getattr(trainer_class, "train", None)
     if original_train is None:
@@ -145,12 +143,8 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
             _maybe_prepare_vllm_for_resume(self)
         return original_train(self, *args, **kwargs)
 
-
     _unsloth_train_with_resume_guard._unsloth_resume_guard = True
     trainer_class.train = _unsloth_train_with_resume_guard
-
-
-
 
 def PatchRL(FastLanguageModel):
     try:
@@ -745,8 +739,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             else:
                 continue
             call_args.append(f"{k} = {k}")
-        arguments = f"\n{' '*8}" + f",\n{' '*8}".join(arguments)
-        call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
+        arguments = f"\n{' ' * 8}" + f",\n{' ' * 8}".join(arguments)
+        call_args = f"\n{' ' * 12}" + f",\n{' ' * 12}".join(call_args)
         processed.append(
             (
                 arguments,
@@ -760,7 +754,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add tokenizer if not seen
     if "tokenizer" not in parameters and "processing_class" in parameters:
-        arguments += f",\n{' '*8}tokenizer = None"
+        arguments += f",\n{' ' * 8}tokenizer = None"
         call_args = call_args.replace(
             "processing_class = processing_class",
             "processing_class = tokenizer if tokenizer is not None else processing_class",
@@ -1765,17 +1759,17 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 # Strip multiple commas
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
                 new_vllm_part = (
-                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"
-                    f"\n{' '*8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
+                    f"\n{' ' * 8}else:\n"
                 )
         else:
             new_vllm_part = (
-                f"\n{' '*8}if {args}.use_vllm:\n"
-                f"{' '*12}self.llm = model.vllm_engine\n"
-                f"{' '*12}self.guided_decoding_regex = getattr(args, 'vllm_guided_decoding_regex', None)\n"
-                f"{' '*12}self._last_loaded_step = 0\n"
-                f"{' '*12}self.accelerator.wait_for_everyone()\n"
-                f"\n{' '*8}else:\n"
+                f"\n{' ' * 8}if {args}.use_vllm:\n"
+                f"{' ' * 12}self.llm = model.vllm_engine\n"
+                f"{' ' * 12}self.guided_decoding_regex = getattr(args, 'vllm_guided_decoding_regex', None)\n"
+                f"{' ' * 12}self._last_loaded_step = 0\n"
+                f"{' ' * 12}self.accelerator.wait_for_everyone()\n"
+                f"\n{' ' * 8}else:\n"
             )
 
         if trl_version >= Version("0.18.0"):

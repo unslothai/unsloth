@@ -205,10 +205,10 @@ def evaluate_model_aime(
 ):
     """Evaluate model on combined AIME dataset with official configuration"""
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"🧮 AIME EVALUATION - {model_type.upper()} MODEL")
     print(f"Combined Dataset: test2024 + test2025-I + test2025-II")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Load combined AIME dataset
     try:
@@ -417,9 +417,9 @@ def evaluate_model_aime(
         json.dump({"results": results, "records": records}, f, indent = 4)
 
     # Print comprehensive summary
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"📊 AIME EVALUATION RESULTS - {model_type.upper()}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     print(f"\n🎯 Overall Performance:")
     print(f"   Total problems:       {total_problems:>6}")
@@ -464,7 +464,7 @@ def evaluate_model_aime(
 
     print(f"\n🎖️  AIME Performance:     {tier} ({accuracy:.1f}%)")
     print(f"\n💾 Detailed results saved to: {filename}")
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
 
     return results
 
@@ -472,9 +472,9 @@ def evaluate_model_aime(
 # Comparison functions for multiple model results
 def compare_aime_results(all_results):
     """Generate comprehensive comparison for AIME evaluation results"""
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("COMPREHENSIVE AIME MODEL COMPARISON")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     # Main comparison table
     print(
@@ -493,9 +493,9 @@ def compare_aime_results(all_results):
 
     # Performance improvement analysis
     if len(all_results) > 1:
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print("IMPROVEMENT ANALYSIS")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
 
         base_result = all_results[0]  # Assume first is base model
 
@@ -509,9 +509,9 @@ def compare_aime_results(all_results):
             print(f"  Pass@K improvement:    {pass_k_improvement:+.1f}%")
 
     # Dataset breakdown
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("PERFORMANCE BY DATASET")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
 
     # Get all unique datasets from the first result
     if all_results and "source_accuracies" in all_results[0]:
