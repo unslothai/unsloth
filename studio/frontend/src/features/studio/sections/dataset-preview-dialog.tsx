@@ -68,7 +68,7 @@ export function DatasetPreviewDialog({
   const {
     manualMapping, setManualMapping, datasetFormat,
     setDatasetAdvisorFields, datasetAdvisorNotification,
-    datasetSystemPrompt, datasetUserTemplate, datasetAssistantTemplate,
+    datasetSystemPrompt,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       manualMapping: s.datasetManualMapping,
@@ -77,8 +77,6 @@ export function DatasetPreviewDialog({
       setDatasetAdvisorFields: s.setDatasetAdvisorFields,
       datasetAdvisorNotification: s.datasetAdvisorNotification,
       datasetSystemPrompt: s.datasetSystemPrompt,
-      datasetUserTemplate: s.datasetUserTemplate,
-      datasetAssistantTemplate: s.datasetAssistantTemplate,
     })),
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
@@ -121,12 +119,10 @@ export function DatasetPreviewDialog({
         }
         setManualMapping(mapped);
 
-        // Store conversion advisor fields (templates, system prompt, etc.)
-        if (result.system_prompt || result.user_template || result.assistant_template) {
+        // Store conversion advisor fields (system prompt, label mapping, notification)
+        if (result.system_prompt || result.label_mapping || result.user_notification) {
           setDatasetAdvisorFields({
             systemPrompt: result.system_prompt ?? undefined,
-            userTemplate: result.user_template ?? undefined,
-            assistantTemplate: result.assistant_template ?? undefined,
             labelMapping: result.label_mapping ?? undefined,
             notification: result.user_notification ?? null,
           });
@@ -459,8 +455,6 @@ export function DatasetPreviewDialog({
                   aiError={aiError}
                   advisorNotification={datasetAdvisorNotification}
                   advisorSystemPrompt={datasetSystemPrompt || undefined}
-                  advisorUserTemplate={datasetUserTemplate || undefined}
-                  advisorAssistantTemplate={datasetAssistantTemplate || undefined}
                 />
               )}
 

@@ -36,13 +36,12 @@ export function buildTrainingStartPayload(
       : undefined;
 
   // Inject conversion advisor metadata into the mapping (__ prefix keys)
-  if (customFormatMapping && config.datasetSystemPrompt) {
-    customFormatMapping.__system_prompt = config.datasetSystemPrompt;
-    if (config.datasetUserTemplate) {
-      customFormatMapping.__user_template = config.datasetUserTemplate;
-    }
-    if (config.datasetAssistantTemplate) {
-      customFormatMapping.__assistant_template = config.datasetAssistantTemplate;
+  const hasAdvisorMeta =
+    config.datasetSystemPrompt ||
+    Object.keys(config.datasetLabelMapping).length > 0;
+  if (customFormatMapping && hasAdvisorMeta) {
+    if (config.datasetSystemPrompt) {
+      customFormatMapping.__system_prompt = config.datasetSystemPrompt;
     }
     if (Object.keys(config.datasetLabelMapping).length > 0) {
       customFormatMapping.__label_mapping = config.datasetLabelMapping;

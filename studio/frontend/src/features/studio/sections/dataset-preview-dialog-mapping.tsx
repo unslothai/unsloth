@@ -102,8 +102,6 @@ export function DatasetMappingCard({
   aiError,
   advisorNotification,
   advisorSystemPrompt,
-  advisorUserTemplate,
-  advisorAssistantTemplate,
 }: {
   mapping: Record<string, string>;
   mappingOk: boolean;
@@ -116,8 +114,6 @@ export function DatasetMappingCard({
   aiError?: string | null;
   advisorNotification?: string | null;
   advisorSystemPrompt?: string;
-  advisorUserTemplate?: string;
-  advisorAssistantTemplate?: string;
 }) {
   const entries = Object.entries(mapping);
   const requiredLabel = isAudio
@@ -229,26 +225,10 @@ export function DatasetMappingCard({
                 <Sparkles className="size-3.5 shrink-0 mt-0.5" />
                 <span>{advisorNotification}</span>
               </div>
-              {(advisorSystemPrompt || advisorUserTemplate || advisorAssistantTemplate) && (
-                <div className="space-y-1.5 pl-5.5 text-[11px] font-mono text-indigo-600/80 dark:text-indigo-400/80">
-                  {advisorSystemPrompt && (
-                    <div>
-                      <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">System:</span>{" "}
-                      <span className="break-words">{advisorSystemPrompt}</span>
-                    </div>
-                  )}
-                  {advisorUserTemplate && (
-                    <div>
-                      <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">User:</span>{" "}
-                      <span className="break-words">{advisorUserTemplate}</span>
-                    </div>
-                  )}
-                  {advisorAssistantTemplate && (
-                    <div>
-                      <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">Assistant:</span>{" "}
-                      <span className="break-words">{advisorAssistantTemplate}</span>
-                    </div>
-                  )}
+              {advisorSystemPrompt && (
+                <div className="pl-5.5 text-[11px] font-mono text-indigo-600/80 dark:text-indigo-400/80">
+                  <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">System:</span>{" "}
+                  <span className="break-words">{advisorSystemPrompt}</span>
                 </div>
               )}
             </div>

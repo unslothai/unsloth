@@ -377,8 +377,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetAdvisorFields: (fields) =>
           set({
             datasetSystemPrompt: fields.systemPrompt ?? get().datasetSystemPrompt,
-            datasetUserTemplate: fields.userTemplate ?? get().datasetUserTemplate,
-            datasetAssistantTemplate: fields.assistantTemplate ?? get().datasetAssistantTemplate,
+            datasetUserTemplate: "",  // templates no longer used
+            datasetAssistantTemplate: "",  // templates no longer used
             datasetLabelMapping: fields.labelMapping ?? get().datasetLabelMapping,
             datasetAdvisorNotification: fields.notification !== undefined ? fields.notification : get().datasetAdvisorNotification,
           }),
