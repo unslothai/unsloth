@@ -332,8 +332,11 @@ def convert_to_vlm_format(
             else:
                 image_data = Image.open(image_data).convert("RGB")
 
-        # Get text
+        # Get text (if list of strings, pick a random one — e.g. multiple captions)
         text_data = sample[text_column]
+        if isinstance(text_data, list) and len(text_data) > 0:
+            import random
+            text_data = random.choice(text_data)
 
         # Get instruction (static or dynamic)
         if uses_dynamic and instruction_column:
