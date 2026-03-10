@@ -545,15 +545,16 @@ def _run_multi_pass_advisor(
             {
                 "role": "system",
                 "content": (
-                    "You are a dataset conversion specialist for LLM fine-tuning. "
-                    "You design templates to convert non-conversational datasets into "
-                    "user/assistant conversation format. Respond with ONLY valid JSON."
+                    "You convert non-conversational datasets into user/assistant pairs "
+                    "for LLM fine-tuning. The user message is the INPUT (what the model "
+                    "receives). The assistant message is the OUTPUT (what the model should "
+                    "generate). You MUST have both. Respond with ONLY valid JSON."
                 ),
             },
             {
                 "role": "user",
                 "content": textwrap.dedent(f"""\
-                    This dataset was classified as:
+                    Dataset classification:
                     {json.dumps(pass1, indent=2)}
 
                     COLUMNS: {columns}
@@ -561,30 +562,41 @@ def _run_multi_pass_advisor(
                     SAMPLE DATA:
                     {samples_text}
 
-                    Design user and assistant message templates for this dataset.
+                    Split the columns into INPUT (user_template) and OUTPUT (assistant_template).
+                    Templates use ONLY {{column_name}} placeholders, NEVER actual data values.
+
+                    EXAMPLES of correct templates for different dataset types:
+                    - Summarization (columns: document, summary):
+                      user_template: "{{document}}"
+                      assistant_template: "{{summary}}"
+                      column_roles: {{"document": "user", "summary": "assistant"}}
+                    - NLI (columns: premise, hypothesis, label):
+                      user_template: "Premise: {{premise}}\\nHypothesis: {{hypothesis}}"
+                      assistant_template: "{{label_name}}"
+                      column_roles: {{"premise": "user", "hypothesis": "user", "label": "assistant"}}
+                    - Translation (columns: en, fr):
+                      user_template: "{{en}}"
+                      assistant_template: "{{fr}}"
+                      column_roles: {{"en": "user", "fr": "assistant"}}
+                    - QA (columns: question, context, answer):
+                      user_template: "Context: {{context}}\\nQuestion: {{question}}"
+                      assistant_template: "{{answer}}"
+                      column_roles: {{"context": "user", "question": "user", "answer": "assistant"}}
 
                     RULES:
-                    - Use {{column_name}} placeholders in templates to reference column values.
-                    - If a column has integer labels, provide a COMPLETE label_mapping for ALL values.
-                      Look at the actual sample data to determine what each integer means.
-                    - When a label_mapping exists for a column, use {{column_name_name}} in the
-                      assistant template to get the mapped string (not the raw integer).
-                    - The user template should include ALL relevant input columns.
-                    - The assistant template should produce the expected model output.
-                    - column_roles: mark columns used in the user template as "user",
-                      columns used in the assistant template as "assistant".
+                    - There MUST be at least one column as "user" AND at least one as "assistant".
+                    - NEVER put the output/target column in the user template.
+                    - If a column has integer labels, provide a label_mapping for ALL integer values.
+                    - When label_mapping exists for a column, use {{column_name}} in assistant_template
+                      (the mapping is applied automatically).
 
-                    Respond with a JSON object:
+                    Respond with JSON:
                     {{
-                        "user_template": "<template for user message using {{column}} placeholders>",
-                        "assistant_template": "<template for assistant response using {{column_name}} placeholders>",
-                        "column_roles": {{
-                            "<column_name>": "user or assistant (based on which template uses it)"
-                        }},
-                        "label_mapping": {{
-                            "<column_name>": {{"0": "<human-readable label>", "1": "<label>", ...}}
-                        }},
-                        "notes": "<any important notes about this conversion>"
+                        "user_template": "<INPUT template with {{column}} placeholders>",
+                        "assistant_template": "<OUTPUT template with {{column}} placeholders>",
+                        "column_roles": {{"<col>": "user or assistant"}},
+                        "label_mapping": {{"<col>": {{"0": "<label>", "1": "<label>"}}}},
+                        "notes": "<brief note>"
                     }}"""),
             },
         ]
@@ -600,6 +612,19 @@ def _run_multi_pass_advisor(
         user_tpl = pass2.get("user_template", "")
         asst_tpl = pass2.get("assistant_template", "")
         label_map = pass2.get("label_mapping", {})
+
+        # Sanity check: assistant_template must reference at least one column
+        has_asst_col = any(
+            f"{{{col}}}" in asst_tpl or f"{{{col}_name}}" in asst_tpl
+            for col in columns
+        )
+        if not has_asst_col and asst_tpl:
+            # LLM put literal text instead of a placeholder — reject
+            print(
+                f"🤖 Pass 2 sanity fail: assistant_template has no column placeholders: {asst_tpl!r}",
+                flush=True,
+            )
+            return None  # triggers fallback to simple classification
 
         # ── Pass 3: System prompt (non-conversational datasets only) ──
         sys_prompt = ""
