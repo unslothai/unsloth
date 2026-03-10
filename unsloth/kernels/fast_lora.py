@@ -25,6 +25,10 @@ from .utils import (
 )
 
 
+def _match_backward_weight_dtype(weight, dtype):
+    return weight if weight.dtype == dtype else weight.to(dtype)
+
+
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -191,12 +195,14 @@ class LoRA_MLP(torch.autograd.Function):
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
         upW = fast_dequantize(upW.t(), upW_quant)
+        upW = _match_backward_weight_dtype(upW, df.dtype)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
+        gateW = _match_backward_weight_dtype(gateW, dX.dtype)
         # dX += de @ gateW.t()
         dX.addmm_(de, gateW.t())
         del gateW
@@ -487,6 +493,7 @@ class LoRA_QKV(torch.autograd.Function):
         # Combine derivatives to find dX
         # dQ
         QW = fast_dequantize(QW.t(), QW_quant)
+        QW = _match_backward_weight_dtype(QW, dQ.dtype)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
@@ -494,6 +501,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         # dK
         KW = fast_dequantize(KW.t(), KW_quant)
+        KW = _match_backward_weight_dtype(KW, dX.dtype)
         # dX += dK @ KW.t()
         dX.addmm_(dK, KW.t())
         del KW
@@ -502,6 +510,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         # dV
         VW = fast_dequantize(VW.t(), VW_quant)
+        VW = _match_backward_weight_dtype(VW, dX.dtype)
         # dX += dV @ VW.t()
         dX.addmm_(dV, VW.t())
         del VW
@@ -629,6 +638,7 @@ class LoRA_W(torch.autograd.Function):
 
         # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
+        W = _match_backward_weight_dtype(W, dY.dtype)
         dX = dY @ W.t()
         del W
         # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
