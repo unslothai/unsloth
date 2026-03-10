@@ -249,17 +249,42 @@ class LlamaCppBackend:
                     )
 
                 # Determine the filename from the variant (e.g., "Q4_K_M" -> find matching file)
+                # For split GGUFs (e.g., *-00001-of-00003.gguf) we must download ALL shards.
                 gguf_filename = None
+                gguf_extra_shards: list[str] = []
                 if hf_variant:
                     # Try common naming patterns
                     try:
+                        import re
                         from huggingface_hub import list_repo_files
                         files = list_repo_files(hf_repo, token=hf_token)
                         variant_lower = hf_variant.lower()
-                        for f in files:
-                            if f.endswith(".gguf") and variant_lower in f.lower():
-                                gguf_filename = f
-                                break
+                        # Use word-boundary matching so "Q8_0" doesn't also
+                        # match "IQ8_0" or other superset variant names.
+                        boundary = re.compile(
+                            r'(?<![a-zA-Z0-9])' + re.escape(variant_lower) + r'(?![a-zA-Z0-9])'
+                        )
+                        gguf_files = sorted(
+                            f for f in files
+                            if f.endswith(".gguf") and boundary.search(f.lower())
+                        )
+                        if gguf_files:
+                            gguf_filename = gguf_files[0]
+                            # For split GGUFs (e.g. model-Q8_0-00001-of-00003.gguf)
+                            # discover siblings by exact basename + total match
+                            # so "model-Q8_0-v2-*" isn't pulled in as a sibling.
+                            shard_pat = re.compile(r'^(.*)-\d{5}-of-(\d{5})\.gguf$')
+                            m = shard_pat.match(gguf_filename)
+                            if m:
+                                prefix = m.group(1)
+                                total = m.group(2)
+                                sibling_pat = re.compile(
+                                    r'^' + re.escape(prefix) + r'-\d{5}-of-' + re.escape(total) + r'\.gguf$'
+                                )
+                                gguf_extra_shards = [
+                                    f for f in gguf_files[1:]
+                                    if sibling_pat.match(f)
+                                ]
                     except Exception as e:
                         logger.warning(f"Could not list repo files: {e}")
 
@@ -269,13 +294,23 @@ class LlamaCppBackend:
                         repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                         gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
-                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}")
+                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}"
+                            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""))
                 try:
                     local_path = hf_hub_download(
                         repo_id=hf_repo,
                         filename=gguf_filename,
                         token=hf_token,
                     )
+                    # Download remaining shards for split GGUFs — llama-server
+                    # auto-discovers them when they are in the same directory.
+                    for shard in gguf_extra_shards:
+                        logger.info(f"Downloading GGUF shard: {shard}")
+                        hf_hub_download(
+                            repo_id=hf_repo,
+                            filename=shard,
+                            token=hf_token,
+                        )
                 except Exception as e:
                     raise RuntimeError(
                         f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
