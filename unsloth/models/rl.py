@@ -106,16 +106,23 @@ def _maybe_prepare_vllm_for_resume(trainer):
     if callable(sleep_fn):
         try:
             sleep_mode = int(os.environ.get("VLLM_SLEEP_MODE", "1"))
+        except ValueError:
+            sleep_mode = 1
+        try:
             sleep_fn(sleep_mode)
             slept = True
         except TypeError:
             try:
                 sleep_fn()
                 slept = True
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as error:
+                logger.warning_once(
+                    f"Unsloth: vLLM sleep() failed during resume cleanup: {error}"
+                )
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: vLLM sleep() failed during resume cleanup: {error}"
+            )
 
     if slept:
         trainer._unsloth_resume_wake_vllm = True

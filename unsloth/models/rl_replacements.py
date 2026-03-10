@@ -249,7 +249,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
             f"{nested_indent}wake_up = getattr(getattr(self, 'llm', None), 'wake_up', None)\n"
             f"{nested_indent}if callable(wake_up):\n"
             f"{nested_indent}    try: wake_up()\n"
-            f"{nested_indent}    except Exception: pass\n"
+            f"{nested_indent}    except Exception as error:\n"
+            f"{nested_indent}        logging.getLogger(__name__).warning('Unsloth: vLLM wake_up() failed during resume: %s', error)\n"
             f"{nested_indent}self._unsloth_resume_wake_vllm = False\n"
             f"{indent}with torch.inference_mode():"
         )
