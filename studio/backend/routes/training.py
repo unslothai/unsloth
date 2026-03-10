@@ -200,6 +200,7 @@ async def start_training(
             "finetune_mlp_modules": request.finetune_mlp_modules,
             "is_dataset_image": request.is_dataset_image,
             "is_dataset_audio": request.is_dataset_audio,
+            "is_embedding": request.is_embedding,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",

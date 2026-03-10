@@ -36,6 +36,7 @@ const initialState: TrainingConfigState = {
   uploadedFile: null,
   isCheckingVision: false,
   isVisionModel: false,
+  isEmbeddingModel: false,
   isAudioModel: false,
   isLoadingModelDefaults: false,
   modelDefaultsError: null,
@@ -59,6 +60,7 @@ let _trainOnCompletionsManuallySet = false;
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
+  "isEmbeddingModel",
   "isAudioModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
@@ -140,14 +142,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             // Use backend-provided model_type when available, otherwise
-            // infer from is_vision (temporary until backend ships model_type).
+            // infer from capability flags.
+            const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType: ModelType = modelDetails.model_type
-              ?? (modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
+              ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
             set({
               ...patch,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
+              isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
               isLoadingModelDefaults: false,
               isCheckingVision: false,
@@ -161,6 +165,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             set({
               isLoadingModelDefaults: false,
+              isEmbeddingModel: false,
               isAudioModel: false,
               modelDefaultsError:
                 error instanceof Error
@@ -175,13 +180,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 set({
                   modelType: isVision ? "vision" : "text",
                   isVisionModel: isVision,
+                  isEmbeddingModel: false,
                   isAudioModel: false,
                   isCheckingVision: false,
                 });
               })
               .catch(() => {
                 if (get().selectedModel !== modelName) return;
-                set({ isCheckingVision: false, isAudioModel: false });
+                set({ isCheckingVision: false, isEmbeddingModel: false, isAudioModel: false });
               });
           });
       };
@@ -256,6 +262,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             selectedModel: null,
             isCheckingVision: false,
             isVisionModel: false,
+            isEmbeddingModel: false,
             isAudioModel: false,
             isDatasetAudio: false,
             isLoadingModelDefaults: false,
@@ -273,6 +280,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               isCheckingVision: false,
               isVisionModel: false,
+              isEmbeddingModel: false,
               isAudioModel: false,
               isDatasetAudio: false,
               isLoadingModelDefaults: false,
