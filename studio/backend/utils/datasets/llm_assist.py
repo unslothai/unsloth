@@ -564,20 +564,27 @@ def _run_multi_pass_advisor(
                     Design a conversion strategy to turn this into conversation format for fine-tuning.
                     The strategy should create a system prompt, a user message template, and an assistant message template.
 
-                    For the user template, use {{column_name}} placeholders for column values.
-                    For the assistant template, use {{column_name}} placeholders.
-                    If a column has integer values that represent categories, provide a label mapping.
+                    RULES:
+                    - Use {{column_name}} placeholders in templates to reference column values.
+                    - If a column has integer labels, provide a COMPLETE label_mapping for ALL values.
+                      Look at the actual sample data to determine what each integer means.
+                    - When a label_mapping exists for a column, use {{column_name_name}} in the
+                      assistant template to get the mapped string (not the raw integer).
+                    - The user template should include ALL relevant input columns.
+                    - The assistant template should produce the expected model output.
+                    - column_roles: mark columns used in the user template as "user",
+                      columns used in the assistant template as "assistant".
 
                     Respond with a JSON object:
                     {{
-                        "system_prompt": "<system prompt for the fine-tuned model>",
+                        "system_prompt": "<system prompt describing what the model should do>",
                         "user_template": "<template for user message using {{column}} placeholders>",
-                        "assistant_template": "<template for assistant message using {{column}} placeholders>",
+                        "assistant_template": "<template for assistant response using {{column_name}} placeholders>",
                         "column_roles": {{
-                            "<column_name>": "<role: user|assistant|system|template_var>"
+                            "<column_name>": "user or assistant (based on which template uses it)"
                         }},
                         "label_mapping": {{
-                            "<column_name>": {{"0": "<string label>", "1": "<string label>"}}
+                            "<column_name>": {{"0": "<human-readable label>", "1": "<label>", ...}}
                         }},
                         "notes": "<any important notes about this conversion>"
                     }}"""),
@@ -657,30 +664,42 @@ def _run_multi_pass_advisor(
         pass3 = _parse_json_response(raw3)
         print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {pass3}", flush=True)
 
+        # ── Quality gate ──
+        if pass3 and pass3.get("quality_score") is not None:
+            score = pass3.get("quality_score", 0)
+            acceptable = pass3.get("is_acceptable", False)
+            if not acceptable or (isinstance(score, (int, float)) and score < 6):
+                print(
+                    f"🤖 Advisor rejected: quality={score}, acceptable={acceptable}. "
+                    "Falling back to simple classification.",
+                    flush=True,
+                )
+                return None  # triggers fallback in llm_conversion_advisor()
+
         # ── Combine results ──
         final_sys_prompt = sys_prompt
         if pass3 and pass3.get("revised_system_prompt"):
-            final_sys_prompt = pass3["revised_system_prompt"]
+            revised = pass3["revised_system_prompt"]
+            # Guard against LLM returning the literal string "null"
+            if isinstance(revised, str) and revised.lower() not in ("null", "none", ""):
+                final_sys_prompt = revised
 
         # Build suggested_mapping (column → role, for the frontend dropdowns)
+        # Include ALL columns referenced in templates, not just the first per role
         suggested_mapping = {}
         column_roles = pass2.get("column_roles", {})
         for col, role in column_roles.items():
             if col in columns and role in ("user", "assistant", "system"):
                 suggested_mapping[col] = role
 
-        # Ensure at least user + assistant in mapping
-        if "user" not in set(suggested_mapping.values()):
-            # Try to infer from templates
-            for col in columns:
-                if f"{{{col}}}" in user_tpl and col not in suggested_mapping:
-                    suggested_mapping[col] = "user"
-                    break
-        if "assistant" not in set(suggested_mapping.values()):
-            for col in columns:
-                if f"{{{col}}}" in asst_tpl and col not in suggested_mapping:
-                    suggested_mapping[col] = "assistant"
-                    break
+        # Infer roles from template placeholders for any columns not yet mapped
+        for col in columns:
+            if col in suggested_mapping:
+                continue
+            if f"{{{col}}}" in user_tpl or f"{{{col}_name}}" in user_tpl:
+                suggested_mapping[col] = "user"
+            elif f"{{{col}}}" in asst_tpl or f"{{{col}_name}}" in asst_tpl:
+                suggested_mapping[col] = "assistant"
 
         user_notification = None
         if pass3:
