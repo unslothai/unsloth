@@ -1871,7 +1871,7 @@ class UnslothTrainer:
                 if subset:
                     load_kwargs["name"] = subset
 
-                if dataset_slice_end is not None:
+                if dataset_slice_end is not None and dataset_slice_end >= 0:
                     # Manual slice — stream only the rows we need instead of
                     # downloading the entire dataset.
                     rows_to_stream = dataset_slice_end + 1
