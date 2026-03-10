@@ -459,8 +459,15 @@ class MLXLlamaForCausalLM(mnn.Module):
         past_key_values: Optional[list] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        use_cce: bool = False,
+        use_cce: Optional[bool] = None,
     ) -> Tuple[mx.array, mx.array]:
+        # Check for model-level _use_cce flag (for use with mx.compile)
+        # Default to CCE if mx.fast.cce_loss is available (memory efficient)
+        if use_cce is None:
+            use_cce = getattr(self, '_use_cce', False)
+            if not use_cce:
+                import mlx.core as mx
+                use_cce = hasattr(mx, "fast") and hasattr(mx.fast, "cce_loss")
         hidden_states, past_key_values = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,

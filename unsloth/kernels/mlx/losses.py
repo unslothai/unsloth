@@ -190,6 +190,8 @@ def chunked_cross_entropy_loss(
     This avoids materializing the full [N, V] logits tensor by processing 
     the vocabulary or sequence in chunks.
     
+    Uses mx.fast.cce_loss when available for optimal performance.
+    
     Args:
         hidden: Hidden states [N, D] or [B, S, D]
         weight: LM head weights [V, D]
@@ -202,8 +204,11 @@ def chunked_cross_entropy_loss(
     Returns:
         Cross-entropy loss
     """
-    # Try to use optimized mlx.fast.cce_loss if available (from add-cce-loss branch)
-    if hasattr(mx, "fast") and hasattr(mx.fast, "cce_loss"):
+    # ALWAYS use optimized mlx.fast.cce_loss if available (from mlx-cce)
+    # This provides 50%+ memory savings for large vocab models
+    _HAS_CCE = hasattr(mx, "fast") and hasattr(mx.fast, "cce_loss")
+    
+    if _HAS_CCE:
         # Reshape to 2D/1D for cce_loss
         hidden_2d = hidden.reshape(-1, hidden.shape[-1])
         targets_1d = targets.reshape(-1)
