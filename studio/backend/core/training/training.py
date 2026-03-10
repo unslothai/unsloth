@@ -150,6 +150,7 @@ class TrainingBackend:
             "custom_format_mapping": kwargs.get("custom_format_mapping"),
             "is_dataset_image": kwargs.get("is_dataset_image", False),
             "is_dataset_audio": kwargs.get("is_dataset_audio", False),
+            "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
             "batch_size": kwargs.get("batch_size", 2),
