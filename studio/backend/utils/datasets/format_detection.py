@@ -361,6 +361,7 @@ def detect_multimodal_dataset(dataset):
         'image', 'img', 'pixel',
         'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tiff', 'svg',
         'photo', 'pic', 'picture', 'visual',
+        'file_name', 'filename',
     ]
 
     # Keywords that indicate audio data
@@ -477,6 +478,17 @@ def _is_image_value(value) -> bool:
     if isinstance(value, (bytes, bytearray)):
         return _has_image_header(value)
 
+    # String that looks like an image file path or URL
+    _IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.svg')
+    if isinstance(value, str) and len(value) < 1000:
+        lower = value.strip().lower()
+        # Image URL (http://... ending in image extension)
+        if lower.startswith(("http://", "https://")) and any(lower.split("?")[0].endswith(ext) for ext in _IMAGE_EXTS):
+            return True
+        # Image file path (relative or absolute path ending in image extension)
+        if any(lower.endswith(ext) for ext in _IMAGE_EXTS):
+            return True
+
     return False
 
 
@@ -581,6 +593,46 @@ def detect_vlm_dataset_structure(dataset):
                                 "text_column": None,
                             }
 
+    # Check for ShareGPT/ChatML conversations with <image> placeholder + companion image column
+    # (e.g. Lin-Chen/ShareGPT4V, LLaVA-style datasets)
+    for chat_col in ("conversations", "messages"):
+        if chat_col not in column_names:
+            continue
+        chat_data = sample[chat_col]
+        if not isinstance(chat_data, list) or len(chat_data) == 0:
+            continue
+        first_msg = chat_data[0]
+        if not isinstance(first_msg, dict):
+            continue
+        # Detect ShareGPT (from/value) or ChatML (role/content) keys
+        msg_text = first_msg.get("value") or first_msg.get("content")
+        if not isinstance(msg_text, str):
+            continue
+        # Check for <image> placeholder anywhere in the conversation
+        has_image_placeholder = any(
+            "<image>" in str(m.get("value", "") or m.get("content", ""))
+            for m in chat_data
+            if isinstance(m, dict)
+        )
+        if not has_image_placeholder:
+            continue
+        # Find companion image column
+        image_col = None
+        for col in column_names:
+            if col == chat_col:
+                continue
+            if _keyword_in_column("image", col) or _keyword_in_column("img", col):
+                image_col = col
+                break
+        if image_col:
+            return {
+                "format": "sharegpt_with_images",
+                "needs_conversion": True,
+                "image_column": image_col,
+                "text_column": None,
+                "messages_column": chat_col,
+            }
+
     # Find image and text columns using metadata filtering
 
     # Define metadata patterns to EXCLUDE
@@ -590,7 +642,7 @@ def detect_vlm_dataset_structure(dataset):
     }
 
     # Image-related keywords
-    image_keywords = ['image', 'img', 'photo', 'picture', 'pic', 'visual', 'scan']
+    image_keywords = ['image', 'img', 'photo', 'picture', 'pic', 'visual', 'scan', 'file_name', 'filename']
 
     # Text-related keywords
     text_keywords = ['text', 'caption', 'description', 'answer', 'output', 'response', 'label']
