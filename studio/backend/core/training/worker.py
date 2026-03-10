@@ -121,6 +121,7 @@ def run_training_process(
             sys.path.insert(0, backend_path)
 
         from core.training.trainer import UnslothTrainer, TrainingProgress
+        from utils.paths import ensure_dir, resolve_output_dir, resolve_tensorboard_dir
 
         import transformers
         logger.info("Subprocess loaded transformers %s", transformers.__version__)
@@ -305,7 +306,14 @@ def run_training_process(
         # Generate output dir
         output_dir = config.get("output_dir")
         if not output_dir:
-            output_dir = f"./outputs/{model_name.replace('/', '_')}_{int(time.time())}"
+            output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
+        output_dir = str(resolve_output_dir(output_dir))
+        ensure_dir(Path(output_dir))
+
+        tensorboard_dir = config.get("tensorboard_dir")
+        if config.get("enable_tensorboard", False):
+            tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
+            ensure_dir(Path(tensorboard_dir))
 
         # Start training (directly — no inner thread, we ARE the subprocess)
         _send_status(event_queue, "Starting training...")
@@ -331,7 +339,7 @@ def run_training_process(
             wandb_project=config.get("wandb_project", "unsloth-training"),
             wandb_token=config.get("wandb_token"),
             enable_tensorboard=config.get("enable_tensorboard", False),
-            tensorboard_dir=config.get("tensorboard_dir", "runs"),
+            tensorboard_dir=tensorboard_dir,
             eval_dataset=eval_dataset,
             eval_steps=eval_steps,
             max_seq_length=config.get("max_seq_length", 2048),
