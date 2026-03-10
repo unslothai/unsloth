@@ -7,9 +7,42 @@ import { Separator } from "@/components/ui/separator";
 import { useTrainingConfigStore } from "@/features/training";
 import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
-import { GpuIcon } from "@hugeicons/core-free-icons";
+import { ChipIcon, Database02Icon, GpuIcon, Settings04Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
+
+function Row({
+  label,
+  value,
+  mono,
+  capitalize,
+  uppercase,
+}: {
+  label: string;
+  value: React.ReactNode;
+  mono?: boolean;
+  capitalize?: boolean;
+  uppercase?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-muted-foreground">{label}</span>
+      <span
+        className={
+          mono
+            ? "font-mono text-xs"
+            : capitalize
+              ? "capitalize"
+              : uppercase
+                ? "uppercase"
+                : undefined
+        }
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
 
 export function SummaryStep() {
   const hw = useHardwareInfo();
@@ -71,140 +104,113 @@ export function SummaryStep() {
   const datasetName = datasetSource === "upload" ? uploadedFile : dataset;
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <Card size="sm" className="rounded-2xl">
+    <div className="grid grid-cols-2 gap-3">
+      <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             System
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center gap-3">
-            <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center">
-              <HugeiconsIcon icon={GpuIcon} className="size-4 text-primary" />
+        <CardContent className="flex flex-1 flex-col">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10">
+              <HugeiconsIcon icon={GpuIcon} className="size-4 text-emerald-600" />
             </div>
-            <div className="flex flex-col flex-1">
+            <div className="flex flex-1 flex-col">
               <span className="text-xs text-muted-foreground">GPU</span>
-              <span className="text-sm font-medium">{hw.gpuName ?? "—"}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">{hw.gpuName ?? "---"}</span>
+                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "---"}</Badge>
+              </div>
             </div>
-            <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "—"}</Badge>
           </div>
-          <Separator />
+          <Separator className="my-2" />
           <div className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">unsloth</span>
-              <span className="font-mono text-xs">{hw.unsloth ?? "—"}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">torch</span>
-              <span className="font-mono text-xs">{hw.torch ?? "—"}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">transformers</span>
-              <span className="font-mono text-xs">
-                {hw.transformers ?? "—"}
-              </span>
-            </div>
+            <Row label="unsloth" value={hw.unsloth ?? "---"} mono />
+            <Row label="torch" value={hw.torch ?? "---"} mono />
+            <Row label="transformers" value={hw.transformers ?? "---"} mono />
           </div>
         </CardContent>
       </Card>
 
-      <Card size="sm" className="rounded-2xl">
+      <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">Model</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium truncate">
-              {selectedModel ?? "—"}
-            </span>
+        <CardContent className="flex flex-1 flex-col">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10">
+              <HugeiconsIcon icon={ChipIcon} className="size-4 text-emerald-600" />
+            </div>
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <span className="text-xs text-muted-foreground">Model</span>
+              <span className="truncate text-sm font-medium">{selectedModel ?? "---"}</span>
+            </div>
           </div>
-          <Separator />
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Type</span>
-            <span className="capitalize">{modelType}</span>
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Method</span>
-            <span className="uppercase">{trainingMethod}</span>
+          <Separator className="my-2" />
+          <div className="space-y-1 text-sm">
+            <Row label="Type" value={modelType} capitalize />
+            <Row label="Method" value={trainingMethod} uppercase />
           </div>
         </CardContent>
       </Card>
 
-      <Card size="sm" className="rounded-2xl">
+      <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             Dataset
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="flex items-center gap-3">
-            <div className="flex flex-col flex-1">
-              <span className="text-sm font-medium truncate">
-                {datasetName ?? "—"}
-              </span>
+        <CardContent className="flex flex-1 flex-col">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10">
+              <HugeiconsIcon icon={Database02Icon} className="size-4 text-indigo-600" />
+            </div>
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <span className="text-xs text-muted-foreground">Dataset</span>
+              <span className="truncate text-sm font-medium">{datasetName ?? "---"}</span>
             </div>
           </div>
-          <Separator />
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Source</span>
-            <span className="capitalize">{datasetSource}</span>
-          </div>
-          {datasetSubset && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Subset</span>
-              <span className="font-mono text-xs">{datasetSubset}</span>
-            </div>
-          )}
-          {datasetSplit && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Split</span>
-              <span className="font-mono text-xs">{datasetSplit}</span>
-            </div>
-          )}
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Format</span>
-            <span className="capitalize">{datasetFormat}</span>
+          <Separator className="my-2" />
+          <div className="space-y-1 text-sm">
+            <Row label="Source" value={datasetSource} capitalize />
+            {datasetSubset && (
+              <Row label="Subset" value={datasetSubset} mono />
+            )}
+            {datasetSplit && (
+              <Row label="Split" value={datasetSplit} mono />
+            )}
+            <Row label="Format" value={datasetFormat} capitalize />
           </div>
         </CardContent>
       </Card>
 
-      <Card size="sm" className="rounded-2xl">
+      <Card size="sm" className="flex flex-col rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-muted-foreground">
             Hyperparameters
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Epochs</span>
-              <span className="font-mono text-xs">{epochs}</span>
+        <CardContent className="flex flex-1 flex-col">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-orange-500/10">
+              <HugeiconsIcon icon={Settings04Icon} className="size-4 text-orange-600" />
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Context</span>
-              <span className="font-mono text-xs">
-                {contextLength.toLocaleString()}
-              </span>
+            <div className="flex flex-1 flex-col">
+              <span className="text-xs text-muted-foreground">Training</span>
+              <span className="text-sm font-medium">{trainingMethod.toUpperCase()}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">LR</span>
-              <span className="font-mono text-xs">{learningRate}</span>
-            </div>
+          </div>
+          <Separator className="my-2" />
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+            <Row label="Epochs" value={epochs} mono />
+            <Row label="Context" value={contextLength.toLocaleString()} mono />
+            <Row label="LR" value={learningRate} mono />
             {showLoraParams && (
               <>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Rank</span>
-                  <span className="font-mono text-xs">{loraRank}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Alpha</span>
-                  <span className="font-mono text-xs">{loraAlpha}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Dropout</span>
-                  <span className="font-mono text-xs">{loraDropout}</span>
-                </div>
+                <Row label="Rank" value={loraRank} mono />
+                <Row label="Alpha" value={loraAlpha} mono />
+                <Row label="Dropout" value={loraDropout} mono />
               </>
             )}
           </div>
