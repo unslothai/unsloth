@@ -71,6 +71,7 @@ class TrainingBackend:
         # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
+        self._cancel_requested = False  # True only for stop(save=False)
 
         # Training Metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
@@ -114,6 +115,7 @@ class TrainingBackend:
 
         # Reset state
         self._should_stop = False
+        self._cancel_requested = False
         self._progress = TrainingProgress(is_training=True, status_message="Initializing training...")
         self.loss_history.clear()
         self.lr_history.clear()
@@ -213,6 +215,8 @@ class TrainingBackend:
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
         self._should_stop = True
+        if not save:
+            self._cancel_requested = True
         with self._lock:
             if self._stop_queue is not None:
                 try:

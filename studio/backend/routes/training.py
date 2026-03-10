@@ -309,9 +309,9 @@ async def reset_training(
         is_active = backend.is_training_active()
 
         if is_active:
-            if backend._should_stop:
-                # Stop was already requested — force-terminate so we can reset immediately
-                logger.info("Force-terminating subprocess for immediate reset")
+            if backend._cancel_requested:
+                # Cancel (save=False) was requested — force-terminate so we can reset immediately
+                logger.info("Force-terminating subprocess for immediate reset (cancel path)")
                 backend.force_terminate()
             else:
                 logger.warning("Rejected reset while training active: is_active=%s", is_active)
