@@ -12,7 +12,7 @@ function parseSliceValue(value: string | null): number | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   const num = Number(trimmed);
-  if (!Number.isFinite(num) || !Number.isInteger(num)) return null;
+  if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) return null;
   return num;
 }
 

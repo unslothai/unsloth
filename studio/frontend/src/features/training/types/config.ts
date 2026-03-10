@@ -61,6 +61,7 @@ export interface TrainingConfigState {
   isCheckingVision: boolean;
   isVisionModel: boolean;
   isEmbeddingModel: boolean;
+  isAudioModel: boolean;
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;
