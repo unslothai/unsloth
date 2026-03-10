@@ -645,7 +645,7 @@ def detect_vlm_dataset_structure(dataset):
     image_keywords = ['image', 'img', 'photo', 'picture', 'pic', 'visual', 'scan', 'file_name', 'filename']
 
     # Text-related keywords
-    text_keywords = ['text', 'caption', 'description', 'answer', 'output', 'response', 'label']
+    text_keywords = ['text', 'caption', 'captions', 'description', 'answer', 'output', 'response', 'label']
 
     def is_metadata_column(col_name):
         """Check if column name looks like metadata."""
@@ -710,6 +710,10 @@ def detect_vlm_dataset_structure(dataset):
                 if isinstance(sample_value, str) and len(sample_value) > 0:
                     # Longer text = higher priority (likely content, not just a label)
                     priority = min(len(sample_value), 1000)  # Cap at 1000
+                    candidates.append((col, priority))
+                elif isinstance(sample_value, list) and len(sample_value) > 0 and isinstance(sample_value[0], str):
+                    # List of strings (e.g. captions list) — lower priority than plain strings
+                    priority = min(len(sample_value[0]), 1000) // 2
                     candidates.append((col, priority))
 
         # Return highest priority candidate
