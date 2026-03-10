@@ -31,7 +31,6 @@ try:
     )
     from utils.models.model_config import _pick_best_gguf, _extract_quant_label, is_audio_input_type
     from core.inference import get_inference_backend
-    from utils.paths import outputs_root, exports_root, resolve_output_dir, resolve_export_dir
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
@@ -49,7 +48,6 @@ except ImportError:
     )
     from utils.models.model_config import _pick_best_gguf, _extract_quant_label, is_audio_input_type
     from core.inference import get_inference_backend
-    from utils.paths import outputs_root, exports_root, resolve_output_dir, resolve_export_dir
 
 from models import (
     CheckpointInfo,
@@ -324,8 +322,8 @@ async def get_model_config(
 
 @router.get("/loras")
 async def scan_loras(
-    outputs_dir: str = Query(default=str(outputs_root()), description="Directory to scan for LoRA adapters"),
-    exports_dir: str = Query(default=str(exports_root()), description="Directory to scan for exported models"),
+    outputs_dir: str = Query(default="./outputs", description="Directory to scan for LoRA adapters"),
+    exports_dir: str = Query(default="./exports", description="Directory to scan for exported models"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -335,12 +333,10 @@ async def scan_loras(
     (from exports_dir) in a single list, distinguished by source field.
     """
     try:
-        resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        resolved_exports_dir = str(resolve_export_dir(exports_dir))
         lora_list = []
 
         # Scan training outputs
-        trained_loras = scan_trained_loras(outputs_dir=resolved_outputs_dir)
+        trained_loras = scan_trained_loras(outputs_dir=outputs_dir)
         for display_name, adapter_path in trained_loras:
             base_model = get_base_model_from_lora(adapter_path)
             lora_list.append(LoRAInfo(
@@ -351,7 +347,7 @@ async def scan_loras(
             ))
 
         # Scan exported models (merged, LoRA, base — skips GGUF)
-        exported = scan_exported_models(exports_dir=resolved_exports_dir)
+        exported = scan_exported_models(exports_dir=exports_dir)
         for display_name, model_path, export_type, base_model in exported:
             lora_list.append(LoRAInfo(
                 display_name=display_name,
@@ -363,7 +359,7 @@ async def scan_loras(
 
         return LoRAScanResponse(
             loras=lora_list,
-            outputs_dir=resolved_outputs_dir
+            outputs_dir=outputs_dir
         )
 
     except Exception as e:
@@ -481,7 +477,7 @@ async def get_gguf_variants(
 @router.get("/checkpoints", response_model=CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(
-        default=str(outputs_root()),
+        default="./outputs",
         description="Directory to scan for checkpoints",
     ),
     current_subject: str = Depends(get_current_subject),
@@ -492,8 +488,7 @@ async def list_checkpoints(
     Scans the outputs folder for training runs and their checkpoints.
     """
     try:
-        resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir=resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir=outputs_dir)
 
         models = [
             ModelCheckpoints(
@@ -510,7 +505,7 @@ async def list_checkpoints(
         ]
 
         return CheckpointListResponse(
-            outputs_dir=resolved_outputs_dir,
+            outputs_dir=outputs_dir,
             models=models,
         )
     except Exception as e:

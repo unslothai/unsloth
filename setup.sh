@@ -5,7 +5,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Helper: run command quietly, show output only on failure ──
 run_quiet() {
@@ -29,9 +28,9 @@ echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
 
 # ── Clean up stale Unsloth compiled caches ──
-rm -rf "$REPO_ROOT/unsloth_compiled_cache"
-rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
-rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
+rm -rf "$SCRIPT_DIR/unsloth_compiled_cache"
+rm -rf "$SCRIPT_DIR/studio/backend/unsloth_compiled_cache"
+rm -rf "$SCRIPT_DIR/studio/tmp/unsloth_compiled_cache"
 
 # ── Detect Colab (like unsloth does) ──
 IS_COLAB=false
@@ -100,13 +99,13 @@ echo "✅ Node $(node -v) | npm $(npm -v)"
 # ── 5. Build frontend ──
 echo ""
 echo "Building frontend..."
-cd "$SCRIPT_DIR/frontend"
+cd "$SCRIPT_DIR/studio/frontend"
 run_quiet "npm install" npm install
 run_quiet "npm run build" npm run build
-cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+cd "$SCRIPT_DIR/studio/backend/core/data_recipe/oxc-validator"
 run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
-echo "✅ Frontend built to frontend/dist"
+echo "✅ Frontend built to studio/frontend/dist"
 
 # ── 6. Python venv + deps ──
 echo ""
@@ -169,7 +168,7 @@ fi
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
 echo "✅ Using $BEST_PY ($BEST_VER) — compatible (3.${MIN_PY_MINOR}.x – 3.${MAX_PY_MINOR}.x)"
 
-REQ_ROOT="$SCRIPT_DIR/backend/requirements"
+REQ_ROOT="$SCRIPT_DIR/studio/backend/requirements"
 SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
 SINGLE_ENV_DATA_DESIGNER="$REQ_ROOT/single-env/data-designer.txt"
 SINGLE_ENV_DATA_DESIGNER_DEPS="$REQ_ROOT/single-env/data-designer-deps.txt"
@@ -184,13 +183,11 @@ if [ "$IS_COLAB" = true ]; then
     install_python_stack
 else
     # Local: create venv (always start fresh to preserve correct install order)
-    cd "$REPO_ROOT"
     rm -rf .venv
     rm -rf .venv_overlay  # Remove legacy overlay (no longer used)
     rm -rf .venv_t5       # Will be rebuilt below
     "$BEST_PY" -m venv .venv
     source .venv/bin/activate
-    cd "$SCRIPT_DIR"
     install_python_stack
 
     # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
@@ -199,7 +196,7 @@ else
     # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
     echo ""
     echo "   Pre-installing transformers 5.x for newer model support..."
-    VENV_T5_DIR="$REPO_ROOT/.venv_t5"
+    VENV_T5_DIR="$SCRIPT_DIR/.venv_t5"
     mkdir -p "$VENV_T5_DIR"
     run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.2.0"
     run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
@@ -309,30 +306,32 @@ rm -rf "$LLAMA_CPP_DIR"
 # This alias hardcodes the venv python path so users don't need to activate.
 if [ "$IS_COLAB" = false ]; then
 echo ""
-REPO_DIR="$REPO_ROOT"
+REPO_DIR="$SCRIPT_DIR"
 
 # Detect the user's default shell and pick the right rc file
 USER_SHELL="$(basename "${SHELL:-/bin/bash}")"
 case "$USER_SHELL" in
     zsh)
         SHELL_RC="$HOME/.zshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
+alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     fish)
         SHELL_RC="$HOME/.config/fish/config.fish"
-        ALIAS_BLOCK="alias unsloth-studio '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        # fish uses 'abbr' or 'function'; a simple alias works via 'alias' in config.fish
+        ALIAS_BLOCK="alias unsloth-studio '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
+alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     ksh)
         SHELL_RC="$HOME/.kshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
+alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
     *)
+        # Default to bash for bash and any other POSIX-compatible shell
         SHELL_RC="$HOME/.bashrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'
+alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${REPO_DIR}/studio/frontend/dist'"
         ;;
 esac
 

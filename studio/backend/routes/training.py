@@ -23,7 +23,6 @@ if str(backend_path) not in sys.path:
 try:
     from core.training import get_training_backend
     from utils.models.model_config import load_model_defaults
-    from utils.paths import resolve_dataset_path
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
@@ -31,7 +30,6 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
     from utils.models.model_config import load_model_defaults
-    from utils.paths import resolve_dataset_path
 
 # Auth
 from auth.authentication import get_current_subject
@@ -119,8 +117,24 @@ async def start_training(
         if request.local_datasets:
             validated_datasets = []
             missing_datasets = []
+            # Get the backend directory (where this file is located)
+            backend_dir = Path(__file__).parent.parent
+            assets_datasets_dir = backend_dir / "assets" / "datasets"
+
             for dataset_path in request.local_datasets:
-                dataset_file = resolve_dataset_path(dataset_path)
+                dataset_file = Path(dataset_path)
+
+                # If not absolute, try multiple locations
+                if not dataset_file.is_absolute():
+                    # First try: relative to current working directory
+                    candidate = Path.cwd() / dataset_path
+                    if not candidate.exists():
+                        # Second try: relative to assets/datasets folder
+                        candidate = assets_datasets_dir / dataset_path
+                    if not candidate.exists():
+                        # Third try: just the filename in assets/datasets
+                        candidate = assets_datasets_dir / dataset_file.name
+                    dataset_file = candidate
 
                 if not dataset_file.exists():
                     missing_datasets.append(
