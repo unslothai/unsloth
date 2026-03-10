@@ -613,11 +613,11 @@ def _run_multi_pass_advisor(
 
             try:
                 user_msg = user_tpl.format(**row_vals)
-            except (KeyError, IndexError):
+            except (KeyError, IndexError, ValueError):
                 user_msg = user_tpl
             try:
                 asst_msg = asst_tpl.format(**row_vals)
-            except (KeyError, IndexError):
+            except (KeyError, IndexError, ValueError):
                 asst_msg = asst_tpl
 
             examples_text += f"Example {i}:\n  System: {sys_prompt}\n  User: {user_msg}\n  Assistant: {asst_msg}\n\n"
