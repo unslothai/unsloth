@@ -190,7 +190,7 @@ export function DatasetMappingCard({
               Use the dropdowns in the column headers to assign roles.
             </p>
           )}
-          {!mappingOk && onAiAssist && (
+          {onAiAssist && (
             <div className="mt-3 flex items-center gap-2">
               <Button
                 variant="outline"
