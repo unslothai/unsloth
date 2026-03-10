@@ -2,6 +2,7 @@
 // Copyright © 2025 Unsloth AI
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { aiAssistMapping } from "@/features/training/api/datasets-api";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Dialog,
@@ -28,6 +29,12 @@ import {
   isMappingComplete,
   remapRolesForFormat,
 } from "./dataset-preview-dialog-mapping";
+
+/** Chatml → format-specific role remap (only for formats that differ from chatml). */
+const ROLE_REMAP: Record<string, Record<string, string>> = {
+  alpaca: { user: "instruction", system: "input", assistant: "output" },
+  sharegpt: { user: "human", assistant: "gpt", system: "system" },
+};
 
 type DatasetPreviewDialogProps = {
   open: boolean;
@@ -78,6 +85,40 @@ export function DatasetPreviewDialog({
   const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = datasetSource === "huggingface";
+
+  // ── AI Assist ──────────────────────────────────────────────────────
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const handleAiAssist = useCallback(async () => {
+    if (!data?.columns || !data?.preview_samples) return;
+    setIsAiLoading(true);
+    setAiError(null);
+
+    try {
+      const result = await aiAssistMapping({
+        columns: data.columns,
+        samples: data.preview_samples,
+        datasetName: datasetName,
+      });
+
+      if (result.success && result.suggested_mapping) {
+        // Remap from chatml roles (user/assistant/system) to format-specific roles
+        const table = ROLE_REMAP[datasetFormat];
+        const mapped: Record<string, string> = {};
+        for (const [col, role] of Object.entries(result.suggested_mapping)) {
+          mapped[col] = table ? (table[role] ?? role) : role;
+        }
+        setManualMapping(mapped);
+      } else {
+        setAiError(result.warning || "AI could not determine column roles.");
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "AI assist failed.");
+    } finally {
+      setIsAiLoading(false);
+    }
+  }, [data, datasetFormat, datasetName, setManualMapping]);
 
   // When format changes, remap existing mapping roles to the new format's role names
   const prevFormatRef = useRef(datasetFormat);
@@ -361,6 +402,9 @@ export function DatasetPreviewDialog({
                   isVlm={effectiveIsVlm}
                   isAudio={effectiveIsAudio}
                   format={datasetFormat}
+                  onAiAssist={handleAiAssist}
+                  isAiLoading={isAiLoading}
+                  aiError={aiError}
                 />
               )}
 

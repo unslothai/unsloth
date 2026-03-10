@@ -36,6 +36,8 @@ if not logger.handlers:
 
 
 from models.datasets import (
+    AiAssistMappingRequest,
+    AiAssistMappingResponse,
     CheckFormatRequest,
     CheckFormatResponse,
     LocalDatasetItem,
@@ -478,4 +480,60 @@ def check_format(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to check dataset format: {str(e)}"
+        )
+
+
+@router.post("/ai-assist-mapping", response_model=AiAssistMappingResponse)
+def ai_assist_mapping(
+    request: AiAssistMappingRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Run LLM-assisted column classification on demand (user-triggered).
+
+    Receives the preview samples already loaded in the frontend dialog,
+    so no re-loading of the dataset is needed. The helper LLM is loaded
+    ephemerally: load → classify → unload.
+    """
+    try:
+        from utils.datasets.llm_assist import llm_classify_columns, llm_generate_dataset_warning
+
+        # Truncate sample values for the LLM prompt
+        truncated = [
+            {col: str(s.get(col, ""))[:200] for col in request.columns}
+            for s in request.samples[:5]
+        ]
+
+        mapping = llm_classify_columns(
+            column_names=request.columns,
+            samples=truncated,
+        )
+        if mapping:
+            # Keep only conversation roles, not metadata
+            conversation_mapping = {
+                col: role for col, role in mapping.items()
+                if role in ("user", "assistant", "system")
+            }
+            return AiAssistMappingResponse(
+                success=True,
+                suggested_mapping=conversation_mapping,
+            )
+
+        # LLM classification failed — generate a helpful warning
+        warning = llm_generate_dataset_warning(
+            issues=[f"Could not determine column roles from columns: {request.columns}"],
+            dataset_name=request.dataset_name,
+            modality="text",
+            column_names=request.columns,
+        )
+        return AiAssistMappingResponse(
+            success=False,
+            warning=warning or "AI could not determine column roles. Please assign them manually.",
+        )
+
+    except Exception as e:
+        logger.error(f"AI assist mapping failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI assist failed: {str(e)}"
         )
