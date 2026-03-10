@@ -31,6 +31,7 @@ from .format_conversion import (
     convert_alpaca_to_chatml,
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
+    convert_sharegpt_with_images_to_vlm_format,
 )
 from .chat_templates import (
     apply_chat_template_to_dataset,
@@ -730,6 +731,33 @@ def format_and_template_dataset(
                 return {
                     "dataset": dataset,
                     "detected_format": "vlm_messages_llava",
+                    "final_format": "vlm_conversion_failed",
+                    "is_vlm": True,
+                    "success": False,
+                    "requires_manual_mapping": True,
+                    "warnings": warnings,
+                    "errors": errors,
+                }
+
+        # Handle ShareGPT/ChatML + image column (e.g. ShareGPT4V, LLaVA-style)
+        elif vlm_structure["format"] == "sharegpt_with_images":
+            try:
+                dataset = convert_sharegpt_with_images_to_vlm_format(
+                    dataset,
+                    image_column=vlm_structure["image_column"],
+                    messages_column=vlm_structure["messages_column"],
+                    dataset_name=dataset_name,
+                    progress_callback=progress_callback,
+                )
+                warnings.append("Converted from ShareGPT+image format to standard VLM format")
+            except Exception as e:
+                errors.append(f"Failed to convert ShareGPT+image format: {e}")
+                import traceback
+                traceback.print_exc()
+
+                return {
+                    "dataset": dataset,
+                    "detected_format": "sharegpt_with_images",
                     "final_format": "vlm_conversion_failed",
                     "is_vlm": True,
                     "success": False,
