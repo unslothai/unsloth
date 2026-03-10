@@ -62,7 +62,9 @@ export interface ModelConfigResponse {
   config?: BackendModelConfig | null;
   is_vision: boolean;
   is_lora: boolean;
+  is_audio?: boolean;
   base_model?: string | null;
+  model_type?: "text" | "vision" | "audio" | "embeddings" | null;
 }
 
 export interface LocalModelInfo {
