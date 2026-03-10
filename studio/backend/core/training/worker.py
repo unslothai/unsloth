@@ -533,16 +533,45 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token=hf_token,
             )
         elif local_datasets:
-            # Load from local file(s)
-            local_path = local_datasets[0]
-            if local_path.endswith(".csv"):
-                dataset = load_dataset("csv", data_files=local_path, split="train")
-            elif local_path.endswith(".json") or local_path.endswith(".jsonl"):
-                dataset = load_dataset("json", data_files=local_path, split="train")
-            elif local_path.endswith(".parquet"):
-                dataset = load_dataset("parquet", data_files=local_path, split="train")
-            else:
-                dataset = load_dataset(local_path, split="train")
+            # Load from local file(s) — mirrors the non-embedding pipeline's
+            # directory handling so recipe outputs (parquet-files/) work.
+            all_files: list[str] = []
+            for dataset_file in local_datasets:
+                file_path = dataset_file if os.path.isabs(dataset_file) else os.path.join(
+                    project_root, "studio", "backend", "assets", "datasets", dataset_file,
+                )
+                if os.path.isdir(file_path):
+                    file_path_obj = Path(file_path)
+                    parquet_dir = (
+                        file_path_obj / "parquet-files"
+                        if (file_path_obj / "parquet-files").exists()
+                        else file_path_obj
+                    )
+                    parquet_files = sorted(parquet_dir.glob("*.parquet"))
+                    if parquet_files:
+                        all_files.extend(str(p) for p in parquet_files)
+                        continue
+                    candidates: list[Path] = []
+                    for ext in (".json", ".jsonl", ".csv", ".parquet"):
+                        candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
+                    if candidates:
+                        all_files.extend(str(c) for c in candidates)
+                        continue
+                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                else:
+                    all_files.append(file_path)
+
+            if all_files:
+                first_ext = Path(all_files[0]).suffix.lower()
+                if first_ext in (".json", ".jsonl"):
+                    loader = "json"
+                elif first_ext == ".csv":
+                    loader = "csv"
+                elif first_ext == ".parquet":
+                    loader = "parquet"
+                else:
+                    raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
+                dataset = load_dataset(loader, data_files=all_files, split="train")
         else:
             event_queue.put({
                 "type": "error",
