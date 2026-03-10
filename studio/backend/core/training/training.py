@@ -226,6 +226,20 @@ class TrainingBackend:
             )
         return True
 
+    def force_terminate(self) -> None:
+        """Force-kill the training subprocess so state can be reset immediately."""
+        with self._lock:
+            if self._proc is not None and self._proc.is_alive():
+                logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
+                self._proc.terminate()
+            proc = self._proc
+
+        if proc is not None:
+            proc.join(timeout=5.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=2.0)
+
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
         with self._lock:
