@@ -65,11 +65,16 @@ export function DatasetPreviewDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { manualMapping, setManualMapping, datasetFormat } = useTrainingConfigStore(
+  const {
+    manualMapping, setManualMapping, datasetFormat,
+    setDatasetAdvisorFields, datasetAdvisorNotification,
+  } = useTrainingConfigStore(
     useShallow((s) => ({
       manualMapping: s.datasetManualMapping,
       setManualMapping: s.setDatasetManualMapping,
       datasetFormat: s.datasetFormat,
+      setDatasetAdvisorFields: s.setDatasetAdvisorFields,
+      datasetAdvisorNotification: s.datasetAdvisorNotification,
     })),
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
@@ -100,6 +105,7 @@ export function DatasetPreviewDialog({
         columns: data.columns,
         samples: data.preview_samples,
         datasetName: datasetName,
+        hfToken: hfToken,
       });
 
       if (result.success && result.suggested_mapping) {
@@ -110,6 +116,17 @@ export function DatasetPreviewDialog({
           mapped[col] = table ? (table[role] ?? role) : role;
         }
         setManualMapping(mapped);
+
+        // Store conversion advisor fields (templates, system prompt, etc.)
+        if (result.system_prompt || result.user_template || result.assistant_template) {
+          setDatasetAdvisorFields({
+            systemPrompt: result.system_prompt ?? undefined,
+            userTemplate: result.user_template ?? undefined,
+            assistantTemplate: result.assistant_template ?? undefined,
+            labelMapping: result.label_mapping ?? undefined,
+            notification: result.user_notification ?? null,
+          });
+        }
       } else {
         setAiError(result.warning || "AI could not determine column roles.");
       }
@@ -118,7 +135,7 @@ export function DatasetPreviewDialog({
     } finally {
       setIsAiLoading(false);
     }
-  }, [data, datasetFormat, datasetName, setManualMapping]);
+  }, [data, datasetFormat, datasetName, hfToken, setManualMapping, setDatasetAdvisorFields]);
 
   // When format changes, remap existing mapping roles to the new format's role names
   const prevFormatRef = useRef(datasetFormat);
@@ -405,6 +422,7 @@ export function DatasetPreviewDialog({
                   onAiAssist={handleAiAssist}
                   isAiLoading={isAiLoading}
                   aiError={aiError}
+                  advisorNotification={datasetAdvisorNotification}
                 />
               )}
 
