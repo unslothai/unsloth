@@ -100,6 +100,7 @@ export function DatasetMappingCard({
   onAiAssist,
   isAiLoading = false,
   aiError,
+  advisorNotification,
 }: {
   mapping: Record<string, string>;
   mappingOk: boolean;
@@ -110,6 +111,7 @@ export function DatasetMappingCard({
   onAiAssist?: () => void;
   isAiLoading?: boolean;
   aiError?: string | null;
+  advisorNotification?: string | null;
 }) {
   const entries = Object.entries(mapping);
   const requiredLabel = isAudio
@@ -200,7 +202,7 @@ export function DatasetMappingCard({
                 {isAiLoading ? (
                   <>
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    Analyzing columns...
+                    Analyzing dataset...
                   </>
                 ) : (
                   <>
@@ -212,6 +214,12 @@ export function DatasetMappingCard({
               {aiError && (
                 <p className="text-xs text-amber-700 dark:text-amber-300">{aiError}</p>
               )}
+            </div>
+          )}
+          {advisorNotification && (
+            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 flex items-start gap-2">
+              <Sparkles className="size-3.5 shrink-0 mt-0.5" />
+              <span>{advisorNotification}</span>
             </div>
           )}
         </div>

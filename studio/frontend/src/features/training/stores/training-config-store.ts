@@ -31,6 +31,11 @@ const initialState: TrainingConfigState = {
   datasetSplit: null,
   datasetEvalSplit: null,
   datasetManualMapping: emptyManualMapping(),
+  datasetSystemPrompt: "",
+  datasetUserTemplate: "",
+  datasetAssistantTemplate: "",
+  datasetLabelMapping: {},
+  datasetAdvisorNotification: null,
   datasetSliceStart: null,
   datasetSliceEnd: null,
   uploadedFile: null,
@@ -205,6 +210,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetSplit: null,
         datasetEvalSplit: null,
         datasetManualMapping: emptyManualMapping(),
+        datasetSystemPrompt: "",
+        datasetUserTemplate: "",
+        datasetAssistantTemplate: "",
+        datasetLabelMapping: {},
+        datasetAdvisorNotification: null,
         datasetSliceStart: null,
         datasetSliceEnd: null,
         isDatasetImage: null,
@@ -364,6 +374,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
+        setDatasetAdvisorFields: (fields) =>
+          set({
+            datasetSystemPrompt: fields.systemPrompt ?? get().datasetSystemPrompt,
+            datasetUserTemplate: fields.userTemplate ?? get().datasetUserTemplate,
+            datasetAssistantTemplate: fields.assistantTemplate ?? get().datasetAssistantTemplate,
+            datasetLabelMapping: fields.labelMapping ?? get().datasetLabelMapping,
+            datasetAdvisorNotification: fields.notification !== undefined ? fields.notification : get().datasetAdvisorNotification,
+          }),
+        clearDatasetAdvisorFields: () =>
+          set({
+            datasetSystemPrompt: "",
+            datasetUserTemplate: "",
+            datasetAssistantTemplate: "",
+            datasetLabelMapping: {},
+            datasetAdvisorNotification: null,
+          }),
         setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
         setUploadedFile: (uploadedFile) => {
@@ -439,7 +465,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 7,
+      version: 8,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -461,6 +487,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         if (version < 7) {
           s.datasetSliceStart ??= null;
           s.datasetSliceEnd ??= null;
+        }
+        if (version < 8) {
+          s.datasetSystemPrompt ??= "";
+          s.datasetUserTemplate ??= "";
+          s.datasetAssistantTemplate ??= "";
+          s.datasetLabelMapping ??= {};
+          s.datasetAdvisorNotification ??= null;
         }
         return s as unknown as TrainingConfigStore;
       },

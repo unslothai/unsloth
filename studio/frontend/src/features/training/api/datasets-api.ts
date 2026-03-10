@@ -68,18 +68,28 @@ type AiAssistMappingArgs = {
   columns: string[];
   samples: Record<string, unknown>[];
   datasetName?: string | null;
+  hfToken?: string | null;
 };
 
 export type AiAssistMappingResponse = {
   success: boolean;
   suggested_mapping?: Record<string, string> | null;
   warning?: string | null;
+  // Conversion advisor fields
+  system_prompt?: string | null;
+  user_template?: string | null;
+  assistant_template?: string | null;
+  label_mapping?: Record<string, Record<string, string>> | null;
+  dataset_type?: string | null;
+  is_conversational?: boolean | null;
+  user_notification?: string | null;
 };
 
 export async function aiAssistMapping({
   columns,
   samples,
   datasetName,
+  hfToken,
 }: AiAssistMappingArgs): Promise<AiAssistMappingResponse> {
   const res = await authFetch("/api/datasets/ai-assist-mapping", {
     method: "POST",
@@ -88,6 +98,7 @@ export async function aiAssistMapping({
       columns,
       samples: samples.slice(0, 5),
       dataset_name: datasetName || undefined,
+      hf_token: hfToken || undefined,
     }),
   });
 

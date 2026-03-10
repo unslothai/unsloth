@@ -489,14 +489,17 @@ def ai_assist_mapping(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Run LLM-assisted column classification on demand (user-triggered).
+    Run LLM-assisted dataset conversion advisor (user-triggered).
 
-    Receives the preview samples already loaded in the frontend dialog,
-    so no re-loading of the dataset is needed. The helper LLM is loaded
-    ephemerally: load → classify → unload.
+    Multi-pass analysis using a 7B helper model:
+      Pass 1: Classify dataset type from HF card + samples
+      Pass 2: Generate conversion strategy (system prompt, templates)
+      Pass 3: Validate conversion quality
+
+    Falls back to simple column classification if the advisor fails.
     """
     try:
-        from utils.datasets.llm_assist import llm_classify_columns, llm_generate_dataset_warning
+        from utils.datasets.llm_assist import llm_conversion_advisor
 
         # Truncate sample values for the LLM prompt
         truncated = [
@@ -504,31 +507,29 @@ def ai_assist_mapping(
             for s in request.samples[:5]
         ]
 
-        mapping = llm_classify_columns(
+        result = llm_conversion_advisor(
             column_names=request.columns,
             samples=truncated,
+            dataset_name=request.dataset_name,
+            hf_token=request.hf_token,
         )
-        if mapping:
-            # Keep only conversation roles, not metadata
-            conversation_mapping = {
-                col: role for col, role in mapping.items()
-                if role in ("user", "assistant", "system")
-            }
+
+        if result and result.get("success"):
             return AiAssistMappingResponse(
                 success=True,
-                suggested_mapping=conversation_mapping,
+                suggested_mapping=result.get("suggested_mapping"),
+                system_prompt=result.get("system_prompt"),
+                user_template=result.get("user_template"),
+                assistant_template=result.get("assistant_template"),
+                label_mapping=result.get("label_mapping"),
+                dataset_type=result.get("dataset_type"),
+                is_conversational=result.get("is_conversational"),
+                user_notification=result.get("user_notification"),
             )
 
-        # LLM classification failed — generate a helpful warning
-        warning = llm_generate_dataset_warning(
-            issues=[f"Could not determine column roles from columns: {request.columns}"],
-            dataset_name=request.dataset_name,
-            modality="text",
-            column_names=request.columns,
-        )
         return AiAssistMappingResponse(
             success=False,
-            warning=warning or "AI could not determine column roles. Please assign them manually.",
+            warning="AI could not determine column roles. Please assign them manually.",
         )
 
     except Exception as e:

@@ -39,9 +39,14 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
-    custom_format_mapping: Optional[Dict[str, str]] = Field(
+    custom_format_mapping: Optional[Dict[str, Any]] = Field(
         None,
-        description="User-provided column-to-role mapping, e.g. {'image': 'image', 'caption': 'text'} for VLM or {'instruction': 'user', 'output': 'assistant'} for LLM"
+        description=(
+            "User-provided column-to-role mapping, e.g. {'image': 'image', 'caption': 'text'} "
+            "for VLM or {'instruction': 'user', 'output': 'assistant'} for LLM. "
+            "Enhanced format includes __system_prompt, __user_template, "
+            "__assistant_template, __label_mapping metadata keys."
+        ),
     )
     # Training parameters
     num_epochs: int = Field(1, description="Number of training epochs")
