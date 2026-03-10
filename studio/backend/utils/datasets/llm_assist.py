@@ -538,15 +538,15 @@ def _run_multi_pass_advisor(
                 ),
             }
 
-        # ── Pass 2: Conversion strategy ──
-        print("🤖 Pass 2: Generating conversion strategy...", flush=True)
+        # ── Pass 2: Conversion templates ──
+        print("🤖 Pass 2: Generating conversion templates...", flush=True)
         t2 = time.monotonic()
         messages2 = [
             {
                 "role": "system",
                 "content": (
                     "You are a dataset conversion specialist for LLM fine-tuning. "
-                    "You design strategies to convert non-conversational datasets into "
+                    "You design templates to convert non-conversational datasets into "
                     "user/assistant conversation format. Respond with ONLY valid JSON."
                 ),
             },
@@ -561,9 +561,7 @@ def _run_multi_pass_advisor(
                     SAMPLE DATA:
                     {samples_text}
 
-                    Design a conversion strategy to turn this into conversation format for fine-tuning.
-                    The strategy should create a user message template and an assistant message template.
-                    Optionally include a system prompt ONLY if the task is ambiguous from the data alone.
+                    Design user and assistant message templates for this dataset.
 
                     RULES:
                     - Use {{column_name}} placeholders in templates to reference column values.
@@ -575,13 +573,9 @@ def _run_multi_pass_advisor(
                     - The assistant template should produce the expected model output.
                     - column_roles: mark columns used in the user template as "user",
                       columns used in the assistant template as "assistant".
-                    - system_prompt: set to null if the user/assistant templates alone
-                      make the task clear. Only provide one when extra context is needed
-                      (e.g. persona, domain expertise, output format constraints).
 
                     Respond with a JSON object:
                     {{
-                        "system_prompt": "<system prompt or null if not needed>",
                         "user_template": "<template for user message using {{column}} placeholders>",
                         "assistant_template": "<template for assistant response using {{column_name}} placeholders>",
                         "column_roles": {{
@@ -603,15 +597,60 @@ def _run_multi_pass_advisor(
             return None
 
         # ── Extract conversion strategy from Pass 2 ──
-        raw_sys = pass2.get("system_prompt")
-        # LLM may return the literal string "null" or None
-        sys_prompt = (
-            raw_sys if isinstance(raw_sys, str) and raw_sys.lower() not in ("null", "none", "")
-            else ""
-        )
         user_tpl = pass2.get("user_template", "")
         asst_tpl = pass2.get("assistant_template", "")
         label_map = pass2.get("label_mapping", {})
+
+        # ── Pass 3: System prompt (non-conversational datasets only) ──
+        sys_prompt = ""
+        dtype = pass1.get("dataset_type", "unknown")
+        is_conv = pass1.get("is_conversational", False)
+
+        if not is_conv:
+            print("🤖 Pass 3: Generating system prompt...", flush=True)
+            t3 = time.monotonic()
+            messages3 = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at writing system prompts for LLM fine-tuning. "
+                        "Your task is to write a clear, concise system prompt that tells "
+                        "the model what task it is performing. Respond with ONLY valid JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": textwrap.dedent(f"""\
+                        A non-conversational dataset is being converted for fine-tuning.
+
+                        Dataset type: {dtype}
+                        Description: {pass1.get('task_description') or pass1.get('description', '')}
+
+                        The training examples will look like:
+                        User: {user_tpl}
+                        Assistant: {asst_tpl}
+
+                        Write a system prompt that clearly describes the task the model should
+                        perform. The system prompt should:
+                        - Explain what kind of input the model will receive
+                        - Explain what output is expected
+                        - Be specific to this dataset's task (not generic)
+                        - Be 1-3 sentences
+
+                        Respond with a JSON object:
+                        {{
+                            "system_prompt": "<the system prompt>"
+                        }}"""),
+                },
+            ]
+            raw3 = _generate_with_backend(backend, messages3, max_tokens=256)
+            pass3 = _parse_json_response(raw3)
+            print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {pass3}", flush=True)
+
+            if pass3:
+                raw_sys = pass3.get("system_prompt")
+                if isinstance(raw_sys, str) and raw_sys.lower() not in ("null", "none", ""):
+                    sys_prompt = raw_sys
 
         # Build suggested_mapping (column → role, for the frontend dropdowns)
         # Include ALL columns referenced in templates
@@ -631,7 +670,6 @@ def _run_multi_pass_advisor(
                 suggested_mapping[col] = "assistant"
 
         # Build user notification from Pass 1 classification
-        dtype = pass1.get("dataset_type", "unknown")
         desc = pass1.get("task_description") or pass1.get("description", "")
         note_parts = [f"This is a {dtype} dataset (not conversational)."]
         if desc:
@@ -642,7 +680,7 @@ def _run_multi_pass_advisor(
         total_time = time.monotonic() - t0
         print(
             f"🤖 Advisor complete ({total_time:.1f}s): type={dtype}, "
-            f"mapping={suggested_mapping}, label_map={bool(label_map)}",
+            f"mapping={suggested_mapping}, sys_prompt={bool(sys_prompt)}, label_map={bool(label_map)}",
             flush=True,
         )
 
@@ -654,7 +692,7 @@ def _run_multi_pass_advisor(
             "assistant_template": asst_tpl,
             "label_mapping": label_map if label_map else None,
             "dataset_type": dtype,
-            "is_conversational": False,
+            "is_conversational": is_conv,
             "user_notification": user_notification,
         }
 
