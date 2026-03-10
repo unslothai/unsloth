@@ -184,68 +184,28 @@ def run_training_process(
     stop_thread.start()
 
     # ── 4. Execute the training pipeline ──
+    # Order: detect → dataset → model → prepare → train
+    # Dataset processing (including LLM-assisted detection) runs BEFORE model
+    # loading so both never occupy VRAM at the same time.
     try:
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
 
-        # Load model
-        _send_status(event_queue, "Loading model...")
-        success = trainer.load_model(
+        # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
+        _send_status(event_queue, "Detecting model type...")
+        trainer.pre_detect_and_load_tokenizer(
             model_name=model_name,
             max_seq_length=config["max_seq_length"],
-            load_in_4bit=config["load_in_4bit"],
             hf_token=hf_token,
             is_dataset_image=config.get("is_dataset_image", False),
             is_dataset_audio=config.get("is_dataset_audio", False),
             trust_remote_code=config.get("trust_remote_code", False),
         )
-        if not success or trainer.should_stop:
-            if trainer.should_stop:
-                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
-            else:
-                error_msg = trainer.training_progress.error or "Failed to load model"
-                event_queue.put({
-                    "type": "error",
-                    "error": error_msg,
-                    "stack": "", "ts": time.time(),
-                })
+        if trainer.should_stop:
+            event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
 
-        # Prepare model (LoRA or full finetuning)
-        training_type = config.get("training_type", "LoRA/QLoRA")
-        use_lora = (training_type == "LoRA/QLoRA")
-        if use_lora:
-            _send_status(event_queue, "Configuring LoRA adapters...")
-            success = trainer.prepare_model_for_training(
-                use_lora=True,
-                finetune_vision_layers=config.get("finetune_vision_layers", True),
-                finetune_language_layers=config.get("finetune_language_layers", True),
-                finetune_attention_modules=config.get("finetune_attention_modules", True),
-                finetune_mlp_modules=config.get("finetune_mlp_modules", True),
-                target_modules=config.get("target_modules"),
-                lora_r=config.get("lora_r", 16),
-                lora_alpha=config.get("lora_alpha", 16),
-                lora_dropout=config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing=config.get("gradient_checkpointing", "unsloth"),
-                use_rslora=config.get("use_rslora", False),
-                use_loftq=config.get("use_loftq", False),
-            )
-        else:
-            _send_status(event_queue, "Preparing model for full finetuning...")
-            success = trainer.prepare_model_for_training(use_lora=False)
-
-        if not success or trainer.should_stop:
-            if trainer.should_stop:
-                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
-            else:
-                event_queue.put({
-                    "type": "error",
-                    "error": trainer.training_progress.error or "Failed to prepare model",
-                    "stack": "", "ts": time.time(),
-                })
-            return
-
-        # Load dataset
+        # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")
         hf_dataset = config.get("hf_dataset", "")
         dataset_result = trainer.load_and_format_dataset(
@@ -287,6 +247,63 @@ def run_training_process(
                 event_queue.put({
                     "type": "error",
                     "error": trainer.training_progress.error or "Failed to load dataset",
+                    "stack": "", "ts": time.time(),
+                })
+            return
+
+        # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
+        _send_status(event_queue, "Loading model...")
+        success = trainer.load_model(
+            model_name=model_name,
+            max_seq_length=config["max_seq_length"],
+            load_in_4bit=config["load_in_4bit"],
+            hf_token=hf_token,
+            is_dataset_image=config.get("is_dataset_image", False),
+            is_dataset_audio=config.get("is_dataset_audio", False),
+            trust_remote_code=config.get("trust_remote_code", False),
+        )
+        if not success or trainer.should_stop:
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+            else:
+                error_msg = trainer.training_progress.error or "Failed to load model"
+                event_queue.put({
+                    "type": "error",
+                    "error": error_msg,
+                    "stack": "", "ts": time.time(),
+                })
+            return
+
+        # ── 4d. Prepare model (LoRA or full finetuning) ──
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        use_lora = (training_type == "LoRA/QLoRA")
+        if use_lora:
+            _send_status(event_queue, "Configuring LoRA adapters...")
+            success = trainer.prepare_model_for_training(
+                use_lora=True,
+                finetune_vision_layers=config.get("finetune_vision_layers", True),
+                finetune_language_layers=config.get("finetune_language_layers", True),
+                finetune_attention_modules=config.get("finetune_attention_modules", True),
+                finetune_mlp_modules=config.get("finetune_mlp_modules", True),
+                target_modules=config.get("target_modules"),
+                lora_r=config.get("lora_r", 16),
+                lora_alpha=config.get("lora_alpha", 16),
+                lora_dropout=config.get("lora_dropout", 0.0),
+                use_gradient_checkpointing=config.get("gradient_checkpointing", "unsloth"),
+                use_rslora=config.get("use_rslora", False),
+                use_loftq=config.get("use_loftq", False),
+            )
+        else:
+            _send_status(event_queue, "Preparing model for full finetuning...")
+            success = trainer.prepare_model_for_training(use_lora=False)
+
+        if not success or trainer.should_stop:
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+            else:
+                event_queue.put({
+                    "type": "error",
+                    "error": trainer.training_progress.error or "Failed to prepare model",
                     "stack": "", "ts": time.time(),
                 })
             return

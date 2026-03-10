@@ -9,6 +9,7 @@ for VLM datasets based on content analysis and heuristics.
 """
 
 import re
+from itertools import islice
 
 
 def generate_smart_vlm_instruction(
@@ -176,7 +177,41 @@ def generate_smart_vlm_instruction(
                 "confidence": 0.75,
             }
 
-    # ===== LEVEL 4: Generic Fallback =====
+    # ===== LEVEL 4: LLM-Assisted Instruction Generation =====
+    try:
+        from .llm_assist import llm_generate_vlm_instruction
+
+        sample_rows = []
+        for s in islice(dataset, 5):
+            row = {}
+            for col in s:
+                val = s[col]
+                if hasattr(val, 'size') and hasattr(val, 'mode'):  # PIL Image
+                    row[col] = "<image>"
+                elif isinstance(val, list):
+                    row[col] = str(val)[:300]
+                else:
+                    row[col] = str(val)[:300]
+            sample_rows.append(row)
+
+        llm_result = llm_generate_vlm_instruction(
+            column_names=list(column_names),
+            samples=sample_rows,
+            dataset_name=dataset_name,
+        )
+        if llm_result and llm_result.get("instruction"):
+            return {
+                "instruction": llm_result["instruction"],
+                "instruction_column": None,
+                "instruction_type": "llm_assisted",
+                "uses_dynamic_instruction": False,
+                "confidence": llm_result.get("confidence", 0.85),
+            }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"LLM-assisted instruction skipped: {e}")
+
+    # ===== LEVEL 5: Generic Fallback =====
     return {
         "instruction": "Describe this image in detail.",
         "instruction_column": None,
