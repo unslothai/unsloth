@@ -323,11 +323,16 @@ async def reset_training(
         is_active = backend.is_training_active()
 
         if is_active:
-            logger.warning("Rejected reset while training active: is_active=%s", is_active)
-            raise HTTPException(
-                status_code=409,
-                detail="Training is still running. Stop training and wait for it to finish before resetting.",
-            )
+            if backend._cancel_requested:
+                # Cancel (save=False) was requested — force-terminate so we can reset immediately
+                logger.info("Force-terminating subprocess for immediate reset (cancel path)")
+                backend.force_terminate()
+            else:
+                logger.warning("Rejected reset while training active: is_active=%s", is_active)
+                raise HTTPException(
+                    status_code=409,
+                    detail="Training is still running. Stop training and wait for it to finish before resetting.",
+                )
 
         logger.info("Reset training state: clearing runtime + metric history")
         backend._should_stop = False  # Clear stop flag so status returns to idle

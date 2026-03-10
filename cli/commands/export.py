@@ -25,8 +25,11 @@ def list_checkpoints(
         typer.echo("No checkpoints found.")
         raise typer.Exit()
 
-    for display, path in checkpoints:
-        typer.echo(f"{display}: {path}")
+    for model_name, ckpt_list, metadata in checkpoints:
+        typer.echo(f"\n{model_name}:")
+        for display, path, loss in ckpt_list:
+            loss_str = f" (loss: {loss:.4f})" if loss is not None else ""
+            typer.echo(f"  {display}{loss_str}: {path}")
 
 
 def export(
