@@ -146,6 +146,7 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
     _unsloth_train_with_resume_guard._unsloth_resume_guard = True
     trainer_class.train = _unsloth_train_with_resume_guard
 
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
