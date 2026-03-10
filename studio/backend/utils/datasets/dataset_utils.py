@@ -133,6 +133,41 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
         else:
+            # Heuristic failed — try LLM-assisted column classification
+            try:
+                from .llm_assist import llm_classify_columns
+                from itertools import islice
+
+                sample_rows = []
+                for s in islice(dataset, 5):
+                    row = {col: str(s[col])[:200] for col in s}
+                    sample_rows.append(row)
+
+                llm_mapping = llm_classify_columns(
+                    column_names=columns,
+                    samples=sample_rows,
+                )
+                if llm_mapping:
+                    # Keep only conversation roles, not metadata
+                    conversation_mapping = {
+                        col: role for col, role in llm_mapping.items()
+                        if role in ("user", "assistant", "system")
+                    }
+                    return {
+                        "requires_manual_mapping": False,
+                        "detected_format": "llm_assisted",
+                        "columns": columns,
+                        "suggested_mapping": conversation_mapping,
+                        "detected_image_column": None,
+                        "detected_text_column": None,
+                        "is_image": False,
+                        "multimodal_columns": None,
+                        **audio_fields,
+                    }
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(f"LLM column classification skipped: {e}")
+
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",
@@ -772,8 +807,22 @@ def format_and_template_dataset(
                 vlm_image_column = vlm_structure["image_column"]
 
             if vlm_text_column is None or vlm_image_column is None:
+                columns = list(next(iter(dataset)).keys()) if dataset else []
+                issues = [
+                    f"Could not auto-detect image and text columns from: {columns}",
+                    f"VLM structure detected: {vlm_structure.get('format', 'unknown')}",
+                ]
+                friendly = None
+                try:
+                    from .llm_assist import llm_generate_dataset_warning
+                    friendly = llm_generate_dataset_warning(
+                        issues, dataset_name=dataset_name, modality="vision",
+                        column_names=columns,
+                    )
+                except Exception:
+                    pass
                 errors.append(
-                    f"Could not auto-detect image/text columns. Found: {vlm_structure}. "
+                    friendly or f"Could not auto-detect image/text columns. Found: {vlm_structure}. "
                 )
                 return {
                     "dataset": dataset,
