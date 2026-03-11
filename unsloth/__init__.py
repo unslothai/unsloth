@@ -143,3 +143,10 @@ else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
+
+# Activation capture for Unsloth Studio neuron visualization
+from .activation_capture import (
+    ActivationCaptureConfig,
+    ActivationCapture,
+    ActivationCaptureCallback,
+)
