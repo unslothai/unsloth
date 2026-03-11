@@ -389,6 +389,13 @@ def mask_packed_sequence_boundaries(
     return True
 
 
+def clear_packed_caches():
+    """Release cached masks/metadata to free device memory."""
+    _PACKED_INFO_CACHE.clear()
+    _SDPA_MASK_CACHE.clear()
+    _XFORMERS_BLOCK_MASK_CACHE.clear()
+
+
 __all__ = [
     "configure_sample_packing",
     "configure_padding_free",
@@ -399,4 +406,5 @@ __all__ = [
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
     "mask_packed_sequence_boundaries",
+    "clear_packed_caches",
 ]
