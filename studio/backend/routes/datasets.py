@@ -506,6 +506,8 @@ def ai_assist_mapping(
             samples=truncated,
             dataset_name=request.dataset_name,
             hf_token=request.hf_token,
+            model_name=request.model_name,
+            model_type=request.model_type,
         )
 
         if result and result.get("success"):

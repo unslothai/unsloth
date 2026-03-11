@@ -434,6 +434,9 @@ def _run_multi_pass_advisor(
     dataset_name: Optional[str] = None,
     dataset_card: Optional[str] = None,
     dataset_metadata: Optional[dict] = None,
+    model_name: Optional[str] = None,
+    model_type: Optional[str] = None,
+    hf_token: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """
     Multi-pass LLM analysis: classify → convert → validate.
@@ -480,6 +483,36 @@ def _run_multi_pass_advisor(
         )
         card_excerpt = (dataset_card or "")[:1200] or "N/A"
 
+        # ── Target Model Hints ──
+        target_hints = ""
+        is_gemma_3n = False
+        if model_name:
+            try:
+                from utils.models.model_config import load_model_config
+                config = load_model_config(model_name, use_auth=True, token=hf_token)
+                archs = getattr(config, "architectures", [])
+                if archs and "Gemma3nForConditionalGeneration" in archs:
+                    is_gemma_3n = True
+            except Exception:
+                is_gemma_3n = "gemma-3n" in model_name.lower()
+        
+        if model_type == "audio" and not is_gemma_3n:
+            target_hints = (
+                "\n\nHINT: The user is training an AUDIO model. The dataset MUST contain "
+                "a column with audio files/paths. Ensure one such column is selected "
+                "as part of the input."
+            )
+        elif model_type == "embeddings":
+            target_hints = (
+                "\n\nHINT: The user is training an EMBEDDING model. These models typically "
+                "do not use standard conversational input/output formats but instead use "
+                "specific formats like:\n"
+                "- Pairs of texts for Semantic Textual Similarity (STS)\n"
+                "- Premise, hypothesis, and label for Natural Language Inference (NLI)\n"
+                "- Queries and positive/negative documents for information retrieval\n"
+                "Ensure the dataset format mapped reflects these specialized tasks."
+            )
+
         # ── Pass 1: Classify ──
         print("🤖 Pass 1: Classifying dataset...", flush=True)
         t1 = time.monotonic()
@@ -495,6 +528,7 @@ def _run_multi_pass_advisor(
                     "— they are things like summarization, question answering, translation, "
                     "classification, etc. Those need conversion. You must respond with ONLY a "
                     "valid JSON object. Do not write any explanation before or after the JSON."
+                    f"{target_hints}"
                 ),
             },
             {
@@ -568,6 +602,7 @@ def _run_multi_pass_advisor(
                     '4. Metadata columns like "id", "index", "source", "url", "date" should be '
                     'set to "skip".\n\n'
                     "You must respond with ONLY a valid JSON object."
+                    f"{target_hints}"
                 ),
             },
             {
@@ -749,6 +784,8 @@ def llm_conversion_advisor(
     samples: list[dict],
     dataset_name: Optional[str] = None,
     hf_token: Optional[str] = None,
+    model_name: Optional[str] = None,
+    model_type: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """
     Full conversion advisor: fetch HF card → multi-pass LLM analysis.
@@ -773,6 +810,9 @@ def llm_conversion_advisor(
         dataset_name=dataset_name,
         dataset_card=dataset_card,
         dataset_metadata=dataset_metadata,
+        model_name=model_name,
+        model_type=model_type,
+        hf_token=hf_token,
     )
 
     if result and result.get("success"):
