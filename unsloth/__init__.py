@@ -352,7 +352,7 @@ from unsloth_zoo.rl_environments import (
     launch_openenv,
 )
 
-# Activation capture for Unsloth Studio neuron visualization
+# Activation capture for neuron visualization
 from .activation_capture import (
     ActivationCaptureConfig,
     ActivationCapture,

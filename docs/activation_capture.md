@@ -2,8 +2,6 @@
 
 Unsloth includes a built-in system for capturing neuron activations, gradient norms, and LoRA adapter statistics during finetuning. This data can be visualized as an animated heatmap to understand *where* and *how* finetuning reshapes your model.
 
-![Activation Visualization Example](../images/activation_viz_example.png)
-
 ## Quick Start
 
 ### 1. Enable capture during training (CLI)
@@ -174,19 +172,6 @@ Shows ‖B @ A‖_F for each LoRA target across layers.
 - **Growing** = adapter accumulating task signal
 - **Flat** = adapter saturated or not needed
 - **Different targets** = see which projections (Q, K, V, etc.) are most important
-
----
-
-## Generating Demo Data
-
-To test the visualizer without training:
-
-```bash
-python scripts/gen_fake_activations.py ./demo_output
-python visualize_activations.py ./demo_output --open
-```
-
-This generates synthetic data mimicking a typical finetuning run.
 
 ---
 

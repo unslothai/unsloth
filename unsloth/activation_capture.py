@@ -13,11 +13,11 @@
 # limitations under the License.
 
 """
-Neuron activation capture for Unsloth Studio visualization.
+Neuron activation capture for training visualization.
 
 Hooks into decoder layer outputs during finetuning to compile lightweight
-per-channel statistics, which can be consumed by the Unsloth Studio JS UI
-to animate a 3D block of neurons and show how finetuning reshapes the model.
+per-channel statistics to animate a 2D or 3D block of neurons and show how 
+finetuning reshapes the model.
 
 Output layout (written to ``output_dir/``):
     metadata.json          — model config, capture config, channel indices
