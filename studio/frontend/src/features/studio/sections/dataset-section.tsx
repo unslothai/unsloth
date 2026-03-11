@@ -718,7 +718,7 @@ export function DatasetSection() {
               />
               Advanced
             </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3">
+            <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2">
                   <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
