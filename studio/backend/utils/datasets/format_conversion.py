@@ -386,11 +386,7 @@ def convert_to_vlm_format(
         try:
             from huggingface_hub import HfApi
             _notify("Resolving image filenames from HF repo...")
-<<<<<<< HEAD
             logger.info(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
-=======
-            print(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
->>>>>>> bf35780 (fix: resolve bare-filename images via HF repo lookup)
             repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
             _image_lookup = {
                 os.path.basename(f): f
@@ -398,21 +394,12 @@ def convert_to_vlm_format(
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
             if first_image in _image_lookup:
-<<<<<<< HEAD
                 logger.info(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
             else:
                 logger.info(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
                 _image_lookup = None
         except Exception as e:
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
-=======
-                print(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
-            else:
-                print(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
-                _image_lookup = None
-        except Exception as e:
-            print(f"⚠️ Failed to build HF repo image lookup: {e}")
->>>>>>> bf35780 (fix: resolve bare-filename images via HF repo lookup)
             _image_lookup = None
 
     # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
