@@ -5,9 +5,20 @@
 Main FastAPI application for Unsloth UI Backend
 """
 import os
+# Suppress annoying C-level dependency warnings globally
+os.environ["PYTHONWARNINGS"] = "ignore" 
+
 import secrets
 import shutil
+import warnings
 from contextlib import asynccontextmanager
+
+# Suppress annoying dependency warnings in production
+if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
+    warnings.filterwarnings("ignore")
+    # Alternatively, you can be more specific:
+    # warnings.filterwarnings("ignore", category=DeprecationWarning)
+    # warnings.filterwarnings("ignore", module="triton.*")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,8 +66,9 @@ async def lifespan(app: FastAPI):
         sm_version = props.major * 10 + props.minor
         if sm_version >= 120:
             os.environ["UNSLOTH_ENABLE_FLEX_ATTENTION"] = "0"
-            import logging
-            logging.getLogger(__name__).info(
+            import structlog
+            from loggers import get_logger
+            get_logger(__name__).info(
                 f"GPU sm_{sm_version} detected — setting UNSLOTH_FLEX_ATTENTION=0"
             )
 
@@ -82,6 +94,17 @@ app = FastAPI(
     description="Backend API for Unsloth UI - Training and Model Management",
     lifespan=lifespan,
 )
+
+# Initialize structured logging
+from loggers.config import LogConfig
+from loggers.handlers import LoggingMiddleware
+
+logger = LogConfig.setup_logging(
+    service_name="unsloth-studio-backend", 
+    env=os.getenv("ENVIRONMENT_TYPE", "production")
+)
+
+app.add_middleware(LoggingMiddleware)
 
 # CORS middleware
 app.add_middleware(

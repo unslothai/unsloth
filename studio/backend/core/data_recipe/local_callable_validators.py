@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import json
-import logging
+import structlog
+from loggers import get_logger
 import subprocess
 from copy import deepcopy
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator"
 

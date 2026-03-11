@@ -6,6 +6,17 @@ Colab-specific helpers for running Unsloth Studio.
 Uses Colab's built-in proxy - no external tunneling needed!
 """
 from pathlib import Path
+import sys
+
+# Add backend to path early so local modules like loggers can be imported
+backend_path = str(Path(__file__).parent)
+if backend_path not in sys.path:
+    sys.path.insert(0, backend_path)
+
+from loggers import get_logger
+logger = get_logger(__name__)
+
+
 
 
 def get_colab_url(port: int = 8000) -> str:
@@ -19,7 +30,7 @@ def get_colab_url(port: int = 8000) -> str:
         url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec=5)
         return url if url else f"http://localhost:{port}"
     except Exception as e:
-        print(f"Note: Could not get Colab URL ({e})")
+        logger.info(f"Note: Could not get Colab URL ({e})")
         return f"http://localhost:{port}"
 
 
@@ -61,14 +72,9 @@ def start(port: int = 8000):
     """
     import sys
     
-    print("🦥 Starting Unsloth Studio...")
+    logger.info("🦥 Starting Unsloth Studio...")
     
-    # Add backend to path
-    backend_path = str(Path(__file__).parent)
-    if backend_path not in sys.path:
-        sys.path.insert(0, backend_path)
-    
-    print("   Loading backend...")
+    logger.info("   Loading backend...")
     from run import run_server
     
     # Auto-detect frontend path
@@ -76,14 +82,14 @@ def start(port: int = 8000):
     frontend_path = repo_root / "frontend" / "dist"
     
     if not frontend_path.exists():
-        print("❌ Frontend not built! Please run the setup cell first.")
+        logger.info("❌ Frontend not built! Please run the setup cell first.")
         return
     
-    print("   Starting server...")
+    logger.info("   Starting server...")
     # Start server silently
     run_server(host="0.0.0.0", port=port, frontend_path=frontend_path, silent=True)
     
-    print("   Server started!")
+    logger.info("   Server started!")
     
     # Show the clickable link with real URL
     show_link(port)
