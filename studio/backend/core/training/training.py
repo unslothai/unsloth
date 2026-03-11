@@ -18,14 +18,15 @@ import multiprocessing as mp
 import queue
 import threading
 import time
-import logging
+import structlog
+from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 

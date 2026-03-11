@@ -11,6 +11,10 @@ This module contains functions for converting between dataset formats
 import os
 
 from datasets import IterableDataset
+from loggers import get_logger
+logger = get_logger(__name__)
+
+
 
 
 def standardize_chat_format(
@@ -301,12 +305,12 @@ def convert_to_vlm_format(
         instruction_column = instruction_info.get("instruction_column")
         uses_dynamic = instruction_info["uses_dynamic_instruction"]
 
-        print(f"📝 Auto-detected instruction type: {instruction_info['instruction_type']}")
-        print(f"📝 Confidence: {instruction_info['confidence']:.2f}")
+        logger.info(f"📝 Auto-detected instruction type: {instruction_info['instruction_type']}")
+        logger.info(f"📝 Confidence: {instruction_info['confidence']:.2f}")
         if not uses_dynamic:
-            print(f"📝 Using instruction: '{instruction}'")
+            logger.info(f"📝 Using instruction: '{instruction}'")
         else:
-            print(f"📝 Using dynamic instructions from column: '{instruction_column}'")
+            logger.info(f"📝 Using dynamic instructions from column: '{instruction_column}'")
     else:
         instruction_column = None
         uses_dynamic = False
@@ -382,7 +386,7 @@ def convert_to_vlm_format(
         try:
             from huggingface_hub import HfApi
             _notify("Resolving image filenames from HF repo...")
-            print(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
+            logger.info(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
             repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
             _image_lookup = {
                 os.path.basename(f): f
@@ -390,12 +394,12 @@ def convert_to_vlm_format(
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
             if first_image in _image_lookup:
-                print(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
+                logger.info(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
             else:
-                print(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
+                logger.info(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
                 _image_lookup = None
         except Exception as e:
-            print(f"⚠️ Failed to build HF repo image lookup: {e}")
+            logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
 
     # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
@@ -409,7 +413,7 @@ def convert_to_vlm_format(
 
         num_workers = safe_num_proc()
         _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
-        print(f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers...")
+        logger.info(f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers...")
 
         probe_samples = [dataset[i] for i in range(PROBE_SIZE)]
         probe_ok = 0
@@ -437,7 +441,7 @@ def convert_to_vlm_format(
                 "This dataset has too many broken or unreachable image URLs. "
                 "Consider using a dataset with embedded images instead."
             )
-            print(msg)
+            logger.info(msg)
             _notify(msg)
             raise ValueError(msg)
 
@@ -453,14 +457,14 @@ def convert_to_vlm_format(
         if probe_fail > 0:
             info_msg += f" | {fail_rate:.0%} broken URLs will be skipped"
 
-        print(f"✅ Probe passed: {probe_ok}/{probe_total} ok, {probe_fail} failed ({fail_rate:.0%}), {throughput:.1f} img/s")
-        print(f"⏱️ Estimated time for {total:,} samples: ~{eta_str}")
+        logger.info(f"✅ Probe passed: {probe_ok}/{probe_total} ok, {probe_fail} failed ({fail_rate:.0%}), {throughput:.1f} img/s")
+        logger.info(f"⏱️ Estimated time for {total:,} samples: ~{eta_str}")
         _notify(info_msg)
 
     # ── Full conversion with progress ──
     from tqdm import tqdm
 
-    print(f"🔄 Converting {total} samples to VLM format...")
+    logger.info(f"🔄 Converting {total} samples to VLM format...")
     converted_list = []
     failed_count = 0
 
@@ -488,7 +492,7 @@ def convert_to_vlm_format(
                     except Exception as e:
                         failed_count += 1
                         if failed_count == 1:
-                            print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
+                            logger.info(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
 
             converted_list.extend(r for r in batch_results if r is not None)
 
@@ -499,7 +503,7 @@ def convert_to_vlm_format(
             remaining_time = (total - done) / rate if rate > 0 else 0
             eta_str = _format_eta(remaining_time)
             progress_msg = f"Downloading images: {done:,}/{total:,} ({done*100//total}%) | ~{eta_str} remaining | {failed_count} skipped"
-            print(f"  [{done}/{total}] {rate:.1f} img/s, {failed_count} failed, ETA {eta_str}")
+            logger.info(f"  [{done}/{total}] {rate:.1f} img/s, {failed_count} failed, ETA {eta_str}")
             _notify(progress_msg)
     else:
         # Sequential conversion for local/embedded images (fast, no I/O bottleneck)
@@ -511,13 +515,13 @@ def convert_to_vlm_format(
                 failed_count += 1
                 if failed_count == 1:
                     # Log the first failure to aid debugging
-                    print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
+                    logger.info(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
             pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
         pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
-        print(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
+        logger.info(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
         # For datasets that skipped the probe (small URL datasets), check fail rate now
         if has_urls and fail_rate >= MAX_FAIL_RATE:
             msg = (
@@ -534,7 +538,7 @@ def convert_to_vlm_format(
             "This dataset may contain only image URLs that are no longer accessible."
         )
 
-    print(f"✅ Converted {len(converted_list)}/{total} samples")
+    logger.info(f"✅ Converted {len(converted_list)}/{total} samples")
     _notify(f"Converted {len(converted_list):,}/{total:,} images successfully")
 
     # Return list, NOT Dataset
@@ -592,7 +596,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         try:
             from huggingface_hub import HfApi
             _notify("Resolving image filenames from HF repo...")
-            print(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
+            logger.info(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
             repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
             _image_lookup = {
                 os.path.basename(f): f
@@ -604,12 +608,12 @@ def convert_sharegpt_with_images_to_vlm_format(
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
                     _image_lookup[f] = f
             if first_image in _image_lookup:
-                print(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
+                logger.info(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
             else:
-                print(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
+                logger.info(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
                 _image_lookup = None
         except Exception as e:
-            print(f"⚠️ Failed to build HF repo image lookup: {e}")
+            logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
 
     def _resolve_image(image_data):
@@ -670,7 +674,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         return {"messages": new_messages}
 
     # ── Full conversion with progress ──
-    print(f"🔄 Converting {total} samples from ShareGPT+image format...")
+    logger.info(f"🔄 Converting {total} samples from ShareGPT+image format...")
     converted_list = []
     failed_count = 0
 
@@ -681,12 +685,12 @@ def convert_sharegpt_with_images_to_vlm_format(
         except Exception as e:
             failed_count += 1
             if failed_count == 1:
-                print(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
+                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
         pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
     pbar.close()
 
     if failed_count > 0:
-        print(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
+        logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
 
     if len(converted_list) == 0:
         raise ValueError(
@@ -694,7 +698,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             "no usable samples found."
         )
 
-    print(f"✅ Converted {len(converted_list)}/{total} samples")
+    logger.info(f"✅ Converted {len(converted_list)}/{total} samples")
     _notify(f"Converted {len(converted_list):,}/{total:,} samples successfully")
     return converted_list
 
@@ -712,7 +716,7 @@ def convert_llava_to_vlm_format(dataset):
     """
     from PIL import Image
 
-    print(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
+    logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
 
     def _convert_single_sample(sample):
         """Convert a single llava sample to standard VLM format."""
@@ -768,5 +772,5 @@ def convert_llava_to_vlm_format(dataset):
     # Convert using list comprehension
     converted_list = [_convert_single_sample(sample) for sample in dataset]
 
-    print(f"✅ Converted {len(converted_list)} samples")
+    logger.info(f"✅ Converted {len(converted_list)} samples")
     return converted_list

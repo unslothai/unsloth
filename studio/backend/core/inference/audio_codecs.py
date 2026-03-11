@@ -8,13 +8,14 @@ Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 import io
 import re
 import wave
-import logging
+import structlog
+from loggers import get_logger
 from typing import Optional, Tuple
 
 import numpy as np
 import torch
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _numpy_to_wav_bytes(waveform: np.ndarray, sample_rate: int) -> bytes:
