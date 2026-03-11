@@ -75,7 +75,7 @@ _HTML_TEMPLATE = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Unsloth Studio</title>
+<title>Unsloth Activation Viewer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
@@ -639,9 +639,9 @@ input[type=range]::-webkit-slider-thumb {{
   <header>
     <div class="logo">
       <span class="logo-icon">🦥</span>
-      <h1>Unsloth Studio</h1>
+      <h1>Unsloth</h1>
     </div>
-    <p class="subtitle">Neural Activation Viewer</p>
+    <p class="subtitle">Activation Viewer</p>
     <div class="model-badge" id="model-label">
       <span class="dot"></span>
       <span>Loading model...</span>

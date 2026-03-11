@@ -510,7 +510,7 @@ if __name__ == "__main__":
 
     viz_group = parser.add_argument_group(
         "🧠 Activation Visualization Options",
-        "Capture hidden-state statistics during training for Unsloth Studio visualization.",
+        "Capture hidden-state statistics during training for visualization.",
     )
     viz_group.add_argument(
         "--capture_activations",

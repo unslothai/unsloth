@@ -144,7 +144,7 @@ else:
     from ._gpu_init import *
     from ._gpu_init import __version__
 
-# Activation capture for Unsloth Studio neuron visualization
+# Activation capture for neuron visualization
 from .activation_capture import (
     ActivationCaptureConfig,
     ActivationCapture,
