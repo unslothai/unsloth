@@ -130,13 +130,14 @@ def run(args):
             if use_modelscope:
                 from modelscope import MsDataset
 
-                dataset = MsDataset.load(args.dataset, split = "train")
+                dataset = MsDataset.load(args.dataset, split = args.dataset_split)
             else:
                 # Existing HuggingFace dataset logic
-                dataset = load_dataset(args.dataset, split = "train")
+                dataset = load_dataset(args.dataset, split = args.dataset_split)
 
-            # Apply formatting for structured datasets
-            dataset = dataset.map(formatting_prompts_func, batched = True)
+            # Apply formatting for structured datasets (skip if 'text' column already present)
+            if "text" not in dataset.column_names:
+                dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
 
     # Attach activation capture now that model exists
@@ -272,6 +273,12 @@ if __name__ == "__main__":
         type = str,
         default = "yahma/alpaca-cleaned",
         help = "Huggingface dataset to use for training",
+    )
+    model_group.add_argument(
+        "--dataset_split",
+        type = str,
+        default = "train",
+        help = "Dataset split to use (default: train)",
     )
 
     lora_group = parser.add_argument_group(
