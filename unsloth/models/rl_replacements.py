@@ -698,14 +698,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if not hasattr(self, "_autocast_dtype"):
                     self._autocast_dtype = (
                         torch.float16
-                        if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
+                        if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16")
+                        == "fp16"
                         else torch.bfloat16
                     )
                 autocaster = torch.amp.autocast(
                     device_type = DEVICE_TYPE, dtype = self._autocast_dtype
                 )
                 dtype_bytes = (
-                    16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
+                    16
+                    if self._autocast_dtype in [torch.float16, torch.bfloat16]
+                    else 32
                 )
 
             pixel_values, image_grid_thw = (
