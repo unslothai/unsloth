@@ -303,13 +303,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
             # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
             # So we only create config class if the previous init was not TrainingArguments
-            if isinstance(training_args, config_class):
-                import copy
-
-                config = copy.deepcopy(training_args)
-                for key, value in additional_config_kwargs.items():
-                    setattr(config, key, value)
-            elif not isinstance(training_args, TrainingArguments):
+            if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
                 config = training_args
@@ -389,7 +383,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = f"Unsloth: Sample packing skipped ({reason} detected)."
+            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
             print(message)
 
         packing_active = False
