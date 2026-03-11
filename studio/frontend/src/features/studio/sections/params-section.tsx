@@ -487,7 +487,7 @@ export function ParamsSection(): ReactElement {
               />
               Training Hyperparameters
             </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3">
+            <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
               <Tabs defaultValue="optimization" className="w-full">
                 <TabsList className="w-full">
                   <TabsTrigger
