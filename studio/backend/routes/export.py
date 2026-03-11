@@ -43,11 +43,7 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-
-
-
-
-@router.post("/load-checkpoint", response_model=ExportOperationResponse)
+@router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
     current_subject: str = Depends(get_current_subject),
@@ -65,6 +61,7 @@ async def load_checkpoint(
         # before loading the export checkpoint (they'd compete for VRAM).
         try:
             from core.inference import get_inference_backend
+
             inf = get_inference_backend()
             if inf.active_model_name:
                 logger.info(
@@ -79,6 +76,7 @@ async def load_checkpoint(
 
         try:
             from core.training import get_training_backend
+
             trn = get_training_backend()
             if trn.is_training_active():
                 logger.info("Stopping active training to free GPU memory for export")
@@ -88,35 +86,39 @@ async def load_checkpoint(
                 for _ in range(60):  # up to 30s
                     if not trn.is_training_active():
                         break
-                    import time; time.sleep(0.5)
+                    import time
+
+                    time.sleep(0.5)
                 else:
-                    logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
+                    logger.warning(
+                        "Training subprocess did not exit within 30s, proceeding anyway"
+                    )
         except Exception as e:
             logger.warning("Could not stop training: %s", e)
 
         backend = get_export_backend()
         success, message = backend.load_checkpoint(
-            checkpoint_path=request.checkpoint_path,
-            max_seq_length=request.max_seq_length,
-            load_in_4bit=request.load_in_4bit,
-            trust_remote_code=request.trust_remote_code,
+            checkpoint_path = request.checkpoint_path,
+            max_seq_length = request.max_seq_length,
+            load_in_4bit = request.load_in_4bit,
+            trust_remote_code = request.trust_remote_code,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success=True, message=message)
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error loading checkpoint: {e}", exc_info=True)
+        logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load checkpoint: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to load checkpoint: {str(e)}",
         )
 
 
-@router.post("/cleanup", response_model=ExportOperationResponse)
+@router.post("/cleanup", response_model = ExportOperationResponse)
 async def cleanup_export_memory(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -131,25 +133,25 @@ async def cleanup_export_memory(
 
         if not success:
             raise HTTPException(
-                status_code=500,
-                detail="Memory cleanup failed. See server logs for details.",
+                status_code = 500,
+                detail = "Memory cleanup failed. See server logs for details.",
             )
 
         return ExportOperationResponse(
-            success=True,
-            message="Memory cleanup completed successfully",
+            success = True,
+            message = "Memory cleanup completed successfully",
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error during export memory cleanup: {e}", exc_info=True)
+        logger.error(f"Error during export memory cleanup: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to cleanup export memory: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to cleanup export memory: {str(e)}",
         )
 
 
-@router.get("/status", response_model=ExportStatusResponse)
+@router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -159,19 +161,19 @@ async def get_export_status(
     try:
         backend = get_export_backend()
         return ExportStatusResponse(
-            current_checkpoint=backend.current_checkpoint,
-            is_vision=bool(getattr(backend, "is_vision", False)),
-            is_peft=bool(getattr(backend, "is_peft", False)),
+            current_checkpoint = backend.current_checkpoint,
+            is_vision = bool(getattr(backend, "is_vision", False)),
+            is_peft = bool(getattr(backend, "is_peft", False)),
         )
     except Exception as e:
-        logger.error(f"Error getting export status: {e}", exc_info=True)
+        logger.error(f"Error getting export status: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get export status: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to get export status: {str(e)}",
         )
 
 
-@router.post("/export/merged", response_model=ExportOperationResponse)
+@router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
     current_subject: str = Depends(get_current_subject),
@@ -184,29 +186,29 @@ async def export_merged_model(
     try:
         backend = get_export_backend()
         success, message = backend.export_merged_model(
-            save_directory=request.save_directory,
-            format_type=request.format_type,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            private=request.private,
+            save_directory = request.save_directory,
+            format_type = request.format_type,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success=True, message=message)
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting merged model: {e}", exc_info=True)
+        logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to export merged model: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to export merged model: {str(e)}",
         )
 
 
-@router.post("/export/base", response_model=ExportOperationResponse)
+@router.post("/export/base", response_model = ExportOperationResponse)
 async def export_base_model(
     request: ExportBaseModelRequest,
     current_subject: str = Depends(get_current_subject),
@@ -219,29 +221,29 @@ async def export_base_model(
     try:
         backend = get_export_backend()
         success, message = backend.export_base_model(
-            save_directory=request.save_directory,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            private=request.private,
-            base_model_id=request.base_model_id,
+            save_directory = request.save_directory,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
+            base_model_id = request.base_model_id,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success=True, message=message)
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting base model: {e}", exc_info=True)
+        logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to export base model: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to export base model: {str(e)}",
         )
 
 
-@router.post("/export/gguf", response_model=ExportOperationResponse)
+@router.post("/export/gguf", response_model = ExportOperationResponse)
 async def export_gguf(
     request: ExportGGUFRequest,
     current_subject: str = Depends(get_current_subject),
@@ -254,28 +256,28 @@ async def export_gguf(
     try:
         backend = get_export_backend()
         success, message = backend.export_gguf(
-            save_directory=request.save_directory,
-            quantization_method=request.quantization_method,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
+            save_directory = request.save_directory,
+            quantization_method = request.quantization_method,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success=True, message=message)
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting GGUF model: {e}", exc_info=True)
+        logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to export GGUF model: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to export GGUF model: {str(e)}",
         )
 
 
-@router.post("/export/lora", response_model=ExportOperationResponse)
+@router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
     request: ExportLoRAAdapterRequest,
     current_subject: str = Depends(get_current_subject),
@@ -288,24 +290,22 @@ async def export_lora_adapter(
     try:
         backend = get_export_backend()
         success, message = backend.export_lora_adapter(
-            save_directory=request.save_directory,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            private=request.private,
+            save_directory = request.save_directory,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success=True, message=message)
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting LoRA adapter: {e}", exc_info=True)
+        logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to export LoRA adapter: {str(e)}",
+            status_code = 500,
+            detail = f"Failed to export LoRA adapter: {str(e)}",
         )
-
-

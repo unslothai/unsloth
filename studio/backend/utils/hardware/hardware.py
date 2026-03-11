@@ -15,6 +15,7 @@ Usage:
         import torch
         ...
 """
+
 import platform
 import structlog
 from loggers import get_logger
@@ -26,11 +27,13 @@ logger = get_logger(__name__)
 
 # ========== Device Enum ==========
 
+
 class DeviceType(str, Enum):
     """Supported compute backends. Inherits from str so it serializes cleanly in JSON."""
+
     CUDA = "cuda"
-    MLX  = "mlx"
-    CPU  = "cpu"
+    MLX = "mlx"
+    CPU = "cpu"
 
 
 # ========== Global State (set once by detect_hardware) ==========
@@ -39,6 +42,7 @@ DEVICE: Optional[DeviceType] = None
 
 
 # ========== Detection ==========
+
 
 def is_apple_silicon() -> bool:
     """Check if running on Apple Silicon hardware (pure platform check, no ML imports)."""
@@ -49,6 +53,7 @@ def _has_torch() -> bool:
     """Check if PyTorch is importable."""
     try:
         import torch
+
         return True
     except ImportError:
         return False
@@ -58,6 +63,7 @@ def _has_mlx() -> bool:
     """Check if MLX is importable."""
     try:
         import mlx.core
+
         return True
     except ImportError:
         return False
@@ -80,6 +86,7 @@ def detect_hardware() -> DeviceType:
     # --- CUDA: try PyTorch ---
     if _has_torch():
         import torch
+
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             device_name = torch.cuda.get_device_properties(0).name
@@ -101,6 +108,7 @@ def detect_hardware() -> DeviceType:
 
 # ========== Convenience helpers ==========
 
+
 def get_device() -> DeviceType:
     """
     Return the detected device. Auto-detects if detect_hardware() hasn't been called yet.
@@ -118,12 +126,14 @@ def clear_gpu_cache():
     Safe to call on any platform — no-ops gracefully.
     """
     import gc
+
     gc.collect()
 
     device = get_device()
 
     if device == DeviceType.CUDA:
         import torch
+
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
@@ -144,6 +154,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
     if device == DeviceType.CUDA:
         try:
             import torch
+
             idx = torch.cuda.current_device()
             props = torch.cuda.get_device_properties(idx)
 
@@ -215,6 +226,7 @@ def log_gpu_memory(context: str):
 
 # ========== GPU Summary & Package Versions ==========
 
+
 def get_gpu_summary() -> Dict[str, Any]:
     """
     Return a compact summary of the primary GPU.
@@ -256,6 +268,7 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     # CUDA toolkit version bundled with torch
     try:
         import torch
+
         versions["cuda"] = getattr(torch.version, "cuda", None)
     except Exception:
         versions["cuda"] = None
@@ -264,6 +277,7 @@ def get_package_versions() -> Dict[str, Optional[str]]:
 
 
 # ========== Live GPU Utilization (nvidia-smi) ==========
+
 
 def get_gpu_utilization() -> Dict[str, Any]:
     """
@@ -312,9 +326,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
 
         if result.returncode == 0 and result.stdout.strip():
@@ -360,7 +374,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
     power_limit = smi_data.get("power_limit")
 
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
-    vram_total_gb = round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
+    vram_total_gb = (
+        round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
+    )
     vram_pct = (
         round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb and vram_total_mb > 0
@@ -395,6 +411,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
 _physical_gpu_count: Optional[int] = None
 
+
 def get_physical_gpu_count() -> int:
     """
     Return the number of physical NVIDIA GPUs on the machine.
@@ -409,9 +426,12 @@ def get_physical_gpu_count() -> int:
 
     try:
         import subprocess
+
         result = subprocess.run(
             ["nvidia-smi", "-L"],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0 and result.stdout.strip():
             _physical_gpu_count = len(result.stdout.strip().splitlines())

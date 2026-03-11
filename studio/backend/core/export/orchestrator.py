@@ -13,6 +13,7 @@ the old subprocess is killed and a new one is spawned with the correct version.
 
 Pattern follows core/inference/orchestrator.py.
 """
+
 import atexit
 import structlog
 from loggers import get_logger
@@ -65,13 +66,13 @@ class ExportOrchestrator:
         self._resp_queue = _CTX.Queue()
 
         self._proc = _CTX.Process(
-            target=run_export_process,
-            kwargs={
+            target = run_export_process,
+            kwargs = {
                 "cmd_queue": self._cmd_queue,
                 "resp_queue": self._resp_queue,
                 "config": config,
             },
-            daemon=True,
+            daemon = True,
         )
         self._proc.start()
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
@@ -93,7 +94,7 @@ class ExportOrchestrator:
 
         # 3. Wait for graceful shutdown
         try:
-            self._proc.join(timeout=timeout)
+            self._proc.join(timeout = timeout)
         except Exception:
             pass
 
@@ -102,14 +103,14 @@ class ExportOrchestrator:
             logger.warning("Export subprocess did not exit gracefully, terminating")
             try:
                 self._proc.terminate()
-                self._proc.join(timeout=5)
+                self._proc.join(timeout = 5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Subprocess still alive after terminate, killing")
                 try:
                     self._proc.kill()
-                    self._proc.join(timeout=3)
+                    self._proc.join(timeout = 3)
                 except Exception:
                     pass
 
@@ -120,7 +121,7 @@ class ExportOrchestrator:
 
     def _cleanup(self):
         """atexit handler."""
-        self._shutdown_subprocess(timeout=5.0)
+        self._shutdown_subprocess(timeout = 5.0)
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive."""
@@ -144,15 +145,13 @@ class ExportOrchestrator:
         if self._resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout=timeout)
+            return self._resp_queue.get(timeout = timeout)
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(
-        self, expected_type: str, timeout: float = 3600.0
-    ) -> dict:
+    def _wait_response(self, expected_type: str, timeout: float = 3600.0) -> dict:
         """Block until a response of the expected type arrives.
 
         Export operations can take a very long time — GGUF conversion for
@@ -163,7 +162,7 @@ class ExportOrchestrator:
 
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout=min(remaining, 2.0))
+            resp = self._read_resp(timeout = min(remaining, 2.0))
 
             if resp is None:
                 # Check subprocess health
@@ -187,7 +186,8 @@ class ExportOrchestrator:
             # Other response types during wait — skip
             logger.debug(
                 "Skipping response type '%s' while waiting for '%s'",
-                rtype, expected_type,
+                rtype,
+                expected_type,
             )
 
         raise RuntimeError(
@@ -233,15 +233,15 @@ class ExportOrchestrator:
         if self._ensure_subprocess_alive():
             self._shutdown_subprocess()
         elif self._proc is not None:
-            self._shutdown_subprocess(timeout=2)
+            self._shutdown_subprocess(timeout = 2)
 
         logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
         self._spawn_subprocess(sub_config)
 
         try:
-            resp = self._wait_response("loaded", timeout=300)
+            resp = self._wait_response("loaded", timeout = 300)
         except RuntimeError as exc:
-            self._shutdown_subprocess(timeout=5)
+            self._shutdown_subprocess(timeout = 5)
             self.current_checkpoint = None
             self.is_vision = False
             self.is_peft = False
@@ -271,14 +271,17 @@ class ExportOrchestrator:
         private: bool = False,
     ) -> Tuple[bool, str]:
         """Export merged PEFT model."""
-        return self._run_export("merged", {
-            "save_directory": save_directory,
-            "format_type": format_type,
-            "push_to_hub": push_to_hub,
-            "repo_id": repo_id,
-            "hf_token": hf_token,
-            "private": private,
-        })
+        return self._run_export(
+            "merged",
+            {
+                "save_directory": save_directory,
+                "format_type": format_type,
+                "push_to_hub": push_to_hub,
+                "repo_id": repo_id,
+                "hf_token": hf_token,
+                "private": private,
+            },
+        )
 
     def export_base_model(
         self,
@@ -290,14 +293,17 @@ class ExportOrchestrator:
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Export base model (non-PEFT)."""
-        return self._run_export("base", {
-            "save_directory": save_directory,
-            "push_to_hub": push_to_hub,
-            "repo_id": repo_id,
-            "hf_token": hf_token,
-            "private": private,
-            "base_model_id": base_model_id,
-        })
+        return self._run_export(
+            "base",
+            {
+                "save_directory": save_directory,
+                "push_to_hub": push_to_hub,
+                "repo_id": repo_id,
+                "hf_token": hf_token,
+                "private": private,
+                "base_model_id": base_model_id,
+            },
+        )
 
     def export_gguf(
         self,
@@ -308,13 +314,16 @@ class ExportOrchestrator:
         hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Export model in GGUF format."""
-        return self._run_export("gguf", {
-            "save_directory": save_directory,
-            "quantization_method": quantization_method,
-            "push_to_hub": push_to_hub,
-            "repo_id": repo_id,
-            "hf_token": hf_token,
-        })
+        return self._run_export(
+            "gguf",
+            {
+                "save_directory": save_directory,
+                "quantization_method": quantization_method,
+                "push_to_hub": push_to_hub,
+                "repo_id": repo_id,
+                "hf_token": hf_token,
+            },
+        )
 
     def export_lora_adapter(
         self,
@@ -325,13 +334,16 @@ class ExportOrchestrator:
         private: bool = False,
     ) -> Tuple[bool, str]:
         """Export LoRA adapter only."""
-        return self._run_export("lora", {
-            "save_directory": save_directory,
-            "push_to_hub": push_to_hub,
-            "repo_id": repo_id,
-            "hf_token": hf_token,
-            "private": private,
-        })
+        return self._run_export(
+            "lora",
+            {
+                "save_directory": save_directory,
+                "push_to_hub": push_to_hub,
+                "repo_id": repo_id,
+                "hf_token": hf_token,
+                "private": private,
+            },
+        )
 
     def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str]:
         """Send an export command to the subprocess and wait for result."""
@@ -344,7 +356,7 @@ class ExportOrchestrator:
             self._send_cmd(cmd)
             resp = self._wait_response(
                 f"export_{export_type}_done",
-                timeout=3600,  # GGUF for 30B+ models can take 30+ min
+                timeout = 3600,  # GGUF for 30B+ models can take 30+ min
             )
             return resp.get("success", False), resp.get("message", "")
         except RuntimeError as exc:
@@ -361,7 +373,7 @@ class ExportOrchestrator:
 
         try:
             self._send_cmd({"type": "cleanup"})
-            resp = self._wait_response("cleanup_done", timeout=30)
+            resp = self._wait_response("cleanup_done", timeout = 30)
             success = resp.get("success", False)
         except RuntimeError:
             success = False
@@ -379,7 +391,8 @@ class ExportOrchestrator:
     ) -> List[Tuple[str, list]]:
         """Scan for checkpoints — no ML imports needed, runs locally."""
         from utils.models.checkpoints import scan_checkpoints
-        return scan_checkpoints(outputs_dir=outputs_dir)
+
+        return scan_checkpoints(outputs_dir = outputs_dir)
 
 
 # ========== GLOBAL INSTANCE ==========

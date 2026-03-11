@@ -14,9 +14,9 @@ from itertools import islice
 
 def generate_smart_vlm_instruction(
     dataset,
-    text_column="text",
-    image_column="image",
-    dataset_name=None,
+    text_column = "text",
+    image_column = "image",
+    dataset_name = None,
 ):
     """
     Generate smart, context-aware instruction for VLM datasets using heuristics.
@@ -66,11 +66,12 @@ def generate_smart_vlm_instruction(
         # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
-            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long text passages (Latin/Arabic)
+            "content_hints": [
+                r"[A-Za-z\u0600-\u06FF]{10,}"
+            ],  # Long text passages (Latin/Arabic)
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },
-
         # LaTeX / Math
         "latex": {
             "keywords": ["latex", "math", "formula", "equation"],
@@ -78,7 +79,6 @@ def generate_smart_vlm_instruction(
             "instruction": "Convert this image to LaTeX notation.",
             "confidence": 0.95,
         },
-
         # Caption / Description
         "caption": {
             "keywords": ["caption", "description", "describe"],
@@ -86,15 +86,21 @@ def generate_smart_vlm_instruction(
             "instruction": "Provide a detailed description of this image.",
             "confidence": 0.85,
         },
-
         # Medical / Radiology
         "medical": {
-            "keywords": ["medical", "radiology", "xray", "ct", "mri", "scan", "diagnosis"],
+            "keywords": [
+                "medical",
+                "radiology",
+                "xray",
+                "ct",
+                "mri",
+                "scan",
+                "diagnosis",
+            ],
             "content_hints": [r"\b(lesion|radiograph|patient|diagnosis|findings)\b"],
             "instruction": "Analyze this medical image and describe the key findings.",
             "confidence": 0.9,
         },
-
         # Code / Programming
         "code": {
             "keywords": ["code", "program", "function", "algorithm"],
@@ -102,7 +108,6 @@ def generate_smart_vlm_instruction(
             "instruction": "Explain what this code visualization shows.",
             "confidence": 0.85,
         },
-
         # Chart / Graph
         "chart": {
             "keywords": ["chart", "graph", "plot", "visualization", "diagram"],
@@ -110,7 +115,6 @@ def generate_smart_vlm_instruction(
             "instruction": "Describe this chart or graph, including key data points and trends.",
             "confidence": 0.85,
         },
-
         # Document / Text Recognition
         "document": {
             "keywords": ["document", "page", "paragraph", "article"],
@@ -132,7 +136,9 @@ def generate_smart_vlm_instruction(
             score += 0.5
 
         # Check dataset name if provided
-        if dataset_name and any(keyword in dataset_name.lower() for keyword in task_info["keywords"]):
+        if dataset_name and any(
+            keyword in dataset_name.lower() for keyword in task_info["keywords"]
+        ):
             score += 0.3
 
         # Check content patterns
@@ -186,7 +192,7 @@ def generate_smart_vlm_instruction(
             row = {}
             for col in s:
                 val = s[col]
-                if hasattr(val, 'size') and hasattr(val, 'mode'):  # PIL Image
+                if hasattr(val, "size") and hasattr(val, "mode"):  # PIL Image
                     row[col] = "<image>"
                 elif isinstance(val, list):
                     row[col] = str(val)[:300]
@@ -195,15 +201,15 @@ def generate_smart_vlm_instruction(
             sample_rows.append(row)
 
         llm_result = llm_generate_vlm_instruction(
-            column_names=list(column_names),
-            samples=sample_rows,
-            dataset_name=dataset_name,
+            column_names = list(column_names),
+            samples = sample_rows,
+            dataset_name = dataset_name,
         )
         if llm_result and llm_result.get("instruction"):
             print(
                 f"\n[DEBUG] LLM-assisted VLM instruction generated: "
                 f"'{llm_result['instruction']}' (confidence={llm_result.get('confidence', 'N/A')})\n",
-                flush=True,
+                flush = True,
             )
             return {
                 "instruction": llm_result["instruction"],
@@ -214,6 +220,7 @@ def generate_smart_vlm_instruction(
             }
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).debug(f"LLM-assisted instruction skipped: {e}")
 
     # ===== LEVEL 5: Generic Fallback =====

@@ -58,10 +58,10 @@ class LoggingConfig(BaseModel):
 
 class Config(BaseModel):
     model: Optional[str] = None
-    data: DataConfig = Field(default_factory=DataConfig)
-    training: TrainingConfig = Field(default_factory=TrainingConfig)
-    lora: LoraConfig = Field(default_factory=LoraConfig)
-    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    data: DataConfig = Field(default_factory = DataConfig)
+    training: TrainingConfig = Field(default_factory = TrainingConfig)
+    lora: LoraConfig = Field(default_factory = LoraConfig)
+    logging: LoggingConfig = Field(default_factory = LoggingConfig)
 
     def apply_overrides(self, **kwargs):
         """Apply CLI overrides by matching arg names to config fields."""
@@ -83,7 +83,11 @@ class Config(BaseModel):
             # Vision models expect a string (e.g., "all-linear"); fall back to None to use trainer defaults
             target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
-            parsed = [m.strip() for m in str(self.lora.target_modules).split(",") if m and m.strip()]
+            parsed = [
+                m.strip()
+                for m in str(self.lora.target_modules).split(",")
+                if m and m.strip()
+            ]
             target_modules = parsed or None
 
         return {
@@ -134,11 +138,12 @@ def load_config(path: Optional[Path]) -> Config:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding = "utf-8")
     if path.suffix.lower() in {".yaml", ".yml"}:
         data = yaml.safe_load(text) or {}
     else:
         import json
+
         data = json.loads(text or "{}")
 
     return Config(**data)

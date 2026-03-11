@@ -4,6 +4,7 @@
 """
 Shared backend utilities
 """
+
 import os
 import structlog
 from loggers import get_logger
@@ -28,26 +29,26 @@ def without_hf_auth():
     """
     # Save environment variables
     saved_env = {}
-    env_vars = ['HF_TOKEN', 'HUGGINGFACE_HUB_TOKEN', 'HF_HOME']
+    env_vars = ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME"]
     for var in env_vars:
         if var in os.environ:
             saved_env[var] = os.environ[var]
             del os.environ[var]
 
     # Save disable flag
-    saved_disable = os.environ.get('HF_HUB_DISABLE_IMPLICIT_TOKEN')
-    os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN'] = '1'
+    saved_disable = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
+    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
     # Move token files temporarily
     token_files = []
     token_locations = [
-        Path.home() / '.cache' / 'huggingface' / 'token',
-        Path.home() / '.huggingface' / 'token'
+        Path.home() / ".cache" / "huggingface" / "token",
+        Path.home() / ".huggingface" / "token",
     ]
 
     for token_loc in token_locations:
         if token_loc.exists():
-            temp = tempfile.NamedTemporaryFile(delete=False)
+            temp = tempfile.NamedTemporaryFile(delete = False)
             temp.close()
             shutil.move(str(token_loc), temp.name)
             token_files.append((token_loc, temp.name))
@@ -58,7 +59,7 @@ def without_hf_auth():
         # Restore tokens
         for original, temp in token_files:
             try:
-                original.parent.mkdir(parents=True, exist_ok=True)
+                original.parent.mkdir(parents = True, exist_ok = True)
                 shutil.move(temp, str(original))
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")
@@ -68,10 +69,12 @@ def without_hf_auth():
             os.environ[var] = value
 
         if saved_disable is not None:
-            os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN'] = saved_disable
+            os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = saved_disable
         else:
-            os.environ.pop('HF_HUB_DISABLE_IMPLICIT_TOKEN', None)
-pass
+            os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
+
+
+
 
 def format_error_message(error: Exception, model_name: str) -> str:
     """
@@ -85,7 +88,7 @@ def format_error_message(error: Exception, model_name: str) -> str:
         User-friendly error string
     """
     error_str = str(error).lower()
-    model_short = model_name.split('/')[-1] if '/' in model_name else model_name
+    model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 
     if "repository not found" in error_str or "404" in error_str:
         return f"Model '{model_short}' not found. Check the model name."
@@ -99,12 +102,21 @@ def format_error_message(error: Exception, model_name: str) -> str:
     if "invalid user token" in error_str:
         return "Invalid HF token. Please check your token and try again."
 
-    if "memory" in error_str or "cuda" in error_str or "mlx" in error_str or "out of memory" in error_str:
+    if (
+        "memory" in error_str
+        or "cuda" in error_str
+        or "mlx" in error_str
+        or "out of memory" in error_str
+    ):
         from utils.hardware import get_device
+
         device = get_device()
-        device_label = {"cuda": "GPU", "mlx": "Apple Silicon GPU", "cpu": "system"}.get(device.value, "GPU")
+        device_label = {"cuda": "GPU", "mlx": "Apple Silicon GPU", "cpu": "system"}.get(
+            device.value, "GPU"
+        )
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
     # Generic fallback
     return str(error)
-pass
+
+

@@ -7,6 +7,7 @@ Test remote LoRA adapter detection via HuggingFace Hub API.
 Verifies that we can detect whether a remote HF model is a LoRA adapter
 by checking for adapter_config.json in the repo file listing.
 """
+
 import pytest
 from huggingface_hub import model_info
 
@@ -17,7 +18,7 @@ def is_remote_lora_adapter(model_id: str, hf_token: str = None) -> bool:
     by looking for adapter_config.json in its repo files.
     """
     try:
-        info = model_info(model_id, token=hf_token)
+        info = model_info(model_id, token = hf_token)
         filenames = [s.rfilename for s in info.siblings]
         return "adapter_config.json" in filenames
     except Exception:
@@ -30,12 +31,16 @@ class TestRemoteLoRADetection:
     def test_lora_adapter_detected(self):
         """edbeeching/llama-se-rl-adapter is a known LoRA adapter on HF."""
         result = is_remote_lora_adapter("edbeeching/llama-se-rl-adapter")
-        assert result is True, "Expected edbeeching/llama-se-rl-adapter to be detected as a LoRA adapter"
+        assert (
+            result is True
+        ), "Expected edbeeching/llama-se-rl-adapter to be detected as a LoRA adapter"
 
     def test_base_model_not_detected_as_lora(self):
         """google/gemma-3-4b-it is a full base model, not a LoRA adapter."""
         result = is_remote_lora_adapter("google/gemma-3-4b-it")
-        assert result is False, "Expected google/gemma-3-4b-it to NOT be detected as a LoRA adapter"
+        assert (
+            result is False
+        ), "Expected google/gemma-3-4b-it to NOT be detected as a LoRA adapter"
 
     def test_nonexistent_model_returns_false(self):
         """A nonexistent model should return False, not raise."""

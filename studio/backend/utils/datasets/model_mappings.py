@@ -8,7 +8,6 @@ This module contains the mapping dictionaries that associate model names
 with their corresponding chat templates and response markers.
 """
 
-
 TEMPLATE_TO_MODEL_MAPPER = {
     "phi-3.5": (
         "unsloth/Phi-3.5-mini-instruct-bnb-4bit",
@@ -407,14 +406,11 @@ MODEL_TO_TEMPLATE_MAPPER = {}
 for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value] = key
-    pass
 
     # Get lowercased
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
-    pass
-pass
 
 
 TEMPLATE_TO_RESPONSES_MAPPER = {
@@ -531,4 +527,3 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "response": "<|assistant|><think>",
     },
 }
-

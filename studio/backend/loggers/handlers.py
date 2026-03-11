@@ -36,21 +36,23 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 "/api/train/status",
                 "/api/train/metrics",
                 "/api/train/hardware",
-                "/api/system"
+                "/api/system",
             }
             is_excluded = (
                 request.url.path in EXCLUDED_PATHS
                 or request.url.path.startswith("/assets/")
-                or request.url.path.endswith((".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf"))
+                or request.url.path.endswith(
+                    (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
+                )
             )
 
             if not is_excluded:
                 logger.info(
                     "request_completed",
-                    method=request.method,
-                    path=request.url.path,
-                    status_code=response.status_code,
-                    process_time_ms=round(process_time, 2),
+                    method = request.method,
+                    path = request.url.path,
+                    status_code = response.status_code,
+                    process_time_ms = round(process_time, 2),
                 )
 
             return response
@@ -58,10 +60,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(
                 "request_failed",
-                path=request.url.path,
-                method=request.method,
-                error=str(e),
-                exc_info=True,
+                path = request.url.path,
+                method = request.method,
+                error = str(e),
+                exc_info = True,
             )
             raise
 

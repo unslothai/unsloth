@@ -61,11 +61,13 @@ def tensorboard_root() -> Path:
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents = True, exist_ok = True)
     return path
 
 
-def _clean_relative_path(path_value: str, *, strip_prefixes: tuple[str, ...] = ()) -> Path:
+def _clean_relative_path(
+    path_value: str, *, strip_prefixes: tuple[str, ...] = ()
+) -> Path:
     path = Path(path_value).expanduser()
     parts = [part for part in path.parts if part not in ("", ".")]
     while parts and parts[0] in strip_prefixes:
@@ -86,31 +88,31 @@ def resolve_under_root(
     if path.is_absolute():
         return path
 
-    cleaned = _clean_relative_path(str(path), strip_prefixes=strip_prefixes)
+    cleaned = _clean_relative_path(str(path), strip_prefixes = strip_prefixes)
     return root / cleaned
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root=outputs_root(),
-        strip_prefixes=("outputs",),
+        root = outputs_root(),
+        strip_prefixes = ("outputs",),
     )
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root=exports_root(),
-        strip_prefixes=("exports",),
+        root = exports_root(),
+        strip_prefixes = ("exports",),
     )
 
 
 def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root=tensorboard_root(),
-        strip_prefixes=("runs", "tensorboard"),
+        root = tensorboard_root(),
+        strip_prefixes = ("runs", "tensorboard"),
     )
 
 
