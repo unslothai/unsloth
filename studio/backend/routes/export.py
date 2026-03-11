@@ -8,7 +8,8 @@ Export API routes: checkpoint discovery and model export operations.
 import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
-import logging
+import structlog
+from loggers import get_logger
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
@@ -39,16 +40,9 @@ from models import (
 )
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Configure logger
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+
 
 
 

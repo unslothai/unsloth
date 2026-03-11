@@ -5,13 +5,21 @@
 Run script for Unsloth UI Backend.
 Works independently and can be moved to any directory.
 """
+import os
 import sys
+
+# Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
+os.environ["PYTHONWARNINGS"] = "ignore" 
+
 from pathlib import Path
 
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
+
+from loggers import get_logger
+logger = get_logger(__name__)
 
 
 def _resolve_external_ip() -> str:
@@ -96,7 +104,7 @@ def run_server(
 
     # Run server
     def _run():
-        config = uvicorn.Config(app, host=host, port=port, log_level="info")
+        config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
         server = uvicorn.Server(config)
         asyncio.run(server.serve())
 

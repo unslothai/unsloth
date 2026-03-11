@@ -273,7 +273,8 @@ class TestLogGpuMemory:
             "utilization_pct": 12.5,
             "free_gb": 14.0,
         }
-        import logging
+        import structlog
+        from loggers import get_logger
         with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info), \
              caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
             log_gpu_memory("unit-test")
@@ -284,7 +285,8 @@ class TestLogGpuMemory:
 
     def test_logs_cpu_fallback_when_no_gpu(self, caplog):
         fake_info = {"available": False, "backend": "cpu"}
-        import logging
+        import structlog
+        from loggers import get_logger
         with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info), \
              caplog.at_level(logging.INFO, logger="utils.hardware.hardware"):
             log_gpu_memory("cpu-test")
