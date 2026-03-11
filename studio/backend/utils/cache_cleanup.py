@@ -9,10 +9,11 @@ FastModel.from_pretrained() and contains model-type-specific compiled Python
 files. It should be cleared between model loads to avoid stale artefacts.
 """
 import shutil
-import logging
+import structlog
+from loggers import get_logger
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Possible locations where unsloth_compiled_cache may appear
 _BACKEND_DIR = Path(__file__).resolve().parent.parent          # studio/backend

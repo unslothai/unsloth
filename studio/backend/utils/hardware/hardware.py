@@ -16,11 +16,12 @@ Usage:
         ...
 """
 import platform
-import logging
+import structlog
+from loggers import get_logger
 from enum import Enum
 from typing import Optional, Dict, Any
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ========== Device Enum ==========
@@ -82,19 +83,19 @@ def detect_hardware() -> DeviceType:
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             device_name = torch.cuda.get_device_properties(0).name
-            logger.info(f"Hardware detected: CUDA — {device_name}")
+            print(f"Hardware detected: CUDA — {device_name}")
             return DEVICE
 
     # --- MLX: Apple Silicon ---
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
         chip = platform.processor() or platform.machine()
-        logger.info(f"Hardware detected: MLX — Apple Silicon ({chip})")
+        print(f"Hardware detected: MLX — Apple Silicon ({chip})")
         return DEVICE
 
     # --- Fallback ---
     DEVICE = DeviceType.CPU
-    logger.info("Hardware detected: CPU (no GPU backend available)")
+    print("Hardware detected: CPU (no GPU backend available)")
     return DEVICE
 
 
@@ -458,7 +459,7 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
 
     if get_physical_gpu_count() > 1:
         capped = min(4, desired)
-        print(
+        logger.info(
             f"⚙️ Multi-GPU detected ({get_physical_gpu_count()} GPUs) — "
             f"capping num_proc {desired} → {capped} to avoid fork deadlocks"
         )
