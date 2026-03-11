@@ -274,7 +274,11 @@ def build_xformers_block_causal_mask(
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
         mask = _get_cached_block_mask(lengths, sliding_window)
 
-        _XFORMERS_BLOCK_MASK_CACHE[device] = {"seq_lengths": seq_lengths, "params": params, "mask": mask}
+        _XFORMERS_BLOCK_MASK_CACHE[device] = {
+            "seq_lengths": seq_lengths,
+            "params": params,
+            "mask": mask,
+        }
     else:
         mask = base_mask
 
@@ -336,7 +340,11 @@ def build_sdpa_packed_attention_mask(
         offset += length
 
     result = mask.unsqueeze(0).unsqueeze(0)
-    _SDPA_MASK_CACHE[device] = {"seq_lengths": seq_lengths, "params": params, "mask": result}
+    _SDPA_MASK_CACHE[device] = {
+        "seq_lengths": seq_lengths,
+        "params": params,
+        "mask": result,
+    }
     return result
 
 
