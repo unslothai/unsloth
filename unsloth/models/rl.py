@@ -101,31 +101,27 @@ def _maybe_prepare_vllm_for_resume(trainer):
     if llm is None:
         llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
 
-    slept = False
     sleep_fn = getattr(llm, "sleep", None)
     if callable(sleep_fn):
         try:
             sleep_mode = int(os.environ.get("VLLM_SLEEP_MODE", "1"))
         except ValueError:
             sleep_mode = 1
+
         try:
-            sleep_fn(sleep_mode)
-            slept = True
-        except TypeError:
-            try:
+            signature = inspect.signature(sleep_fn)
+        except (TypeError, ValueError):
+            signature = None
+
+        try:
+            if signature is not None and len(signature.parameters) == 0:
                 sleep_fn()
-                slept = True
-            except Exception as error:
-                logger.warning_once(
-                    f"Unsloth: vLLM sleep() failed during resume cleanup: {error}"
-                )
+            else:
+                sleep_fn(sleep_mode)
         except Exception as error:
             logger.warning_once(
                 f"Unsloth: vLLM sleep() failed during resume cleanup: {error}"
             )
-
-    if slept:
-        trainer._unsloth_resume_wake_vllm = True
 
     import gc
 

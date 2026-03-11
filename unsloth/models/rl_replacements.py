@@ -236,26 +236,6 @@ def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
 
-    import re
-
-    match = re.search(
-        r"^([ \t]*)with torch\.inference_mode\(\):", function, flags = re.MULTILINE
-    )
-    if match is not None:
-        indent = match.group(1)
-        nested_indent = indent + " " * 4
-        wake_block = (
-            f"{indent}if getattr(self, '_unsloth_resume_wake_vllm', False):\n"
-            f"{nested_indent}wake_up = getattr(getattr(self, 'llm', None), 'wake_up', None)\n"
-            f"{nested_indent}if callable(wake_up):\n"
-            f"{nested_indent}    try: wake_up()\n"
-            f"{nested_indent}    except Exception as error:\n"
-            f"{nested_indent}        logging.getLogger(__name__).warning('Unsloth: vLLM wake_up() failed during resume: %s', error)\n"
-            f"{nested_indent}self._unsloth_resume_wake_vllm = False\n"
-            f"{indent}with torch.inference_mode():"
-        )
-        function = function[: match.start()] + wake_block + function[match.end() :]
-
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
