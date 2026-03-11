@@ -7,6 +7,7 @@ export interface InferenceParams {
   topK: number;
   minP: number;
   repetitionPenalty: number;
+  maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
   checkpoint: string;
@@ -20,7 +21,8 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   topK: 50,
   minP: 0.01,
   repetitionPenalty: 1.1,
-  maxTokens: 4092,
+  maxSeqLength: 4096,
+  maxTokens: 2048,
   systemPrompt: "",
   checkpoint: "",
   trustRemoteCode: false,

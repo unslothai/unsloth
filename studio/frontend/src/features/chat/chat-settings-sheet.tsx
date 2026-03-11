@@ -323,10 +323,18 @@ export function ChatSettingsPanel({
                 onChange={set("repetitionPenalty")}
               />
               <ParamSlider
+                label="Max Seq Length"
+                value={params.maxSeqLength}
+                min={128}
+                max={32768}
+                step={128}
+                onChange={set("maxSeqLength")}
+              />
+              <ParamSlider
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={4092}
+                max={4096}
                 step={64}
                 onChange={set("maxTokens")}
               />
