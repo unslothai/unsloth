@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
 // Copyright © 2025 Unsloth AI
 
-export type ModelType = "vision" | "tts" | "embeddings" | "text";
+export type ModelType = "vision" | "audio" | "embeddings" | "text";
 export type TrainingMethod = "qlora" | "lora" | "full";
 
 export function isAdapterMethod(method: TrainingMethod): boolean {

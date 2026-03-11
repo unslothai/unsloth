@@ -12,6 +12,10 @@ from torch.utils.data import IterableDataset
 
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
+from loggers import get_logger
+logger = get_logger(__name__)
+
+
 
 
 DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -53,15 +57,15 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     # Direct match in MODEL_TO_TEMPLATE_MAPPER
     if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
         matched_template = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
-        print(f"📝 Applying Unsloth chat template: {matched_template}")
+        logger.info(f"📝 Applying Unsloth chat template: {matched_template}")
         try:
             tokenizer = get_chat_template(
                 tokenizer,
                 chat_template=matched_template,
             )
         except Exception as e:
-            print(f"⚠️ Failed to apply Unsloth template '{matched_template}': {e}")
-            print(f"   Falling back to tokenizer's default chat template")
+            logger.info(f"⚠️ Failed to apply Unsloth template '{matched_template}': {e}")
+            logger.info(f"   Falling back to tokenizer's default chat template")
     else:
         # Check if tokenizer actually has a chat_template set
         has_chat_template = (
@@ -69,18 +73,18 @@ def get_tokenizer_chat_template(tokenizer, model_name):
             and tokenizer.chat_template is not None
         )
         if has_chat_template:
-            print(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
+            logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
         else:
             # Base model with no chat template — apply default ChatML
-            print(f"📝 No chat template found — applying default ChatML template (base model)")
+            logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
             try:
                 tokenizer = get_chat_template(
                     tokenizer,
                     chat_template="chatml",
                 )
             except Exception as e:
-                print(f"⚠️ Failed to apply default ChatML template: {e}")
-                print(f"   Falling back to tokenizer as-is")
+                logger.info(f"⚠️ Failed to apply default ChatML template: {e}")
+                logger.info(f"   Falling back to tokenizer as-is")
 
     return tokenizer
 
@@ -253,9 +257,9 @@ def apply_chat_template_to_dataset(
             try:
                 from unsloth.chat_templates import get_chat_template
                 tokenizer = get_chat_template(tokenizer, chat_template="alpaca")
-                print(f"📝 Set alpaca chat template on tokenizer for model saving")
+                logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
             except Exception as e:
-                print(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+                logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
 
         # Use custom template if provided
         def _format_alpaca_custom(examples):

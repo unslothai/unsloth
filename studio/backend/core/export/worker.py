@@ -16,14 +16,15 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 """
 from __future__ import annotations
 
-import logging
+import structlog
+from loggers import get_logger
 import os
 import sys
 import time
 import traceback
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _activate_transformers_version(model_name: str, project_root: str) -> None:
@@ -217,6 +218,17 @@ def run_export_process(
     import queue as _queue
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
+
+    import warnings
+    from loggers.config import LogConfig
+    if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
+        warnings.filterwarnings("ignore")
+        
+    LogConfig.setup_logging(
+        service_name="unsloth-studio-export-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
+    )
 
     project_root = config["project_root"]
     checkpoint_path = config["checkpoint_path"]

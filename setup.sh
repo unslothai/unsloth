@@ -225,7 +225,6 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
-rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
@@ -237,66 +236,79 @@ rm -rf "$LLAMA_CPP_DIR"
         echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
     else
         echo ""
-        echo "Building llama-server for GGUF inference..."
-
-        BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
-
-        if [ "$BUILD_OK" = true ]; then
-            CMAKE_ARGS=""
-            # Detect CUDA: check nvcc on PATH, then common install locations
-            NVCC_PATH=""
-            if command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
-            elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                export PATH="/usr/local/cuda/bin:$PATH"
-            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                # Pick the newest cuda-XX.X directory
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
-            fi
-
-            if [ -n "$NVCC_PATH" ]; then
-                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
-                CMAKE_ARGS="-DGGML_CUDA=ON"
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
-                echo "   CUDA driver detected but nvcc not found — building CPU-only"
-                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
-            else
-                echo "   Building CPU-only (no CUDA detected)..."
-            fi
-
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-
-            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
-        fi
-
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
-        fi
-
-        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
-            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
-            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
-            if [ -f "$QUANTIZE_BIN" ]; then
-                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-            fi
-        fi
-
-        if [ "$BUILD_OK" = true ]; then
-            if [ -f "$LLAMA_SERVER_BIN" ]; then
-                echo "✅ llama-server built at $LLAMA_SERVER_BIN"
-            else
-                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
-            fi
-            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
-                echo "✅ llama-quantize available for GGUF export"
-            fi
+        if [ -f "$LLAMA_SERVER_BIN" ]; then
+            echo "✅ llama-server already exists at $LLAMA_SERVER_BIN"
         else
-            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+            echo "Building llama-server for GGUF inference..."
+
+            BUILD_OK=true
+            if [ -d "$LLAMA_CPP_DIR/.git" ]; then
+                echo "   llama.cpp repo already cloned, pulling latest..."
+                run_quiet "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || echo "   ⚠️  git pull failed — using existing source"
+            elif [ -e "$LLAMA_CPP_DIR" ]; then
+                echo "   Removing non-git llama.cpp dir..."
+                rm -rf "$LLAMA_CPP_DIR"
+                run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+            else
+                run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+            fi
+
+            if [ "$BUILD_OK" = true ]; then
+                CMAKE_ARGS=""
+                # Detect CUDA: check nvcc on PATH, then common install locations
+                NVCC_PATH=""
+                if command -v nvcc &>/dev/null; then
+                    NVCC_PATH="$(command -v nvcc)"
+                elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                    NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                    export PATH="/usr/local/cuda/bin:$PATH"
+                elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                    # Pick the newest cuda-XX.X directory
+                    NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                    export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                fi
+
+                if [ -n "$NVCC_PATH" ]; then
+                    echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
+                    CMAKE_ARGS="-DGGML_CUDA=ON"
+                elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+                    echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                    echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+                else
+                    echo "   Building CPU-only (no CUDA detected)..."
+                fi
+
+                NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+                run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            fi
+
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            fi
+
+            # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+                # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+                QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+                if [ -f "$QUANTIZE_BIN" ]; then
+                    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+                fi
+            fi
+
+            if [ "$BUILD_OK" = true ]; then
+                if [ -f "$LLAMA_SERVER_BIN" ]; then
+                    echo "✅ llama-server built at $LLAMA_SERVER_BIN"
+                else
+                    echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+                fi
+                if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
+                    echo "✅ llama-quantize available for GGUF export"
+                fi
+            else
+                echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+            fi
         fi
     fi
 }

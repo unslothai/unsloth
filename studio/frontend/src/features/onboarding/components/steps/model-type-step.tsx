@@ -26,19 +26,19 @@ import { useShallow } from "zustand/react/shallow";
 
 const TYPE_ICONS: Record<ModelType, typeof ImageIcon> = {
   vision: ImageIcon,
-  tts: VoiceIcon,
+  audio: VoiceIcon,
   embeddings: Database02Icon,
   text: TextIcon,
 };
 
 const TYPE_TOOLTIPS: Record<ModelType, string> = {
   vision: "Fine-tune models that understand images and text together",
-  tts: "Fine-tune text-to-speech models for voice generation",
+  audio: "Fine-tune text-to-speech and audio models",
   embeddings: "Fine-tune models for semantic search and similarity",
   text: "Fine-tune large language models for text generation",
 };
 
-const COMING_SOON: ModelType[] = ["tts", "embeddings"];
+const COMING_SOON: ModelType[] = [];
 
 export function ModelTypeStep(): ReactElement {
   const { modelType, setModelType } = useTrainingConfigStore(

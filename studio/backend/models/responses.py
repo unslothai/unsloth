@@ -41,3 +41,9 @@ class VisionCheckResponse(BaseModel):
     """Response for checking if a model is a vision model"""
     model_name: str = Field(..., description="Model identifier")
     is_vision: bool = Field(..., description="Whether the model is a vision model")
+
+
+class EmbeddingCheckResponse(BaseModel):
+    """Response for checking if a model is an embedding model"""
+    model_name: str = Field(..., description="Model identifier")
+    is_embedding: bool = Field(..., description="Whether the model is an embedding/sentence-transformer model")

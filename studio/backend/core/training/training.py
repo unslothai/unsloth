@@ -18,14 +18,15 @@ import multiprocessing as mp
 import queue
 import threading
 import time
-import logging
+import structlog
+from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
@@ -71,6 +72,7 @@ class TrainingBackend:
         # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
+        self._cancel_requested = False  # True only for stop(save=False)
 
         # Training Metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
@@ -114,6 +116,7 @@ class TrainingBackend:
 
         # Reset state
         self._should_stop = False
+        self._cancel_requested = False
         self._progress = TrainingProgress(is_training=True, status_message="Initializing training...")
         self.loss_history.clear()
         self.lr_history.clear()
@@ -148,6 +151,7 @@ class TrainingBackend:
             "custom_format_mapping": kwargs.get("custom_format_mapping"),
             "is_dataset_image": kwargs.get("is_dataset_image", False),
             "is_dataset_audio": kwargs.get("is_dataset_audio", False),
+            "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
             "batch_size": kwargs.get("batch_size", 2),
@@ -213,6 +217,8 @@ class TrainingBackend:
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
         self._should_stop = True
+        if not save:
+            self._cancel_requested = True
         with self._lock:
             if self._stop_queue is not None:
                 try:
@@ -225,6 +231,20 @@ class TrainingBackend:
                 if save else "Cancelling training..."
             )
         return True
+
+    def force_terminate(self) -> None:
+        """Force-kill the training subprocess so state can be reset immediately."""
+        with self._lock:
+            if self._proc is not None and self._proc.is_alive():
+                logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
+                self._proc.terminate()
+            proc = self._proc
+
+        if proc is not None:
+            proc.join(timeout=5.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=2.0)
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""

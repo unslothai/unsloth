@@ -14,7 +14,8 @@ the old subprocess is killed and a new one is spawned with the correct version.
 Pattern follows core/inference/orchestrator.py.
 """
 import atexit
-import logging
+import structlog
+from loggers import get_logger
 import multiprocessing as mp
 import queue
 import threading
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 

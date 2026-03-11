@@ -7,7 +7,8 @@ Export backend - handles model exporting in various formats
 """
 import glob
 import json
-import logging
+import structlog
+from loggers import get_logger
 import os
 import shutil
 from pathlib import Path
@@ -23,7 +24,7 @@ from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
 from core.inference import get_inference_backend
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _is_wsl():

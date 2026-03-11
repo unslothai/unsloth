@@ -9,7 +9,8 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 """
 import atexit
 import json
-import logging
+import structlog
+from loggers import get_logger
 import shutil
 import signal
 import socket
@@ -21,7 +22,7 @@ from typing import Generator, Optional
 
 import httpx
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LlamaCppBackend:
@@ -255,16 +256,36 @@ class LlamaCppBackend:
                 if hf_variant:
                     # Try common naming patterns
                     try:
+                        import re
                         from huggingface_hub import list_repo_files
                         files = list_repo_files(hf_repo, token=hf_token)
                         variant_lower = hf_variant.lower()
-                        matching = sorted(
-                            f for f in files
-                            if f.endswith(".gguf") and variant_lower in f.lower()
+                        # Use word-boundary matching so "Q8_0" doesn't also
+                        # match "IQ8_0" or other superset variant names.
+                        boundary = re.compile(
+                            r'(?<![a-zA-Z0-9])' + re.escape(variant_lower) + r'(?![a-zA-Z0-9])'
                         )
-                        if matching:
-                            gguf_filename = matching[0]  # first shard (or single file)
-                            gguf_extra_shards = matching[1:]  # remaining shards if split
+                        gguf_files = sorted(
+                            f for f in files
+                            if f.endswith(".gguf") and boundary.search(f.lower())
+                        )
+                        if gguf_files:
+                            gguf_filename = gguf_files[0]
+                            # For split GGUFs (e.g. model-Q8_0-00001-of-00003.gguf)
+                            # discover siblings by exact basename + total match
+                            # so "model-Q8_0-v2-*" isn't pulled in as a sibling.
+                            shard_pat = re.compile(r'^(.*)-\d{5}-of-(\d{5})\.gguf$')
+                            m = shard_pat.match(gguf_filename)
+                            if m:
+                                prefix = m.group(1)
+                                total = m.group(2)
+                                sibling_pat = re.compile(
+                                    r'^' + re.escape(prefix) + r'-\d{5}-of-' + re.escape(total) + r'\.gguf$'
+                                )
+                                gguf_extra_shards = [
+                                    f for f in gguf_files[1:]
+                                    if sibling_pat.match(f)
+                                ]
                     except Exception as e:
                         logger.warning(f"Could not list repo files: {e}")
 
