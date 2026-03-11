@@ -118,7 +118,7 @@ const BOOSTED_TASK_CATEGORIES: Record<ModelType, Set<string>> = {
     "image-to-text",
     "image-captioning",
   ]),
-  tts: new Set([
+  audio: new Set([
     "text-to-speech",
     "text-to-audio",
     "automatic-speech-recognition",
@@ -160,6 +160,59 @@ const OCR_OR_VISION_TEXT_TASKS = new Set([
   "document-question-answering",
 ]);
 
+const CURATED_EMPTY_QUERY_DATASET_IDS: Partial<Record<ModelType, string[]>> = {
+  text: [
+    "unsloth/alpaca-cleaned",
+    "unsloth/OpenMathReasoning-mini",
+    "mlabonne/FineTome-100k",
+    "openai/gsm8k",
+    "philschmid/guanaco-sharegpt-style",
+    "open-r1/DAPO-Math-17k-Processed",
+    "HuggingFaceH4/Multilingual-Thinking",
+    "HuggingFaceH4/ultrafeedback_binarized",
+    "reciperesearch/dolphin-sft-v0.1-preference",
+    "roneneldan/TinyStories",
+    "FreedomIntelligence/alpaca-gpt4-korean",
+    "Goedel-LM/SFT_dataset_v2",
+    "allenai/tulu-3-sft-mixture",
+    "HuggingFaceH4/no_robots",
+    "Magpie-Align/Magpie-Air-300K-Filtered",
+    "teknium/OpenHermes-2.5",
+    "databricks/databricks-dolly-15k",
+    "tatsu-lab/alpaca",
+    "garage-bAInd/Open-Platypus",
+    "microsoft/orca-math-word-problems-200k",
+    "Open-Orca/OpenOrca",
+    "openbmb/UltraInteract_sft",
+  ],
+  vision: [
+    "unsloth/LaTeX_OCR",
+    "unsloth/llava-instruct-mix-vsft-mini",
+    "unsloth/Radiology_mini",
+    "AI4Math/MathVista",
+    "AI4Math/MathVerse",
+    "ChongyanChen/VQAonline",
+    "lmms-lab/VQAv2",
+    "hezarai/parsynth-ocr-200k",
+  ],
+  audio: [
+    "MrDragonFox/Elise",
+    "keithito/lj_speech",
+    "parler-tts/mls_eng_10k",
+    "parler-tts/libritts-r-filtered-speaker-descriptions",
+    "openslr/librispeech_asr",
+    "MikhailT/hifi-tts",
+    "mozilla-foundation/common_voice_17_0",
+    "facebook/voxpopuli",
+    "speechcolab/gigaspeech",
+    "kth-tmh/vctk",
+    "Wenetspeech4TTS/WenetSpeech4TTS",
+  ],
+  embeddings: [
+    "electroglyph/technical",
+  ],
+};
+
 const INCOMPATIBLE_TASKS_BY_MODEL: Record<ModelType, Set<string>> = {
   text: new Set([
     "text-to-image",
@@ -189,7 +242,7 @@ const INCOMPATIBLE_TASKS_BY_MODEL: Record<ModelType, Set<string>> = {
     "audio-to-audio",
     "automatic-speech-recognition",
   ]),
-  tts: new Set([
+  audio: new Set([
     "text-to-image",
     "image-to-image",
     "image-to-video",
@@ -278,20 +331,39 @@ function isOcrOrVisionTextDataset(dataset: HfDatasetResult): boolean {
   );
 }
 
+function toCuratedDatasetResult(id: string): HfDatasetResult {
+  // Curated defaults are id-only. This adapter satisfies the shared result shape
+  // used by downstream combobox/ranking code without making extra HF requests.
+  return {
+    id,
+    downloads: 0,
+    likes: 0,
+    taskCategories: [],
+    plainTags: [],
+  };
+}
+
 export function useHfDatasetSearch(
   query: string,
   options?: { modelType?: ModelType | null; accessToken?: string; enabled?: boolean },
 ) {
   const { modelType, accessToken, enabled = true } = options ?? {};
+  const hasQuery = query.trim().length > 0;
+  const useCuratedOnly = !hasQuery && !!modelType;
   const createIter = useCallback(
-    () =>
-      listDatasets({
-        search: query.trim() ? { query } : {},
+    () => {
+      // Use curated defaults for typed model flows only.
+      if (useCuratedOnly) {
+        return (async function* empty() {})() as AsyncGenerator<unknown>;
+      }
+      return listDatasets({
+        search: hasQuery ? { query } : {},
         additionalFields: ["cardData", "tags"],
         fetch: withTrendingSort,
         ...(accessToken ? { credentials: { accessToken } } : {}),
-      }) as AsyncGenerator<unknown>,
-    [query, accessToken],
+      }) as AsyncGenerator<unknown>;
+    },
+    [useCuratedOnly, hasQuery, query, accessToken],
   );
 
   const search = useHfPaginatedSearch(createIter, mapDataset, { enabled });
@@ -302,6 +374,11 @@ export function useHfDatasetSearch(
     const baseResults = hideOcr
       ? search.results.filter((ds) => !isOcrOrVisionTextDataset(ds))
       : search.results;
+
+    if (!hasQuery && modelType) {
+      const curatedIds = CURATED_EMPTY_QUERY_DATASET_IDS[modelType] ?? [];
+      return curatedIds.map(toCuratedDatasetResult);
+    }
 
     if (!modelType) return baseResults;
 
@@ -315,7 +392,7 @@ export function useHfDatasetSearch(
     }
 
     return [...boosted, ...neutral];
-  }, [enabled, search.results, modelType]);
+  }, [enabled, search.results, modelType, query]);
 
   return { ...search, results };
 }

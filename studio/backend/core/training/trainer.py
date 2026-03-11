@@ -19,7 +19,8 @@ from unsloth.chat_templates import get_chat_template
 import json
 import threading
 import math
-import logging
+import structlog
+from loggers import get_logger
 import time
 from pathlib import Path
 from typing import Optional, Callable
@@ -32,8 +33,7 @@ from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from trl import SFTTrainer, SFTConfig
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _ASSETS_DATASETS_ROOT = _BACKEND_ROOT / "assets" / "datasets"
@@ -227,7 +227,7 @@ class UnslothTrainer:
 
             def on_step_end(self, args, state, control, **kwargs):
                 if trainer_ref.should_stop:
-                    print(f"Stop detected at step {state.global_step}\n")
+                    logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
 
@@ -298,21 +298,21 @@ class UnslothTrainer:
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
-            print(f"\n{msg}. Model saved to {output_dir}\n")
+            logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
                 is_training=False,
                 status_message=f"Training stopped. Model saved to {output_dir}",
             )
         elif self.should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
-            print(f"\n{msg}.\n")
+            logger.info(f"\n{msg}.\n")
             self._update_progress(is_training=False, status_message="Training cancelled.")
         else:
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
-            print(f"\n{msg}! Model saved to {output_dir}\n")
+            logger.info(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(
                 is_training=False,
                 is_completed=True,
@@ -352,7 +352,7 @@ class UnslothTrainer:
             del _sys.modules[key]
 
         if removed_paths or removed_modules:
-            print(f"Cleaned up audio artifacts: {len(removed_paths)} paths, "
+            logger.info(f"Cleaned up audio artifacts: {len(removed_paths)} paths, "
                   f"{len(removed_modules)} modules\n")
 
     def _resolve_audio_columns(self, dataset, custom_format_mapping: dict = None):
@@ -411,7 +411,7 @@ class UnslothTrainer:
             if self.trainer is not None:
                 del self.trainer
 
-            print("\nClearing GPU memory before training...")
+            logger.info("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
             # Clean up sys.path and sys.modules from previous audio preprocessing
@@ -478,7 +478,7 @@ class UnslothTrainer:
                 status_message=f"Loading {model_type_label} model... {model_display}"
             )
 
-            print(f"\nLoading {model_type_label} model: {model_name}")
+            logger.info(f"\nLoading {model_type_label} model: {model_name}")
 
             # Set HF token if provided
             if hf_token:
@@ -636,10 +636,10 @@ class UnslothTrainer:
                 from transformers import ProcessorMixin
                 tok = self.tokenizer
                 has_image_proc = isinstance(tok, ProcessorMixin) or hasattr(tok, "image_processor")
-                print(f"\n[VLM Diagnostic] FastVisionModel returned: {type(tok).__name__}")
-                print(f"[VLM Diagnostic] Is ProcessorMixin: {isinstance(tok, ProcessorMixin)}")
-                print(f"[VLM Diagnostic] Has image_processor: {hasattr(tok, 'image_processor')}")
-                print(f"[VLM Diagnostic] Usable as vision processor: {has_image_proc}\n")
+                logger.info(f"\n[VLM Diagnostic] FastVisionModel returned: {type(tok).__name__}")
+                logger.info(f"[VLM Diagnostic] Is ProcessorMixin: {isinstance(tok, ProcessorMixin)}")
+                logger.info(f"[VLM Diagnostic] Has image_processor: {hasattr(tok, 'image_processor')}")
+                logger.info(f"[VLM Diagnostic] Usable as vision processor: {has_image_proc}\n")
             else:
                 # Load text model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
@@ -656,7 +656,7 @@ class UnslothTrainer:
                 return False
 
             self._update_progress(status_message="Model loaded successfully")
-            print("Model loaded successfully")
+            logger.info("Model loaded successfully")
             return True
 
         except OSError as e:
@@ -667,7 +667,7 @@ class UnslothTrainer:
                 # second attempt because the failed first call's partial
                 # imports clean up the stale state as a side effect.
                 self._source_code_retried = True
-                print(f"\n'could not get source code' — retrying once...\n")
+                logger.info(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(model_name, max_seq_length, load_in_4bit, hf_token,
                                        is_dataset_image, is_dataset_audio, trust_remote_code)
             error_msg = str(e)
@@ -721,7 +721,7 @@ class UnslothTrainer:
             # Full finetuning mode - skip PEFT entirely
             if not use_lora:
                 self._update_progress(status_message="Full finetuning mode - no LoRA adapters")
-                print("Full finetuning mode - training all parameters\n")
+                logger.info("Full finetuning mode - training all parameters\n")
                 return True
 
             # LoRA/QLoRA mode - apply PEFT
@@ -768,22 +768,22 @@ class UnslothTrainer:
                 self._update_progress(error=error_msg)
                 return False
 
-            print(f"Configuring LoRA adapters (r={lora_r}, alpha={lora_alpha})...\n")
-            print(f"Gradient checkpointing: {use_gradient_checkpointing} (type: {type(use_gradient_checkpointing).__name__})\n")
+            logger.info(f"Configuring LoRA adapters (r={lora_r}, alpha={lora_alpha})...\n")
+            logger.info(f"Gradient checkpointing: {use_gradient_checkpointing} (type: {type(use_gradient_checkpointing).__name__})\n")
 
             # Branch based on model type: audio, audio_vlm, vision, or text
             if self._audio_type in ('csm', 'bicodec', 'dac') or self.is_audio_vlm:
                 # Models using FastModel.get_peft_model (codec audio + audio VLM)
                 from unsloth import FastModel
                 label = self._audio_type or 'audio_vlm'
-                print(f"{label} LoRA configuration:")
-                print(f"  - Target modules: {target_modules}")
+                logger.info(f"{label} LoRA configuration:")
+                logger.info(f"  - Target modules: {target_modules}")
                 if self.is_audio_vlm:
-                    print(f"  - Finetune vision layers: {finetune_vision_layers}")
-                    print(f"  - Finetune language layers: {finetune_language_layers}")
-                    print(f"  - Finetune attention modules: {finetune_attention_modules}")
-                    print(f"  - Finetune MLP modules: {finetune_mlp_modules}")
-                print()
+                    logger.info(f"  - Finetune vision layers: {finetune_vision_layers}")
+                    logger.info(f"  - Finetune language layers: {finetune_language_layers}")
+                    logger.info(f"  - Finetune attention modules: {finetune_attention_modules}")
+                    logger.info(f"  - Finetune MLP modules: {finetune_mlp_modules}")
+                logger.info()
 
                 peft_kwargs = dict(
                     r=lora_r,
@@ -810,8 +810,8 @@ class UnslothTrainer:
             elif self._audio_type == 'whisper':
                 # Phase 2: Whisper uses FastModel.get_peft_model with task_type=None
                 from unsloth import FastModel
-                print(f"Audio model (whisper) LoRA configuration:")
-                print(f"  - Target modules: {target_modules}\n")
+                logger.info(f"Audio model (whisper) LoRA configuration:")
+                logger.info(f"  - Target modules: {target_modules}\n")
 
                 self.model = FastModel.get_peft_model(
                     self.model,
@@ -829,8 +829,8 @@ class UnslothTrainer:
 
             elif self._audio_type == 'snac':
                 # Orpheus uses FastLanguageModel.get_peft_model
-                print(f"Audio model ({self._audio_type}) LoRA configuration:")
-                print(f"  - Target modules: {target_modules}\n")
+                logger.info(f"Audio model ({self._audio_type}) LoRA configuration:")
+                logger.info(f"  - Target modules: {target_modules}\n")
 
                 self.model = FastLanguageModel.get_peft_model(
                     self.model,
@@ -847,11 +847,11 @@ class UnslothTrainer:
 
             elif self.is_vlm:
                 # Vision model LoRA
-                print(f"Vision model LoRA configuration:")
-                print(f"  - Finetune vision layers: {finetune_vision_layers}")
-                print(f"  - Finetune language layers: {finetune_language_layers}")
-                print(f"  - Finetune attention modules: {finetune_attention_modules}")
-                print(f"  - Finetune MLP modules: {finetune_mlp_modules}\n")
+                logger.info(f"Vision model LoRA configuration:")
+                logger.info(f"  - Finetune vision layers: {finetune_vision_layers}")
+                logger.info(f"  - Finetune language layers: {finetune_language_layers}")
+                logger.info(f"  - Finetune attention modules: {finetune_attention_modules}")
+                logger.info(f"  - Finetune MLP modules: {finetune_mlp_modules}\n")
 
                 self.model = FastVisionModel.get_peft_model(
                     self.model,
@@ -871,8 +871,8 @@ class UnslothTrainer:
                 )
             else:
                 # Text model LoRA
-                print(f"Text model LoRA configuration:")
-                print(f"  - Target modules: {target_modules}\n")
+                logger.info(f"Text model LoRA configuration:")
+                logger.info(f"  - Target modules: {target_modules}\n")
 
                 self.model = FastLanguageModel.get_peft_model(
                     self.model,
@@ -889,11 +889,11 @@ class UnslothTrainer:
 
             # Check if stopped during LoRA preparation
             if self.should_stop:
-                print("Stopped during LoRA configuration\n")
+                logger.info("Stopped during LoRA configuration\n")
                 return False
 
             self._update_progress(status_message="LoRA adapters configured")
-            print("LoRA adapters configured successfully\n")
+            logger.info("LoRA adapters configured successfully\n")
             return True
 
         except Exception as e:
@@ -903,8 +903,8 @@ class UnslothTrainer:
             full_traceback = traceback.format_exc()
             logger.error(f"Error preparing model: {error_details}")
             logger.error(f"Full traceback:\n{full_traceback}")
-            print(f"\n[ERROR] Error preparing model: {error_details}", file=sys.stderr, flush=True)
-            print(f"[ERROR] Full traceback:\n{full_traceback}", file=sys.stderr, flush=True)
+            logger.info(f"\n[ERROR] Error preparing model: {error_details}")
+            logger.info(f"[ERROR] Full traceback:\n{full_traceback}")
             self._update_progress(error=error_details)
             return False
 
@@ -1060,7 +1060,7 @@ class UnslothTrainer:
         base_csm.forward = types.MethodType(_fixed_csm_forward, base_csm)
         # Class-level: catches any path that resolves through the class dict
         CsmForConditionalGeneration.forward = _fixed_csm_forward
-        print("Applied CSM forward fix (class + instance level)\n")
+        logger.info("Applied CSM forward fix (class + instance level)\n")
 
     def _preprocess_csm_dataset(self, dataset, custom_format_mapping=None):
         """Preprocess dataset for CSM TTS training (exact notebook copy)."""
@@ -1089,11 +1089,11 @@ class UnslothTrainer:
         if text_col is None:
             raise ValueError(f"No text column found in dataset. Columns: {dataset.column_names}")
         if speaker_key is None:
-            print("No speaker found, adding default 'source' of 0 for all examples\n")
+            logger.info("No speaker found, adding default 'source' of 0 for all examples\n")
             dataset = dataset.add_column("source", ["0"] * len(dataset))
             speaker_key = "source"
 
-        print(f"CSM preprocessing: audio_col='{audio_col}', text_col='{text_col}', speaker_key='{speaker_key}'\n")
+        logger.info(f"CSM preprocessing: audio_col='{audio_col}', text_col='{text_col}', speaker_key='{speaker_key}'\n")
 
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate=24000))
 
@@ -1104,7 +1104,7 @@ class UnslothTrainer:
         skipped = 0
         for idx in range(len(dataset)):
             if self.should_stop:
-                print("Stopped during CSM preprocessing\n")
+                logger.info("Stopped during CSM preprocessing\n")
                 break
 
             example = dataset[idx]
@@ -1164,7 +1164,7 @@ class UnslothTrainer:
             )
 
         result_dataset = Dataset.from_list(processed_examples)
-        print(f"CSM preprocessing complete: {len(result_dataset)} examples "
+        logger.info(f"CSM preprocessing complete: {len(result_dataset)} examples "
               f"({skipped} skipped)\n")
         return result_dataset
 
@@ -1212,7 +1212,7 @@ class UnslothTrainer:
 
         self._update_progress(status_message="Formatting audio VLM dataset...")
         dataset = dataset.map(format_messages, batched=True, batch_size=4, num_proc=safe_num_proc(4))
-        print(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
+        logger.info(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
         return dataset
 
     def _preprocess_snac_dataset(self, dataset, custom_format_mapping=None):
@@ -1261,7 +1261,7 @@ class UnslothTrainer:
 
         # Load SNAC codec model
         self._update_progress(status_message="Loading SNAC codec model...")
-        print("Loading SNAC codec model...\n")
+        logger.info("Loading SNAC codec model...\n")
         from snac import SNAC
         snac_model = SNAC.from_pretrained(SNAC_MODEL_NAME)
         snac_model = snac_model.to(device).eval()
@@ -1270,14 +1270,14 @@ class UnslothTrainer:
         resample_transform = T.Resample(orig_freq=ds_sample_rate, new_freq=SNAC_SAMPLE_RATE) if ds_sample_rate != SNAC_SAMPLE_RATE else None
 
         self._update_progress(status_message="Encoding audio with SNAC...")
-        print(f"SNAC preprocessing: audio_col='{audio_col}', text_col='{text_col}', "
+        logger.info(f"SNAC preprocessing: audio_col='{audio_col}', text_col='{text_col}', "
               f"has_source={has_source}, ds_sample_rate={ds_sample_rate}\n")
 
         processed_examples = []
         skipped = 0
         for idx in range(len(dataset)):
             if self.should_stop:
-                print("Stopped during SNAC preprocessing\n")
+                logger.info("Stopped during SNAC preprocessing\n")
                 break
 
             example = dataset[idx]
@@ -1365,7 +1365,7 @@ class UnslothTrainer:
                 )
 
         # Free SNAC model from GPU
-        print("Freeing SNAC codec model from GPU...\n")
+        logger.info("Freeing SNAC codec model from GPU...\n")
         snac_model.to("cpu")
         del snac_model
         import gc
@@ -1379,7 +1379,7 @@ class UnslothTrainer:
             )
 
         result_dataset = Dataset.from_list(processed_examples)
-        print(f"SNAC preprocessing complete: {len(result_dataset)} examples "
+        logger.info(f"SNAC preprocessing complete: {len(result_dataset)} examples "
               f"({skipped} skipped)\n")
         return result_dataset
 
@@ -1404,7 +1404,7 @@ class UnslothTrainer:
         sparktts_pkg = os.path.join(spark_code_dir, "sparktts")
         if not os.path.isdir(sparktts_pkg):
             self._update_progress(status_message="Cloning Spark-TTS code repo...")
-            print(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...\n")
+            logger.info(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...\n")
             subprocess.run(
                 ["git", "clone", "--depth", "1", "https://github.com/SparkAudio/Spark-TTS", spark_code_dir],
                 check=True,
@@ -1434,13 +1434,13 @@ class UnslothTrainer:
 
         # Load BiCodec tokenizer
         self._update_progress(status_message="Loading BiCodec tokenizer...")
-        print("Loading BiCodec tokenizer...\n")
+        logger.info("Loading BiCodec tokenizer...\n")
         audio_tokenizer = BiCodecTokenizer(self._spark_tts_repo_dir, device)
 
         target_sr = audio_tokenizer.config['sample_rate']
 
         self._update_progress(status_message="Encoding audio with BiCodec...")
-        print(f"BiCodec preprocessing: audio_col='{audio_col}', text_col='{text_col}', "
+        logger.info(f"BiCodec preprocessing: audio_col='{audio_col}', text_col='{text_col}', "
               f"has_source={has_source}, target_sr={target_sr}\n")
 
         def extract_wav2vec2_features(wavs: torch.Tensor) -> torch.Tensor:
@@ -1472,7 +1472,7 @@ class UnslothTrainer:
         skipped = 0
         for idx in range(len(dataset)):
             if self.should_stop:
-                print("Stopped during BiCodec preprocessing\n")
+                logger.info("Stopped during BiCodec preprocessing\n")
                 break
 
             example = dataset[idx]
@@ -1557,7 +1557,7 @@ class UnslothTrainer:
                 )
 
         # Free BiCodec model from GPU
-        print("Freeing BiCodec tokenizer from GPU...\n")
+        logger.info("Freeing BiCodec tokenizer from GPU...\n")
         audio_tokenizer.model.cpu()
         audio_tokenizer.feature_extractor.cpu()
         del audio_tokenizer
@@ -1572,12 +1572,12 @@ class UnslothTrainer:
             )
 
         result_dataset = Dataset.from_list(processed_examples)
-        print(f"BiCodec preprocessing complete: {len(result_dataset)} examples "
+        logger.info(f"BiCodec preprocessing complete: {len(result_dataset)} examples "
               f"({skipped} skipped)\n")
         # Debug: show first example text (truncated)
         sample = result_dataset[0]["text"]
-        print(f"Sample text (first 200 chars): {sample[:200]}...\n")
-        print(f"Sample text length: {len(sample)} chars\n")
+        logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
+        logger.info(f"Sample text length: {len(sample)} chars\n")
         return result_dataset
 
     def _preprocess_dac_dataset(self, dataset, custom_format_mapping=None):
@@ -1604,7 +1604,7 @@ class UnslothTrainer:
         outetts_pkg = os.path.join(outetts_code_dir, "outetts")
         if not os.path.isdir(outetts_pkg):
             self._update_progress(status_message="Cloning OuteTTS code repo...")
-            print(f"Cloning edwko/OuteTTS to {outetts_code_dir}...\n")
+            logger.info(f"Cloning edwko/OuteTTS to {outetts_code_dir}...\n")
             subprocess.run(
                 ["git", "clone", "--depth", "1", "https://github.com/edwko/OuteTTS", outetts_code_dir],
                 check=True,
@@ -1616,7 +1616,7 @@ class UnslothTrainer:
             ]:
                 if os.path.exists(fpath):
                     os.remove(fpath)
-                    print(f"Removed {fpath}\n")
+                    logger.info(f"Removed {fpath}\n")
 
         if outetts_code_dir not in sys.path:
             sys.path.insert(0, outetts_code_dir)
@@ -1638,17 +1638,17 @@ class UnslothTrainer:
         # Cast audio to 24kHz (notebook: dataset.cast_column("audio", Audio(sampling_rate=24000)))
         from datasets import Audio
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate=24000))
-        print("Cast audio column to 24kHz\n")
+        logger.info("Cast audio column to 24kHz\n")
 
         # Load Whisper for word timings
         self._update_progress(status_message="Loading Whisper model for word timings...")
-        print("Loading Whisper model for word timings...\n")
+        logger.info("Loading Whisper model for word timings...\n")
         import whisper
         whisper_model = whisper.load_model("turbo", device=device)
 
         # Load OuteTTS AudioProcessor + PromptProcessor
         self._update_progress(status_message="Loading OuteTTS AudioProcessor...")
-        print("Loading OuteTTS AudioProcessor...\n")
+        logger.info("Loading OuteTTS AudioProcessor...\n")
         model_tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B"
         dummy_config = OuteTTSModelConfig(
             tokenizer_path=model_tokenizer_path,
@@ -1659,13 +1659,13 @@ class UnslothTrainer:
         prompt_processor = PromptProcessor(model_tokenizer_path)
 
         self._update_progress(status_message="Preprocessing audio with OuteTTS...")
-        print(f"DAC preprocessing: audio_col='{audio_col}', text_col='{text_col}'\n")
+        logger.info(f"DAC preprocessing: audio_col='{audio_col}', text_col='{text_col}'\n")
 
         processed_examples = []
         skipped = 0
         for idx in range(len(dataset)):
             if self.should_stop:
-                print("Stopped during DAC preprocessing\n")
+                logger.info("Stopped during DAC preprocessing\n")
                 break
 
             example = dataset[idx]
@@ -1739,7 +1739,7 @@ class UnslothTrainer:
                 )
 
         # Free Whisper from GPU (notebook: data_processor.whisper_model.to('cpu'))
-        print("Moving Whisper model to CPU...\n")
+        logger.info("Moving Whisper model to CPU...\n")
         whisper_model.to('cpu')
         del whisper_model
         del audio_processor
@@ -1755,10 +1755,10 @@ class UnslothTrainer:
             )
 
         result_dataset = HFDataset.from_list(processed_examples)
-        print(f"DAC preprocessing complete: {len(result_dataset)} examples "
+        logger.info(f"DAC preprocessing complete: {len(result_dataset)} examples "
               f"({skipped} skipped)\n")
         sample = result_dataset[0]["text"]
-        print(f"Sample text (first 200 chars): {sample[:200]}...\n")
+        logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
         return result_dataset
 
     def _preprocess_whisper_dataset(self, dataset, eval_split=None, custom_format_mapping=None):
@@ -1791,7 +1791,7 @@ class UnslothTrainer:
             eval_dataset_raw = splits["test"]
 
         self._update_progress(status_message="Processing audio for Whisper...")
-        print(f"Whisper preprocessing: audio_col='{audio_col}', text_col='{text_col}', "
+        logger.info(f"Whisper preprocessing: audio_col='{audio_col}', text_col='{text_col}', "
               f"samples={len(dataset)}\n")
 
         def process_split(ds, split_name="train"):
@@ -1799,7 +1799,7 @@ class UnslothTrainer:
             skipped = 0
             for idx in range(len(ds)):
                 if self.should_stop:
-                    print(f"Stopped during Whisper {split_name} preprocessing\n")
+                    logger.info(f"Stopped during Whisper {split_name} preprocessing\n")
                     break
 
                 example = ds[idx]
@@ -1831,7 +1831,7 @@ class UnslothTrainer:
                         status_message=f"Processing {split_name} audio... {idx + 1}/{len(ds)}"
                     )
 
-            print(f"Whisper {split_name} preprocessing: {len(processed)} examples ({skipped} skipped)\n")
+            logger.info(f"Whisper {split_name} preprocessing: {len(processed)} examples ({skipped} skipped)\n")
             return processed
 
         train_data = process_split(dataset, "train")
@@ -1922,43 +1922,67 @@ class UnslothTrainer:
 
                     # Check if stopped during dataset loading
                     if self.should_stop:
-                        print("Stopped during dataset loading\n")
+                        logger.info("Stopped during dataset loading\n")
                         return None
 
                     self._update_progress(status_message=f"Loaded {len(dataset)} samples from local files")
-                    print(f"Loaded {len(dataset)} samples from local files\n")
-                    print(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
+                    logger.info(f"Loaded {len(dataset)} samples from local files\n")
+                    logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
             elif dataset_source:
                 # Load from Hugging Face
-                load_kwargs = {"path": dataset_source, "split": train_split or "train"}
+                split_name = train_split or "train"
+                load_kwargs = {"path": dataset_source, "split": split_name}
                 if subset:
                     load_kwargs["name"] = subset
-                dataset = load_dataset(**load_kwargs)
+
+                _slice_start = dataset_slice_start or 0
+                if (dataset_slice_end is not None
+                        and dataset_slice_end >= 0
+                        and dataset_slice_end >= _slice_start):
+                    # Manual slice — stream only the rows we need instead of
+                    # downloading the entire dataset.
+                    rows_to_stream = dataset_slice_end + 1
+                    logger.info(
+                        f"[dataset-slice] Manual slice specified "
+                        f"(start={dataset_slice_start}, end={dataset_slice_end}), "
+                        f"streaming {rows_to_stream} rows\n"
+                    )
+                    stream = load_dataset(**load_kwargs, streaming=True)
+                    dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
+                    logger.info(
+                        f"[dataset-slice] Downloaded {len(dataset)} rows "
+                        f"(requested {rows_to_stream})\n"
+                    )
+                    self._update_progress(
+                        status_message=f"Streamed {len(dataset)} rows from HuggingFace"
+                    )
+                else:
+                    dataset = load_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
                 if self.should_stop:
-                    print("Stopped during dataset loading\n")
+                    logger.info("Stopped during dataset loading\n")
                     return None
 
                 self._update_progress(status_message=f"Loaded dataset from HuggingFace: {dataset_source}")
-                print(f"Loaded dataset from Hugging Face: {dataset_source}\n")
+                logger.info(f"Loaded dataset from Hugging Face: {dataset_source} ({len(dataset)} rows)\n")
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
                 if eval_enabled:
                     effective_train = train_split or "train"
                     if eval_split and eval_split != effective_train:
                         # Explicit eval split provided - load it directly
-                        print(f"Loading explicit eval split: '{eval_split}'\n")
+                        logger.info(f"Loading explicit eval split: '{eval_split}'\n")
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
                         if subset:
                             eval_load_kwargs["name"] = subset
                         eval_dataset = load_dataset(**eval_load_kwargs)
                         has_separate_eval_source = True
-                        print(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
+                        logger.info(f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n")
                     elif eval_split and eval_split == effective_train:
                         # Same split as training — will do 80/20 split after formatting
-                        print(f"Eval split '{eval_split}' is the same as train split — will split 80/20\n")
+                        logger.info(f"Eval split '{eval_split}' is the same as train split — will split 80/20\n")
                     else:
                         # Auto-detect eval split from HF (returns a separate dataset, or None)
                         eval_dataset = self._auto_detect_eval_split_from_hf(
@@ -1968,7 +1992,7 @@ class UnslothTrainer:
                         if eval_dataset is not None:
                             has_separate_eval_source = True
                 else:
-                    print("Eval disabled (eval_steps <= 0), skipping eval split detection\n")
+                    logger.info("Eval disabled (eval_steps <= 0), skipping eval split detection\n")
 
             if dataset is None:
                 raise ValueError("No dataset provided")
@@ -1982,12 +2006,12 @@ class UnslothTrainer:
                 start = max(0, min(start, total_rows - 1))
                 end = max(start, min(end, total_rows - 1))
                 dataset = dataset.select(range(start, end + 1))
-                print(f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n")
+                logger.info(f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n")
                 self._update_progress(status_message=f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})")
 
             # Check if stopped before applying template
             if self.should_stop:
-                print("Stopped before applying chat template\n")
+                logger.info("Stopped before applying chat template\n")
                 return None
 
             # ========== AUDIO MODELS: custom preprocessing ==========
@@ -2018,7 +2042,7 @@ class UnslothTrainer:
                 return (formatted, None)
 
             # ========== FORMAT FIRST ==========
-            print(f"Formatting dataset with format_type='{format_type}'...\n")
+            logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
             dataset_info = format_and_template_dataset(
                 dataset,
@@ -2033,7 +2057,7 @@ class UnslothTrainer:
 
             # Check if stopped during formatting
             if self.should_stop:
-                print("Stopped during dataset formatting\n")
+                logger.info("Stopped during dataset formatting\n")
                 return None
 
             # Abort if dataset formatting/conversion failed
@@ -2045,12 +2069,12 @@ class UnslothTrainer:
                 return None
 
             self._update_progress(status_message=f"Dataset formatted and ready for training")
-            print(f"Dataset formatted successfully\n")
+            logger.info(f"Dataset formatted successfully\n")
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:
                 # Eval came from a separate HF split — format it too
-                print(f"Formatting eval dataset ({len(eval_dataset)} rows)...\n")
+                logger.info(f"Formatting eval dataset ({len(eval_dataset)} rows)...\n")
                 eval_info = format_and_template_dataset(
                     eval_dataset,
                     model_name=self.model_name,
@@ -2061,7 +2085,7 @@ class UnslothTrainer:
                     custom_format_mapping=custom_format_mapping,
                 )
                 eval_dataset = eval_info["dataset"]
-                print(f"Eval dataset formatted successfully\n")
+                logger.info(f"Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source:
                 # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
@@ -2086,7 +2110,7 @@ class UnslothTrainer:
             if subset:
                 load_kwargs["config_name"] = subset
             available_splits = get_dataset_split_names(**load_kwargs)
-            print(f"Available splits: {available_splits}\n")
+            logger.info(f"Available splits: {available_splits}\n")
 
             # Check for common eval split names
             for candidate in ["eval", "validation", "valid", "val", "test"]:
@@ -2096,10 +2120,10 @@ class UnslothTrainer:
                         eval_load_kwargs["name"] = subset
                     candidate_ds = load_dataset(**eval_load_kwargs)
                     if len(candidate_ds) >= 16:
-                        print(f"Auto-detected eval split '{candidate}' with {len(candidate_ds)} rows\n")
+                        logger.info(f"Auto-detected eval split '{candidate}' with {len(candidate_ds)} rows\n")
                         return candidate_ds
                     else:
-                        print(f"Found eval split '{candidate}' but only {len(candidate_ds)} rows (< 16), skipping\n")
+                        logger.info(f"Found eval split '{candidate}' but only {len(candidate_ds)} rows (< 16), skipping\n")
 
         except Exception as e:
             logger.warning(f"Could not check dataset splits: {e}")
@@ -2118,16 +2142,16 @@ class UnslothTrainer:
 
         n = len(dataset)
         if n < MIN_TOTAL_ROWS:
-            print(f"Dataset too small ({n} rows) for eval split, skipping eval\n")
+            logger.info(f"Dataset too small ({n} rows) for eval split, skipping eval\n")
             return None
 
         eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * n)))
         # Ensure we don't take more than half the dataset
         eval_size = min(eval_size, n // 2)
 
-        print(f"Auto-splitting: {eval_size} rows for eval from {n} total\n")
+        logger.info(f"Auto-splitting: {eval_size} rows for eval from {n} total\n")
         split_result = dataset.train_test_split(test_size=eval_size, seed=3407)
-        print(f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n")
+        logger.info(f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n")
         return (split_result['train'], split_result['test'])
 
     def start_training(self,
@@ -2266,7 +2290,7 @@ class UnslothTrainer:
                     training_args.get('max_steps', 0),
                 )
                 self._update_progress(total_steps=total, status_message="Starting CSM training...")
-                print(f"CSM training config: {config}\n")
+                logger.info(f"CSM training config: {config}\n")
                 self.trainer.train()
                 self._finalize_training(output_dir, "CSM")
                 return
@@ -2295,7 +2319,7 @@ class UnslothTrainer:
                     training_args.get('max_steps', 0),
                 )
                 self._update_progress(total_steps=total, status_message="Starting SNAC training...")
-                print(f"SNAC training config: {config}\n")
+                logger.info(f"SNAC training config: {config}\n")
                 self.trainer.train()
                 self._finalize_training(output_dir, "SNAC")
                 return
@@ -2334,7 +2358,7 @@ class UnslothTrainer:
                     training_args.get('max_steps', 0),
                 )
                 self._update_progress(total_steps=total, status_message="Starting Whisper training...")
-                print(f"Whisper training config: {config}\n")
+                logger.info(f"Whisper training config: {config}\n")
                 self.trainer.train()
                 self._finalize_training(output_dir, "Whisper")
                 return
@@ -2348,12 +2372,12 @@ class UnslothTrainer:
             model_name_lower = self.model_name.lower()
             is_deepseek_ocr = "deepseek" in model_name_lower and "ocr" in model_name_lower
 
-            print("Configuring data collator...\n")
+            logger.info("Configuring data collator...\n")
 
             data_collator = None  # Default to built-in data collator
             if is_deepseek_ocr:
                 # Special DeepSeek OCR collator - auto-install if needed
-                print("Detected DeepSeek OCR model\n")
+                logger.info("Detected DeepSeek OCR model\n")
                 # Ensure DeepSeek OCR module is installed
                 if not _ensure_deepseek_ocr_installed():
                     error_msg = (
@@ -2369,7 +2393,7 @@ class UnslothTrainer:
                 try:
                     from backend.data_utils import DeepSeekOCRDataCollator
 
-                    print("Configuring DeepSeek OCR data collator...\n")
+                    logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(self.model)
                     data_collator = DeepSeekOCRDataCollator(
                         tokenizer=self.tokenizer,
@@ -2379,7 +2403,7 @@ class UnslothTrainer:
                         crop_mode=True,
                         train_on_responses_only=training_args.get('train_on_completions', False),
                     )
-                    print("DeepSeek OCR data collator configured successfully\n")
+                    logger.info("DeepSeek OCR data collator configured successfully\n")
 
                 except Exception as e:
                     logger.error(f"Failed to configure DeepSeek OCR collator: {e}")
@@ -2390,7 +2414,7 @@ class UnslothTrainer:
             elif self.is_audio_vlm:
                 # Audio VLM collator (e.g. Gemma 3N with audio data)
                 # Mirrors the collate_fn from Gemma3N_(4B)-Audio notebook
-                print("Configuring audio VLM data collator...\n")
+                logger.info("Configuring audio VLM data collator...\n")
                 processor = self.tokenizer  # FastModel returns processor as tokenizer
 
                 audio_col_name = getattr(self, '_audio_vlm_audio_col', 'audio')
@@ -2420,16 +2444,16 @@ class UnslothTrainer:
                     return batch
 
                 data_collator = audio_vlm_collate_fn
-                print("Audio VLM data collator configured\n")
+                logger.info("Audio VLM data collator configured\n")
 
             elif self.is_vlm:
                 # Standard VLM collator (images)
-                print("Using UnslothVisionDataCollator for vision model\n")
+                logger.info("Using UnslothVisionDataCollator for vision model\n")
                 from unsloth.trainer import UnslothVisionDataCollator
 
                 FastVisionModel.for_training(self.model)
                 data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
-                print("Vision data collator configured\n")
+                logger.info("Vision data collator configured\n")
 
             # ========== TRAINING CONFIGURATION ==========
             # Handle warmup_steps vs warmup_ratio
@@ -2437,7 +2461,7 @@ class UnslothTrainer:
             warmup_ratio_val = training_args.get('warmup_ratio', None)
             
             lr_value = training_args.get('learning_rate', 2e-4)
-            print(f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n")
+            logger.info(f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n")
 
             config_args = {
                 "per_device_train_batch_size": training_args.get('batch_size', 2),
@@ -2455,7 +2479,7 @@ class UnslothTrainer:
                 "dataset_num_proc": 1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else safe_num_proc(max(1, os.cpu_count() // 4)),
                 "max_seq_length": training_args.get('max_seq_length', 2048),
             }
-            print(f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})")
+            logger.info(f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})")
 
             # On Windows with transformers 5.x, disable DataLoader multiprocessing
             # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
@@ -2467,14 +2491,14 @@ class UnslothTrainer:
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
             if warmup_ratio_val is not None:
                 config_args["warmup_ratio"] = warmup_ratio_val
-                print(f"Using warmup_ratio: {warmup_ratio_val}\n")
+                logger.info(f"Using warmup_ratio: {warmup_ratio_val}\n")
             elif warmup_steps_val is not None:
                 config_args["warmup_steps"] = warmup_steps_val
-                print(f"Using warmup_steps: {warmup_steps_val}\n")
+                logger.info(f"Using warmup_steps: {warmup_steps_val}\n")
             else:
                 # Default to warmup_steps if neither provided
                 config_args["warmup_steps"] = 5
-                print(f"Using default warmup_steps: 5\n")
+                logger.info(f"Using default warmup_steps: 5\n")
 
             # Add save_steps if specified
             save_steps_val = training_args.get('save_steps', 0)
@@ -2487,9 +2511,9 @@ class UnslothTrainer:
             if max_steps_val and max_steps_val > 0:
                 del config_args["num_train_epochs"]  # Remove epochs
                 config_args["max_steps"] = max_steps_val  # Use steps instead
-                print(f"Training for {max_steps_val} steps\n")
+                logger.info(f"Training for {max_steps_val} steps\n")
             else:
-                print(f"Training for {config_args['num_train_epochs']} epochs\n")
+                logger.info(f"Training for {config_args['num_train_epochs']} epochs\n")
 
             # ========== EVAL CONFIGURATION ==========
             eval_dataset = training_args.get('eval_dataset', None)
@@ -2498,13 +2522,13 @@ class UnslothTrainer:
                 if eval_steps_val > 0:
                     config_args["eval_strategy"] = "steps"
                     config_args["eval_steps"] = eval_steps_val
-                    print(f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
-                    print(f"Eval dataset: {len(eval_dataset)} rows\n")
+                    logger.info(f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n")
+                    logger.info(f"Eval dataset: {len(eval_dataset)} rows\n")
                 else:
-                    print(f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n")
-                    print("To enable evaluation, set eval_steps > 0.0\n")
+                    logger.info(f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n")
+                    logger.info("To enable evaluation, set eval_steps > 0.0\n")
             else:
-                print("No eval dataset — evaluation disabled\n")
+                logger.info("No eval dataset — evaluation disabled\n")
 
             # Add model-specific parameters
             # Use optim and lr_scheduler_type from training_args if provided, otherwise use defaults
@@ -2514,7 +2538,7 @@ class UnslothTrainer:
             if self.is_vlm or self.is_audio_vlm:
                 # Vision / audio VLM config (both need skip_prepare_dataset + remove_unused_columns)
                 label = "audio VLM" if self.is_audio_vlm else "vision"
-                print(f"Configuring {label} model training parameters\n")
+                logger.info(f"Configuring {label} model training parameters\n")
                 # Use provided values or defaults for vision models
                 optim_value = training_args.get('optim', "adamw_torch_fused")
                 lr_scheduler_type_value = training_args.get('lr_scheduler_type', "cosine")
@@ -2530,7 +2554,7 @@ class UnslothTrainer:
                     "max_length": training_args.get('max_seq_length', 2048),
                 })
             else:
-                print("Configuring text model training parameters\n")
+                logger.info("Configuring text model training parameters\n")
                 config_args.update({
                     "optim": optim_value,
                     "lr_scheduler_type": lr_scheduler_type_value,
@@ -2541,19 +2565,19 @@ class UnslothTrainer:
                 if not is_deepseek_ocr:
                     packing_enabled = training_args.get('packing', False)
                     config_args["packing"] = packing_enabled
-                    print(f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n")
+                    logger.info(f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n")
 
             # Audio codec overrides — BiCodec/DAC use the text SFTTrainer path
             if self._audio_type == 'bicodec':
                 config_args["packing"] = False
-                print("Applied BiCodec overrides: packing=False\n")
+                logger.info("Applied BiCodec overrides: packing=False\n")
             elif self._audio_type == 'dac':
                 config_args["packing"] = False
-                print("Applied DAC overrides: packing=False\n")
+                logger.info("Applied DAC overrides: packing=False\n")
 
-            print(f"The configuration is: {config_args}")
+            logger.info(f"The configuration is: {config_args}")
 
-            print("Training configuration prepared\n")
+            logger.info("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
             if self.is_audio_vlm:
                 # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset
@@ -2592,7 +2616,7 @@ class UnslothTrainer:
                 from transformers import ProcessorMixin
                 sft_tokenizer = self.tokenizer
                 if isinstance(self.tokenizer, ProcessorMixin) and hasattr(self.tokenizer, 'tokenizer'):
-                    print(f"  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
+                    logger.info(f"  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
                     sft_tokenizer = self.tokenizer.tokenizer
 
                 trainer_kwargs = {
@@ -2605,7 +2629,11 @@ class UnslothTrainer:
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
-            print("Trainer initialized\n")
+                # Restore the full processor as processing_class so checkpoint
+                # saves include preprocessor_config.json (needed for GGUF export).
+                if sft_tokenizer is not self.tokenizer:
+                    self.trainer.processing_class = self.tokenizer
+            logger.info("Trainer initialized\n")
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Determine if we should train on responses only
@@ -2617,26 +2645,26 @@ class UnslothTrainer:
             # Audio VLM handles label masking in its collator, so skip
             if train_on_responses_enabled and not self.is_audio_vlm and not self.is_audio and not (is_deepseek_ocr or dataset["final_format"].lower() == 'alpaca'):
                 try:
-                    print("Configuring train on responses only...\n")
+                    logger.info("Configuring train on responses only...\n")
 
                     # Get the template mapping for this model
                     model_name_lower = self.model_name.lower()
 
                     if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
                         template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
-                        print(f"Detected template: {template_name}\n")
+                        logger.info(f"Detected template: {template_name}\n")
 
                         if template_name in TEMPLATE_TO_RESPONSES_MAPPER:
                             instruction_part = TEMPLATE_TO_RESPONSES_MAPPER[template_name]["instruction"]
                             response_part = TEMPLATE_TO_RESPONSES_MAPPER[template_name]["response"]
 
-                            print(f"Instruction marker: {instruction_part[:50]}...\n")
-                            print(f"Response marker: {response_part[:50]}...\n")
+                            logger.info(f"Instruction marker: {instruction_part[:50]}...\n")
+                            logger.info(f"Response marker: {response_part[:50]}...\n")
                         else:
-                            print(f"No response mapping found for template: {template_name}\n")
+                            logger.info(f"No response mapping found for template: {template_name}\n")
                             train_on_responses_enabled = False
                     else:
-                        print(f"No template mapping found for model: {self.model_name}\n")
+                        logger.info(f"No template mapping found for model: {self.model_name}\n")
                         train_on_responses_enabled = False
 
                 except Exception as e:
@@ -2654,7 +2682,7 @@ class UnslothTrainer:
                         response_part=response_part,
                         num_proc=config_args["dataset_num_proc"],
                     )
-                    print("Train on responses only configured successfully\n")
+                    logger.info("Train on responses only configured successfully\n")
 
                     # ── Safety net: check if all samples were filtered out ──
                     # Unsloth's train_on_responses_only masks non-response
@@ -2683,12 +2711,12 @@ class UnslothTrainer:
                         return
 
                     if dropped > 0:
-                        print(
+                        logger.info(
                             f"⚠️ {dropped}/{original_len} samples "
                             f"({drop_pct}%) were dropped (all labels "
                             f"masked). {filtered_len} samples remain.\n"
                         )
-                    print(f"Post-filter dataset size: {filtered_len} samples\n")
+                    logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
 
                     # [DEBUG] Decode first sample AFTER train_on_completions applied
                     try:
@@ -2705,9 +2733,9 @@ class UnslothTrainer:
                     train_on_responses_enabled = False
             else:
                 if train_on_responses_enabled and is_deepseek_ocr:
-                    print("Train on responses handled by DeepSeek OCR collator\n")
+                    logger.info("Train on responses handled by DeepSeek OCR collator\n")
                 else:
-                    print("Training on full sequences (including prompts)\n")
+                    logger.info("Training on full sequences (including prompts)\n")
 
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
@@ -2724,7 +2752,7 @@ class UnslothTrainer:
 
             # ========== START TRAINING ==========
             self._update_progress(status_message="Starting training...")
-            print("Starting training...\n")
+            logger.info("Starting training...\n")
             self.trainer.train()
 
             # ========== SAVE MODEL ==========
@@ -2771,7 +2799,7 @@ class UnslothTrainer:
 
     def stop_training(self, save: bool = True):
         """Stop ongoing training"""
-        print(f"\nStopping training (save={save})...")
+        logger.info(f"\nStopping training (save={save})...")
         self.should_stop = True
         self.save_on_stop = save
         stop_msg = (
@@ -2785,7 +2813,7 @@ class UnslothTrainer:
         if self.trainer:
             try:
                 # The callback will catch should_stop flag and stop the training loop
-                print("Training will stop at next step...\n")
+                logger.info("Training will stop at next step...\n")
             except Exception as e:
                 logger.error(f"Error stopping trainer: {e}")
 
@@ -2825,7 +2853,7 @@ def _ensure_deepseek_ocr_installed():
 
     try:
         logger.info("DeepSeek OCR module not found. Auto-installing from HuggingFace...")
-        print("\n Downloading DeepSeek OCR module from HuggingFace...\n")
+        logger.info("\n Downloading DeepSeek OCR module from HuggingFace...\n")
 
         from huggingface_hub import snapshot_download
         import sys
@@ -2852,12 +2880,12 @@ def _ensure_deepseek_ocr_installed():
         from deepseek_ocr.modeling_deepseekocr import format_messages
 
         logger.info("DeepSeek OCR module installed successfully")
-        print("DeepSeek OCR module installed successfully!\n")
+        logger.info("DeepSeek OCR module installed successfully!\n")
         return True
 
     except Exception as e:
         logger.error(f"Failed to install DeepSeek OCR module: {e}")
-        print(f"\n❌ Failed to install DeepSeek OCR module: {e}\n")
+        logger.info(f"\n❌ Failed to install DeepSeek OCR module: {e}\n")
         return False
 
 # Global trainer instance

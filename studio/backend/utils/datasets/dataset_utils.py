@@ -44,6 +44,10 @@ from .chat_templates import (
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
+from loggers import get_logger
+logger = get_logger(__name__)
+
+
 
 
 def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
@@ -822,7 +826,7 @@ def format_and_template_dataset(
                         f"text='{user_vlm_text_column}') failed: {e} — "
                         f"falling back to auto-detection"
                     )
-                    print(f"⚠️ User VLM mapping failed, falling back to auto-detection...")
+                    logger.info(f"⚠️ User VLM mapping failed, falling back to auto-detection...")
                     custom_format_mapping = None  # clear so auto-detection runs below
             else:
                 errors.append(

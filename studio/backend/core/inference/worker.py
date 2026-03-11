@@ -16,7 +16,8 @@ Pattern follows core/training/worker.py.
 from __future__ import annotations
 
 import base64
-import logging
+import structlog
+from loggers import get_logger
 import os
 import queue as _queue
 import sys
@@ -25,7 +26,7 @@ import traceback
 from io import BytesIO
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _activate_transformers_version(model_name: str, project_root: str) -> None:
@@ -244,6 +245,8 @@ def _handle_generate(
         else:
             generator = backend.generate_chat_response(**gen_kwargs)
 
+        logger.info("Starting text generation for request_id=%s", request_id)
+
         for cumulative_text in generator:
             # cancel_event is an mp.Event — checked instantly, no queue polling
             if cancel_event.is_set():
@@ -262,6 +265,7 @@ def _handle_generate(
             "request_id": request_id,
             "ts": time.time(),
         })
+        logger.info("Finished text generation for request_id=%s", request_id)
 
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
@@ -282,6 +286,7 @@ def _handle_generate_audio(
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
     try:
+        logger.info("Starting audio generation for request_id=%s", request_id)
         wav_bytes, sample_rate = backend.generate_audio_response(
             text=cmd["text"],
             temperature=cmd.get("temperature", 0.6),
@@ -301,6 +306,7 @@ def _handle_generate_audio(
             "sample_rate": sample_rate,
             "ts": time.time(),
         })
+        logger.info("Finished audio generation for request_id=%s", request_id)
 
     except Exception as exc:
         logger.error("Audio generation error: %s", exc, exc_info=True)
@@ -349,6 +355,8 @@ def _handle_generate_audio_input(
                 cancel_event=cancel_event,
             )
 
+        logger.info("Starting audio input generation for request_id=%s", request_id)
+
         for text_chunk in generator:
             if cancel_event.is_set():
                 logger.info("Audio input generation cancelled for request %s", request_id)
@@ -366,6 +374,7 @@ def _handle_generate_audio_input(
             "request_id": request_id,
             "ts": time.time(),
         })
+        logger.info("Finished audio input generation for request_id=%s", request_id)
 
     except Exception as exc:
         logger.error("Audio input generation error: %s", exc, exc_info=True)
@@ -418,6 +427,17 @@ def run_inference_process(
         config: Initial configuration dict with model info and project_root.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
+
+    import warnings
+    from loggers.config import LogConfig
+    if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
+        warnings.filterwarnings("ignore")
+        
+    LogConfig.setup_logging(
+        service_name="unsloth-studio-inference-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
+    )
 
     project_root = config["project_root"]
     model_name = config["model_name"]

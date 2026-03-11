@@ -105,6 +105,12 @@ export function useTrainingActions() {
         }
       }
 
+      // Abort if cancel was requested during dataset check
+      if (useTrainingRuntimeStore.getState().stopRequested) {
+        runtimeStore.setStarting(false);
+        return false;
+      }
+
       // Re-read config after potential store updates from dataset check
       const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
       const response = await startTraining(payload);

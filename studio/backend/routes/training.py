@@ -9,7 +9,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from typing import Dict, Optional, Any
-import logging
+import structlog
+from loggers import get_logger
 import asyncio
 from datetime import datetime
 
@@ -48,16 +49,9 @@ class TrainingStopRequest(PydanticBaseModel):
     save: bool = True
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Configure logger
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+
 
 
 @router.get("/hardware")
@@ -200,6 +194,7 @@ async def start_training(
             "finetune_mlp_modules": request.finetune_mlp_modules,
             "is_dataset_image": request.is_dataset_image,
             "is_dataset_audio": request.is_dataset_audio,
+            "is_embedding": request.is_embedding,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",
@@ -323,11 +318,16 @@ async def reset_training(
         is_active = backend.is_training_active()
 
         if is_active:
-            logger.warning("Rejected reset while training active: is_active=%s", is_active)
-            raise HTTPException(
-                status_code=409,
-                detail="Training is still running. Stop training and wait for it to finish before resetting.",
-            )
+            if backend._cancel_requested:
+                # Cancel (save=False) was requested — force-terminate so we can reset immediately
+                logger.info("Force-terminating subprocess for immediate reset (cancel path)")
+                backend.force_terminate()
+            else:
+                logger.warning("Rejected reset while training active: is_active=%s", is_active)
+                raise HTTPException(
+                    status_code=409,
+                    detail="Training is still running. Stop training and wait for it to finish before resetting.",
+                )
 
         logger.info("Reset training state: clearing runtime + metric history")
         backend._should_stop = False  # Clear stop flag so status returns to idle

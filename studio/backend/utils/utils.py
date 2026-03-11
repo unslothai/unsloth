@@ -5,14 +5,15 @@
 Shared backend utilities
 """
 import os
-import logging
+import structlog
+from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import tempfile
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @contextmanager

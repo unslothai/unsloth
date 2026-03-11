@@ -8,6 +8,11 @@ interface VisionCheckResponse {
   is_vision: boolean;
 }
 
+interface EmbeddingCheckResponse {
+  model_name: string;
+  is_embedding: boolean;
+}
+
 interface BackendTrainingDefaults {
   max_seq_length?: number;
   num_epochs?: number;
@@ -61,8 +66,11 @@ export interface ModelConfigResponse {
   model_name?: string | null;
   config?: BackendModelConfig | null;
   is_vision: boolean;
+  is_embedding?: boolean;
+  is_audio: boolean;
   is_lora: boolean;
   base_model?: string | null;
+  model_type?: "text" | "vision" | "audio" | "embeddings" | null;
 }
 
 export interface LocalModelInfo {
@@ -93,6 +101,23 @@ export async function checkVisionModel(modelName: string): Promise<boolean> {
   }
   const data = (await response.json()) as VisionCheckResponse;
   return data.is_vision;
+}
+
+/**
+ * Check whether a model is an embedding model by asking the backend.
+ * Calls GET /api/models/check-embedding/{model_name}.
+ */
+export async function checkEmbeddingModel(
+  modelName: string,
+): Promise<boolean> {
+  const encoded = encodeURIComponent(modelName);
+  const response = await authFetch(`/api/models/check-embedding/${encoded}`);
+  if (!response.ok) {
+    // If the check fails (e.g. network error), default to non-embedding
+    return false;
+  }
+  const data = (await response.json()) as EmbeddingCheckResponse;
+  return data.is_embedding;
 }
 
 export async function getModelConfig(

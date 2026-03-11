@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-import logging
+import structlog
+from loggers import get_logger
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
@@ -23,16 +24,9 @@ from utils.datasets import check_dataset_format
 from auth.authentication import get_current_subject
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Configure logger
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+
 
 
 from models.datasets import (
