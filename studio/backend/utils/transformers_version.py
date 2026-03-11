@@ -23,23 +23,16 @@ Strategy:
 
 import importlib
 import json
-import logging
+import structlog
+from loggers import get_logger
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Ensure our logger is visible even if root logger isn't configured for INFO.
-if not logger.handlers:
-    _handler = logging.StreamHandler()
-    _handler.setLevel(logging.INFO)
-    _handler.setFormatter(
-        logging.Formatter("[%(name)s|%(levelname)s]%(message)s")
-    )
-    logger.addHandler(_handler)
-    logger.setLevel(logging.INFO)
+
 
 # ---------------------------------------------------------------------------
 # Detection

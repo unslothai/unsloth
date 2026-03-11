@@ -20,11 +20,12 @@ from utils.utils import format_error_message
 from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
-import logging
+import structlog
+from loggers import get_logger
 
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""

@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
-import logging
+import structlog
+from loggers import get_logger
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
@@ -25,6 +26,7 @@ try:
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
+        is_embedding_model,
         scan_checkpoints,
         list_gguf_variants,
         ModelConfig,
@@ -42,6 +44,7 @@ except ImportError:
         load_model_defaults,
         get_base_model_from_lora,
         is_vision_model,
+        is_embedding_model,
         scan_checkpoints,
         list_gguf_variants,
         ModelConfig,
@@ -60,20 +63,24 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
-from models.models import GgufVariantDetail, GgufVariantsResponse
-from models.responses import LoRABaseModelResponse, VisionCheckResponse
+from models.models import GgufVariantDetail, GgufVariantsResponse, ModelType
+from models.responses import LoRABaseModelResponse, VisionCheckResponse, EmbeddingCheckResponse
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Configure logger
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+
+def derive_model_type(is_vision: bool, audio_type: Optional[str], is_embedding: bool = False) -> ModelType:
+    """Collapse individual capability flags into a single model modality string."""
+    if is_embedding:
+        return "embeddings"
+    if audio_type is not None:
+        return "audio"
+    if is_vision:
+        return "vision"
+    return "text"
+
+
 
 
 def _resolve_hf_cache_dir() -> Path:
@@ -224,14 +231,17 @@ async def list_models(
         # Get loaded models
         loaded_models = []
         for model_name, model_data in inference_backend.models.items():
+            _is_vision = model_data.get("is_vision", False)
+            _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
                 id=model_name,
                 name=model_name.split("/")[-1] if "/" in model_name else model_name,
-                is_vision=model_data.get("is_vision", False),
+                is_vision=_is_vision,
                 is_lora=model_data.get("is_lora", False),
                 is_audio=model_data.get("is_audio", False),
-                audio_type=model_data.get("audio_type"),
+                audio_type=_audio_type,
                 has_audio_input=model_data.get("has_audio_input", False),
+                model_type=derive_model_type(_is_vision, _audio_type),
             )
             loaded_models.append(model_info)
         
@@ -280,6 +290,10 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
+        from utils.models.model_config import is_local_path
+        if not is_local_path(model_name):
+            model_name = model_name.lower()
+            
         logger.info(f"Getting model config for: {model_name}")
         from utils.models.model_config import detect_audio_type
         # Load model defaults from backend
@@ -287,6 +301,7 @@ async def get_model_config(
 
         # Detect model capabilities (pass HF token for gated models)
         is_vision = is_vision_model(model_name)
+        is_embedding = is_embedding_model(model_name, hf_token=hf_token)
         audio_type = detect_audio_type(model_name, hf_token=hf_token)
 
         # Check if it's a LoRA adapter
@@ -299,16 +314,18 @@ async def get_model_config(
         except Exception:
             pass
 
-        logger.info(f"Model config result for {model_name}: is_vision={is_vision}, audio_type={audio_type}, is_lora={is_lora}")
+        logger.info(f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}")
         return ModelDetails(
             id=model_name,
             model_name=model_name,
             config=config_dict,
             is_vision=is_vision,
+            is_embedding=is_embedding,
             is_lora=is_lora,
             is_audio=audio_type is not None,
             audio_type=audio_type,
             has_audio_input=is_audio_input_type(audio_type),
+            model_type=derive_model_type(is_vision, audio_type, is_embedding),
             base_model=base_model,
         )
         
@@ -430,6 +447,35 @@ async def check_vision_model(
             status_code=500,
             detail=f"Failed to check vision model: {str(e)}"
         )
+
+@router.get("/check-embedding/{model_name:path}", response_model=EmbeddingCheckResponse)
+async def check_embedding_model(
+    model_name: str,
+    hf_token: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Check if a model is an embedding model.
+
+    This endpoint wraps the backend is_embedding_model function.
+    """
+    try:
+        logger.info(f"Checking if embedding model: {model_name}")
+        is_embedding = is_embedding_model(model_name, hf_token=hf_token)
+
+        logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
+        return EmbeddingCheckResponse(
+            model_name=model_name,
+            is_embedding=is_embedding,
+        )
+
+    except Exception as e:
+        logger.error(f"Error checking embedding model: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check embedding model: {str(e)}"
+        )
+
 
 @router.get("/gguf-variants", response_model=GgufVariantsResponse)
 async def get_gguf_variants(

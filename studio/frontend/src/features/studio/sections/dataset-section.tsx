@@ -89,6 +89,13 @@ function formatUpdatedDate(timestamp: number | null): string {
   return new Date(timestamp * 1000).toLocaleDateString();
 }
 
+function normalizeSliceInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 export function DatasetSection() {
   const {
     dataset,
@@ -106,8 +113,6 @@ export function DatasetSection() {
     uploadedFile,
     hfToken,
     modelType,
-    isVisionModel,
-    isCheckingVision,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -129,8 +134,6 @@ export function DatasetSection() {
       uploadedFile: s.uploadedFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
-      isVisionModel: s.isVisionModel,
-      isCheckingVision: s.isCheckingVision,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
@@ -230,7 +233,7 @@ export function DatasetSection() {
     setSearchQuery(val);
   }
 
-  const effectiveModelType = !isCheckingVision && isVisionModel ? "vision" : modelType;
+  const effectiveModelType = modelType ?? "text";
 
   const {
     results: hfResults,
@@ -645,6 +648,19 @@ export function DatasetSection() {
               datasetEvalSplit={datasetEvalSplit}
               setDatasetEvalSplit={setDatasetEvalSplit}
             />
+          ) : !selectedDatasetName ? (
+            <HfDatasetSubsetSplitSelectors
+              variant="studio"
+              enabled={false}
+              datasetName={null}
+              accessToken={hfToken || undefined}
+              datasetSubset={datasetSubset}
+              setDatasetSubset={setDatasetSubset}
+              datasetSplit={datasetSplit}
+              setDatasetSplit={setDatasetSplit}
+              datasetEvalSplit={datasetEvalSplit}
+              setDatasetEvalSplit={setDatasetEvalSplit}
+            />
           ) : datasetSource === "upload" && selectedLocalDataset ? (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -702,7 +718,7 @@ export function DatasetSection() {
               />
               Advanced
             </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3">
+            <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2">
                   <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -774,11 +790,14 @@ export function DatasetSection() {
                       </Tooltip>
                     </span>
                     <Input
+                      type="number"
                       inputMode="numeric"
+                      min={0}
+                      step={1}
                       placeholder="0"
                       value={datasetSliceStart ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceStart(e.target.value || null)
+                        setDatasetSliceStart(normalizeSliceInput(e.target.value))
                       }
                     />
                   </div>
@@ -806,11 +825,14 @@ export function DatasetSection() {
                       </Tooltip>
                     </span>
                     <Input
+                      type="number"
                       inputMode="numeric"
+                      min={0}
+                      step={1}
                       placeholder="End"
                       value={datasetSliceEnd ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceEnd(e.target.value || null)
+                        setDatasetSliceEnd(normalizeSliceInput(e.target.value))
                       }
                     />
                   </div>

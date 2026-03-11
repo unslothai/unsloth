@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import normalize_path, is_local_path, is_model_cached
 from utils.utils import without_hf_auth
-import logging
+import structlog
+from loggers import get_logger
 import os
 import subprocess
 import sys
@@ -19,12 +20,36 @@ import json
 import yaml
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Model name mapping: maps all equivalent model names to their canonical YAML config file
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
 # Based on the model mapper provided - canonical filename is based on the first model name in the mapper
 MODEL_NAME_MAPPING = {
+    # ── Embedding models ──
+    "unsloth_all-MiniLM-L6-v2.yaml": [
+        "unsloth/all-MiniLM-L6-v2",
+        "sentence-transformers/all-MiniLM-L6-v2",
+    ],
+    "unsloth_bge-m3.yaml": [
+        "unsloth/bge-m3",
+        "BAAI/bge-m3",
+    ],
+    "unsloth_embeddinggemma-300m.yaml": [
+        "unsloth/embeddinggemma-300m",
+        "google/embeddinggemma-300m",
+    ],
+    "unsloth_gte-modernbert-base.yaml": [
+        "unsloth/gte-modernbert-base",
+        "Alibaba-NLP/gte-modernbert-base",
+    ],
+    "unsloth_Qwen3-Embedding-0.6B.yaml": [
+        "unsloth/Qwen3-Embedding-0.6B",
+        "Qwen/Qwen3-Embedding-0.6B",
+        "unsloth/Qwen3-Embedding-4B",
+        "Qwen/Qwen3-Embedding-4B",
+    ],
+    # ── Other models ──
     "unsloth_answerdotai_ModernBERT-large.yaml": [
         "answerdotai/ModernBERT-large",
     ],
@@ -188,7 +213,7 @@ MODEL_NAME_MAPPING = {
         "unsloth/Ministral-3-3B-Instruct-2512",
     ],
     "unsloth_mistral-7b-v0.3-bnb-4bit.yaml": [
-        "unsloth/mistral-7b-v0.3-bnb-4bit"
+        "unsloth/mistral-7b-v0.3-bnb-4bit",
         "unsloth/mistral-7b-v0.3",
         "mistralai/Mistral-7B-v0.3",
     ],
@@ -349,7 +374,7 @@ MODEL_NAME_MAPPING = {
 _REVERSE_MODEL_MAPPING = {}
 for canonical_file, model_names in MODEL_NAME_MAPPING.items():
     for model_name in model_names:
-        _REVERSE_MODEL_MAPPING[model_name] = canonical_file
+        _REVERSE_MODEL_MAPPING[model_name.lower()] = canonical_file
 
 def load_model_config(model_name: str, use_auth: bool = False, token: Optional[str] = None):
     """
@@ -435,10 +460,10 @@ try:
 
     model_type = getattr(config, "model_type", "unknown")
     archs = getattr(config, "architectures", [])
-    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+    logger.info(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
 except Exception as exc:
-    print(json.dumps({"error": str(exc)}))
+    logger.info(json.dumps({"error": str(exc)}))
     sys.exit(1)
 '''
 
@@ -894,6 +919,70 @@ def download_gguf_file(
     return local_path
 
 
+# Cache embedding detection results per session to avoid repeated HF API calls
+_embedding_detection_cache: Dict[tuple, bool] = {}
+
+
+def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
+    """
+    Detect embedding/sentence-transformer models using HuggingFace model metadata.
+
+    Uses a belt-and-suspenders approach combining three signals:
+      1. "sentence-transformers" in model tags
+      2. "feature-extraction" in model tags
+      3. pipeline_tag is "sentence-similarity" or "feature-extraction"
+
+    This catches all known embedding models including those like gte-modernbert
+    whose library_name is "transformers" rather than "sentence-transformers".
+
+    Args:
+        model_name: Model identifier (HF repo or local path)
+        hf_token: Optional HF token for accessing gated/private models
+
+    Returns:
+        True if the model is an embedding model, False otherwise.
+        Defaults to False for local paths or on errors.
+    """
+    cache_key = (model_name, hf_token)
+    if cache_key in _embedding_detection_cache:
+        return _embedding_detection_cache[cache_key]
+
+    # Local paths: check for sentence-transformer marker file (modules.json)
+    if is_local_path(model_name):
+        local_dir = normalize_path(model_name)
+        is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
+
+    try:
+        from huggingface_hub import model_info as hf_model_info
+
+        info = hf_model_info(model_name, token=hf_token)
+        tags = set(info.tags or [])
+        pipeline_tag = info.pipeline_tag or ""
+
+        is_emb = (
+            "sentence-transformers" in tags
+            or "feature-extraction" in tags
+            or pipeline_tag in ("sentence-similarity", "feature-extraction")
+        )
+
+        _embedding_detection_cache[cache_key] = is_emb
+        if is_emb:
+            logger.info(
+                f"Model {model_name} detected as embedding model: "
+                f"pipeline_tag={pipeline_tag}, "
+                f"sentence-transformers in tags={('sentence-transformers' in tags)}, "
+                f"feature-extraction in tags={('feature-extraction' in tags)}"
+            )
+        return is_emb
+
+    except Exception as e:
+        logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
+        _embedding_detection_cache[cache_key] = False
+        return False
+
+
 def scan_trained_loras(outputs_dir: str = "./outputs") -> List[Tuple[str, str]]:
     """
     Scan outputs folder for trained LoRA adapters.
@@ -1145,8 +1234,8 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
         
         # First, check if model is in the mapping
-        if model_name in _REVERSE_MODEL_MAPPING:
-            canonical_file = _REVERSE_MODEL_MAPPING[model_name]
+        if model_name.lower() in _REVERSE_MODEL_MAPPING:
+            canonical_file = _REVERSE_MODEL_MAPPING[model_name.lower()]
             # Search in subfolders and root
             for config_path in defaults_dir.rglob(canonical_file):
                 if config_path.is_file():
@@ -1310,6 +1399,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
+        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        if not is_local:
+            identifier = identifier.lower()
+            path = path.lower()
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:

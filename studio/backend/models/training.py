@@ -81,6 +81,7 @@ class TrainingStartRequest(BaseModel):
     finetune_mlp_modules: bool = Field(False, description="Finetune MLP modules")
     is_dataset_image: bool = Field(False, description="Whether the dataset contains image data")
     is_dataset_audio: bool = Field(False, description="Whether the dataset contains audio data")
+    is_embedding: bool = Field(False, description="Whether model is an embedding/sentence-transformer model")
 
     # Logging parameters
     enable_wandb: bool = Field(False, description="Enable Weights & Biases logging")

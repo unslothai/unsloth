@@ -2,7 +2,7 @@
 // Copyright © 2025 Unsloth AI
 
 import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
-import type { StepNumber } from "@/types/training";
+import type { ModelType, StepNumber } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -41,6 +41,8 @@ const initialState: TrainingConfigState = {
   uploadedFile: null,
   isCheckingVision: false,
   isVisionModel: false,
+  isEmbeddingModel: false,
+  isAudioModel: false,
   isLoadingModelDefaults: false,
   modelDefaultsError: null,
   modelDefaultsAppliedFor: null,
@@ -63,6 +65,8 @@ let _trainOnCompletionsManuallySet = false;
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
+  "isEmbeddingModel",
+  "isAudioModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
   "modelDefaultsAppliedFor",
@@ -132,9 +136,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions = false;
             }
 
+            const isAudio = !!modelDetails.is_audio;
+            // Pure audio model → always uncheck trainOnCompletions.
+            if (isAudio && !modelDetails.is_vision) {
+              patch.trainOnCompletions = false;
+            }
+            // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
+            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
+              patch.trainOnCompletions = false;
+            }
+
+            // Use backend-provided model_type when available, otherwise
+            // infer from capability flags.
+            const isEmbedding = !!modelDetails.is_embedding;
+            const inferredModelType: ModelType = modelDetails.model_type
+              ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
+
             set({
               ...patch,
+              modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
+              isEmbeddingModel: isEmbedding,
+              isAudioModel: isAudio,
               isLoadingModelDefaults: false,
               isCheckingVision: false,
               modelDefaultsError: null,
@@ -147,6 +170,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             set({
               isLoadingModelDefaults: false,
+              isEmbeddingModel: false,
+              isAudioModel: false,
               modelDefaultsError:
                 error instanceof Error
                   ? error.message
@@ -158,13 +183,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({
+                  modelType: isVision ? "vision" : "text",
                   isVisionModel: isVision,
+                  isEmbeddingModel: false,
+                  isAudioModel: false,
                   isCheckingVision: false,
                 });
               })
               .catch(() => {
                 if (get().selectedModel !== modelName) return;
-                set({ isCheckingVision: false });
+                set({ isCheckingVision: false, isEmbeddingModel: false, isAudioModel: false });
               });
           });
       };
@@ -192,8 +220,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isCheckingDataset: false,
             };
             if (!_trainOnCompletionsManuallySet) {
-              const { isVisionModel } = get();
+              const { isVisionModel, isAudioModel } = get();
               if (isVisionModel && isImage) {
+                updates.trainOnCompletions = false;
+              }
+              // Pure audio model → always uncheck regardless of dataset.
+              if (isAudioModel && !isVisionModel) {
+                updates.trainOnCompletions = false;
+              }
+              // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
+              if (isAudioModel && isVisionModel && isAudio) {
                 updates.trainOnCompletions = false;
               }
             }
@@ -236,6 +272,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             selectedModel: null,
             isCheckingVision: false,
             isVisionModel: false,
+            isEmbeddingModel: false,
+            isAudioModel: false,
             isDatasetAudio: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
@@ -252,6 +290,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               isCheckingVision: false,
               isVisionModel: false,
+              isEmbeddingModel: false,
+              isAudioModel: false,
               isDatasetAudio: false,
               isLoadingModelDefaults: false,
               modelDefaultsError: null,

@@ -47,6 +47,7 @@ export interface TrainingStartRequest {
   finetune_mlp_modules: boolean;
   is_dataset_image: boolean;
   is_dataset_audio: boolean;
+  is_embedding: boolean;
   enable_wandb: boolean;
   wandb_token: string | null;
   wandb_project: string | null;
