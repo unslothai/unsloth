@@ -24,14 +24,14 @@ from typing import Any
 logger = get_logger(__name__)
 
 
-def _activate_transformers_version(model_name: str, project_root: str) -> None:
+def _activate_transformers_version(model_name: str) -> None:
     """Activate the correct transformers version BEFORE any ML imports.
 
     If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
     directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
     """
     # Ensure backend is on path for utils imports
-    backend_path = os.path.join(project_root, "studio", "backend")
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
@@ -39,7 +39,7 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
 
     resolved = _resolve_base_model(model_name)
     if needs_transformers_5(resolved):
-        venv_t5 = os.path.join(project_root, ".venv_t5")
+        venv_t5 = os.path.join(os.path.expanduser("~"), ".unsloth", "studio", ".venv_t5")
         if os.path.isdir(venv_t5):
             sys.path.insert(0, venv_t5)
             logger.info("Activated transformers 5.x from %s", venv_t5)
@@ -97,12 +97,11 @@ def run_training_process(
         env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    project_root = config["project_root"]
     model_name = config["model_name"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name, project_root)
+        _activate_transformers_version(model_name)
     except Exception as exc:
         event_queue.put({
             "type": "error",
@@ -128,12 +127,12 @@ def run_training_process(
     try:
         _send_status(event_queue, "Importing ML libraries...")
 
-        backend_path = os.path.join(project_root, "studio", "backend")
+        backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
         from core.training.trainer import UnslothTrainer, TrainingProgress
-        from utils.paths import ensure_dir, resolve_output_dir, resolve_tensorboard_dir
+        from utils.paths import ensure_dir, resolve_output_dir, resolve_tensorboard_dir, datasets_root
 
         import transformers
         logger.info("Subprocess loaded transformers %s", transformers.__version__)
@@ -588,7 +587,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             all_files: list[str] = []
             for dataset_file in local_datasets:
                 file_path = dataset_file if os.path.isabs(dataset_file) else os.path.join(
-                    project_root, "studio", "backend", "assets", "datasets", dataset_file,
+                    str(datasets_root()), dataset_file,
                 )
                 if os.path.isdir(file_path):
                     file_path_obj = Path(file_path)

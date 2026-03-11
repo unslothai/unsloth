@@ -277,11 +277,9 @@ class InferenceOrchestrator:
 
         try:
             needed_major = "5" if needs_transformers_5(model_name) else "4"
-            project_root = str(Path(__file__).resolve().parent.parent.parent.parent.parent)
 
             # Build config dict for subprocess
             sub_config = {
-                "project_root": project_root,
                 "model_name": model_name,
                 "max_seq_length": max_seq_length,
                 "load_in_4bit": load_in_4bit,

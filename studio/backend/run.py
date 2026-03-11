@@ -92,6 +92,10 @@ def run_server(
     import uvicorn
 
     from main import app, setup_frontend
+    from utils.paths import ensure_studio_directories
+
+    # Create all standard directories on startup
+    ensure_studio_directories()
 
     # Setup frontend if path provided
     if frontend_path:
