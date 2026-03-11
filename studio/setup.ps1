@@ -488,69 +488,49 @@ if ($CudaArch) {
 }
 
 # ============================================
-# 1f. Node.js / npm (always -- needed regardless of install method)
+# 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
 # ============================================
-# setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-# Node >= 20, npm >= 11.
-$NeedNode = $true
-try {
-    $NodeVersion = (node -v 2>$null)
-    $NpmVersion = (npm -v 2>$null)
-    if ($NodeVersion -and $NpmVersion) {
-        $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
-        $NpmMajor = [int]$NpmVersion.Split('.')[0]
+if ($IsPipInstall) {
+    Write-Host "[OK] Running from pip install - frontend already bundled, skipping Node/npm check" -ForegroundColor Green
+} else {
+    # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
+    # Node >= 20, npm >= 11.
+    $NeedNode = $true
+    try {
+        $NodeVersion = (node -v 2>$null)
+        $NpmVersion = (npm -v 2>$null)
+        if ($NodeVersion -and $NpmVersion) {
+            $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
+            $NpmMajor = [int]$NpmVersion.Split('.')[0]
 
-        if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
-            Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
-            $NeedNode = $false
-        } else {
-            Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
+            if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
+                Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
+                $NeedNode = $false
+            } else {
+                Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
+            }
+        }
+    } catch {
+        Write-Host "[WARN] Node/npm not found." -ForegroundColor Yellow
+    }
+
+    if ($NeedNode) {
+        Write-Host "Installing Node.js LTS via winget..." -ForegroundColor Cyan
+        try {
+            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
+            Refresh-Environment
+        } catch {
+            Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
+            Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
+            exit 1
         }
     }
-} catch {
-    Write-Host "[WARN] Node/npm not found." -ForegroundColor Yellow
-}
 
-if ($NeedNode) {
-    Write-Host "Installing Node.js LTS via winget..." -ForegroundColor Cyan
-    try {
-        winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
-        Refresh-Environment
-    } catch {
-        Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-        Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
-        exit 1
-    }
-}
-
-Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
-
-# ============================================
-# 1g. FFmpeg (required for audio model support)
-# ============================================
-$HasFFmpeg = $null -ne (Get-Command ffmpeg -ErrorAction SilentlyContinue)
-if (-not $HasFFmpeg) {
-    Write-Host "FFmpeg not found -- installing via winget..." -ForegroundColor Yellow
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        try {
-            winget install -e --id Gyan.FFmpeg --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            Refresh-Environment
-            $HasFFmpeg = $null -ne (Get-Command ffmpeg -ErrorAction SilentlyContinue)
-        } catch { }
-    }
-    if (-not $HasFFmpeg) {
-        Write-Host "[WARN] FFmpeg could not be installed automatically." -ForegroundColor Yellow
-        Write-Host "       Install FFmpeg from https://ffmpeg.org/download.html and re-run." -ForegroundColor Yellow
-    } else {
-        Write-Host "[OK] FFmpeg installed: $(ffmpeg -version | Select-Object -First 1)" -ForegroundColor Green
-    }
-} else {
-    Write-Host "[OK] FFmpeg found: $(ffmpeg -version | Select-Object -First 1)" -ForegroundColor Green
+    Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
 }
 
 # ============================================
-# 1h. Python (>= 3.11 and < 3.14, matching setup.sh)
+# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
 # ============================================
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PythonOk = $false
@@ -1034,6 +1014,6 @@ Write-Host "|           Setup Complete!                     |" -ForegroundColor 
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "|  IMPORTANT: Open a NEW terminal, then run:    |" -ForegroundColor Yellow
 Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|    unsloth-studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
+Write-Host "|    unsloth studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "+===============================================+" -ForegroundColor Green
