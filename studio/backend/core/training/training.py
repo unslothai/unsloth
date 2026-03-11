@@ -128,12 +128,8 @@ class TrainingBackend:
         self.eval_enabled = False
         self._output_dir = None
 
-        # Resolve project root (studio/backend/core/training/ → project root)
-        project_root = str(Path(__file__).resolve().parent.parent.parent.parent.parent)
-
         # Build config dict for the subprocess
         config = {
-            "project_root": project_root,
             "model_name": kwargs["model_name"],
             "training_type": kwargs.get("training_type", "LoRA/QLoRA"),
             "hf_token": kwargs.get("hf_token", ""),

@@ -24,19 +24,20 @@ import sys
 import time
 import traceback
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
 
 
-def _activate_transformers_version(model_name: str, project_root: str) -> None:
+def _activate_transformers_version(model_name: str) -> None:
     """Activate the correct transformers version BEFORE any ML imports.
 
     If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
     directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
     """
     # Ensure backend is on path for utils imports
-    backend_path = os.path.join(project_root, "studio", "backend")
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
@@ -44,7 +45,7 @@ def _activate_transformers_version(model_name: str, project_root: str) -> None:
 
     resolved = _resolve_base_model(model_name)
     if needs_transformers_5(resolved):
-        venv_t5 = os.path.join(project_root, ".venv_t5")
+        venv_t5 = os.path.join(os.path.expanduser("~"), ".unsloth", "studio", ".venv_t5")
         if os.path.isdir(venv_t5):
             sys.path.insert(0, venv_t5)
             logger.info("Activated transformers 5.x from %s", venv_t5)
@@ -424,7 +425,7 @@ def run_inference_process(
         cmd_queue: mp.Queue for receiving commands from parent.
         resp_queue: mp.Queue for sending responses to parent.
         cancel_event: mp.Event shared with parent — set by parent to cancel generation.
-        config: Initial configuration dict with model info and project_root.
+        config: Initial configuration dict with model info.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -433,18 +434,17 @@ def run_inference_process(
     from loggers.config import LogConfig
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
-        
+
     LogConfig.setup_logging(
         service_name="unsloth-studio-inference-worker",
         env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    project_root = config["project_root"]
     model_name = config["model_name"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name, project_root)
+        _activate_transformers_version(model_name)
     except Exception as exc:
         _send_response(resp_queue, {
             "type": "error",
@@ -474,7 +474,7 @@ def run_inference_process(
             "ts": time.time(),
         })
 
-        backend_path = os.path.join(project_root, "studio", "backend")
+        backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
