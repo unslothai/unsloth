@@ -96,6 +96,29 @@ fi
 
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
+# ── 4b. Check / install FFmpeg (required for audio model support) ──
+if command -v ffmpeg &>/dev/null; then
+    echo "✅ FFmpeg found: $(ffmpeg -version 2>&1 | head -1)"
+else
+    echo "⚠️  FFmpeg not found — installing..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -y > /dev/null 2>&1
+        sudo apt-get install -y ffmpeg > /dev/null 2>&1
+    elif command -v yum &>/dev/null; then
+        sudo yum install -y ffmpeg > /dev/null 2>&1
+    elif command -v brew &>/dev/null; then
+        brew install ffmpeg > /dev/null 2>&1
+    fi
+    if command -v ffmpeg &>/dev/null; then
+        echo "✅ FFmpeg installed: $(ffmpeg -version 2>&1 | head -1)"
+    else
+        echo "⚠️  Could not install FFmpeg automatically."
+        echo "   Audio model support requires FFmpeg. Install it manually:"
+        echo "   Ubuntu/Debian: sudo apt-get install ffmpeg"
+        echo "   macOS: brew install ffmpeg"
+    fi
+fi
+
 # ── 5. Build frontend ──
 echo ""
 echo "Building frontend..."
