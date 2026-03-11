@@ -5,11 +5,12 @@
 Checkpoint scanning utilities for discovering training runs and their checkpoints.
 """
 import json
-import logging
+import structlog
+from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:

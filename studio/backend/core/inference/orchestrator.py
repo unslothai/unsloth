@@ -16,7 +16,8 @@ Pattern follows core/training/training.py.
 """
 import atexit
 import base64
-import logging
+import structlog
+from loggers import get_logger
 import multiprocessing as mp
 import queue
 import threading
@@ -26,7 +27,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 

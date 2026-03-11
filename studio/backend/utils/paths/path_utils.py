@@ -7,9 +7,10 @@ Path utilities for model and dataset handling
 import os
 from pathlib import Path
 from typing import Optional
-import logging
+import structlog
+from loggers import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def normalize_path(path: str) -> str:

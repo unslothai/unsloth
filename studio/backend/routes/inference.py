@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
-import logging
+import structlog
+from loggers import get_logger
 import asyncio
 import threading
 
@@ -65,16 +66,9 @@ import base64
 import numpy as np
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Configure logger
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+
 
 # GGUF inference backend (llama-server)
 _llama_cpp_backend = LlamaCppBackend()
