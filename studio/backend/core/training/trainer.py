@@ -2564,6 +2564,10 @@ class UnslothTrainer:
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
+                # Restore the full processor as processing_class so checkpoint
+                # saves include preprocessor_config.json (needed for GGUF export).
+                if sft_tokenizer is not self.tokenizer:
+                    self.trainer.processing_class = self.tokenizer
             print("Trainer initialized\n")
 
             # ========== TRAIN ON RESPONSES ONLY ==========
