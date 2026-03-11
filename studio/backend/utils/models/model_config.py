@@ -212,7 +212,7 @@ MODEL_NAME_MAPPING = {
         "unsloth/Ministral-3-3B-Instruct-2512",
     ],
     "unsloth_mistral-7b-v0.3-bnb-4bit.yaml": [
-        "unsloth/mistral-7b-v0.3-bnb-4bit"
+        "unsloth/mistral-7b-v0.3-bnb-4bit",
         "unsloth/mistral-7b-v0.3",
         "mistralai/Mistral-7B-v0.3",
     ],
