@@ -33,6 +33,12 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
+# ── Detect pip install (no frontend source dir → already bundled) ──
+IS_PIP_INSTALL=false
+if [ ! -f "$SCRIPT_DIR/frontend/package.json" ]; then
+    IS_PIP_INSTALL=true
+fi
+
 # ── Detect Colab (like unsloth does) ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -40,7 +46,10 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
 
-# ── 1. Check existing Node/npm versions ──
+# ── 1. Check existing Node/npm versions (skip if pip-installed) ──
+if [ "$IS_PIP_INSTALL" = true ]; then
+    echo "✅ Running from pip install — frontend already bundled, skipping Node/npm check."
+else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -97,29 +106,6 @@ fi
 
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
-# ── 4b. Check / install FFmpeg (required for audio model support) ──
-if command -v ffmpeg &>/dev/null; then
-    echo "✅ FFmpeg found: $(ffmpeg -version 2>&1 | head -1)"
-else
-    echo "⚠️  FFmpeg not found — installing..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update -y > /dev/null 2>&1
-        sudo apt-get install -y ffmpeg > /dev/null 2>&1
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y ffmpeg > /dev/null 2>&1
-    elif command -v brew &>/dev/null; then
-        brew install ffmpeg > /dev/null 2>&1
-    fi
-    if command -v ffmpeg &>/dev/null; then
-        echo "✅ FFmpeg installed: $(ffmpeg -version 2>&1 | head -1)"
-    else
-        echo "⚠️  Could not install FFmpeg automatically."
-        echo "   Audio model support requires FFmpeg. Install it manually:"
-        echo "   Ubuntu/Debian: sudo apt-get install ffmpeg"
-        echo "   macOS: brew install ffmpeg"
-    fi
-fi
-
 # ── 5. Build frontend ──
 echo ""
 echo "Building frontend..."
@@ -130,6 +116,8 @@ cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
 run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
+
+fi  # end IS_PIP_INSTALL check
 
 # ── 6. Python venv + deps ──
 echo ""
@@ -206,13 +194,21 @@ if [ "$IS_COLAB" = true ]; then
     # Colab: install packages directly without venv
     install_python_stack
 else
-    # Local: create venv (always start fresh to preserve correct install order)
-    cd "$REPO_ROOT"
-    rm -rf .venv
-    rm -rf .venv_overlay  # Remove legacy overlay (no longer used)
-    rm -rf .venv_t5       # Will be rebuilt below
-    "$BEST_PY" -m venv .venv
-    source .venv/bin/activate
+    # Local: create venv under ~/.unsloth/studio/ (shared location, not in repo)
+    STUDIO_HOME="$HOME/.unsloth/studio"
+    VENV_DIR="$STUDIO_HOME/.venv"
+    VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
+    mkdir -p "$STUDIO_HOME"
+
+    # Clean up legacy in-repo venvs if they exist
+    [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
+    [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
+    [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+
+    rm -rf "$VENV_DIR"
+    rm -rf "$VENV_T5_DIR"
+    "$BEST_PY" -m venv "$VENV_DIR"
+    source "$VENV_DIR/bin/activate"
     cd "$SCRIPT_DIR"
     install_python_stack
 
@@ -222,11 +218,10 @@ else
     # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
     echo ""
     echo "   Pre-installing transformers 5.x for newer model support..."
-    VENV_T5_DIR="$REPO_ROOT/.venv_t5"
     mkdir -p "$VENV_T5_DIR"
     run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.2.0"
     run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
-    echo "✅ Transformers 5.x pre-installed to .venv_t5/"
+    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
     # ── 7. WSL: pre-install GGUF build dependencies ──
     # On WSL, sudo requires a password and can't be entered during GGUF export
@@ -251,6 +246,7 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
@@ -262,79 +258,66 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
         echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
     else
         echo ""
-        if [ -f "$LLAMA_SERVER_BIN" ]; then
-            echo "✅ llama-server already exists at $LLAMA_SERVER_BIN"
+        echo "Building llama-server for GGUF inference..."
+
+        BUILD_OK=true
+        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+
+        if [ "$BUILD_OK" = true ]; then
+            CMAKE_ARGS=""
+            # Detect CUDA: check nvcc on PATH, then common install locations
+            NVCC_PATH=""
+            if command -v nvcc &>/dev/null; then
+                NVCC_PATH="$(command -v nvcc)"
+            elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                export PATH="/usr/local/cuda/bin:$PATH"
+            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                # Pick the newest cuda-XX.X directory
+                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                export PATH="$(dirname "$NVCC_PATH"):$PATH"
+            fi
+
+            if [ -n "$NVCC_PATH" ]; then
+                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
+                CMAKE_ARGS="-DGGML_CUDA=ON"
+            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+                echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+            else
+                echo "   Building CPU-only (no CUDA detected)..."
+            fi
+
+            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+        fi
+
+        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+            if [ -f "$QUANTIZE_BIN" ]; then
+                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+        fi
+
+        if [ "$BUILD_OK" = true ]; then
+            if [ -f "$LLAMA_SERVER_BIN" ]; then
+                echo "✅ llama-server built at $LLAMA_SERVER_BIN"
+            else
+                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+            fi
+            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
+                echo "✅ llama-quantize available for GGUF export"
+            fi
         else
-            echo "Building llama-server for GGUF inference..."
-
-            BUILD_OK=true
-            if [ -d "$LLAMA_CPP_DIR/.git" ]; then
-                echo "   llama.cpp repo already cloned, pulling latest..."
-                run_quiet "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || echo "   ⚠️  git pull failed — using existing source"
-            elif [ -e "$LLAMA_CPP_DIR" ]; then
-                echo "   Removing non-git llama.cpp dir..."
-                rm -rf "$LLAMA_CPP_DIR"
-                run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
-            else
-                run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
-            fi
-
-            if [ "$BUILD_OK" = true ]; then
-                CMAKE_ARGS=""
-                # Detect CUDA: check nvcc on PATH, then common install locations
-                NVCC_PATH=""
-                if command -v nvcc &>/dev/null; then
-                    NVCC_PATH="$(command -v nvcc)"
-                elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                    NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                    export PATH="/usr/local/cuda/bin:$PATH"
-                elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                    # Pick the newest cuda-XX.X directory
-                    NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                    export PATH="$(dirname "$NVCC_PATH"):$PATH"
-                fi
-
-                if [ -n "$NVCC_PATH" ]; then
-                    echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
-                    CMAKE_ARGS="-DGGML_CUDA=ON"
-                elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
-                    echo "   CUDA driver detected but nvcc not found — building CPU-only"
-                    echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
-                else
-                    echo "   Building CPU-only (no CUDA detected)..."
-                fi
-
-                NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-
-                run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
-            fi
-
-            if [ "$BUILD_OK" = true ]; then
-                run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
-            fi
-
-            # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
-            if [ "$BUILD_OK" = true ]; then
-                run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
-                # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
-                QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
-                if [ -f "$QUANTIZE_BIN" ]; then
-                    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-                fi
-            fi
-
-            if [ "$BUILD_OK" = true ]; then
-                if [ -f "$LLAMA_SERVER_BIN" ]; then
-                    echo "✅ llama-server built at $LLAMA_SERVER_BIN"
-                else
-                    echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
-                fi
-                if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
-                    echo "✅ llama-quantize available for GGUF export"
-                fi
-            else
-                echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
-            fi
+            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
         fi
     fi
 }
@@ -345,29 +328,30 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 if [ "$IS_COLAB" = false ]; then
 echo ""
 REPO_DIR="$REPO_ROOT"
+STUDIO_VENV_PY="$HOME/.unsloth/studio/.venv/bin/python"
 
 # Detect the user's default shell and pick the right rc file
 USER_SHELL="$(basename "${SHELL:-/bin/bash}")"
 case "$USER_SHELL" in
     zsh)
         SHELL_RC="$HOME/.zshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
+alias unsloth-ui='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
         ;;
     fish)
         SHELL_RC="$HOME/.config/fish/config.fish"
-        ALIAS_BLOCK="alias unsloth-studio '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui '${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio '${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
+alias unsloth-ui '${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
         ;;
     ksh)
         SHELL_RC="$HOME/.kshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
+alias unsloth-ui='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
         ;;
     *)
         SHELL_RC="$HOME/.bashrc"
-        ALIAS_BLOCK="alias unsloth-studio='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'
-alias unsloth-ui='${REPO_DIR}/.venv/bin/python ${REPO_DIR}/cli.py studio -f ${SCRIPT_DIR}/frontend/dist'"
+        ALIAS_BLOCK="alias unsloth-studio='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
+alias unsloth-ui='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
         ;;
 esac
 
@@ -408,6 +392,6 @@ else
         echo "║ Launch with:                         ║"
     fi
     echo "║                                      ║"
-    echo "║ unsloth-studio -H 0.0.0.0 -p 8000   ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8000   ║"
     echo "╚══════════════════════════════════════╝"
 fi
