@@ -50,6 +50,8 @@ class AiAssistMappingRequest(BaseModel):
     samples: List[Dict[str, Any]]  # Preview rows already loaded in the dialog
     dataset_name: Optional[str] = None  # For LLM context
     hf_token: Optional[str] = None  # For fetching dataset card
+    model_name: Optional[str] = None
+    model_type: Optional[str] = None
 
 
 class AiAssistMappingResponse(BaseModel):
