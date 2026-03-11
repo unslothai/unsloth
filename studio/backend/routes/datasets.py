@@ -30,6 +30,8 @@ logger = get_logger(__name__)
 
 
 from models.datasets import (
+    AiAssistMappingRequest,
+    AiAssistMappingResponse,
     CheckFormatRequest,
     CheckFormatResponse,
     LocalDatasetItem,
@@ -432,18 +434,19 @@ def check_format(
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
-        # Lightweight URL-based image detection for VLM datasets
-        warning = None
+        # Collect warnings: from check_dataset_format + URL-based image detection
+        warning = result.get("warning")
         image_col = result.get("detected_image_column")
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
                 if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
-                    warning = (
+                    url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
                     )
                     logger.info(f"URL-based image column detected: {image_col}")
+                    warning = f"{warning} {url_warning}" if warning else url_warning
             except Exception:
                 pass
 
@@ -471,4 +474,63 @@ def check_format(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to check dataset format: {str(e)}"
+        )
+
+
+@router.post("/ai-assist-mapping", response_model=AiAssistMappingResponse)
+def ai_assist_mapping(
+    request: AiAssistMappingRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Run LLM-assisted dataset conversion advisor (user-triggered).
+
+    Multi-pass analysis using a 7B helper model:
+      Pass 1: Classify dataset type from HF card + samples
+      Pass 2: Generate conversion strategy (system prompt, templates)
+      Pass 3: Validate conversion quality
+
+    Falls back to simple column classification if the advisor fails.
+    """
+    try:
+        from utils.datasets.llm_assist import llm_conversion_advisor
+
+        # Truncate sample values for the LLM prompt
+        truncated = [
+            {col: str(s.get(col, ""))[:200] for col in request.columns}
+            for s in request.samples[:5]
+        ]
+
+        result = llm_conversion_advisor(
+            column_names=request.columns,
+            samples=truncated,
+            dataset_name=request.dataset_name,
+            hf_token=request.hf_token,
+            model_name=request.model_name,
+            model_type=request.model_type,
+        )
+
+        if result and result.get("success"):
+            return AiAssistMappingResponse(
+                success=True,
+                suggested_mapping=result.get("suggested_mapping"),
+                system_prompt=result.get("system_prompt"),
+                user_template=result.get("user_template"),
+                assistant_template=result.get("assistant_template"),
+                label_mapping=result.get("label_mapping"),
+                dataset_type=result.get("dataset_type"),
+                is_conversational=result.get("is_conversational"),
+                user_notification=result.get("user_notification"),
+            )
+
+        return AiAssistMappingResponse(
+            success=False,
+            warning="AI could not determine column roles. Please assign them manually.",
+        )
+
+    except Exception as e:
+        logger.error(f"AI assist mapping failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI assist failed: {str(e)}"
         )

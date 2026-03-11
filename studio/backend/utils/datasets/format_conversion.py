@@ -435,7 +435,21 @@ def convert_to_vlm_format(
         throughput = probe_total / probe_elapsed if probe_elapsed > 0 else 0
 
         if fail_rate >= MAX_FAIL_RATE:
-            msg = (
+            issues = [
+                f"{fail_rate:.0%} of the first {PROBE_SIZE} image URLs failed to download ({probe_fail}/{probe_total})",
+                "Images are external URLs, not embedded in the dataset",
+            ]
+            # Try LLM-friendly warning
+            friendly = None
+            try:
+                from .llm_assist import llm_generate_dataset_warning
+                friendly = llm_generate_dataset_warning(
+                    issues, dataset_name=dataset_name, modality="vision",
+                    column_names=[image_column, text_column],
+                )
+            except Exception:
+                pass
+            msg = friendly or (
                 f"⚠️ {fail_rate:.0%} of the first {PROBE_SIZE} images failed to download "
                 f"({probe_fail}/{probe_total}). "
                 "This dataset has too many broken or unreachable image URLs. "
@@ -524,7 +538,20 @@ def convert_to_vlm_format(
         logger.info(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
         # For datasets that skipped the probe (small URL datasets), check fail rate now
         if has_urls and fail_rate >= MAX_FAIL_RATE:
-            msg = (
+            issues = [
+                f"{fail_rate:.0%} of images failed to download ({failed_count}/{total})",
+                "Images are external URLs, not embedded in the dataset",
+            ]
+            friendly = None
+            try:
+                from .llm_assist import llm_generate_dataset_warning
+                friendly = llm_generate_dataset_warning(
+                    issues, dataset_name=dataset_name, modality="vision",
+                    column_names=[image_column, text_column],
+                )
+            except Exception:
+                pass
+            msg = friendly or (
                 f"⚠️ {fail_rate:.0%} of images failed to download ({failed_count}/{total}). "
                 "This dataset has too many broken or unreachable image URLs. "
                 "Consider using a dataset with embedded images instead."
@@ -533,9 +560,25 @@ def convert_to_vlm_format(
             raise ValueError(msg)
 
     if len(converted_list) == 0:
+        issues = [
+            f"All {total} samples failed during VLM conversion — no usable images found",
+            f"Image column '{image_column}' may contain URLs that are no longer accessible, "
+            "or local file paths that don't exist",
+        ]
+        friendly = None
+        try:
+            from .llm_assist import llm_generate_dataset_warning
+            friendly = llm_generate_dataset_warning(
+                issues, dataset_name=dataset_name, modality="vision",
+                column_names=[image_column, text_column],
+            )
+        except Exception:
+            pass
         raise ValueError(
-            f"All {total} samples failed during VLM conversion — no usable images found. "
-            "This dataset may contain only image URLs that are no longer accessible."
+            friendly or (
+                f"All {total} samples failed during VLM conversion — no usable images found. "
+                "This dataset may contain only image URLs that are no longer accessible."
+            )
         )
 
     logger.info(f"✅ Converted {len(converted_list)}/{total} samples")

@@ -72,6 +72,17 @@ async def lifespan(app: FastAPI):
                 f"GPU sm_{sm_version} detected — setting UNSLOTH_FLEX_ATTENTION=0"
             )
 
+    # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
+    # Runs in a background thread so it doesn't block server startup.
+    import threading
+    def _precache():
+        try:
+            from utils.datasets.llm_assist import precache_helper_gguf
+            precache_helper_gguf()
+        except Exception:
+            pass  # non-critical
+    threading.Thread(target=_precache, daemon=True).start()
+
     if not storage.is_initialized():
         setup_token = secrets.token_urlsafe(32)
         storage.save_setup_token(setup_token)
