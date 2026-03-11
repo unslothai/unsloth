@@ -10,11 +10,12 @@ from model YAML configuration files, with fallback to default.yaml.
 from pathlib import Path
 from typing import Dict, Any
 import yaml
-import logging
+import structlog
+from loggers import get_logger
 
 from utils.models.model_config import load_model_defaults
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def load_inference_config(model_identifier: str) -> Dict[str, Any]:

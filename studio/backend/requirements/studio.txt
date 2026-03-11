@@ -12,3 +12,4 @@ easydict
 addict
 gradio>=4.0.0
 huggingface-hub==0.36.2
+structlog>=24.1.0

@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import normalize_path, is_local_path, is_model_cached
 from utils.utils import without_hf_auth
-import logging
+import structlog
+from loggers import get_logger
 import os
 import subprocess
 import sys
@@ -19,7 +20,7 @@ import json
 import yaml
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Model name mapping: maps all equivalent model names to their canonical YAML config file
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
@@ -459,10 +460,10 @@ try:
 
     model_type = getattr(config, "model_type", "unknown")
     archs = getattr(config, "architectures", [])
-    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+    logger.info(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
 except Exception as exc:
-    print(json.dumps({"error": str(exc)}))
+    logger.info(json.dumps({"error": str(exc)}))
     sys.exit(1)
 '''
 

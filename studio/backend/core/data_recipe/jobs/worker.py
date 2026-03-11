@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import structlog
+import loggers
 import logging
 import re
 import shutil
@@ -71,6 +73,19 @@ def run_job_process(
     Subprocess entrypoint.
     Sends events to `event_queue`.
     """
+    import os
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
+
+    import warnings
+    from loggers.config import LogConfig
+    if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
+        warnings.filterwarnings("ignore")
+        
+    LogConfig.setup_logging(
+        service_name="unsloth-studio-data-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
+    )
+
     event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
 
     try:
