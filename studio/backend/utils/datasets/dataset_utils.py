@@ -18,6 +18,8 @@ All internal utilities have been moved to separate modules:
 - model_mappings: TEMPLATE_TO_MODEL_MAPPER
 """
 
+import json
+
 # Import from modular files
 from .format_detection import (
     detect_dataset_format,
@@ -89,6 +91,21 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
 
+        warning = None
+        if requires_mapping:
+            img_col = vlm_structure.get("image_column")
+            txt_col = vlm_structure.get("text_column")
+            missing = []
+            if not img_col:
+                missing.append("image")
+            if not txt_col:
+                missing.append("text")
+            if missing:
+                warning = (
+                    f"Could not auto-detect {' or '.join(missing)} column. "
+                    "Please assign image and text columns manually."
+                )
+
         return {
             "requires_manual_mapping": requires_mapping,
             "detected_format": vlm_structure["format"],
@@ -98,6 +115,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "detected_text_column": vlm_structure.get("text_column"),
             "is_image": multimodal_info["is_image"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
+            "warning": warning,
             **audio_fields,
         }
 
@@ -118,7 +136,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             **audio_fields,
         }
 
-    # LLM flow
+    # Text / LLM flow
     detected = detect_dataset_format(dataset)
 
     # If format is unknown, try heuristic detection
@@ -137,6 +155,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
         else:
+            # Heuristic failed — user must map manually (or use AI Assist)
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",
@@ -146,6 +165,10 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "detected_text_column": None,
                 "is_image": False,
                 "multimodal_columns": None,
+                "warning": (
+                    f"Could not auto-detect column roles for columns: {columns}. "
+                    "Please assign roles manually, or use AI Assist."
+                ),
                 **audio_fields,
             }
 
@@ -179,12 +202,23 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     Accepts chatml (user/assistant/system), sharegpt (human/gpt/system), and
     alpaca (instruction/input/output) role names — all normalised to chatml output.
 
+    If the mapping contains ``__``-prefixed metadata keys (from the conversion
+    advisor), routes to template-based conversion instead of simple role mapping.
+
     Returns:
         Dataset with single 'conversations' column
     """
+    # Split metadata from column roles
+    meta = {k: v for k, v in mapping.items() if k.startswith("__")}
+    column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
+
+    if meta:
+        return _apply_template_mapping(dataset, column_roles, meta, batch_size)
+
+    # ── Simple mode (original logic) ──
     # Pre-compute: group columns by canonical chatml role
     role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
-    for col_name, role in mapping.items():
+    for col_name, role in column_roles.items():
         canonical = _TO_CHATML.get(role)
         if canonical:
             role_groups[canonical].append(col_name)
@@ -203,6 +237,98 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
         return {"conversations": conversations}
 
     return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+
+
+def _extract_column_value(val, col: str, label_mapping: dict) -> str:
+    """Extract a string value from a column, handling complex types and label mapping."""
+    # Handle complex types (dicts, lists) — extract useful text instead of raw repr
+    if isinstance(val, dict):
+        # Common pattern: {"text": [...]} in QA datasets
+        if "text" in val:
+            inner = val["text"]
+            str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
+        else:
+            str_val = json.dumps(val, ensure_ascii=False)
+    elif isinstance(val, list):
+        str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
+    else:
+        str_val = str(val) if val is not None else ""
+
+    # Apply label mapping if this column has one
+    if col in label_mapping and isinstance(label_mapping[col], dict):
+        str_val = label_mapping[col].get(str_val, str_val)
+
+    return str_val
+
+
+def _apply_template_mapping(
+    dataset, column_roles: dict, meta: dict, batch_size: int = 1000
+):
+    """
+    Apply advisor-driven mapping for non-conversational datasets.
+
+    Groups columns by their assigned role (user/assistant), concatenates
+    values within each role into a single message, and injects an optional
+    system prompt.  Label mapping is applied to convert integer labels
+    to human-readable strings.
+
+    Returns:
+        Dataset with single 'conversations' column
+    """
+    system_prompt = meta.get("__system_prompt", "")
+    label_mapping = meta.get("__label_mapping", {})  # {col: {int_str: label_str}}
+
+    # Group columns by canonical chatml role
+    role_groups: dict[str, list[str]] = {"user": [], "assistant": []}
+    for col, role in column_roles.items():
+        canonical = _TO_CHATML.get(role, role)
+        if canonical in role_groups:
+            role_groups[canonical].append(col)
+
+    import logging as _log
+    _log.getLogger(__name__).info(
+        f"Applying role mapping: sys={bool(system_prompt)}, "
+        f"user_cols={role_groups['user']}, asst_cols={role_groups['assistant']}, "
+        f"label_map={list(label_mapping.keys())}"
+    )
+
+    def _convert(examples):
+        num = len(next(iter(examples.values())))
+        conversations = []
+        for i in range(num):
+            convo = []
+
+            # System prompt (generated, static across all rows)
+            if system_prompt:
+                convo.append({"role": "system", "content": system_prompt})
+
+            # User message: concatenate all user-role column values
+            user_parts = []
+            for col in role_groups["user"]:
+                if col in examples:
+                    user_parts.append(
+                        _extract_column_value(examples[col][i], col, label_mapping)
+                    )
+            if user_parts:
+                convo.append({"role": "user", "content": "\n".join(user_parts)})
+
+            # Assistant message: concatenate all assistant-role column values
+            asst_parts = []
+            for col in role_groups["assistant"]:
+                if col in examples:
+                    asst_parts.append(
+                        _extract_column_value(examples[col][i], col, label_mapping)
+                    )
+            if asst_parts:
+                convo.append({"role": "assistant", "content": "\n".join(asst_parts)})
+
+            conversations.append(convo)
+        return {"conversations": conversations}
+
+    return dataset.map(
+        _convert, batched=True, batch_size=batch_size,
+        remove_columns=dataset.column_names,
+    )
 
 
 def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
@@ -776,8 +902,22 @@ def format_and_template_dataset(
                 vlm_image_column = vlm_structure["image_column"]
 
             if vlm_text_column is None or vlm_image_column is None:
+                columns = list(next(iter(dataset)).keys()) if dataset else []
+                issues = [
+                    f"Could not auto-detect image and text columns from: {columns}",
+                    f"VLM structure detected: {vlm_structure.get('format', 'unknown')}",
+                ]
+                friendly = None
+                try:
+                    from .llm_assist import llm_generate_dataset_warning
+                    friendly = llm_generate_dataset_warning(
+                        issues, dataset_name=dataset_name, modality="vision",
+                        column_names=columns,
+                    )
+                except Exception:
+                    pass
                 errors.append(
-                    f"Could not auto-detect image/text columns. Found: {vlm_structure}. "
+                    friendly or f"Could not auto-detect image/text columns. Found: {vlm_structure}. "
                 )
                 return {
                     "dataset": dataset,

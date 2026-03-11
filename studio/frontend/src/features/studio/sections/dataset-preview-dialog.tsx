@@ -2,6 +2,7 @@
 // Copyright © 2025 Unsloth AI
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { aiAssistMapping } from "@/features/training/api/datasets-api";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Dialog,
@@ -28,6 +29,12 @@ import {
   isMappingComplete,
   remapRolesForFormat,
 } from "./dataset-preview-dialog-mapping";
+
+/** Chatml → format-specific role remap (only for formats that differ from chatml). */
+const ROLE_REMAP: Record<string, Record<string, string>> = {
+  alpaca: { user: "instruction", system: "input", assistant: "output" },
+  sharegpt: { user: "human", assistant: "gpt", system: "system" },
+};
 
 type DatasetPreviewDialogProps = {
   open: boolean;
@@ -58,11 +65,22 @@ export function DatasetPreviewDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { manualMapping, setManualMapping, datasetFormat } = useTrainingConfigStore(
+  const {
+    manualMapping, setManualMapping, datasetFormat,
+    setDatasetAdvisorFields, datasetAdvisorNotification,
+    datasetSystemPrompt,
+    selectedModel,
+    modelType,
+  } = useTrainingConfigStore(
     useShallow((s) => ({
       manualMapping: s.datasetManualMapping,
       setManualMapping: s.setDatasetManualMapping,
       datasetFormat: s.datasetFormat,
+      setDatasetAdvisorFields: s.setDatasetAdvisorFields,
+      datasetAdvisorNotification: s.datasetAdvisorNotification,
+      datasetSystemPrompt: s.datasetSystemPrompt,
+      selectedModel: s.selectedModel,
+      modelType: s.modelType,
     })),
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
@@ -78,6 +96,52 @@ export function DatasetPreviewDialog({
   const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = datasetSource === "huggingface";
+
+  // ── AI Assist ──────────────────────────────────────────────────────
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const handleAiAssist = useCallback(async () => {
+    if (!data?.columns || !data?.preview_samples) return;
+    setIsAiLoading(true);
+    setAiError(null);
+
+    try {
+      const result = await aiAssistMapping({
+        columns: data.columns,
+        samples: data.preview_samples,
+        datasetName: datasetName,
+        hfToken: hfToken,
+        modelName: selectedModel,
+        modelType: modelType,
+      });
+
+      if (result.success && result.suggested_mapping) {
+        // Remap from chatml roles (user/assistant/system) to format-specific roles
+        const table = ROLE_REMAP[datasetFormat];
+        const mapped: Record<string, string> = {};
+        for (const [col, role] of Object.entries(result.suggested_mapping)) {
+          mapped[col] = table ? (table[role] ?? role) : role;
+        }
+        setManualMapping(mapped);
+
+        // Store conversion advisor fields (system prompt, label mapping, notification)
+        if (result.system_prompt || result.label_mapping || result.user_notification) {
+          setDatasetAdvisorFields({
+            systemPrompt: result.system_prompt ?? undefined,
+            labelMapping: result.label_mapping ?? undefined,
+            notification: result.user_notification ?? null,
+          });
+        }
+      } else {
+        setAiError(result.warning || "AI could not determine column roles.");
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "AI assist failed.");
+    } finally {
+      setIsAiLoading(false);
+    }
+  }, [data, datasetFormat, datasetName, hfToken, setManualMapping, setDatasetAdvisorFields, selectedModel, modelType]);
 
   // When format changes, remap existing mapping roles to the new format's role names
   const prevFormatRef = useRef(datasetFormat);
@@ -180,7 +244,8 @@ export function DatasetPreviewDialog({
   // Build TanStack Table columns from the column names
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!columns.length) return [];
-    return columns.map((colName) => ({
+
+    const dataCols: ColumnDef<Record<string, unknown>>[] = columns.map((colName) => ({
       accessorKey: colName,
       header: () => (
         <div className="flex flex-col gap-2">
@@ -247,12 +312,42 @@ export function DatasetPreviewDialog({
         );
       },
     }));
+
+    // Prepend generated system prompt column when advisor is active
+    if (datasetSystemPrompt) {
+      dataCols.unshift({
+        id: "__system_generated",
+        header: () => (
+          <div className="flex flex-col gap-2">
+            <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+              System <span className="text-muted-foreground font-normal">(generated)</span>
+            </span>
+            {mappingEnabled && (
+              <Badge variant="outline" className="h-6 w-fit text-[10px] px-2 py-0 border-dashed text-muted-foreground">
+                System
+              </Badge>
+            )}
+          </div>
+        ),
+        cell: () => (
+          <p
+            className="text-[13px] leading-relaxed line-clamp-6 text-muted-foreground italic"
+            title={datasetSystemPrompt}
+          >
+            {datasetSystemPrompt}
+          </p>
+        ),
+      });
+    }
+
+    return dataCols;
   }, [
     columns,
     manualMapping,
     handleRoleChange,
     mappingEnabled,
     availableRoles,
+    datasetSystemPrompt,
   ]);
 
   return (
@@ -274,7 +369,7 @@ export function DatasetPreviewDialog({
         </DialogHeader>
 
         {/* Body */}
-        <div className="flex flex-col min-h-0 flex-1 overflow-hidden px-6 pb-6">
+        <div className="flex flex-col min-h-0 flex-1 overflow-auto px-6 pb-6">
           {/* Loading */}
           {loading && (
             <div className="py-24 flex flex-col items-center justify-center gap-3">
@@ -361,11 +456,16 @@ export function DatasetPreviewDialog({
                   isVlm={effectiveIsVlm}
                   isAudio={effectiveIsAudio}
                   format={datasetFormat}
+                  onAiAssist={handleAiAssist}
+                  isAiLoading={isAiLoading}
+                  aiError={aiError}
+                  advisorNotification={datasetAdvisorNotification}
+                  advisorSystemPrompt={datasetSystemPrompt || undefined}
                 />
               )}
 
               {/* Data table */}
-              <div className="flex-1 min-h-0 rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
+              <div className="flex-1 min-h-[250px] rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
                 <DataTable columns={tableColumns} data={rows} />
               </div>
 
