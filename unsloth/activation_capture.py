@@ -108,12 +108,21 @@ class ActivationCaptureConfig:
                            to the full decoder-layer output.  Gives a more
                            "neuron-level" view but doubles storage.
                            Default: False.
+        capture_gradients: If True, capture gradient norms per layer during
+                           backward pass. Shows which layers are actively learning.
+                           Default: True.
+        capture_lora_norms: If True, capture LoRA adapter norms ||B @ A||_F per
+                            layer. Shows which adapters are claiming capacity.
+                            Only meaningful for PEFT/LoRA models.
+                            Default: True.
         seed:              Random seed for reproducible channel sampling.
     """
     output_dir: str = "activation_logs"
     capture_interval: int = 10
     max_channels: int = 64
     capture_mlp_out: bool = False
+    capture_gradients: bool = True
+    capture_lora_norms: bool = True
     seed: int = 42
 
 
@@ -133,15 +142,22 @@ class ActivationCapture:
 
     def __init__(self, model, config: ActivationCaptureConfig):
         self.config = config
+        self._model = model  # keep reference for LoRA norm computation
         self._hooks: List[torch.utils.hooks.RemovableHook] = []
+        self._grad_hooks: List[torch.utils.hooks.RemovableHook] = []
         # { layer_idx -> {"mean_abs": [...], "mean": [...]} }
         self._buffer: Dict[int, Dict[str, List[float]]] = {}
+        # { layer_idx -> gradient_norm }
+        self._grad_buffer: Dict[int, float] = {}
         # Tracks which layer indices have already been captured this step
         # so gradient-checkpointing re-runs don't overwrite clean data.
         self._captured_layers: set = set()
+        self._captured_grad_layers: set = set()
         self._should_capture: bool = False
         self._step: int = 0
         self._loss: Optional[float] = None
+        # Cache LoRA modules per layer for fast lookup
+        self._lora_modules: Dict[int, List[tuple]] = {}
 
         os.makedirs(config.output_dir, exist_ok=True)
 
@@ -192,7 +208,20 @@ class ActivationCapture:
         else:
             self._sampled_channels = list(range(n_total))
 
+        # ---- discover LoRA modules per layer ----------------------------
+        if config.capture_lora_norms:
+            self._discover_lora_modules()
+
         # ---- write metadata once ------------------------------------------
+        lora_targets = []
+        if self._lora_modules:
+            # Get unique target names across all layers
+            all_targets = set()
+            for mods in self._lora_modules.values():
+                for name, _, _ in mods:
+                    all_targets.add(name)
+            lora_targets = sorted(all_targets)
+
         metadata = {
             "model_name":         model_name,
             "num_layers":         len(self._layers),
@@ -202,6 +231,9 @@ class ActivationCapture:
             "capture_interval":   config.capture_interval,
             "max_channels":       config.max_channels,
             "capture_mlp_out":    config.capture_mlp_out,
+            "capture_gradients":  config.capture_gradients,
+            "capture_lora_norms": config.capture_lora_norms,
+            "lora_targets":       lora_targets,
             "created_at":         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         with open(os.path.join(config.output_dir, "metadata.json"), "w") as f:
@@ -217,11 +249,82 @@ class ActivationCapture:
         )
 
     # ------------------------------------------------------------------
+    # LoRA module discovery
+    # ------------------------------------------------------------------
+
+    def _discover_lora_modules(self):
+        """Find LoRA adapters (lora_A, lora_B pairs) for each decoder layer.
+
+        Populates ``self._lora_modules`` as:
+            { layer_idx: [(target_name, lora_A, lora_B), ...] }
+
+        where target_name is e.g. "q_proj", "v_proj", etc.
+        """
+        for idx, layer in enumerate(self._layers):
+            layer_loras = []
+            for name, module in layer.named_modules():
+                # PEFT LoRA modules have lora_A and lora_B as submodules
+                lora_A = getattr(module, "lora_A", None)
+                lora_B = getattr(module, "lora_B", None)
+                if lora_A is not None and lora_B is not None:
+                    # Extract the target name (last part of the path)
+                    # e.g., "self_attn.q_proj" -> "q_proj"
+                    parts = name.split(".")
+                    target_name = parts[-1] if parts else name
+                    # lora_A and lora_B might be ModuleDict (multi-adapter)
+                    # or direct Linear layers (single adapter)
+                    if hasattr(lora_A, "default"):
+                        # Multi-adapter: lora_A.default, lora_B.default
+                        lora_A = lora_A.default
+                        lora_B = lora_B.default
+                    layer_loras.append((target_name, lora_A, lora_B))
+            if layer_loras:
+                self._lora_modules[idx] = layer_loras
+
+        if self._lora_modules:
+            total_adapters = sum(len(v) for v in self._lora_modules.values())
+            logger.info(
+                "ActivationCapture: Found %d LoRA adapters across %d layers",
+                total_adapters, len(self._lora_modules)
+            )
+        else:
+            logger.info("ActivationCapture: No LoRA adapters found (non-PEFT model?)")
+
+    def _compute_lora_norms(self) -> Dict[int, Dict[str, float]]:
+        """Compute ||B @ A||_F for each LoRA adapter per layer.
+
+        Returns:
+            { layer_idx: { target_name: frobenius_norm, ... }, ... }
+        """
+        lora_norms = {}
+        for layer_idx, adapters in self._lora_modules.items():
+            layer_norms = {}
+            for target_name, lora_A, lora_B in adapters:
+                try:
+                    with torch.no_grad():
+                        # lora_A.weight: [r, in_features]
+                        # lora_B.weight: [out_features, r]
+                        # effective delta: B @ A  -> [out_features, in_features]
+                        A = lora_A.weight.float()
+                        B = lora_B.weight.float()
+                        delta = B @ A
+                        norm = torch.linalg.matrix_norm(delta, ord="fro").item()
+                        layer_norms[target_name] = norm
+                except Exception as e:
+                    logger.debug(f"Could not compute LoRA norm for layer {layer_idx} {target_name}: {e}")
+            if layer_norms:
+                lora_norms[layer_idx] = layer_norms
+        return lora_norms
+
+    # ------------------------------------------------------------------
     # Hook registration / removal
     # ------------------------------------------------------------------
 
     def attach(self):
-        """Register forward hooks on all decoder layers (and optionally MLPs)."""
+        """Register forward hooks on all decoder layers (and optionally MLPs).
+
+        Also registers backward hooks for gradient capture if enabled.
+        """
         for idx, layer in enumerate(self._layers):
             h = layer.register_forward_hook(self._make_layer_hook(idx, kind="layer"))
             self._hooks.append(h)
@@ -232,13 +335,25 @@ class ActivationCapture:
                         self._make_layer_hook(idx, kind="mlp")
                     )
                     self._hooks.append(h2)
-        logger.debug("ActivationCapture: %d hooks attached.", len(self._hooks))
+
+            # Register backward hook for gradient capture
+            if self.config.capture_gradients:
+                gh = layer.register_full_backward_hook(self._make_grad_hook(idx))
+                self._grad_hooks.append(gh)
+
+        logger.debug(
+            "ActivationCapture: %d forward hooks, %d backward hooks attached.",
+            len(self._hooks), len(self._grad_hooks)
+        )
 
     def detach(self):
         """Remove all registered hooks (call after training finishes)."""
         for hook in self._hooks:
             hook.remove()
         self._hooks.clear()
+        for hook in self._grad_hooks:
+            hook.remove()
+        self._grad_hooks.clear()
         logger.debug("ActivationCapture: all hooks removed.")
 
     # ------------------------------------------------------------------
@@ -279,6 +394,34 @@ class ActivationCapture:
 
         return hook
 
+    def _make_grad_hook(self, layer_idx: int):
+        """Return a backward hook closure to capture gradient norms.
+
+        Captures the L2 norm of the gradient w.r.t. the layer output,
+        which indicates how much this layer is contributing to the loss
+        gradient — i.e., how much it's "learning" this step.
+        """
+        def hook(module, grad_input, grad_output):
+            if not self._should_capture:
+                return
+            # Deduplicate for gradient checkpointing
+            if layer_idx in self._captured_grad_layers:
+                return
+
+            # grad_output is a tuple; first element is the gradient w.r.t output
+            grad = grad_output[0] if isinstance(grad_output, tuple) else grad_output
+            if grad is None or not isinstance(grad, torch.Tensor):
+                return
+
+            with torch.no_grad():
+                # Compute L2 norm of the gradient
+                grad_norm = grad.detach().float().norm().item()
+                self._grad_buffer[layer_idx] = grad_norm
+
+            self._captured_grad_layers.add(layer_idx)
+
+        return hook
+
     # ------------------------------------------------------------------
     # Capture control
     # ------------------------------------------------------------------
@@ -292,13 +435,14 @@ class ActivationCapture:
         self._step = step
         self._loss = loss
         self._captured_layers.clear()
+        self._captured_grad_layers.clear()
 
     def flush(self):
         """Write the buffered stats to JSONL and reset capture state.
 
         Called by :class:`ActivationCaptureCallback` after each step completes.
         """
-        if not self._buffer:
+        if not self._buffer and not self._grad_buffer:
             self._should_capture = False
             return
 
@@ -307,10 +451,27 @@ class ActivationCapture:
             "loss":   self._loss,
             "layers": {str(k): v for k, v in self._buffer.items()},
         }
+
+        # Add gradient norms if captured
+        if self._grad_buffer:
+            record["grad_norms"] = {str(k): v for k, v in self._grad_buffer.items()}
+
+        # Add LoRA norms if configured
+        if self.config.capture_lora_norms and self._lora_modules:
+            lora_norms = self._compute_lora_norms()
+            if lora_norms:
+                # Flatten to { "layer_idx.target": norm, ... }
+                record["lora_norms"] = {
+                    f"{layer_idx}.{target}": norm
+                    for layer_idx, targets in lora_norms.items()
+                    for target, norm in targets.items()
+                }
+
         with open(self._log_path, "a") as f:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
         self._buffer.clear()
+        self._grad_buffer.clear()
         self._should_capture = False
 
 
