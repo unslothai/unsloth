@@ -168,7 +168,7 @@ export function DatasetMappingCard({
           >
             {mappingOk
               ? autoDetected
-                ? "We auto-detected the column mapping below. You can change it using the dropdowns in the column headers."
+                ? "We auto-detected the column mapping below. You can change it using the dropdowns in the column headers, or use AI Assist for a smarter mapping strategy."
                 : "Looks good. We'll convert this dataset automatically."
               : `Assign roles to columns using the dropdowns in the headers. At minimum, assign ${requiredLabel}.`}
           </p>
