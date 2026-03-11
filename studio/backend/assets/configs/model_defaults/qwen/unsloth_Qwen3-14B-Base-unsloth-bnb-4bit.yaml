@@ -23,7 +23,7 @@ training:
   lr_scheduler_type: "linear"
 
 lora:
-  lora_r:16
+  lora_r: 16
   lora_alpha: 16
   lora_dropout: 0.0
   target_modules:
@@ -49,4 +49,3 @@ inference:
   temperature: 0.6
   top_k: 20
   top_p: 0.95
-
