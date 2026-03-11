@@ -222,12 +222,7 @@ class ExportOrchestrator:
 
         Always spawns a fresh subprocess to ensure a clean Python interpreter.
         """
-        project_root = str(
-            Path(__file__).resolve().parent.parent.parent.parent.parent
-        )
-
         sub_config = {
-            "project_root": project_root,
             "checkpoint_path": checkpoint_path,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,

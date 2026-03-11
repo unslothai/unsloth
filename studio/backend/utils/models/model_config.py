@@ -420,10 +420,9 @@ _VLM_MODEL_TYPES = {
     'internvl_chat', 'cogvlm2', 'minicpmv',
 }
 
-# Pre-computed project root and .venv_t5 path for subprocess version switching.
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent.parent)
-_VENV_T5_DIR = os.path.join(_PROJECT_ROOT, ".venv_t5")
-_BACKEND_DIR = os.path.join(_PROJECT_ROOT, "studio", "backend")
+# Pre-computed .venv_t5 path and backend dir for subprocess version switching.
+_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # Inline script executed in a subprocess with transformers 5.x activated.
 # Receives model_name and token via argv, prints JSON result to stdout.
