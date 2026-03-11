@@ -1,3 +1,0 @@
-# Core unsloth packages
-unsloth-zoo
-unsloth
