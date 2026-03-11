@@ -14,6 +14,7 @@ import type { CheckFormatResponse } from "@/features/training/types/datasets";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Loader2, Sparkles } from "lucide-react";
 
 const CHATML_ROLES = ["system", "user", "assistant"] as const;
 const ALPACA_ROLES = ["instruction", "input", "output"] as const;
@@ -96,6 +97,11 @@ export function DatasetMappingCard({
   isVlm = false,
   isAudio = false,
   format,
+  onAiAssist,
+  isAiLoading = false,
+  aiError,
+  advisorNotification,
+  advisorSystemPrompt,
 }: {
   mapping: Record<string, string>;
   mappingOk: boolean;
@@ -103,6 +109,11 @@ export function DatasetMappingCard({
   isVlm?: boolean;
   isAudio?: boolean;
   format?: string;
+  onAiAssist?: () => void;
+  isAiLoading?: boolean;
+  aiError?: string | null;
+  advisorNotification?: string | null;
+  advisorSystemPrompt?: string;
 }) {
   const entries = Object.entries(mapping);
   const requiredLabel = isAudio
@@ -157,7 +168,7 @@ export function DatasetMappingCard({
           >
             {mappingOk
               ? autoDetected
-                ? "We auto-detected the column mapping below. You can change it using the dropdowns in the column headers."
+                ? "We auto-detected the column mapping below. You can change it using the dropdowns in the column headers, or use AI Assist for a smarter mapping strategy."
                 : "Looks good. We'll convert this dataset automatically."
               : `Assign roles to columns using the dropdowns in the headers. At minimum, assign ${requiredLabel}.`}
           </p>
@@ -180,6 +191,47 @@ export function DatasetMappingCard({
             <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-200/80">
               Use the dropdowns in the column headers to assign roles.
             </p>
+          )}
+          {onAiAssist && (
+            <div className="mt-3 flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onAiAssist}
+                disabled={isAiLoading}
+                className="cursor-pointer bg-white/60 dark:bg-transparent"
+              >
+                {isAiLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Analyzing dataset...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    AI Assist
+                    <Badge variant="outline" className="ml-1.5 text-[9px] px-1 py-0 h-4 font-medium">Beta</Badge>
+                  </>
+                )}
+              </Button>
+              {aiError && (
+                <p className="text-xs text-amber-700 dark:text-amber-300">{aiError}</p>
+              )}
+            </div>
+          )}
+          {advisorNotification && (
+            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 space-y-2">
+              <div className="flex items-start gap-2">
+                <Sparkles className="size-3.5 shrink-0 mt-0.5" />
+                <span>{advisorNotification}</span>
+              </div>
+              {advisorSystemPrompt && (
+                <div className="pl-5.5 text-[11px] font-mono text-indigo-600/80 dark:text-indigo-400/80">
+                  <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">System:</span>{" "}
+                  <span className="break-words">{advisorSystemPrompt}</span>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>

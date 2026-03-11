@@ -212,11 +212,87 @@ def run_training_process(
     stop_thread.start()
 
     # ── 4. Execute the training pipeline ──
+    # Order: detect → dataset → model → prepare → train
+    # Dataset processing (including LLM-assisted detection) runs BEFORE model
+    # loading so both never occupy VRAM at the same time.
     try:
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
 
-        # Load model
+        # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
+        _send_status(event_queue, "Detecting model type...")
+        trainer.pre_detect_and_load_tokenizer(
+            model_name=model_name,
+            max_seq_length=config["max_seq_length"],
+            hf_token=hf_token,
+            is_dataset_image=config.get("is_dataset_image", False),
+            is_dataset_audio=config.get("is_dataset_audio", False),
+            trust_remote_code=config.get("trust_remote_code", False),
+        )
+        if trainer.should_stop:
+            event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+            return
+
+        # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
+        _send_status(event_queue, "Loading and formatting dataset...")
+        hf_dataset = config.get("hf_dataset", "")
+        dataset_result = trainer.load_and_format_dataset(
+            dataset_source=hf_dataset if hf_dataset and hf_dataset.strip() else None,
+            format_type=config.get("format_type", ""),
+            local_datasets=config.get("local_datasets") or None,
+            custom_format_mapping=config.get("custom_format_mapping"),
+            subset=config.get("subset"),
+            train_split=config.get("train_split", "train"),
+            eval_split=config.get("eval_split"),
+            eval_steps=config.get("eval_steps", 0.00),
+            dataset_slice_start=config.get("dataset_slice_start"),
+            dataset_slice_end=config.get("dataset_slice_end"),
+        )
+
+        if isinstance(dataset_result, tuple):
+            dataset, eval_dataset = dataset_result
+        else:
+            dataset = dataset_result
+            eval_dataset = None
+
+        # [DEBUG] Print first sample before model is loaded
+        # dataset is a dict {"dataset": <Dataset>, "detected_format": ..., ...}
+        # or a raw Dataset for audio paths
+        try:
+            ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
+            print(f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}", flush=True)
+            print(f"[DEBUG] Columns: {ds.column_names}", flush=True)
+            sample = ds[0]
+            preview = {k: str(v)[:300] for k, v in sample.items()}
+            print(f"[DEBUG] First sample: {preview}\n", flush=True)
+        except Exception as e:
+            print(f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}", flush=True)
+
+        # Disable eval if eval_steps <= 0
+        eval_steps = config.get("eval_steps", 0.00)
+        if eval_steps is not None and float(eval_steps) <= 0:
+            eval_dataset = None
+
+        # Tell the parent process that eval is configured so the frontend
+        # shows "Waiting for first evaluation step..." instead of "not configured"
+        if eval_dataset is not None:
+            event_queue.put({
+                "type": "eval_configured",
+                "ts": time.time(),
+            })
+
+        if dataset is None or trainer.should_stop:
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+            else:
+                event_queue.put({
+                    "type": "error",
+                    "error": trainer.training_progress.error or "Failed to load dataset",
+                    "stack": "", "ts": time.time(),
+                })
+            return
+
+        # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
             model_name=model_name,
@@ -239,7 +315,7 @@ def run_training_process(
                 })
             return
 
-        # Prepare model (LoRA or full finetuning)
+        # ── 4d. Prepare model (LoRA or full finetuning) ──
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = (training_type == "LoRA/QLoRA")
         if use_lora:
@@ -269,52 +345,6 @@ def run_training_process(
                 event_queue.put({
                     "type": "error",
                     "error": trainer.training_progress.error or "Failed to prepare model",
-                    "stack": "", "ts": time.time(),
-                })
-            return
-
-        # Load dataset
-        _send_status(event_queue, "Loading and formatting dataset...")
-        hf_dataset = config.get("hf_dataset", "")
-        dataset_result = trainer.load_and_format_dataset(
-            dataset_source=hf_dataset if hf_dataset and hf_dataset.strip() else None,
-            format_type=config.get("format_type", ""),
-            local_datasets=config.get("local_datasets") or None,
-            custom_format_mapping=config.get("custom_format_mapping"),
-            subset=config.get("subset"),
-            train_split=config.get("train_split", "train"),
-            eval_split=config.get("eval_split"),
-            eval_steps=config.get("eval_steps", 0.00),
-            dataset_slice_start=config.get("dataset_slice_start"),
-            dataset_slice_end=config.get("dataset_slice_end"),
-        )
-
-        if isinstance(dataset_result, tuple):
-            dataset, eval_dataset = dataset_result
-        else:
-            dataset = dataset_result
-            eval_dataset = None
-
-        # Disable eval if eval_steps <= 0
-        eval_steps = config.get("eval_steps", 0.00)
-        if eval_steps is not None and float(eval_steps) <= 0:
-            eval_dataset = None
-
-        # Tell the parent process that eval is configured so the frontend
-        # shows "Waiting for first evaluation step..." instead of "not configured"
-        if eval_dataset is not None:
-            event_queue.put({
-                "type": "eval_configured",
-                "ts": time.time(),
-            })
-
-        if dataset is None or trainer.should_stop:
-            if trainer.should_stop:
-                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
-            else:
-                event_queue.put({
-                    "type": "error",
-                    "error": trainer.training_progress.error or "Failed to load dataset",
                     "stack": "", "ts": time.time(),
                 })
             return
