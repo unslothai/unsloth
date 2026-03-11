@@ -290,6 +290,10 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
+        from utils.models.model_config import is_local_path
+        if not is_local_path(model_name):
+            model_name = model_name.lower()
+            
         logger.info(f"Getting model config for: {model_name}")
         from utils.models.model_config import detect_audio_type
         # Load model defaults from backend
