@@ -528,7 +528,6 @@ def convert_to_vlm_format(
             try:
                 converted_list.append(_convert_single_sample(sample))
             except Exception as e:
-            except Exception as e:
                 failed_count += 1
                 if failed_count == 1:
                     # Log the first failure to aid debugging
