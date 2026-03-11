@@ -374,7 +374,7 @@ MODEL_NAME_MAPPING = {
 _REVERSE_MODEL_MAPPING = {}
 for canonical_file, model_names in MODEL_NAME_MAPPING.items():
     for model_name in model_names:
-        _REVERSE_MODEL_MAPPING[model_name] = canonical_file
+        _REVERSE_MODEL_MAPPING[model_name.lower()] = canonical_file
 
 def load_model_config(model_name: str, use_auth: bool = False, token: Optional[str] = None):
     """
@@ -1234,8 +1234,8 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
         
         # First, check if model is in the mapping
-        if model_name in _REVERSE_MODEL_MAPPING:
-            canonical_file = _REVERSE_MODEL_MAPPING[model_name]
+        if model_name.lower() in _REVERSE_MODEL_MAPPING:
+            canonical_file = _REVERSE_MODEL_MAPPING[model_name.lower()]
             # Search in subfolders and root
             for config_path in defaults_dir.rglob(canonical_file):
                 if config_path.is_file():
@@ -1399,6 +1399,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
+        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        if not is_local:
+            identifier = identifier.lower()
+            path = path.lower()
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
