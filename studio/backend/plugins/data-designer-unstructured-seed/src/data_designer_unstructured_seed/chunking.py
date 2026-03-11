@@ -36,9 +36,9 @@ def build_unstructured_preview_rows(
     chunk_overlap: Any,
 ) -> list[dict[str, str]]:
     parquet_path, rows = materialize_unstructured_seed_dataset(
-        source_path=source_path,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        source_path = source_path,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
     )
     count = max(0, int(preview_size))
     if rows:
@@ -47,12 +47,14 @@ def build_unstructured_preview_rows(
     try:
         import pandas as pd
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(f"pandas is required for unstructured seed processing: {exc}") from exc
+        raise RuntimeError(
+            f"pandas is required for unstructured seed processing: {exc}"
+        ) from exc
 
     dataframe = pd.read_parquet(parquet_path).head(count)
     return [
         {"chunk_text": str(value.get("chunk_text", "")).strip()}
-        for value in dataframe.to_dict(orient="records")
+        for value in dataframe.to_dict(orient = "records")
         if str(value.get("chunk_text", "")).strip()
     ]
 
@@ -69,9 +71,9 @@ def materialize_unstructured_seed_dataset(
 
     size, overlap = resolve_chunking(chunk_size, chunk_overlap)
     key = _compute_cache_key(
-        source_path=resolved,
-        chunk_size=size,
-        chunk_overlap=overlap,
+        source_path = resolved,
+        chunk_size = size,
+        chunk_overlap = overlap,
     )
     parquet_path = _CACHE_DIR / f"{key}.parquet"
     if parquet_path.exists():
@@ -79,9 +81,9 @@ def materialize_unstructured_seed_dataset(
 
     text = load_unstructured_text_file(resolved)
     chunks = split_text_into_chunks(
-        text=text,
-        chunk_size=size,
-        chunk_overlap=overlap,
+        text = text,
+        chunk_size = size,
+        chunk_overlap = overlap,
     )
     if not chunks:
         raise ValueError("No text found in unstructured seed source.")
@@ -91,10 +93,12 @@ def materialize_unstructured_seed_dataset(
     try:
         import pandas as pd
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(f"pandas is required for unstructured seed processing: {exc}") from exc
+        raise RuntimeError(
+            f"pandas is required for unstructured seed processing: {exc}"
+        ) from exc
 
     tmp_path = _CACHE_DIR / f"{key}.tmp.parquet"
-    pd.DataFrame(rows).to_parquet(tmp_path, index=False)
+    pd.DataFrame(rows).to_parquet(tmp_path, index = False)
     tmp_path.replace(parquet_path)
     return parquet_path, rows
 
@@ -104,7 +108,7 @@ def load_unstructured_text_file(path: Path) -> str:
     if ext not in {".txt", ".md"}:
         raise ValueError(f"Unsupported unstructured seed file type: {ext}")
 
-    raw = path.read_text(encoding="utf-8", errors="ignore")
+    raw = path.read_text(encoding = "utf-8", errors = "ignore")
     return normalize_unstructured_text(raw)
 
 

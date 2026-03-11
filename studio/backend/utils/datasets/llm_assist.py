@@ -42,28 +42,31 @@ def precache_helper_gguf():
         return
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
+    variant = os.environ.get(
+        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
+    )
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
         # Find the GGUF file matching the variant
         api = HfApi()
-        files = api.list_repo_files(repo, repo_type="model")
+        files = api.list_repo_files(repo, repo_type = "model")
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
         # Find all GGUF files matching the variant (may be split into shards)
         variant_lower = variant.lower().replace("-", "_")
         matching = sorted(
-            f for f in gguf_files
-            if variant_lower in f.lower().replace("-", "_")
+            f for f in gguf_files if variant_lower in f.lower().replace("-", "_")
         )
 
         if matching:
-            logger.info(f"Pre-caching helper GGUF: {repo}/{matching[0]}"
-                        + (f" (+{len(matching) - 1} shards)" if len(matching) > 1 else ""))
+            logger.info(
+                f"Pre-caching helper GGUF: {repo}/{matching[0]}"
+                + (f" (+{len(matching) - 1} shards)" if len(matching) > 1 else "")
+            )
             for target in matching:
-                hf_hub_download(repo_id=repo, filename=target)
+                hf_hub_download(repo_id = repo, filename = target)
             logger.info(f"Helper GGUF cached: {len(matching)} file(s)")
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
@@ -81,7 +84,9 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
+    variant = os.environ.get(
+        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
+    )
 
     backend = None
     try:
@@ -92,12 +97,12 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         print(f"🤖 Loading helper model: {repo} ({variant})...")
 
         ok = backend.load_model(
-            hf_repo=repo,
-            hf_variant=variant,
-            model_identifier=f"helper:{repo}:{variant}",
-            is_vision=False,
-            n_ctx=2048,
-            n_gpu_layers=-1,
+            hf_repo = repo,
+            hf_variant = variant,
+            model_identifier = f"helper:{repo}:{variant}",
+            is_vision = False,
+            n_ctx = 2048,
+            n_gpu_layers = -1,
         )
         if not ok:
             logger.warning("Helper model failed to start")
@@ -106,12 +111,12 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         messages = [{"role": "user", "content": prompt}]
         cumulative = ""
         for text in backend.generate_chat_completion(
-            messages=messages,
-            temperature=0.1,
-            top_p=0.9,
-            top_k=20,
-            max_tokens=max_tokens,
-            repetition_penalty=1.0,
+            messages = messages,
+            temperature = 0.1,
+            top_p = 0.9,
+            top_k = 20,
+            max_tokens = max_tokens,
+            repetition_penalty = 1.0,
         ):
             cumulative = text  # cumulative — last value is full text
 
@@ -176,7 +181,7 @@ def llm_generate_vlm_instruction(
         "Respond with ONLY the instruction sentence, nothing else."
     )
 
-    result = _run_with_helper(prompt, max_tokens=100)
+    result = _run_with_helper(prompt, max_tokens = 100)
     if not result:
         return None
 
@@ -231,7 +236,7 @@ def llm_classify_columns(
         'Example: {"question": "user", "answer": "assistant", "id": "metadata"}'
     )
 
-    result = _run_with_helper(prompt, max_tokens=200)
+    result = _run_with_helper(prompt, max_tokens = 200)
     if not result:
         return None
 
@@ -248,6 +253,7 @@ def llm_classify_columns(
     except json.JSONDecodeError:
         # Try to find JSON object in the response
         import re
+
         match = re.search(r"\{[^}]+\}", text)
         if match:
             try:
@@ -266,7 +272,11 @@ def llm_classify_columns(
     valid_roles = {"user", "assistant", "system", "metadata"}
     cleaned = {}
     for col, role in mapping.items():
-        if col in column_names and isinstance(role, str) and role.lower() in valid_roles:
+        if (
+            col in column_names
+            and isinstance(role, str)
+            and role.lower() in valid_roles
+        ):
             cleaned[col] = role.lower()
 
     if not cleaned:
@@ -319,7 +329,7 @@ def llm_generate_dataset_warning(
         "Keep it under 3 sentences. Be specific about the dataset."
     )
 
-    result = _run_with_helper(prompt, max_tokens=200)
+    result = _run_with_helper(prompt, max_tokens = 200)
     if not result:
         return None
 
@@ -369,18 +379,16 @@ def _parse_json_response(text: str) -> Optional[dict]:
     return None
 
 
-def _generate_with_backend(
-    backend, messages: list[dict], max_tokens: int = 512
-) -> str:
+def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512) -> str:
     """Run one chat completion on an already-loaded backend. Returns raw text."""
     cumulative = ""
     for text in backend.generate_chat_completion(
-        messages=messages,
-        temperature=0.1,
-        top_p=0.9,
-        top_k=20,
-        max_tokens=max_tokens,
-        repetition_penalty=1.0,
+        messages = messages,
+        temperature = 0.1,
+        top_p = 0.9,
+        top_k = 20,
+        max_tokens = max_tokens,
+        repetition_penalty = 1.0,
     ):
         cumulative = text
     return cumulative.strip()
@@ -398,7 +406,7 @@ def fetch_hf_dataset_card(
     try:
         from huggingface_hub import DatasetCard
 
-        card = DatasetCard.load(dataset_name, token=hf_token)
+        card = DatasetCard.load(dataset_name, token = hf_token)
         readme = card.text or ""
 
         # Truncate at sentence boundary
@@ -413,14 +421,21 @@ def fetch_hf_dataset_card(
         metadata = {}
         if card.data:
             for key in (
-                "task_categories", "task_ids", "language",
-                "size_categories", "tags", "license", "pretty_name",
+                "task_categories",
+                "task_ids",
+                "language",
+                "size_categories",
+                "tags",
+                "license",
+                "pretty_name",
             ):
                 val = getattr(card.data, key, None)
                 if val is not None:
                     metadata[key] = val
 
-        logger.info(f"Fetched dataset card: {len(readme)} chars, {len(metadata)} metadata fields")
+        logger.info(
+            f"Fetched dataset card: {len(readme)} chars, {len(metadata)} metadata fields"
+        )
         return readme, metadata
 
     except Exception as e:
@@ -447,7 +462,9 @@ def _run_multi_pass_advisor(
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
+    variant = os.environ.get(
+        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
+    )
 
     backend = None
     try:
@@ -458,12 +475,12 @@ def _run_multi_pass_advisor(
         t0 = time.monotonic()
 
         ok = backend.load_model(
-            hf_repo=repo,
-            hf_variant=variant,
-            model_identifier=f"advisor:{repo}:{variant}",
-            is_vision=False,
-            n_ctx=2048,
-            n_gpu_layers=-1,
+            hf_repo = repo,
+            hf_variant = variant,
+            model_identifier = f"advisor:{repo}:{variant}",
+            is_vision = False,
+            n_ctx = 2048,
+            n_gpu_layers = -1,
         )
         if not ok:
             logger.warning("Advisor model failed to start")
@@ -478,8 +495,9 @@ def _run_multi_pass_advisor(
             samples_text += f"Row {i}:\n" + "\n".join(parts) + "\n"
 
         metadata_str = (
-            json.dumps(dataset_metadata, indent=2, default=str)[:500]
-            if dataset_metadata else "N/A"
+            json.dumps(dataset_metadata, indent = 2, default = str)[:500]
+            if dataset_metadata
+            else "N/A"
         )
         card_excerpt = (dataset_card or "")[:1200] or "N/A"
 
@@ -489,13 +507,14 @@ def _run_multi_pass_advisor(
         if model_name:
             try:
                 from utils.models.model_config import load_model_config
-                config = load_model_config(model_name, use_auth=True, token=hf_token)
+
+                config = load_model_config(model_name, use_auth = True, token = hf_token)
                 archs = getattr(config, "architectures", [])
                 if archs and "Gemma3nForConditionalGeneration" in archs:
                     is_gemma_3n = True
             except Exception:
                 is_gemma_3n = "gemma-3n" in model_name.lower()
-        
+
         if model_type == "audio" and not is_gemma_3n:
             target_hints = (
                 "\n\nHINT: The user is training an AUDIO model. The dataset MUST contain "
@@ -514,7 +533,7 @@ def _run_multi_pass_advisor(
             )
 
         # ── Pass 1: Classify ──
-        print("🤖 Pass 1: Classifying dataset...", flush=True)
+        print("🤖 Pass 1: Classifying dataset...", flush = True)
         t1 = time.monotonic()
         messages1 = [
             {
@@ -559,9 +578,9 @@ def _run_multi_pass_advisor(
                     Respond with ONLY the JSON object. No markdown, no explanation."""),
             },
         ]
-        raw1 = _generate_with_backend(backend, messages1, max_tokens=256)
+        raw1 = _generate_with_backend(backend, messages1, max_tokens = 256)
         pass1 = _parse_json_response(raw1)
-        print(f"🤖 Pass 1 done ({time.monotonic() - t1:.1f}s): {pass1}", flush=True)
+        print(f"🤖 Pass 1 done ({time.monotonic() - t1:.1f}s): {pass1}", flush = True)
 
         if not pass1:
             logger.warning(f"Advisor Pass 1 failed to produce JSON: {raw1[:200]}")
@@ -580,7 +599,7 @@ def _run_multi_pass_advisor(
             }
 
         # ── Pass 2: Map columns to roles ──
-        print("🤖 Pass 2: Mapping columns to roles...", flush=True)
+        print("🤖 Pass 2: Mapping columns to roles...", flush = True)
         t2 = time.monotonic()
         messages2 = [
             {
@@ -592,13 +611,13 @@ def _run_multi_pass_advisor(
                     '- "user" = This column contains INPUT that the model will receive as a prompt.\n'
                     '- "assistant" = This column contains OUTPUT that the model should learn to generate.\n\n'
                     "CRITICAL RULES:\n"
-                    "1. There MUST be at least one column assigned to \"user\" AND at least one "
-                    "column assigned to \"assistant\". Never assign all columns to the same role.\n"
+                    '1. There MUST be at least one column assigned to "user" AND at least one '
+                    'column assigned to "assistant". Never assign all columns to the same role.\n'
                     "2. The column that contains the TARGET or OUTPUT or ANSWER or LABEL must "
-                    "ALWAYS be assigned to \"assistant\". This is the thing the model should learn "
+                    'ALWAYS be assigned to "assistant". This is the thing the model should learn '
                     "to produce.\n"
                     "3. The columns that contain the SOURCE or INPUT or CONTEXT or QUESTION must "
-                    "be assigned to \"user\". This is what the model receives.\n"
+                    'be assigned to "user". This is what the model receives.\n'
                     '4. Metadata columns like "id", "index", "source", "url", "date" should be '
                     'set to "skip".\n\n'
                     "You must respond with ONLY a valid JSON object."
@@ -611,7 +630,7 @@ def _run_multi_pass_advisor(
                     Here is a dataset that has been classified:
 
                     CLASSIFICATION:
-                    {json.dumps(pass1, indent=2)}
+                    {json.dumps(pass1, indent = 2)}
 
                     COLUMNS AVAILABLE: {columns}
 
@@ -659,9 +678,9 @@ def _run_multi_pass_advisor(
                     Respond with ONLY the JSON object."""),
             },
         ]
-        raw2 = _generate_with_backend(backend, messages2, max_tokens=512)
+        raw2 = _generate_with_backend(backend, messages2, max_tokens = 512)
         pass2 = _parse_json_response(raw2)
-        print(f"🤖 Pass 2 done ({time.monotonic() - t2:.1f}s): {pass2}", flush=True)
+        print(f"🤖 Pass 2 done ({time.monotonic() - t2:.1f}s): {pass2}", flush = True)
 
         if not pass2:
             logger.warning(f"Advisor Pass 2 failed to produce JSON: {raw2[:200]}")
@@ -676,7 +695,7 @@ def _run_multi_pass_advisor(
         if "user" not in roles_present or "assistant" not in roles_present:
             print(
                 f"🤖 Pass 2 sanity fail: missing user or assistant role: {column_roles}",
-                flush=True,
+                flush = True,
             )
             return None  # triggers fallback to simple classification
 
@@ -686,7 +705,7 @@ def _run_multi_pass_advisor(
         is_conv = pass1.get("is_conversational", False)
 
         if not is_conv:
-            print("🤖 Pass 3: Generating system prompt...", flush=True)
+            print("🤖 Pass 3: Generating system prompt...", flush = True)
             t3 = time.monotonic()
 
             # Format label mapping info for the prompt
@@ -726,8 +745,11 @@ def _run_multi_pass_advisor(
                         Write ONLY the system prompt text. No quotes, no labels, no explanation around it."""),
                 },
             ]
-            raw3 = _generate_with_backend(backend, messages3, max_tokens=256)
-            print(f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}", flush=True)
+            raw3 = _generate_with_backend(backend, messages3, max_tokens = 256)
+            print(
+                f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}",
+                flush = True,
+            )
 
             if raw3:
                 # Pass 3 returns raw text, not JSON — clean it up
@@ -746,14 +768,16 @@ def _run_multi_pass_advisor(
         note_parts = [f"This is a {dtype} dataset (not conversational)."]
         if desc:
             note_parts.append(desc)
-        note_parts.append("Columns have been mapped to conversation roles. You can adjust the mapping if needed.")
+        note_parts.append(
+            "Columns have been mapped to conversation roles. You can adjust the mapping if needed."
+        )
         user_notification = " ".join(note_parts)
 
         total_time = time.monotonic() - t0
         print(
             f"🤖 Advisor complete ({total_time:.1f}s): type={dtype}, "
             f"mapping={suggested_mapping}, sys_prompt={bool(sys_prompt)}, label_map={bool(label_map)}",
-            flush=True,
+            flush = True,
         )
 
         return {
@@ -805,14 +829,14 @@ def llm_conversion_advisor(
 
     # Try multi-pass advisor
     result = _run_multi_pass_advisor(
-        columns=column_names,
-        samples=samples,
-        dataset_name=dataset_name,
-        dataset_card=dataset_card,
-        dataset_metadata=dataset_metadata,
-        model_name=model_name,
-        model_type=model_type,
-        hf_token=hf_token,
+        columns = column_names,
+        samples = samples,
+        dataset_name = dataset_name,
+        dataset_card = dataset_card,
+        dataset_metadata = dataset_metadata,
+        model_name = model_name,
+        model_type = model_type,
+        hf_token = hf_token,
     )
 
     if result and result.get("success"):
@@ -826,7 +850,8 @@ def llm_conversion_advisor(
         return {
             "success": True,
             "suggested_mapping": {
-                col: role for col, role in simple_mapping.items()
+                col: role
+                for col, role in simple_mapping.items()
                 if role in ("user", "assistant", "system")
             },
             "dataset_type": None,

@@ -45,22 +45,21 @@ from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
 from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
 from loggers import get_logger
+
 logger = get_logger(__name__)
-
-
 
 
 def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     """
     Lightweight format check without processing - for frontend validation.
-    
+
     Use this to quickly determine if user needs to manually map columns
     before calling the full format_and_template_dataset().
-    
+
     Args:
         dataset: HuggingFace dataset
         is_vlm: Whether this is a Vision-Language Model dataset
-    
+
     Returns:
         dict: {
             "requires_manual_mapping": bool - True if user must map columns,
@@ -71,8 +70,12 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "detected_text_column": str or None - For VLM only,
         }
     """
-    columns = list(dataset.column_names) if hasattr(dataset, 'column_names') else list(next(iter(dataset)).keys())
-    
+    columns = (
+        list(dataset.column_names)
+        if hasattr(dataset, "column_names")
+        else list(next(iter(dataset)).keys())
+    )
+
     # Auto-detect multimodal data regardless of is_vlm flag
     multimodal_info = detect_multimodal_dataset(dataset)
     is_audio = multimodal_info.get("is_audio", False)
@@ -185,11 +188,17 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         **audio_fields,
     }
 
+
 # Normalise any format-specific role to canonical chatml (user/assistant/system)
 _TO_CHATML = {
-    "user": "user", "human": "user", "instruction": "user",
-    "assistant": "assistant", "gpt": "assistant", "output": "assistant",
-    "system": "system", "input": "system",
+    "user": "user",
+    "human": "user",
+    "instruction": "user",
+    "assistant": "assistant",
+    "gpt": "assistant",
+    "output": "assistant",
+    "system": "system",
+    "input": "system",
 }
 _CHATML_ROLE_ORDER = ("system", "user", "assistant")
 _CHATML_TO_ALPACA = {"user": "instruction", "system": "input", "assistant": "output"}
@@ -232,11 +241,21 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
                 for col in role_groups[chatml_role]:
                     if col in examples:
                         content = examples[col][i]
-                        convo.append({"role": chatml_role, "content": str(content) if content else ""})
+                        convo.append(
+                            {
+                                "role": chatml_role,
+                                "content": str(content) if content else "",
+                            }
+                        )
             conversations.append(convo)
         return {"conversations": conversations}
 
-    return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+    return dataset.map(
+        _convert,
+        batched = True,
+        batch_size = batch_size,
+        remove_columns = dataset.column_names,
+    )
 
 
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
@@ -248,7 +267,7 @@ def _extract_column_value(val, col: str, label_mapping: dict) -> str:
             inner = val["text"]
             str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
         else:
-            str_val = json.dumps(val, ensure_ascii=False)
+            str_val = json.dumps(val, ensure_ascii = False)
     elif isinstance(val, list):
         str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
     else:
@@ -286,6 +305,7 @@ def _apply_template_mapping(
             role_groups[canonical].append(col)
 
     import logging as _log
+
     _log.getLogger(__name__).info(
         f"Applying role mapping: sys={bool(system_prompt)}, "
         f"user_cols={role_groups['user']}, asst_cols={role_groups['assistant']}, "
@@ -326,8 +346,10 @@ def _apply_template_mapping(
         return {"conversations": conversations}
 
     return dataset.map(
-        _convert, batched=True, batch_size=batch_size,
-        remove_columns=dataset.column_names,
+        _convert,
+        batched = True,
+        batch_size = batch_size,
+        remove_columns = dataset.column_names,
     )
 
 
@@ -341,7 +363,11 @@ def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
     Returns:
         Dataset with instruction/input/output columns
     """
-    col_for: dict[str, str | None] = {"instruction": None, "input": None, "output": None}
+    col_for: dict[str, str | None] = {
+        "instruction": None,
+        "input": None,
+        "output": None,
+    }
     for col_name, role in mapping.items():
         canonical = _TO_CHATML.get(role)
         alpaca_field = _CHATML_TO_ALPACA.get(canonical) if canonical else None
@@ -352,25 +378,48 @@ def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
         num = len(next(iter(examples.values())))
         instructions, inputs, outputs = [], [], []
         for i in range(num):
-            for field, dest in (("instruction", instructions), ("input", inputs), ("output", outputs)):
+            for field, dest in (
+                ("instruction", instructions),
+                ("input", inputs),
+                ("output", outputs),
+            ):
                 col = col_for[field]
-                val = str(examples[col][i]) if col and col in examples and examples[col][i] else ""
+                val = (
+                    str(examples[col][i])
+                    if col and col in examples and examples[col][i]
+                    else ""
+                )
                 dest.append(val)
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
-    return dataset.map(_convert, batched=True, batch_size=batch_size, remove_columns=dataset.column_names)
+    return dataset.map(
+        _convert,
+        batched = True,
+        batch_size = batch_size,
+        remove_columns = dataset.column_names,
+    )
 
 
 def format_dataset(
     dataset,
-    format_type           = "auto",
-    tokenizer             = None,
-    aliases_for_system    = ["system",],
-    aliases_for_user      = ["user", "human", "input",],
-    aliases_for_assistant = ["gpt", "assistant", "output",],
-    batch_size            = 1000,
-    num_proc              = None,
-    auto_detect_custom    = True,
+    format_type = "auto",
+    tokenizer = None,
+    aliases_for_system = [
+        "system",
+    ],
+    aliases_for_user = [
+        "user",
+        "human",
+        "input",
+    ],
+    aliases_for_assistant = [
+        "gpt",
+        "assistant",
+        "output",
+    ],
+    batch_size = 1000,
+    num_proc = None,
+    auto_detect_custom = True,
     custom_format_mapping = None,
 ):
     """
@@ -395,13 +444,17 @@ def format_dataset(
     if custom_format_mapping:
         try:
             if format_type == "alpaca":
-                mapped_dataset = _apply_user_mapping_alpaca(dataset, custom_format_mapping, batch_size)
+                mapped_dataset = _apply_user_mapping_alpaca(
+                    dataset, custom_format_mapping, batch_size
+                )
                 final_format = "alpaca"
                 chat_column = None
             else:
                 # auto / chatml / sharegpt / conversational — all produce chatml conversations
                 # (sharegpt is always standardized to role/content internally)
-                mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
+                mapped_dataset = _apply_user_mapping(
+                    dataset, custom_format_mapping, batch_size
+                )
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
 
@@ -414,7 +467,9 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": [f"Applied user-provided column mapping ({format_type}): {custom_format_mapping}"]
+                "warnings": [
+                    f"Applied user-provided column mapping ({format_type}): {custom_format_mapping}"
+                ],
             }
         except Exception as e:
             return {
@@ -426,9 +481,8 @@ def format_dataset(
                 "requires_manual_mapping": True,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": [f"Failed to apply user mapping: {e}"]
+                "warnings": [f"Failed to apply user mapping: {e}"],
             }
-
 
     # Detect current format
     detected = detect_dataset_format(dataset)
@@ -442,7 +496,6 @@ def format_dataset(
 
     # AUTO MODE: Keep format but standardize if needed
     if format_type == "auto":
-
         # Alpaca - keep as is
         if detected["format"] == "alpaca":
             return {
@@ -454,16 +507,20 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": []
+                "warnings": [],
             }
 
         # ShareGPT - needs standardization
         elif detected["format"] == "sharegpt":
             try:
                 standardized = standardize_chat_format(
-                    dataset, tokenizer, aliases_for_system,
-                    aliases_for_user, aliases_for_assistant,
-                    batch_size, num_proc
+                    dataset,
+                    tokenizer,
+                    aliases_for_system,
+                    aliases_for_user,
+                    aliases_for_assistant,
+                    batch_size,
+                    num_proc,
                 )
                 return {
                     "dataset": standardized,
@@ -474,7 +531,7 @@ def format_dataset(
                     "requires_manual_mapping": False,
                     "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
-                    "warnings": []
+                    "warnings": [],
                 }
             except Exception as e:
                 warnings.append(f"Failed to standardize ShareGPT format: {e}")
@@ -487,10 +544,14 @@ def format_dataset(
                     "requires_manual_mapping": True,
                     "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
-                    "warnings": warnings
+                    "warnings": warnings,
                 }
 
-        elif detected["format"] == "chatml" and detected["chat_column"] in ["conversations", "messages", "texts"]:
+        elif detected["format"] == "chatml" and detected["chat_column"] in [
+            "conversations",
+            "messages",
+            "texts",
+        ]:
             return {
                 "dataset": dataset,
                 "detected_format": f"chatml_{detected['chat_column']}",
@@ -500,20 +561,20 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": warnings
+                "warnings": warnings,
             }
-
 
         # Unknown - try standardization, if fails pass as is
         else:
-            warnings.append(f"Unknown format detected. Keys found: {detected['sample_keys']}")
+            warnings.append(
+                f"Unknown format detected. Keys found: {detected['sample_keys']}"
+            )
 
             # NEW: Try heuristic detection
             if auto_detect_custom:
                 custom_mapping = detect_custom_format_heuristic(dataset)
                 if custom_mapping:
                     warnings.append(f"Auto-detected column mapping: {custom_mapping}")
-
 
                     def _apply_auto_mapping(examples):
                         conversations = []
@@ -523,25 +584,27 @@ def format_dataset(
                         all_columns = set(examples.keys())
                         mapped_columns = set(custom_mapping.keys())
                         preserved_columns = {
-                            col: examples[col]
-                            for col in all_columns - mapped_columns
+                            col: examples[col] for col in all_columns - mapped_columns
                         }
 
                         for i in range(num_examples):
                             convo = []
-                            for target_role in ['system', 'user', 'assistant']:
+                            for target_role in ["system", "user", "assistant"]:
                                 for col_name, role in custom_mapping.items():
                                     if role == target_role and col_name in examples:
                                         content = examples[col_name][i]
                                         if content and str(content).strip():
-                                            convo.append({"role": role, "content": str(content)})
+                                            convo.append(
+                                                {"role": role, "content": str(content)}
+                                            )
                             conversations.append(convo)
 
                         return {"conversations": conversations, **preserved_columns}
 
-
                     try:
-                        dataset = dataset.map(_apply_auto_mapping, batched=True, batch_size=batch_size)
+                        dataset = dataset.map(
+                            _apply_auto_mapping, batched = True, batch_size = batch_size
+                        )
                         return {
                             "dataset": dataset,
                             "detected_format": "unknown",
@@ -551,7 +614,7 @@ def format_dataset(
                             "requires_manual_mapping": False,
                             "is_image": multimodal_info["is_image"],
                             "multimodal_info": multimodal_info,
-                            "warnings": warnings
+                            "warnings": warnings,
                         }
                     except Exception as e:
                         warnings.append(f"Auto-detection failed: {e}")
@@ -560,9 +623,13 @@ def format_dataset(
             if detected["chat_column"]:
                 try:
                     standardized = standardize_chat_format(
-                        dataset, tokenizer, aliases_for_system,
-                        aliases_for_user, aliases_for_assistant,
-                        batch_size, num_proc
+                        dataset,
+                        tokenizer,
+                        aliases_for_system,
+                        aliases_for_user,
+                        aliases_for_assistant,
+                        batch_size,
+                        num_proc,
                     )
                     warnings.append("Successfully standardized unknown format")
                     return {
@@ -574,10 +641,12 @@ def format_dataset(
                         "requires_manual_mapping": False,
                         "is_image": multimodal_info["is_image"],
                         "multimodal_info": multimodal_info,
-                        "warnings": warnings
+                        "warnings": warnings,
                     }
                 except Exception as e:
-                    warnings.append(f"Could not standardize: {e}. Passing dataset as-is.")
+                    warnings.append(
+                        f"Could not standardize: {e}. Passing dataset as-is."
+                    )
 
             # Return as-is with warnings
             return {
@@ -589,12 +658,11 @@ def format_dataset(
                 "requires_manual_mapping": True,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": warnings
+                "warnings": warnings,
             }
 
     # ALPACA MODE: Convert to Alpaca
     elif format_type == "alpaca":
-
         if detected["format"] == "alpaca":
             return {
                 "dataset": dataset,
@@ -605,16 +673,20 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": []
+                "warnings": [],
             }
 
         elif detected["format"] in ["sharegpt", "chatml"]:
             # First standardize if ShareGPT
             if detected["format"] == "sharegpt":
                 dataset = standardize_chat_format(
-                    dataset, tokenizer, aliases_for_system,
-                    aliases_for_user, aliases_for_assistant,
-                    batch_size, num_proc
+                    dataset,
+                    tokenizer,
+                    aliases_for_system,
+                    aliases_for_user,
+                    aliases_for_assistant,
+                    batch_size,
+                    num_proc,
                 )
 
             # Then convert to Alpaca
@@ -628,7 +700,7 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": []
+                "warnings": [],
             }
 
         else:
@@ -642,12 +714,11 @@ def format_dataset(
                 "requires_manual_mapping": True,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": warnings
+                "warnings": warnings,
             }
 
     # CHATML MODE: Convert to ChatML
     elif format_type in ["chatml", "conversational", "sharegpt"]:
-
         if detected["format"] == "alpaca":
             converted = convert_alpaca_to_chatml(dataset, batch_size, num_proc)
             return {
@@ -659,14 +730,18 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": []
+                "warnings": [],
             }
 
         elif detected["format"] == "sharegpt":
             standardized = standardize_chat_format(
-                dataset, tokenizer, aliases_for_system,
-                aliases_for_user, aliases_for_assistant,
-                batch_size, num_proc
+                dataset,
+                tokenizer,
+                aliases_for_system,
+                aliases_for_user,
+                aliases_for_assistant,
+                batch_size,
+                num_proc,
             )
             return {
                 "dataset": standardized,
@@ -677,7 +752,7 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": []
+                "warnings": [],
             }
 
         elif detected["format"] == "chatml":
@@ -690,7 +765,7 @@ def format_dataset(
                 "requires_manual_mapping": False,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": []
+                "warnings": [],
             }
 
         else:
@@ -698,9 +773,13 @@ def format_dataset(
             if detected["chat_column"]:
                 try:
                     standardized = standardize_chat_format(
-                        dataset, tokenizer, aliases_for_system,
-                        aliases_for_user, aliases_for_assistant,
-                        batch_size, num_proc
+                        dataset,
+                        tokenizer,
+                        aliases_for_system,
+                        aliases_for_user,
+                        aliases_for_assistant,
+                        batch_size,
+                        num_proc,
                     )
                     return {
                         "dataset": standardized,
@@ -711,7 +790,7 @@ def format_dataset(
                         "requires_manual_mapping": False,
                         "is_image": multimodal_info["is_image"],
                         "multimodal_info": multimodal_info,
-                        "warnings": warnings
+                        "warnings": warnings,
                     }
                 except Exception as e:
                     warnings.append(f"Standardization failed: {e}")
@@ -725,7 +804,7 @@ def format_dataset(
                 "requires_manual_mapping": True,
                 "is_image": multimodal_info["is_image"],
                 "multimodal_info": multimodal_info,
-                "warnings": warnings
+                "warnings": warnings,
             }
 
     else:
@@ -737,25 +816,34 @@ def format_and_template_dataset(
     model_name,
     tokenizer,
     is_vlm = False,
-    format_type="auto",
+    format_type = "auto",
     # VLM-specific parameters
-    vlm_instruction=None,  # Now optional - will auto-generate
-    vlm_text_column=None,
-    vlm_image_column=None,
-    dataset_name=None,
-
-    custom_prompt_template=None,
-    add_eos_token=False,
-    remove_bos_prefix=False,
-    custom_format_mapping=None,
-    auto_detect_custom=True,
-    auto_detect_mapping=True,
-    aliases_for_system=["system",],
-    aliases_for_user=["user", "human", "input",],
-    aliases_for_assistant=["gpt", "assistant", "output",],
-    batch_size=1000,
-    num_proc=None,
-    progress_callback=None,
+    vlm_instruction = None,  # Now optional - will auto-generate
+    vlm_text_column = None,
+    vlm_image_column = None,
+    dataset_name = None,
+    custom_prompt_template = None,
+    add_eos_token = False,
+    remove_bos_prefix = False,
+    custom_format_mapping = None,
+    auto_detect_custom = True,
+    auto_detect_mapping = True,
+    aliases_for_system = [
+        "system",
+    ],
+    aliases_for_user = [
+        "user",
+        "human",
+        "input",
+    ],
+    aliases_for_assistant = [
+        "gpt",
+        "assistant",
+        "output",
+    ],
+    batch_size = 1000,
+    num_proc = None,
+    progress_callback = None,
 ):
     """
     Convenience function that combines format_dataset and apply_chat_template_to_dataset.
@@ -786,25 +874,27 @@ def format_and_template_dataset(
             # Expect mapping like: {"image_col": "image", "caption_col": "text"}
             user_vlm_image_column = None
             user_vlm_text_column = None
-            
+
             for col, role in custom_format_mapping.items():
                 if role == "image":
                     user_vlm_image_column = col
                 elif role in ["text", "user", "caption", "assistant"]:
                     user_vlm_text_column = col
-            
+
             if user_vlm_image_column and user_vlm_text_column:
                 try:
                     dataset = convert_to_vlm_format(
                         dataset,
-                        instruction=vlm_instruction,
-                        text_column=user_vlm_text_column,
-                        image_column=user_vlm_image_column,
-                        dataset_name=dataset_name,
-                        progress_callback=progress_callback,
+                        instruction = vlm_instruction,
+                        text_column = user_vlm_text_column,
+                        image_column = user_vlm_image_column,
+                        dataset_name = dataset_name,
+                        progress_callback = progress_callback,
                     )
-                    warnings.append(f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'")
-                    
+                    warnings.append(
+                        f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'"
+                    )
+
                     return {
                         "dataset": dataset,
                         "detected_format": "user_mapped",
@@ -826,7 +916,9 @@ def format_and_template_dataset(
                         f"text='{user_vlm_text_column}') failed: {e} — "
                         f"falling back to auto-detection"
                     )
-                    logger.info(f"⚠️ User VLM mapping failed, falling back to auto-detection...")
+                    logger.info(
+                        f"⚠️ User VLM mapping failed, falling back to auto-detection..."
+                    )
                     custom_format_mapping = None  # clear so auto-detection runs below
             else:
                 errors.append(
@@ -850,10 +942,13 @@ def format_and_template_dataset(
         if vlm_structure["format"] == "vlm_messages_llava":
             try:
                 dataset = convert_llava_to_vlm_format(dataset)
-                warnings.append("Converted from Llava format (image indices) to standard VLM format")
+                warnings.append(
+                    "Converted from Llava format (image indices) to standard VLM format"
+                )
             except Exception as e:
                 errors.append(f"Failed to convert Llava format: {e}")
                 import traceback
+
                 traceback.print_exc()
 
                 return {
@@ -872,15 +967,18 @@ def format_and_template_dataset(
             try:
                 dataset = convert_sharegpt_with_images_to_vlm_format(
                     dataset,
-                    image_column=vlm_structure["image_column"],
-                    messages_column=vlm_structure["messages_column"],
-                    dataset_name=dataset_name,
-                    progress_callback=progress_callback,
+                    image_column = vlm_structure["image_column"],
+                    messages_column = vlm_structure["messages_column"],
+                    dataset_name = dataset_name,
+                    progress_callback = progress_callback,
                 )
-                warnings.append("Converted from ShareGPT+image format to standard VLM format")
+                warnings.append(
+                    "Converted from ShareGPT+image format to standard VLM format"
+                )
             except Exception as e:
                 errors.append(f"Failed to convert ShareGPT+image format: {e}")
                 import traceback
+
                 traceback.print_exc()
 
                 return {
@@ -910,14 +1008,18 @@ def format_and_template_dataset(
                 friendly = None
                 try:
                     from .llm_assist import llm_generate_dataset_warning
+
                     friendly = llm_generate_dataset_warning(
-                        issues, dataset_name=dataset_name, modality="vision",
-                        column_names=columns,
+                        issues,
+                        dataset_name = dataset_name,
+                        modality = "vision",
+                        column_names = columns,
                     )
                 except Exception:
                     pass
                 errors.append(
-                    friendly or f"Could not auto-detect image/text columns. Found: {vlm_structure}. "
+                    friendly
+                    or f"Could not auto-detect image/text columns. Found: {vlm_structure}. "
                 )
                 return {
                     "dataset": dataset,
@@ -933,21 +1035,26 @@ def format_and_template_dataset(
             try:
                 dataset = convert_to_vlm_format(
                     dataset,
-                    instruction=vlm_instruction,
-                    text_column=vlm_text_column,
-                    image_column=vlm_image_column,
-                    dataset_name=dataset_name,
-                    progress_callback=progress_callback,
+                    instruction = vlm_instruction,
+                    text_column = vlm_text_column,
+                    image_column = vlm_image_column,
+                    dataset_name = dataset_name,
+                    progress_callback = progress_callback,
                 )
 
                 if vlm_instruction:
-                    warnings.append(f"Using user-provided instruction: '{vlm_instruction}'")
+                    warnings.append(
+                        f"Using user-provided instruction: '{vlm_instruction}'"
+                    )
                 else:
-                    warnings.append("Auto-generated instruction based on dataset analysis")
+                    warnings.append(
+                        "Auto-generated instruction based on dataset analysis"
+                    )
 
             except Exception as e:
                 errors.append(f"Failed to convert to VLM format: {e}")
                 import traceback
+
                 traceback.print_exc()
 
                 return {
@@ -987,41 +1094,45 @@ def format_and_template_dataset(
         # Step 1: Format the dataset
         dataset_info = format_dataset(
             dataset,
-            format_type=format_type,
-            tokenizer=tokenizer,
-            auto_detect_custom=auto_detect_custom,
-            custom_format_mapping=custom_format_mapping,
-            aliases_for_system=aliases_for_system,
-            aliases_for_user=aliases_for_user,
-            aliases_for_assistant=aliases_for_assistant,
-            batch_size=batch_size,
-            num_proc=num_proc,
+            format_type = format_type,
+            tokenizer = tokenizer,
+            auto_detect_custom = auto_detect_custom,
+            custom_format_mapping = custom_format_mapping,
+            aliases_for_system = aliases_for_system,
+            aliases_for_user = aliases_for_user,
+            aliases_for_assistant = aliases_for_assistant,
+            batch_size = batch_size,
+            num_proc = num_proc,
         )
 
         # Step 2: Apply chat template
         # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
-        is_alpaca = format_type == "alpaca" or (format_type == "auto" and dataset_info["detected_format"] == "alpaca")
+        is_alpaca = format_type == "alpaca" or (
+            format_type == "auto" and dataset_info["detected_format"] == "alpaca"
+        )
         is_gemma = "gemma" in model_name.lower()
         if is_gemma and not dataset_info["is_image"] and not is_alpaca:
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
-            dataset_info=dataset_info,
-            tokenizer=tokenizer,
-            model_name=model_name,
-            custom_prompt_template=custom_prompt_template,
-            add_eos_token=add_eos_token,
-            remove_bos_prefix=remove_bos_prefix,
-            custom_format_mapping=custom_format_mapping,
-            auto_detect_mapping=auto_detect_mapping,
-            batch_size=batch_size,
-            num_proc=num_proc,
+            dataset_info = dataset_info,
+            tokenizer = tokenizer,
+            model_name = model_name,
+            custom_prompt_template = custom_prompt_template,
+            add_eos_token = add_eos_token,
+            remove_bos_prefix = remove_bos_prefix,
+            custom_format_mapping = custom_format_mapping,
+            auto_detect_mapping = auto_detect_mapping,
+            batch_size = batch_size,
+            num_proc = num_proc,
         )
 
         # Step 3: Generate summary
         summary = get_dataset_info_summary(dataset_info)
 
         # Combine results
-        all_warnings = dataset_info.get("warnings", []) + template_result.get("warnings", [])
+        all_warnings = dataset_info.get("warnings", []) + template_result.get(
+            "warnings", []
+        )
         all_errors = template_result.get("errors", [])
 
         # If format_dataset returned "unknown" but apply_chat_template rescued

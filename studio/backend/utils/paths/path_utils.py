@@ -4,6 +4,7 @@
 """
 Path utilities for model and dataset handling
 """
+
 import os
 from pathlib import Path
 from typing import Optional
@@ -25,14 +26,16 @@ def normalize_path(path: str) -> str:
         return path
 
     # Handle Windows drive letters (C:\\ or c:\\)
-    if len(path) >= 3 and path[1] == ':' and path[2] in ('\\', '/'):
+    if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
         drive = path[0].lower()
-        rest = path[3:].replace('\\', '/')
-        return f'/mnt/{drive}/{rest}'
+        rest = path[3:].replace("\\", "/")
+        return f"/mnt/{drive}/{rest}"
 
     # Already Unix-style or relative
-    return path.replace('\\', '/')
-pass
+    return path.replace("\\", "/")
+
+
+
 
 def is_local_path(path: str) -> bool:
     """
@@ -53,26 +56,30 @@ def is_local_path(path: str) -> bool:
         pass
 
     # Obvious HF patterns
-    if path.count('/') == 1 and not path.startswith(('/', '.', '~')):
+    if path.count("/") == 1 and not path.startswith(("/", ".", "~")):
         return False  # Looks like org/model format
 
     # Filesystem indicators
     return (
-        path.startswith(('/', '.', '~')) or  # Unix absolute/relative
-        ':' in path or                        # Windows drive or URL
-        '\\' in path or                       # Windows separator
-        os.path.isabs(path)                  # System-absolute
+        path.startswith(("/", ".", "~"))  # Unix absolute/relative
+        or ":" in path  # Windows drive or URL
+        or "\\" in path  # Windows separator
+        or os.path.isabs(path)  # System-absolute
     )
-pass
+
+
+
 
 def get_cache_path(model_name: str) -> Optional[Path]:
     """Get HuggingFace cache path for a model if it exists."""
-    cache_dir = Path.home() / '.cache' / 'huggingface' / 'hub'
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
     model_cache_name = model_name.replace("/", "--")
-    model_cache_path = cache_dir / f'models--{model_cache_name}'
+    model_cache_path = cache_dir / f"models--{model_cache_name}"
 
     return model_cache_path if model_cache_path.exists() else None
-pass
+
+
+
 
 def is_model_cached(model_name: str) -> bool:
     """Check if model is downloaded in HuggingFace cache."""
@@ -81,9 +88,10 @@ def is_model_cached(model_name: str) -> bool:
         return False
 
     # Check for actual model files
-    for suffix in ['.safetensors', '.bin', '.json']:
-        if list(cache_path.rglob(f'*{suffix}')):
+    for suffix in [".safetensors", ".bin", ".json"]:
+        if list(cache_path.rglob(f"*{suffix}")):
             return True
 
     return False
-pass
+
+

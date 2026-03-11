@@ -5,11 +5,12 @@
 Run script for Unsloth UI Backend.
 Works independently and can be moved to any directory.
 """
+
 import os
 import sys
 
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
-os.environ["PYTHONWARNINGS"] = "ignore" 
+os.environ["PYTHONWARNINGS"] = "ignore"
 
 from pathlib import Path
 
@@ -19,6 +20,7 @@ if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
 from loggers import get_logger
+
 logger = get_logger(__name__)
 
 
@@ -38,9 +40,9 @@ def _resolve_external_ip() -> str:
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
-            headers={"Metadata-Flavor": "Google"},
+            headers = {"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(req, timeout=1) as resp:
+        with urllib.request.urlopen(req, timeout = 1) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -49,7 +51,7 @@ def _resolve_external_ip() -> str:
 
     # 2. Try public IP service
     try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as resp:
+        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -108,11 +110,13 @@ def run_server(
 
     # Run server
     def _run():
-        config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+        config = uvicorn.Config(
+            app, host = host, port = port, log_level = "info", access_log = False
+        )
         server = uvicorn.Server(config)
         asyncio.run(server.serve())
 
-    thread = Thread(target=_run, daemon=True)
+    thread = Thread(target = _run, daemon = True)
     thread.start()
     time.sleep(3)
 
@@ -135,19 +139,22 @@ def run_server(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run Unsloth UI Backend server")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
+    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
+    parser.add_argument("--port", type = int, default = 8000, help = "Port to bind to")
     parser.add_argument(
-        "--frontend", type=str, default="studio/frontend/dist", help="Path to frontend build"
+        "--frontend",
+        type = str,
+        default = "studio/frontend/dist",
+        help = "Path to frontend build",
     )
-    parser.add_argument("--silent", action="store_true", help="Suppress output")
+    parser.add_argument("--silent", action = "store_true", help = "Suppress output")
 
     args = parser.parse_args()
 
     frontend_path = Path(args.frontend) if args.frontend else None
     run_server(
-        host=args.host, port=args.port, frontend_path=frontend_path, silent=args.silent
+        host = args.host, port = args.port, frontend_path = frontend_path, silent = args.silent
     )
 
     # Keep running
@@ -155,4 +162,3 @@ if __name__ == "__main__":
 
     while True:
         time.sleep(1)
-

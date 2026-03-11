@@ -7,6 +7,7 @@ llama-server inference backend for GGUF models.
 Manages a llama-server subprocess and proxies chat completions
 through its OpenAI-compatible /v1/chat/completions endpoint.
 """
+
 import atexit
 import json
 import structlog
@@ -146,7 +147,9 @@ class LlamaCppBackend:
         if build_path.is_file():
             return str(build_path)
         if sys.platform == "win32":
-            win_path = project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
+            win_path = (
+                project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
+            )
             if win_path.is_file():
                 return str(win_path)
 
@@ -258,15 +261,19 @@ class LlamaCppBackend:
                     try:
                         import re
                         from huggingface_hub import list_repo_files
-                        files = list_repo_files(hf_repo, token=hf_token)
+
+                        files = list_repo_files(hf_repo, token = hf_token)
                         variant_lower = hf_variant.lower()
                         # Use word-boundary matching so "Q8_0" doesn't also
                         # match "IQ8_0" or other superset variant names.
                         boundary = re.compile(
-                            r'(?<![a-zA-Z0-9])' + re.escape(variant_lower) + r'(?![a-zA-Z0-9])'
+                            r"(?<![a-zA-Z0-9])"
+                            + re.escape(variant_lower)
+                            + r"(?![a-zA-Z0-9])"
                         )
                         gguf_files = sorted(
-                            f for f in files
+                            f
+                            for f in files
                             if f.endswith(".gguf") and boundary.search(f.lower())
                         )
                         if gguf_files:
@@ -274,17 +281,20 @@ class LlamaCppBackend:
                             # For split GGUFs (e.g. model-Q8_0-00001-of-00003.gguf)
                             # discover siblings by exact basename + total match
                             # so "model-Q8_0-v2-*" isn't pulled in as a sibling.
-                            shard_pat = re.compile(r'^(.*)-\d{5}-of-(\d{5})\.gguf$')
+                            shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
                             m = shard_pat.match(gguf_filename)
                             if m:
                                 prefix = m.group(1)
                                 total = m.group(2)
                                 sibling_pat = re.compile(
-                                    r'^' + re.escape(prefix) + r'-\d{5}-of-' + re.escape(total) + r'\.gguf$'
+                                    r"^"
+                                    + re.escape(prefix)
+                                    + r"-\d{5}-of-"
+                                    + re.escape(total)
+                                    + r"\.gguf$"
                                 )
                                 gguf_extra_shards = [
-                                    f for f in gguf_files[1:]
-                                    if sibling_pat.match(f)
+                                    f for f in gguf_files[1:] if sibling_pat.match(f)
                                 ]
                     except Exception as e:
                         logger.warning(f"Could not list repo files: {e}")
@@ -295,22 +305,28 @@ class LlamaCppBackend:
                         repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                         gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
-                logger.info(f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-                            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""))
+                logger.info(
+                    f"Downloading GGUF: {hf_repo}/{gguf_filename}"
+                    + (
+                        f" (+{len(gguf_extra_shards)} shards)"
+                        if gguf_extra_shards
+                        else ""
+                    )
+                )
                 try:
                     local_path = hf_hub_download(
-                        repo_id=hf_repo,
-                        filename=gguf_filename,
-                        token=hf_token,
+                        repo_id = hf_repo,
+                        filename = gguf_filename,
+                        token = hf_token,
                     )
                     # Download remaining shards for split GGUFs — llama-server
                     # auto-discovers them when they are in the same directory.
                     for shard in gguf_extra_shards:
                         logger.info(f"Downloading GGUF shard: {shard}")
                         hf_hub_download(
-                            repo_id=hf_repo,
-                            filename=shard,
-                            token=hf_token,
+                            repo_id = hf_repo,
+                            filename = shard,
+                            token = hf_token,
                         )
                 except Exception as e:
                     raise RuntimeError(
@@ -320,20 +336,28 @@ class LlamaCppBackend:
                 logger.info(f"GGUF downloaded to: {local_path}")
                 cmd = [
                     binary,
-                    "-m", local_path,
-                    "--port", str(self._port),
-                    "-c", str(n_ctx),
-                    "-ngl", str(n_gpu_layers),
+                    "-m",
+                    local_path,
+                    "--port",
+                    str(self._port),
+                    "-c",
+                    str(n_ctx),
+                    "-ngl",
+                    str(n_gpu_layers),
                 ]
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
                 cmd = [
                     binary,
-                    "-m", gguf_path,
-                    "--port", str(self._port),
-                    "-c", str(n_ctx),
-                    "-ngl", str(n_gpu_layers),
+                    "-m",
+                    gguf_path,
+                    "--port",
+                    str(self._port),
+                    "-c",
+                    str(n_ctx),
+                    "-ngl",
+                    str(n_gpu_layers),
                 ]
             else:
                 raise ValueError("Either gguf_path or hf_repo must be provided")
@@ -354,6 +378,7 @@ class LlamaCppBackend:
             # Set library paths so llama-server can find its shared libs and CUDA DLLs
             import os
             import sys
+
             env = os.environ.copy()
             binary_dir = str(Path(binary).parent)
 
@@ -375,20 +400,22 @@ class LlamaCppBackend:
             else:
                 # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                 existing_ld = env.get("LD_LIBRARY_PATH", "")
-                env["LD_LIBRARY_PATH"] = f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+                env["LD_LIBRARY_PATH"] = (
+                    f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+                )
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                env = env,
             )
 
             # Start background thread to drain stdout and prevent pipe deadlock
             self._stdout_thread = threading.Thread(
-                target=self._drain_stdout, daemon=True, name="llama-stdout"
+                target = self._drain_stdout, daemon = True, name = "llama-stdout"
             )
             self._stdout_thread.start()
 
@@ -399,7 +426,7 @@ class LlamaCppBackend:
             self._model_identifier = model_identifier
 
             # Wait for llama-server to become healthy
-            if not self._wait_for_health(timeout=120.0):
+            if not self._wait_for_health(timeout = 120.0):
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "
@@ -434,17 +461,17 @@ class LlamaCppBackend:
             return
         try:
             self._process.terminate()
-            self._process.wait(timeout=5)
+            self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             logger.warning("llama-server did not exit on SIGTERM, sending SIGKILL")
             self._process.kill()
-            self._process.wait(timeout=5)
+            self._process.wait(timeout = 5)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._process = None
             if self._stdout_thread is not None:
-                self._stdout_thread.join(timeout=2)
+                self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
 
     def _cleanup(self):
@@ -465,7 +492,7 @@ class LlamaCppBackend:
             if self._process.poll() is not None:
                 # Give the drain thread a moment to collect final output
                 if self._stdout_thread is not None:
-                    self._stdout_thread.join(timeout=2)
+                    self._stdout_thread.join(timeout = 2)
                 output = "\n".join(self._stdout_lines[-50:])
                 logger.error(
                     f"llama-server exited with code {self._process.returncode}. "
@@ -474,7 +501,7 @@ class LlamaCppBackend:
                 return False
 
             try:
-                resp = httpx.get(url, timeout=2.0)
+                resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
             except (httpx.ConnectError, httpx.TimeoutException):
@@ -567,8 +594,8 @@ class LlamaCppBackend:
         cumulative = ""
 
         try:
-            with httpx.Client(timeout=None) as client:
-                with client.stream("POST", url, json=payload) as response:
+            with httpx.Client(timeout = None) as client:
+                with client.stream("POST", url, json = payload) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(
@@ -602,7 +629,9 @@ class LlamaCppBackend:
                                         cumulative += token
                                         yield cumulative
                             except json.JSONDecodeError:
-                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                                logger.debug(
+                                    f"Skipping malformed SSE line: {line[:100]}"
+                                )
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")

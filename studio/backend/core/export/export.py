@@ -5,6 +5,7 @@
 """
 Export backend - handles model exporting in various formats
 """
+
 import glob
 import json
 import structlog
@@ -50,7 +51,7 @@ def _apply_wsl_sudo_patch():
     try:
         import unsloth_zoo.llama_cpp as llama_cpp_module
 
-        def _wsl_do_we_need_sudo(system_type="debian"):
+        def _wsl_do_we_need_sudo(system_type = "debian"):
             logger.info(
                 "WSL detected — skipping sudo check "
                 "(build deps pre-installed by setup.sh)"
@@ -59,16 +60,14 @@ def _apply_wsl_sudo_patch():
 
         llama_cpp_module.do_we_need_sudo = _wsl_do_we_need_sudo
         logger.info(
-            "Applied WSL sudo patch to "
-            "unsloth_zoo.llama_cpp.do_we_need_sudo"
+            "Applied WSL sudo patch to " "unsloth_zoo.llama_cpp.do_we_need_sudo"
         )
     except Exception as e:
         logger.warning(f"Could not apply WSL sudo patch: {e}")
 
 
 # Model card template
-MODEL_CARD = \
-"""---
+MODEL_CARD = """---
 base_model: {base_model}
 tags:
 - text-generation-inference
@@ -91,6 +90,7 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
+
 
 class ExportBackend:
     """Handles model export operations"""
@@ -130,7 +130,9 @@ class ExportBackend:
             logger.error(f"Error during memory cleanup: {e}")
             return False
 
-    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, List[Tuple[str, str]]]]:
+    def scan_checkpoints(
+        self, outputs_dir: str = str(outputs_root())
+    ) -> List[Tuple[str, List[Tuple[str, str]]]]:
         """
         Scan outputs folder for training runs and their checkpoints.
 
@@ -138,13 +140,16 @@ class ExportBackend:
             List of tuples: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
         from utils.models.checkpoints import scan_checkpoints
-        return scan_checkpoints(outputs_dir=outputs_dir)
 
-    def load_checkpoint(self,
-                       checkpoint_path: str,
-                       max_seq_length: int = 2048,
-                       load_in_4bit: bool = True,
-                       trust_remote_code: bool = False) -> Tuple[bool, str]:
+        return scan_checkpoints(outputs_dir = outputs_dir)
+
+    def load_checkpoint(
+        self,
+        checkpoint_path: str,
+        max_seq_length: int = 2048,
+        load_in_4bit: bool = True,
+        trust_remote_code: bool = False,
+    ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
 
@@ -174,81 +179,85 @@ class ExportBackend:
             self.is_vision = not self._audio_type and is_vision_model(model_id)
 
             # Load model based on type
-            if self._audio_type == 'csm':
+            if self._audio_type == "csm":
                 from unsloth import FastModel
                 from transformers import CsmForConditionalGeneration
+
                 logger.info("Loading as CSM audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    max_seq_length=max_seq_length,
-                    dtype=None,
-                    auto_model=CsmForConditionalGeneration,
-                    load_in_4bit=False,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    auto_model = CsmForConditionalGeneration,
+                    load_in_4bit = False,
+                    trust_remote_code = trust_remote_code,
                 )
 
-            elif self._audio_type == 'whisper':
+            elif self._audio_type == "whisper":
                 from unsloth import FastModel
                 from transformers import WhisperForConditionalGeneration
+
                 logger.info("Loading as Whisper audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    dtype=None,
-                    load_in_4bit=False,
-                    auto_model=WhisperForConditionalGeneration,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    dtype = None,
+                    load_in_4bit = False,
+                    auto_model = WhisperForConditionalGeneration,
+                    trust_remote_code = trust_remote_code,
                 )
 
-            elif self._audio_type == 'snac':
+            elif self._audio_type == "snac":
                 logger.info("Loading as SNAC (Orpheus) audio model...")
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    max_seq_length=max_seq_length,
-                    dtype=None,
-                    load_in_4bit=load_in_4bit,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    load_in_4bit = load_in_4bit,
+                    trust_remote_code = trust_remote_code,
                 )
 
-            elif self._audio_type == 'bicodec':
+            elif self._audio_type == "bicodec":
                 from unsloth import FastModel
+
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    max_seq_length=max_seq_length,
-                    dtype=torch.float32,
-                    load_in_4bit=False,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = torch.float32,
+                    load_in_4bit = False,
+                    trust_remote_code = trust_remote_code,
                 )
 
-            elif self._audio_type == 'dac':
+            elif self._audio_type == "dac":
                 from unsloth import FastModel
+
                 logger.info("Loading as DAC (OuteTTS) audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    max_seq_length=max_seq_length,
-                    load_in_4bit=False,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    load_in_4bit = False,
+                    trust_remote_code = trust_remote_code,
                 )
 
             elif self.is_vision:
                 logger.info("Loading as vision model...")
                 model, processor = FastVisionModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    max_seq_length=max_seq_length,
-                    dtype=None,
-                    load_in_4bit=load_in_4bit,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    load_in_4bit = load_in_4bit,
+                    trust_remote_code = trust_remote_code,
                 )
                 tokenizer = processor  # For vision models, processor acts as tokenizer
 
             else:
                 logger.info("Loading as text model...")
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name=checkpoint_path,
-                    max_seq_length=max_seq_length,
-                    dtype=None,
-                    load_in_4bit=load_in_4bit,
-                    trust_remote_code=trust_remote_code,
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    load_in_4bit = load_in_4bit,
+                    trust_remote_code = trust_remote_code,
                 )
 
             # Check if PEFT model
@@ -273,28 +282,35 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error loading checkpoint: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False, f"Failed to load checkpoint: {str(e)}"
 
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
-            base_model = get_base_model_from_lora(self.current_checkpoint) if self.current_checkpoint else None
+            base_model = (
+                get_base_model_from_lora(self.current_checkpoint)
+                if self.current_checkpoint
+                else None
+            )
             metadata = {"base_model": base_model}
             metadata_path = os.path.join(save_directory, "export_metadata.json")
             with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
+                json.dump(metadata, f, indent = 2)
             logger.info(f"Wrote export metadata to {metadata_path}")
         except Exception as e:
             logger.warning(f"Could not write export metadata: {e}")
 
-    def export_merged_model(self,
-                           save_directory: str,
-                           format_type: str = "16-bit (FP16)",
-                           push_to_hub: bool = False,
-                           repo_id: Optional[str] = None,
-                           hf_token: Optional[str] = None,
-                           private: bool = False) -> Tuple[bool, str]:
+    def export_merged_model(
+        self,
+        save_directory: str,
+        format_type: str = "16-bit (FP16)",
+        push_to_hub: bool = False,
+        repo_id: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        private: bool = False,
+    ) -> Tuple[bool, str]:
         """
         Export merged model (for PEFT models).
 
@@ -319,7 +335,7 @@ class ExportBackend:
             # Determine save method
             if format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
-            elif self._audio_type == 'whisper':
+            elif self._audio_type == "whisper":
                 # Whisper uses save_method=None for local 16-bit merged save
                 save_method = None
             else:  # 16-bit (FP16)
@@ -332,9 +348,7 @@ class ExportBackend:
                 ensure_dir(Path(save_directory))
 
                 self.current_model.save_pretrained_merged(
-                    save_directory,
-                    self.current_tokenizer,
-                    save_method=save_method
+                    save_directory, self.current_tokenizer, save_method = save_method
                 )
 
                 # Write export metadata so the Chat page can identify the base model
@@ -344,18 +358,23 @@ class ExportBackend:
             # Push to hub if requested
             if push_to_hub:
                 if not repo_id or not hf_token:
-                    return False, "Repository ID and Hugging Face token required for Hub upload"
+                    return (
+                        False,
+                        "Repository ID and Hugging Face token required for Hub upload",
+                    )
 
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
 
                 # Whisper uses save_method=None for local but "merged_16bit" for hub push
-                hub_save_method = save_method if save_method is not None else "merged_16bit"
+                hub_save_method = (
+                    save_method if save_method is not None else "merged_16bit"
+                )
                 self.current_model.push_to_hub_merged(
                     repo_id,
                     self.current_tokenizer,
-                    save_method=hub_save_method,
-                    token=hf_token,
-                    private=private
+                    save_method = hub_save_method,
+                    token = hf_token,
+                    private = private,
                 )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
@@ -364,16 +383,19 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error exporting merged model: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False, f"Export failed: {str(e)}"
 
-    def export_base_model(self,
-                         save_directory: str,
-                         push_to_hub: bool = False,
-                         repo_id: Optional[str] = None,
-                         hf_token: Optional[str] = None,
-                         private: bool = False,
-                         base_model_id: Optional[str] = None) -> Tuple[bool, str]:
+    def export_base_model(
+        self,
+        save_directory: str,
+        push_to_hub: bool = False,
+        repo_id: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        private: bool = False,
+        base_model_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
         Export base model (for non-PEFT models).
 
@@ -384,7 +406,10 @@ class ExportBackend:
             return False, "No model loaded. Please select a checkpoint first."
 
         if self.is_peft:
-            return False, "This is a PEFT model. Use 'Merged Model' export type instead."
+            return (
+                False,
+                "This is a PEFT model. Use 'Merged Model' export type instead.",
+            )
 
         try:
             # Save locally if requested
@@ -403,40 +428,47 @@ class ExportBackend:
             # Push to hub if requested
             if push_to_hub:
                 if not repo_id or not hf_token:
-                    return False, "Repository ID and Hugging Face token required for Hub upload"
+                    return (
+                        False,
+                        "Repository ID and Hugging Face token required for Hub upload",
+                    )
 
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
                 # Get base model name from request or model config
-                base_model = base_model_id or self.current_model.config._name_or_path or "unknown"
+                base_model = (
+                    base_model_id
+                    or self.current_model.config._name_or_path
+                    or "unknown"
+                )
 
                 # Create repo
-                hf_api = HfApi(token=hf_token)
+                hf_api = HfApi(token = hf_token)
                 repo_id = PushToHubMixin._create_repo(
                     PushToHubMixin,
-                    repo_id=repo_id,
-                    private=private,
-                    token=hf_token,
+                    repo_id = repo_id,
+                    private = private,
+                    token = hf_token,
                 )
                 username = repo_id.split("/")[0]
 
                 # Create and push model card
                 content = MODEL_CARD.format(
-                    username=username,
-                    base_model=base_model,
-                    model_type=self.current_model.config.model_type,
-                    method="",
-                    extra="unsloth",
+                    username = username,
+                    base_model = base_model,
+                    model_type = self.current_model.config.model_type,
+                    method = "",
+                    extra = "unsloth",
                 )
                 card = ModelCard(content)
-                card.push_to_hub(repo_id, token=hf_token, commit_message="Unsloth Model Card")
+                card.push_to_hub(
+                    repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                )
 
                 # Upload model files
                 if save_directory:
                     hf_api.upload_folder(
-                        folder_path=save_directory,
-                        repo_id=repo_id,
-                        repo_type="model"
+                        folder_path = save_directory, repo_id = repo_id, repo_type = "model"
                     )
                     logger.info(f"Model pushed successfully to {repo_id}")
                 else:
@@ -447,16 +479,18 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error exporting base model: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False, f"Export failed: {str(e)}"
 
-
-    def export_gguf(self,
-                    save_directory: str,
-                    quantization_method: str = "Q4_K_M",
-                    push_to_hub: bool = False,
-                    repo_id: Optional[str] = None,
-                    hf_token: Optional[str] = None) -> Tuple[bool, str]:
+    def export_gguf(
+        self,
+        save_directory: str,
+        quantization_method: str = "Q4_K_M",
+        push_to_hub: bool = False,
+        repo_id: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
         Export model in GGUF format.
 
@@ -505,17 +539,21 @@ class ExportBackend:
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
                     self.current_tokenizer,
-                    quantization_method=quant_method
+                    quantization_method = quant_method,
                 )
 
                 # Relocate GGUF artifacts into the export directory.
                 # convert_to_gguf writes .gguf files to cwd (repo root)
                 # because --outfile is a relative path like "model.Q4_K_M.gguf".
-                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
+                new_ggufs = (
+                    set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
+                )
                 for src in sorted(new_ggufs):
                     dest = os.path.join(abs_save_dir, os.path.basename(src))
                     shutil.move(src, dest)
-                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
+                    logger.info(
+                        f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
+                    )
 
                 # Flatten any .gguf files from subdirectories into abs_save_dir.
                 # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
@@ -528,7 +566,7 @@ class ExportBackend:
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
                     # Clean up the subdirectory (intermediate HF files, etc.)
-                    shutil.rmtree(str(sub), ignore_errors=True)
+                    shutil.rmtree(str(sub), ignore_errors = True)
                     logger.info(f"Cleaned up subdirectory: {sub.name}")
 
                 # Write export metadata so the Chat page can identify the base model
@@ -546,15 +584,18 @@ class ExportBackend:
             # Push to hub if requested
             if push_to_hub:
                 if not repo_id or not hf_token:
-                    return False, "Repository ID and Hugging Face token required for Hub upload"
+                    return (
+                        False,
+                        "Repository ID and Hugging Face token required for Hub upload",
+                    )
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
 
                 self.current_model.push_to_hub_gguf(
                     repo_id,
                     self.current_tokenizer,
-                    quantization_method=quant_method,
-                    token=hf_token
+                    quantization_method = quant_method,
+                    token = hf_token,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
@@ -563,15 +604,18 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False, f"GGUF export failed: {str(e)}"
 
-    def export_lora_adapter(self,
-                           save_directory: str,
-                           push_to_hub: bool = False,
-                           repo_id: Optional[str] = None,
-                           hf_token: Optional[str] = None,
-                           private: bool = False) -> Tuple[bool, str]:
+    def export_lora_adapter(
+        self,
+        save_directory: str,
+        push_to_hub: bool = False,
+        repo_id: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        private: bool = False,
+    ) -> Tuple[bool, str]:
         """
         Export LoRA adapter only (not merged).
 
@@ -598,19 +642,16 @@ class ExportBackend:
             # Push to hub if requested
             if push_to_hub:
                 if not repo_id or not hf_token:
-                    return False, "Repository ID and Hugging Face token required for Hub upload"
+                    return (
+                        False,
+                        "Repository ID and Hugging Face token required for Hub upload",
+                    )
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
-                self.current_model.push_to_hub(
-                    repo_id,
-                    token=hf_token,
-                    private=private
-                )
+                self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                 self.current_tokenizer.push_to_hub(
-                    repo_id,
-                    token=hf_token,
-                    private=private
+                    repo_id, token = hf_token, private = private
                 )
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
@@ -619,12 +660,14 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error exporting LoRA adapter: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False, f"Adapter export failed: {str(e)}"
 
 
 # Global export backend instance
 _export_backend = None
+
 
 def get_export_backend() -> ExportBackend:
     """Get or create the global export backend instance"""

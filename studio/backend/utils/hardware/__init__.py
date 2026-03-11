@@ -4,6 +4,7 @@
 """
 Hardware detection and GPU utilities
 """
+
 from .hardware import (
     DeviceType,
     DEVICE,
@@ -21,17 +22,17 @@ from .hardware import (
 )
 
 __all__ = [
-    'DeviceType',
-    'DEVICE',
-    'detect_hardware',
-    'get_device',
-    'is_apple_silicon',
-    'clear_gpu_cache',
-    'get_gpu_memory_info',
-    'log_gpu_memory',
-    'get_gpu_summary',
-    'get_package_versions',
-    'get_gpu_utilization',
-    'get_physical_gpu_count',
-    'safe_num_proc',
+    "DeviceType",
+    "DEVICE",
+    "detect_hardware",
+    "get_device",
+    "is_apple_silicon",
+    "clear_gpu_cache",
+    "get_gpu_memory_info",
+    "log_gpu_memory",
+    "get_gpu_summary",
+    "get_package_versions",
+    "get_gpu_utilization",
+    "get_physical_gpu_count",
+    "safe_num_proc",
 ]

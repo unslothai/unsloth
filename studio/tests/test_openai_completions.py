@@ -13,6 +13,7 @@ Validates:
 
 All tests mock the inference backend and bypass auth.
 """
+
 import sys
 import json
 from pathlib import Path
@@ -31,17 +32,20 @@ from main import app
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
-def _make_mock_backend(*, tokens: list[str] | None = None, active_model: str = "test-model"):
+
+def _make_mock_backend(
+    *, tokens: list[str] | None = None, active_model: str = "test-model"
+):
     """Build a mock InferenceBackend that yields preset tokens."""
     backend = MagicMock()
     backend.active_model_name = active_model
     backend.models = {active_model: {"is_vision": False}}
 
     def fake_generate(**kwargs):
-        for t in (tokens or ["Hello", "Hello world", "Hello world!"]):
+        for t in tokens or ["Hello", "Hello world", "Hello world!"]:
             yield t
 
-    backend.generate_chat_response = MagicMock(side_effect=fake_generate)
+    backend.generate_chat_response = MagicMock(side_effect = fake_generate)
     backend.reset_generation_state = MagicMock()
     return backend
 
@@ -51,7 +55,7 @@ def _parse_sse_data(raw: str) -> list[dict | str]:
     results = []
     for line in raw.split("\n"):
         if line.startswith("data: "):
-            payload = line[len("data: "):]
+            payload = line[len("data: ") :]
             if payload == "[DONE]":
                 results.append("[DONE]")
             else:
@@ -76,11 +80,11 @@ class TestStreamingChunkFormat:
     """Each SSE chunk must match the OpenAI chat.completion.chunk schema."""
 
     def test_chunks_have_required_fields(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["Hi"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["Hi"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={
+                json = {
                     "messages": [{"role": "user", "content": "Hello"}],
                     "stream": True,
                 },
@@ -102,51 +106,63 @@ class TestStreamingChunkFormat:
             assert "delta" in chunk["choices"][0]
 
     def test_first_chunk_has_role(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["Hi"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["Hi"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={"messages": [{"role": "user", "content": "Hello"}]},
+                json = {"messages": [{"role": "user", "content": "Hello"}]},
             )
 
-        chunks = [c for c in _parse_sse_data(resp.text) if isinstance(c, dict) and "choices" in c]
+        chunks = [
+            c
+            for c in _parse_sse_data(resp.text)
+            if isinstance(c, dict) and "choices" in c
+        ]
         first = chunks[0]
         assert first["choices"][0]["delta"].get("role") == "assistant"
 
     def test_last_chunk_has_stop_finish_reason(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["Done"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["Done"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={"messages": [{"role": "user", "content": "Hello"}]},
+                json = {"messages": [{"role": "user", "content": "Hello"}]},
             )
 
-        chunks = [c for c in _parse_sse_data(resp.text) if isinstance(c, dict) and "choices" in c]
+        chunks = [
+            c
+            for c in _parse_sse_data(resp.text)
+            if isinstance(c, dict) and "choices" in c
+        ]
         last = chunks[-1]
         assert last["choices"][0]["finish_reason"] == "stop"
         # Delta should be empty on the final chunk
         assert last["choices"][0]["delta"].get("content") is None
 
     def test_stream_ends_with_done(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["x"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["x"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={"messages": [{"role": "user", "content": "Hello"}]},
+                json = {"messages": [{"role": "user", "content": "Hello"}]},
             )
 
         all_data = _parse_sse_data(resp.text)
         assert all_data[-1] == "[DONE]"
 
     def test_consistent_id_across_chunks(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["a", "b", "c"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["a", "b", "c"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={"messages": [{"role": "user", "content": "Hello"}]},
+                json = {"messages": [{"role": "user", "content": "Hello"}]},
             )
 
-        chunks = [c for c in _parse_sse_data(resp.text) if isinstance(c, dict) and "choices" in c]
+        chunks = [
+            c
+            for c in _parse_sse_data(resp.text)
+            if isinstance(c, dict) and "choices" in c
+        ]
         ids = set(c["id"] for c in chunks)
         assert len(ids) == 1, "All chunks should share the same completion ID"
 
@@ -155,11 +171,11 @@ class TestStreamingHeaders:
     """Verify response headers for SSE proxy compatibility."""
 
     def test_headers(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["x"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["x"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={"messages": [{"role": "user", "content": "Hello"}]},
+                json = {"messages": [{"role": "user", "content": "Hello"}]},
             )
 
         assert resp.headers["content-type"].startswith("text/event-stream")
@@ -176,11 +192,11 @@ class TestNonStreaming:
     """When stream=false, return a single ChatCompletion JSON object."""
 
     def test_returns_json_object(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["Full response text"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["Full response text"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={
+                json = {
                     "messages": [{"role": "user", "content": "Hello"}],
                     "stream": False,
                 },
@@ -194,11 +210,11 @@ class TestNonStreaming:
         assert body["choices"][0]["finish_reason"] == "stop"
 
     def test_non_streaming_has_model(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["x"], active_model="my-model")
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["x"], active_model = "my-model")
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={
+                json = {
                     "messages": [{"role": "user", "content": "Hi"}],
                     "stream": False,
                 },
@@ -217,11 +233,11 @@ class TestSystemPromptExtraction:
     """System messages should be extracted and passed as system_prompt."""
 
     def test_system_message_extracted(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["ok"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["ok"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             client.post(
                 "/api/inference/chat/completions",
-                json={
+                json = {
                     "messages": [
                         {"role": "system", "content": "You are a pirate."},
                         {"role": "user", "content": "Hello"},
@@ -237,11 +253,11 @@ class TestSystemPromptExtraction:
         assert all(m["role"] != "system" for m in call_kwargs["messages"])
 
     def test_default_system_prompt_when_none(self, client: TestClient):
-        mock_backend = _make_mock_backend(tokens=["ok"])
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(tokens = ["ok"])
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             client.post(
                 "/api/inference/chat/completions",
-                json={
+                json = {
                     "messages": [{"role": "user", "content": "Hello"}],
                     "stream": False,
                 },
@@ -262,10 +278,10 @@ class TestErrorHandling:
     def test_no_model_loaded(self, client: TestClient):
         mock_backend = _make_mock_backend()
         mock_backend.active_model_name = None
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={"messages": [{"role": "user", "content": "Hi"}]},
+                json = {"messages": [{"role": "user", "content": "Hi"}]},
             )
 
         assert resp.status_code == 400
@@ -273,10 +289,10 @@ class TestErrorHandling:
 
     def test_only_system_messages_rejected(self, client: TestClient):
         mock_backend = _make_mock_backend()
-        with patch("routes.inference.get_inference_backend", return_value=mock_backend):
+        with patch("routes.inference.get_inference_backend", return_value = mock_backend):
             resp = client.post(
                 "/api/inference/chat/completions",
-                json={
+                json = {
                     "messages": [{"role": "system", "content": "You are a bot."}],
                 },
             )

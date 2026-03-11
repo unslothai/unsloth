@@ -14,6 +14,7 @@ from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
 )
+
 _IMAGE_CONTEXT_PATCHED = False
 
 
@@ -21,7 +22,9 @@ def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
     return base64.b64encode(bytes(value)).decode("utf-8")
 
 
-def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
+def _load_image_file_to_base64(
+    path_value: str, *, base_path: str | None = None
+) -> str | None:
     try:
         path = Path(path_value)
         candidates: list[Path] = []
@@ -53,7 +56,7 @@ def _pil_image_to_base64(value: Any) -> str | None:
     image_format = str(getattr(value, "format", "") or "").upper()
     if image_format not in {"PNG", "JPEG", "JPG", "WEBP", "GIF"}:
         image_format = "PNG"
-    value.save(buffer, format=image_format)
+    value.save(buffer, format = image_format)
     return _encode_bytes_to_base64(buffer.getvalue())
 
 
@@ -93,7 +96,7 @@ def _normalize_image_context_value(value: Any, *, base_path: str | None = None) 
 
         path_value = value.get("path")
         if isinstance(path_value, str) and path_value.strip():
-            if as_base64 := _load_image_file_to_base64(path_value, base_path=base_path):
+            if as_base64 := _load_image_file_to_base64(path_value, base_path = base_path):
                 return as_base64
             return path_value
 
@@ -116,8 +119,10 @@ def _apply_data_designer_image_context_patch() -> None:
 
     original_auto_resolve = ImageContext._auto_resolve_context_value
 
-    def _patched_auto_resolve(self: Any, context_value: Any, base_path: str | None) -> Any:
-        normalized = _normalize_image_context_value(context_value, base_path=base_path)
+    def _patched_auto_resolve(
+        self: Any, context_value: Any, base_path: str | None
+    ) -> Any:
+        normalized = _normalize_image_context_value(context_value, base_path = base_path)
         return original_auto_resolve(self, normalized, base_path)
 
     ImageContext._auto_resolve_context_value = _patched_auto_resolve
@@ -137,12 +142,12 @@ def build_model_providers(recipe: dict[str, Any]):
             api_key = os.getenv(api_key_env)
         providers.append(
             ModelProvider(
-                name=provider["name"],
-                endpoint=provider["endpoint"],
-                provider_type=provider.get("provider_type", "openai"),
-                api_key=api_key,
-                extra_headers=provider.get("extra_headers"),
-                extra_body=provider.get("extra_body"),
+                name = provider["name"],
+                endpoint = provider["endpoint"],
+                provider_type = provider.get("provider_type", "openai"),
+                api_key = api_key,
+                extra_headers = provider.get("extra_headers"),
+                extra_body = provider.get("extra_body"),
             )
         )
 
@@ -170,10 +175,10 @@ def build_mcp_providers(
                 args = []
             providers.append(
                 LocalStdioMCPProvider(
-                    name=str(provider.get("name", "")),
-                    command=str(provider.get("command", "")),
-                    args=[str(value) for value in args],
-                    env={str(key): str(value) for key, value in env.items()},
+                    name = str(provider.get("name", "")),
+                    command = str(provider.get("command", "")),
+                    args = [str(value) for value in args],
+                    env = {str(key): str(value) for key, value in env.items()},
                 )
             )
             continue
@@ -185,10 +190,10 @@ def build_mcp_providers(
                 api_key = os.getenv(str(api_key_env))
             providers.append(
                 MCPProvider(
-                    name=str(provider.get("name", "")),
-                    endpoint=str(provider.get("endpoint", "")),
-                    provider_type=str(provider_type),
-                    api_key=str(api_key) if api_key else None,
+                    name = str(provider.get("name", "")),
+                    endpoint = str(provider.get("endpoint", "")),
+                    provider_type = str(provider_type),
+                    api_key = str(api_key) if api_key else None,
                 )
             )
     return providers
@@ -209,8 +214,8 @@ def build_config_builder(recipe: dict[str, Any]):
     )
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
-        builder=builder,
-        specs=oxc_local_callable_specs,
+        builder = builder,
+        specs = oxc_local_callable_specs,
     )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
@@ -223,7 +228,7 @@ def build_config_builder(recipe: dict[str, Any]):
             continue
         kwargs = {k: v for k, v in processor.items() if k != "processor_type"}
         builder.add_processor(
-            processor_type=ProcessorType(processor_type_raw),
+            processor_type = ProcessorType(processor_type_raw),
             **kwargs,
         )
 
@@ -239,9 +244,9 @@ def create_data_designer(
     from data_designer.interface.data_designer import DataDesigner
 
     return DataDesigner(
-        artifact_path=artifact_path,
-        model_providers=build_model_providers(recipe),
-        mcp_providers=build_mcp_providers(recipe),
+        artifact_path = artifact_path,
+        model_providers = build_model_providers(recipe),
+        mcp_providers = build_mcp_providers(recipe),
     )
 
 
@@ -257,11 +262,11 @@ def preview_recipe(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
     builder = build_config_builder(recipe)
     designer = create_data_designer(recipe)
-    results = designer.preview(builder, num_records=num_records)
+    results = designer.preview(builder, num_records = num_records)
 
     dataset: list[dict[str, Any]] = []
     if results.dataset is not None:
-        raw_rows = results.dataset.to_dict(orient="records")
+        raw_rows = results.dataset.to_dict(orient = "records")
         dataset = [to_jsonable(row) for row in raw_rows]
 
     artifacts = (
@@ -272,7 +277,7 @@ def preview_recipe(
     analysis = (
         None
         if results.analysis is None
-        else to_jsonable(results.analysis.model_dump(mode="json"))
+        else to_jsonable(results.analysis.model_dump(mode = "json"))
     )
 
     return dataset, artifacts, analysis

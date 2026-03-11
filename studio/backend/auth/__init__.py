@@ -4,6 +4,7 @@
 """
 Authentication module for JWT-based auth with SQLite storage.
 """
+
 from .authentication import (
     create_access_token,
     create_refresh_token,
@@ -44,6 +45,3 @@ __all__ = [
     "hash_password",
     "verify_password",
 ]
-
-
-

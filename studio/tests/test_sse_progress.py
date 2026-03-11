@@ -12,6 +12,7 @@ Validates:
 
 All tests mock the training backend and bypass auth.
 """
+
 import sys
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,7 @@ from auth.authentication import get_current_subject
 
 
 # ── Fixtures ──────────────────────────────────────────────────────
+
 
 def _bypass_auth():
     """Dependency override that skips real JWT validation."""
@@ -85,6 +87,7 @@ def client():
 
 # ── SSE Parsing Helpers ───────────────────────────────────────────
 
+
 def parse_sse_events(raw: str) -> list[dict]:
     """
     Parse raw SSE text into a list of event dicts.
@@ -123,8 +126,8 @@ class TestSSERetryDirective:
     """The first thing the stream emits must be `retry: 3000`."""
 
     def test_retry_is_first_event(self, client: TestClient):
-        mock_backend = _make_mock_backend(is_active=False)
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(is_active = False)
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/progress")
 
         assert resp.status_code == 200
@@ -140,13 +143,13 @@ class TestSSEEventFields:
 
     def test_events_have_id_and_event_type(self, client: TestClient):
         mock_backend = _make_mock_backend(
-            is_active=False,
-            step_history=[1, 2, 3],
-            loss_history=[2.0, 1.5, 1.0],
-            lr_history=[1e-4, 1e-4, 1e-4],
-            total_steps=3,
+            is_active = False,
+            step_history = [1, 2, 3],
+            loss_history = [2.0, 1.5, 1.0],
+            lr_history = [1e-4, 1e-4, 1e-4],
+            total_steps = 3,
         )
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/progress")
 
         events = parse_sse_events(resp.text)
@@ -164,13 +167,13 @@ class TestSSENamedEventTypes:
 
     def test_idle_sends_progress_then_complete(self, client: TestClient):
         mock_backend = _make_mock_backend(
-            is_active=False,
-            step_history=[10],
-            loss_history=[1.5],
-            lr_history=[1e-4],
-            total_steps=10,
+            is_active = False,
+            step_history = [10],
+            loss_history = [1.5],
+            lr_history = [1e-4],
+            total_steps = 10,
         )
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/progress")
 
         events = parse_sse_events(resp.text)
@@ -181,8 +184,8 @@ class TestSSENamedEventTypes:
         assert "complete" in event_types
 
     def test_no_history_sends_complete(self, client: TestClient):
-        mock_backend = _make_mock_backend(is_active=False)
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(is_active = False)
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/progress")
 
         events = parse_sse_events(resp.text)
@@ -195,16 +198,16 @@ class TestSSELastEventIDResume:
 
     def test_replays_steps_after_last_event_id(self, client: TestClient):
         mock_backend = _make_mock_backend(
-            is_active=False,
-            step_history=[1, 2, 3, 4, 5],
-            loss_history=[2.5, 2.0, 1.5, 1.2, 1.0],
-            lr_history=[1e-4, 1e-4, 1e-4, 1e-4, 1e-4],
-            total_steps=5,
+            is_active = False,
+            step_history = [1, 2, 3, 4, 5],
+            loss_history = [2.5, 2.0, 1.5, 1.2, 1.0],
+            lr_history = [1e-4, 1e-4, 1e-4, 1e-4, 1e-4],
+            total_steps = 5,
         )
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get(
                 "/api/train/progress",
-                headers={"Last-Event-ID": "2"},
+                headers = {"Last-Event-ID": "2"},
             )
 
         events = parse_sse_events(resp.text)
@@ -223,13 +226,13 @@ class TestSSELastEventIDResume:
     def test_no_replay_without_header(self, client: TestClient):
         """Without Last-Event-ID, should start fresh (initial progress event)."""
         mock_backend = _make_mock_backend(
-            is_active=False,
-            step_history=[1, 2, 3],
-            loss_history=[2.0, 1.5, 1.0],
-            lr_history=[1e-4, 1e-4, 1e-4],
-            total_steps=3,
+            is_active = False,
+            step_history = [1, 2, 3],
+            loss_history = [2.0, 1.5, 1.0],
+            lr_history = [1e-4, 1e-4, 1e-4],
+            total_steps = 3,
         )
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/progress")
 
         events = parse_sse_events(resp.text)
@@ -240,25 +243,27 @@ class TestSSELastEventIDResume:
 
     def test_invalid_last_event_id_treated_as_fresh(self, client: TestClient):
         """Non-integer Last-Event-ID should be ignored gracefully."""
-        mock_backend = _make_mock_backend(is_active=False)
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(is_active = False)
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get(
                 "/api/train/progress",
-                headers={"Last-Event-ID": "not-a-number"},
+                headers = {"Last-Event-ID": "not-a-number"},
             )
 
         assert resp.status_code == 200
         events = parse_sse_events(resp.text)
         # Should still work — treated as a fresh connection
-        assert any(e.get("event") == "progress" or e.get("event") == "complete" for e in events)
+        assert any(
+            e.get("event") == "progress" or e.get("event") == "complete" for e in events
+        )
 
 
 class TestSSEResponseHeaders:
     """Verify SSE response headers for proxy compatibility."""
 
     def test_headers(self, client: TestClient):
-        mock_backend = _make_mock_backend(is_active=False)
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(is_active = False)
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/progress")
 
         assert resp.headers["content-type"].startswith("text/event-stream")
@@ -276,13 +281,13 @@ class TestStatusMetricHistory:
 
     def test_metric_history_populated_when_history_exists(self, client: TestClient):
         mock_backend = _make_mock_backend(
-            is_active=True,
-            step_history=[1, 2, 3, 4, 5],
-            loss_history=[2.5, 2.0, 1.5, 1.2, 1.0],
-            lr_history=[1e-4, 1e-4, 1e-4, 1e-4, 1e-4],
-            total_steps=10,
+            is_active = True,
+            step_history = [1, 2, 3, 4, 5],
+            loss_history = [2.5, 2.0, 1.5, 1.2, 1.0],
+            lr_history = [1e-4, 1e-4, 1e-4, 1e-4, 1e-4],
+            total_steps = 10,
         )
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/status")
 
         assert resp.status_code == 200
@@ -296,8 +301,8 @@ class TestStatusMetricHistory:
         assert mh["lr"] == [1e-4, 1e-4, 1e-4, 1e-4, 1e-4]
 
     def test_metric_history_null_when_no_history(self, client: TestClient):
-        mock_backend = _make_mock_backend(is_active=False)
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        mock_backend = _make_mock_backend(is_active = False)
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/status")
 
         assert resp.status_code == 200
@@ -307,13 +312,13 @@ class TestStatusMetricHistory:
     def test_status_still_returns_phase_and_details(self, client: TestClient):
         """Ensure adding metric_history didn't break existing fields."""
         mock_backend = _make_mock_backend(
-            is_active=True,
-            step_history=[5],
-            loss_history=[1.5],
-            lr_history=[1e-4],
-            total_steps=100,
+            is_active = True,
+            step_history = [5],
+            loss_history = [1.5],
+            lr_history = [1e-4],
+            total_steps = 100,
         )
-        with patch("routes.training.get_training_backend", return_value=mock_backend):
+        with patch("routes.training.get_training_backend", return_value = mock_backend):
             resp = client.get("/api/train/status")
 
         body = resp.json()
