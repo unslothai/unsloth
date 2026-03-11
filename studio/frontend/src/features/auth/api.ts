@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
+import {
+  clearAuthTokens,
+  getAuthToken,
+  getRefreshToken,
+  storeAuthTokens,
+} from "./session";
+
+type RefreshResponse = {
+  access_token: string;
+  refresh_token: string;
+};
+
+let isRedirecting = false;
+
+async function redirectToAuth(): Promise<void> {
+  if (isRedirecting) return;
+  isRedirecting = true;
+
+  let target = "/login";
+  try {
+    const res = await fetch("/api/auth/status");
+    if (res.ok) {
+      const data = (await res.json()) as { initialized: boolean };
+      if (!data.initialized) target = "/signup";
+    }
+  } catch {
+    // Fall through to /login on error
+  }
+
+  window.location.href = target;
+}
+
+export async function refreshSession(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+
+  try {
+    const response = await fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    if (!response.ok) {
+      clearAuthTokens();
+      return false;
+    }
+
+    const payload = (await response.json()) as RefreshResponse;
+    storeAuthTokens(payload.access_token, payload.refresh_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function authFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const accessToken = getAuthToken();
+  if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
+  }
+
+  const response = await fetch(input, { ...init, headers });
+  if (response.status !== 401) return response;
+
+  const refreshed = await refreshSession();
+  if (!refreshed) {
+    clearAuthTokens();
+    void redirectToAuth();
+    return response;
+  }
+
+  const retryHeaders = new Headers(init?.headers);
+  const newToken = getAuthToken();
+  if (newToken) {
+    retryHeaders.set("Authorization", `Bearer ${newToken}`);
+  } else {
+    clearAuthTokens();
+  }
+
+  return fetch(input, { ...init, headers: retryHeaders });
+}
+
+export function logout(): void {
+  clearAuthTokens();
+}
