@@ -351,6 +351,13 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3-30B-A3B-Thinking-2507",
         "Qwen/Qwen3-30B-A3B-Thinking-2507",
     ),
+    "qwen3.5": (
+        "unsloth/Qwen3.5-0.8B",
+        "unsloth/Qwen3.5-2B",
+        "unsloth/Qwen3.5-4B",
+        "unsloth/Qwen3.5-27B",
+        "unsloth/Qwen3.5-35B-A3B",
+    ),
     "zephyr": (
         "unsloth/zephyr-sft-bnb-4bit",
         "unsloth/zephyr-sft",
@@ -424,8 +431,8 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "response": "<|im_start|>assistant\n<think>\n",
     },
     "qwen3-instruct": {
-        "instruction": "1user\n",
-        "response": "1assistant\n",
+        "instruction": "<|im_start|>user\n",
+        "response": "<|im_start|>assistant\n",
     },
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
