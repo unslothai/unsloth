@@ -526,7 +526,31 @@ if ($NeedNode) {
 Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
 
 # ============================================
-# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
+# 1g. FFmpeg (required for audio model support)
+# ============================================
+$HasFFmpeg = $null -ne (Get-Command ffmpeg -ErrorAction SilentlyContinue)
+if (-not $HasFFmpeg) {
+    Write-Host "FFmpeg not found -- installing via winget..." -ForegroundColor Yellow
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        try {
+            winget install -e --id Gyan.FFmpeg --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            Refresh-Environment
+            $HasFFmpeg = $null -ne (Get-Command ffmpeg -ErrorAction SilentlyContinue)
+        } catch { }
+    }
+    if (-not $HasFFmpeg) {
+        Write-Host "[WARN] FFmpeg could not be installed automatically." -ForegroundColor Yellow
+        Write-Host "       Install FFmpeg from https://ffmpeg.org/download.html and re-run." -ForegroundColor Yellow
+    } else {
+        Write-Host "[OK] FFmpeg installed: $(ffmpeg -version | Select-Object -First 1)" -ForegroundColor Green
+    }
+} else {
+    Write-Host "[OK] FFmpeg found: $(ffmpeg -version | Select-Object -First 1)" -ForegroundColor Green
+}
+
+# ============================================
+# 1h. Python (>= 3.11 and < 3.14, matching setup.sh)
 # ============================================
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PythonOk = $false
