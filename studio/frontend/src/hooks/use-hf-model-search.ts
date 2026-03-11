@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
+// Copyright © 2025 Unsloth AI
+
+import type { PipelineType } from "@huggingface/hub";
+import { listModels } from "@huggingface/hub";
+import { useCallback, useMemo } from "react";
+import { useHfPaginatedSearch } from "./use-hf-paginated-search";
+
+export interface HfModelResult {
+  id: string;
+  downloads: number;
+  likes: number;
+  totalParams?: number;
+}
+
+const EXCLUDED_TAGS = new Set([
+  "gptq",
+  "awq",
+  "exl2",
+  "mlx",
+  "onnx",
+  "openvino",
+  "coreml",
+  "tflite",
+  "ctranslate2",
+]);
+
+// Embedding / sentence-transformer models ship with onnx/openvino as additional
+// export formats — they should not be excluded by the tag check above.
+const EMBEDDING_TAGS = new Set([
+  "sentence-transformers",
+  "feature-extraction",
+]);
+
+function withPopularitySort(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> {
+  const rawUrl =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  const url = new URL(rawUrl);
+
+  if (!url.searchParams.has("sort")) {
+    url.searchParams.set("sort", "downloads");
+  }
+  if (!url.searchParams.has("direction")) {
+    url.searchParams.set("direction", "-1");
+  }
+
+  return fetch(url, init);
+}
+
+function makeMapModel(excludeGguf: boolean) {
+  return (raw: unknown): HfModelResult | null => {
+    const m = raw as {
+      name: string;
+      downloads: number;
+      likes: number;
+      safetensors?: { total: number };
+      tags?: string[];
+    };
+    const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
+    if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
+      return null;
+    }
+    if (excludeGguf && m.tags?.includes("gguf")) {
+      return null;
+    }
+    return {
+      id: m.name,
+      downloads: m.downloads,
+      likes: m.likes,
+      totalParams: m.safetensors?.total,
+    };
+  };
+}
+
+/** Number of unsloth results to pull up-front before yielding general results. */
+const UNSLOTH_PREFETCH = 20;
+
+/**
+ * Creates a merged async generator that yields unsloth-owned models first,
+ * then general results (with deduplication).
+ */
+async function* mergedModelIterator(
+  query: string,
+  task?: PipelineType,
+  accessToken?: string,
+): AsyncGenerator<unknown> {
+  const common = {
+    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    fetch: withPopularitySort,
+    ...(accessToken ? { credentials: { accessToken } } : {}),
+  };
+
+  // Fire both iterators immediately (parallel network requests on first pull)
+  const unslothIter = listModels({
+    search: { query, owner: "unsloth", ...(task ? { task } : {}) },
+    ...common,
+  });
+  const generalIter = listModels({
+    search: { query, ...(task ? { task } : {}) },
+    ...common,
+  });
+
+  // Phase 1: pull & yield unsloth models first
+  const seen = new Set<string>();
+  let count = 0;
+  for await (const model of unslothIter) {
+    const m = model as { name?: string };
+    if (m.name) seen.add(m.name);
+    yield model;
+    count++;
+    if (count >= UNSLOTH_PREFETCH) break;
+  }
+
+  // Phase 2: yield general results, skipping already-seen unsloth models
+  for await (const model of generalIter) {
+    const m = model as { name?: string };
+    if (m.name && seen.has(m.name)) continue;
+    yield model;
+  }
+}
+
+export function useHfModelSearch(
+  query: string,
+  options?: { task?: PipelineType; accessToken?: string; excludeGguf?: boolean },
+) {
+  const { task, accessToken, excludeGguf = false } = options ?? {};
+
+  const createIter = useCallback(
+    () => {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        // No query → show default unsloth models
+        return listModels({
+          search: { owner: "unsloth", ...(task ? { task } : {}) },
+          additionalFields: ["safetensors", "tags"],
+          fetch: withPopularitySort,
+          ...(accessToken ? { credentials: { accessToken } } : {}),
+        }) as AsyncGenerator<unknown>;
+      }
+      // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
+      return mergedModelIterator(trimmed, undefined, accessToken) as AsyncGenerator<unknown>;
+    },
+    [query, task, accessToken],
+  );
+
+  const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
+  const search = useHfPaginatedSearch(createIter, mapModel);
+
+  // Secondary sort guarantee: unsloth models always float to the top
+  const results = useMemo(
+    () =>
+      [...search.results].sort((a, b) => {
+        const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
+        const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
+        return aFirst - bFirst;
+      }),
+    [search.results],
+  );
+
+  return { ...search, results };
+}
+
