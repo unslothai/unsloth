@@ -36,14 +36,14 @@ except Exception:
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
 _XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
 
-# Cache for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
-_PACKED_INFO_CACHE: dict = {"seq_lengths": None, "result": None}
+# Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
+_PACKED_INFO_CACHE: dict = {}
 
-# Cache for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
-_SDPA_MASK_CACHE: dict = {"seq_lengths": None, "params": None, "mask": None}
+# Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
+_SDPA_MASK_CACHE: dict = {}
 
-# Cache for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
-_XFORMERS_BLOCK_MASK_CACHE: dict = {"seq_lengths": None, "params": None, "mask": None}
+# Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
+_XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
 
 def _window_cache_key(sliding_window: Optional[int]) -> int:
@@ -233,8 +233,9 @@ def get_packed_info_from_kwargs(
     if seq_lengths is None:
         return None
 
-    if _PACKED_INFO_CACHE["seq_lengths"] is seq_lengths:
-        return _PACKED_INFO_CACHE["result"]
+    entry = _PACKED_INFO_CACHE.get(device)
+    if entry is not None and entry["seq_lengths"] is seq_lengths:
+        return entry["result"]
 
     lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
     cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
@@ -242,8 +243,7 @@ def get_packed_info_from_kwargs(
 
     max_seqlen = int(lengths.max().item())
     result = (lengths, cu_seqlens, max_seqlen)
-    _PACKED_INFO_CACHE["seq_lengths"] = seq_lengths
-    _PACKED_INFO_CACHE["result"] = result
+    _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
     return result
 
 
@@ -258,12 +258,15 @@ def build_xformers_block_causal_mask(
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
         # Cache the mask to avoid repeated D2H sync across layers
+        device = seq_lengths.device
         params = (sliding_window,)
+        entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if (
-            _XFORMERS_BLOCK_MASK_CACHE["seq_lengths"] is seq_lengths
-            and _XFORMERS_BLOCK_MASK_CACHE["params"] == params
+            entry is not None
+            and entry["seq_lengths"] is seq_lengths
+            and entry["params"] == params
         ):
-            return _XFORMERS_BLOCK_MASK_CACHE["mask"]
+            return entry["mask"]
 
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
         if lengths_tensor.numel() == 0:
@@ -271,9 +274,7 @@ def build_xformers_block_causal_mask(
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
         mask = _get_cached_block_mask(lengths, sliding_window)
 
-        _XFORMERS_BLOCK_MASK_CACHE["seq_lengths"] = seq_lengths
-        _XFORMERS_BLOCK_MASK_CACHE["params"] = params
-        _XFORMERS_BLOCK_MASK_CACHE["mask"] = mask
+        _XFORMERS_BLOCK_MASK_CACHE[device] = {"seq_lengths": seq_lengths, "params": params, "mask": mask}
     else:
         mask = base_mask
 
@@ -296,12 +297,14 @@ def build_sdpa_packed_attention_mask(
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
 
-    params = (dtype, device, sliding_window)
+    params = (dtype, sliding_window)
+    entry = _SDPA_MASK_CACHE.get(device)
     if (
-        _SDPA_MASK_CACHE["seq_lengths"] is seq_lengths
-        and _SDPA_MASK_CACHE["params"] == params
+        entry is not None
+        and entry["seq_lengths"] is seq_lengths
+        and entry["params"] == params
     ):
-        return _SDPA_MASK_CACHE["mask"]
+        return entry["mask"]
 
     total_tokens = int(seq_lengths.sum().item())
     mask = torch.full(
@@ -333,9 +336,7 @@ def build_sdpa_packed_attention_mask(
         offset += length
 
     result = mask.unsqueeze(0).unsqueeze(0)
-    _SDPA_MASK_CACHE["seq_lengths"] = seq_lengths
-    _SDPA_MASK_CACHE["params"] = params
-    _SDPA_MASK_CACHE["mask"] = result
+    _SDPA_MASK_CACHE[device] = {"seq_lengths": seq_lengths, "params": params, "mask": result}
     return result
 
 
