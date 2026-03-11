@@ -21,6 +21,7 @@ environment.yaml
 unsloth_compiled_cache/
 
 # ML artifacts (large files)
+feature/
 outputs/
 exports/
 /datasets/
@@ -71,3 +72,5 @@ studio/backend/tests/
 log_rtx.txt
 log.txt
 setup_leo.sh
+server.pid
+*.log
