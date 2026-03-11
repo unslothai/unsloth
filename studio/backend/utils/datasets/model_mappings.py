@@ -419,9 +419,13 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<start_of_turn>user\n",
         "response": "<start_of_turn>model\n",
     },
-    "qwen3-instruct": {
+    "qwen3.5": {
         "instruction": "<|im_start|>user\n",
-        "response": "<|im_start|>assistant\n",
+        "response": "<|im_start|>assistant\n<think>\n",
+    },
+    "qwen3-instruct": {
+        "instruction": "1user\n",
+        "response": "1assistant\n",
     },
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
