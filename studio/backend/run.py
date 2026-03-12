@@ -72,7 +72,7 @@ def _resolve_external_ip() -> str:
 def run_server(
     host: str = "0.0.0.0",
     port: int = 8000,
-    frontend_path: Path = "studio/frontend/dist",
+    frontend_path: Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
 ):
     """
@@ -145,7 +145,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--frontend",
         type = str,
-        default = "studio/frontend/dist",
+        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
