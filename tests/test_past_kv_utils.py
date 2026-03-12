@@ -5,6 +5,7 @@ Self-contained — does NOT import unsloth, so runs without a GPU.
 Run with:
     python -m pytest tests/test_past_kv_utils.py -v
 """
+
 import unittest
 import torch
 from transformers.cache_utils import DynamicCache, Cache
@@ -13,6 +14,7 @@ from transformers.cache_utils import DynamicCache, Cache
 # ── Inline copies of the functions under test ──────────────────────────
 # These match the implementations in unsloth/models/llama.py exactly.
 # Kept inline so the test suite can run on any machine (no GPU needed).
+
 
 def _ensure_cache_is_dynamic(past_key_values):
     """Convert list/tuple of (K, V) pairs to DynamicCache for transformers v5 compat."""
@@ -34,14 +36,15 @@ def _slice_position_ids(position_ids, input_ids):
         return None
     if position_ids.dim() == 2:
         if position_ids.shape[1] > input_ids.shape[1]:
-            position_ids = position_ids[:, -input_ids.shape[1]:]
+            position_ids = position_ids[:, -input_ids.shape[1] :]
     elif position_ids.dim() == 1:
         if position_ids.shape[0] > input_ids.shape[1]:
-            position_ids = position_ids[-input_ids.shape[1]:]
+            position_ids = position_ids[-input_ids.shape[1] :]
     return position_ids
 
 
 # ── Tests ──────────────────────────────────────────────────────────────
+
 
 class TestEnsureCacheIsDynamic(unittest.TestCase):
     """Tests for _ensure_cache_is_dynamic conversion utility."""
@@ -102,18 +105,18 @@ class TestSlicePositionIds(unittest.TestCase):
     """Tests for _slice_position_ids utility."""
 
     def test_none_passthrough(self):
-        input_ids = torch.zeros(1, 5, dtype=torch.long)
+        input_ids = torch.zeros(1, 5, dtype = torch.long)
         self.assertIsNone(_slice_position_ids(None, input_ids))
 
     def test_2d_no_slice_needed(self):
-        input_ids = torch.zeros(1, 10, dtype=torch.long)
+        input_ids = torch.zeros(1, 10, dtype = torch.long)
         position_ids = torch.arange(10).unsqueeze(0)
         result = _slice_position_ids(position_ids, input_ids)
         self.assertTrue(torch.equal(result, position_ids))
 
     def test_2d_slice_needed(self):
         """position_ids longer than input_ids — should take last N."""
-        input_ids = torch.zeros(1, 3, dtype=torch.long)
+        input_ids = torch.zeros(1, 3, dtype = torch.long)
         position_ids = torch.arange(10).unsqueeze(0)  # shape (1, 10)
         result = _slice_position_ids(position_ids, input_ids)
         self.assertEqual(result.shape, (1, 3))
@@ -121,13 +124,13 @@ class TestSlicePositionIds(unittest.TestCase):
         self.assertTrue(torch.equal(result, expected))
 
     def test_1d_no_slice_needed(self):
-        input_ids = torch.zeros(1, 5, dtype=torch.long)
+        input_ids = torch.zeros(1, 5, dtype = torch.long)
         position_ids = torch.arange(5)
         result = _slice_position_ids(position_ids, input_ids)
         self.assertTrue(torch.equal(result, position_ids))
 
     def test_1d_slice_needed(self):
-        input_ids = torch.zeros(1, 3, dtype=torch.long)
+        input_ids = torch.zeros(1, 3, dtype = torch.long)
         position_ids = torch.arange(10)  # shape (10,)
         result = _slice_position_ids(position_ids, input_ids)
         self.assertEqual(result.shape, (3,))
@@ -136,14 +139,14 @@ class TestSlicePositionIds(unittest.TestCase):
 
     def test_shorter_position_ids_passthrough(self):
         """position_ids shorter than input_ids — should pass through unchanged."""
-        input_ids = torch.zeros(1, 10, dtype=torch.long)
+        input_ids = torch.zeros(1, 10, dtype = torch.long)
         position_ids = torch.arange(5).unsqueeze(0)
         result = _slice_position_ids(position_ids, input_ids)
         self.assertTrue(torch.equal(result, position_ids))
 
     def test_exact_match(self):
         """Exact same length — no slicing."""
-        input_ids = torch.zeros(2, 7, dtype=torch.long)
+        input_ids = torch.zeros(2, 7, dtype = torch.long)
         position_ids = torch.arange(7).unsqueeze(0).expand(2, -1)
         result = _slice_position_ids(position_ids, input_ids)
         self.assertEqual(result.shape, (2, 7))

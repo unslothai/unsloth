@@ -13,6 +13,7 @@ The longer the conversation history, the bigger the speedup.
 Run in Colab (T4/A100):
     python examples/kv_cache_multiturn_benchmark.py
 """
+
 import torch
 import time
 from unsloth import FastLanguageModel
@@ -349,7 +350,7 @@ CONVERSATION_HISTORY = [
 ]
 
 
-def run_benchmark(model, tokenizer, history_turns, new_question, num_runs=5):
+def run_benchmark(model, tokenizer, history_turns, new_question, num_runs = 5):
     """
     Run a single benchmark: compare baseline vs KV cache generation.
     Returns (time_baseline, time_kv, num_history_tokens, outputs_match).
@@ -359,14 +360,14 @@ def run_benchmark(model, tokenizer, history_turns, new_question, num_runs=5):
 
     # Tokenize history and full conversation
     text_history = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=False
+        history, tokenize = False, add_generation_prompt = False
     )
     text_full = tokenizer.apply_chat_template(
-        history + new_msg, tokenize=False, add_generation_prompt=True
+        history + new_msg, tokenize = False, add_generation_prompt = True
     )
 
-    inputs_history = tokenizer(text_history, return_tensors="pt").to("cuda")
-    inputs_full = tokenizer(text_full, return_tensors="pt").to("cuda")
+    inputs_history = tokenizer(text_history, return_tensors = "pt").to("cuda")
+    inputs_full = tokenizer(text_full, return_tensors = "pt").to("cuda")
 
     len_history = inputs_history.input_ids.shape[1]
     len_full = inputs_full.input_ids.shape[1]
@@ -382,14 +383,14 @@ def run_benchmark(model, tokenizer, history_turns, new_question, num_runs=5):
 
     # Pre-compute KV cache (this cost is amortized over many requests)
     with torch.no_grad():
-        outputs_history = model(**inputs_history, use_cache=True)
+        outputs_history = model(**inputs_history, use_cache = True)
         cached_kv = outputs_history.past_key_values
 
-    gen_kwargs = dict(max_new_tokens=50, use_cache=True, do_sample=False)
+    gen_kwargs = dict(max_new_tokens = 50, use_cache = True, do_sample = False)
 
     # Warmup both paths
-    model.generate(**inputs_full, max_new_tokens=1)
-    model.generate(**inputs_full, max_new_tokens=1, past_key_values=cached_kv)
+    model.generate(**inputs_full, max_new_tokens = 1)
+    model.generate(**inputs_full, max_new_tokens = 1, past_key_values = cached_kv)
     torch.cuda.synchronize()
 
     # Benchmark baseline (no KV cache — re-processes all history tokens)
@@ -409,19 +410,19 @@ def run_benchmark(model, tokenizer, history_turns, new_question, num_runs=5):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         output_kv = model.generate(
-            **inputs_full, past_key_values=cached_kv, **gen_kwargs
+            **inputs_full, past_key_values = cached_kv, **gen_kwargs
         )
         torch.cuda.synchronize()
         times_kv.append(time.perf_counter() - t0)
 
     # Decode outputs
     text_baseline = tokenizer.decode(
-        output_baseline[0][len_full:], skip_special_tokens=True
+        output_baseline[0][len_full:], skip_special_tokens = True
     )
     if output_kv.shape[1] > len_full:
-        text_kv = tokenizer.decode(output_kv[0][len_full:], skip_special_tokens=True)
+        text_kv = tokenizer.decode(output_kv[0][len_full:], skip_special_tokens = True)
     else:
-        text_kv = tokenizer.decode(output_kv[0], skip_special_tokens=True)
+        text_kv = tokenizer.decode(output_kv[0], skip_special_tokens = True)
 
     # Use median for stable timing
     time_baseline = sorted(times_baseline)[len(times_baseline) // 2]
@@ -446,10 +447,10 @@ def main():
 
     print(f"Loading {model_name}...")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
-        max_seq_length=max_seq_length,
-        dtype=None,
-        load_in_4bit=True,
+        model_name = model_name,
+        max_seq_length = max_seq_length,
+        dtype = None,
+        load_in_4bit = True,
     )
     FastLanguageModel.for_inference(model)
 
@@ -457,8 +458,8 @@ def main():
     # We test with 4, 8, 12, and all 16 messages of history.
     # Each step roughly doubles the cached token count.
     test_cases = [
-        (4,  "What should I look at next?"),
-        (8,  "Can you recap what we've covered so far?"),
+        (4, "What should I look at next?"),
+        (8, "Can you recap what we've covered so far?"),
         (12, "What's the single most impactful optimization?"),
         (16, "Give me a 3-step action plan to go to production."),
     ]
@@ -473,7 +474,7 @@ def main():
         num_turns = num_msgs // 2  # user+assistant pairs
         print(f"\n{'─' * 72}")
         print(f"  Conversation: {num_msgs} messages ({num_turns} turns)")
-        print(f"  New question: \"{question}\"")
+        print(f'  New question: "{question}"')
         print(f"{'─' * 72}")
 
         r = run_benchmark(model, tokenizer, num_msgs, question)
@@ -496,7 +497,9 @@ def main():
     print(f"\n{'=' * 72}")
     print("  SUMMARY")
     print(f"{'=' * 72}")
-    print(f"  {'History':>8} {'New':>6} {'Baseline':>10} {'KV Cache':>10} {'Speedup':>8} {'Match':>6}")
+    print(
+        f"  {'History':>8} {'New':>6} {'Baseline':>10} {'KV Cache':>10} {'Speedup':>8} {'Match':>6}"
+    )
     print(f"  {'tokens':>8} {'tokens':>6} {'(sec)':>10} {'(sec)':>10} {'':>8} {'':>6}")
     print(f"  {'─' * 8} {'─' * 6} {'─' * 10} {'─' * 10} {'─' * 8} {'─' * 6}")
     for r in results:
