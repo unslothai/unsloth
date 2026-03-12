@@ -608,7 +608,7 @@ class FastBaseModel:
             model_class = auto_model._model_mapping[auto_config.__class__]
         except Exception:
             model_class = None
-            
+
         attn_impl = determine_attention_implementation(model_class, auto_config)
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
