@@ -152,9 +152,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    kwargs = dict(host = host, port = port, silent = silent)
-    if frontend is not None:
-        kwargs["frontend_path"] = frontend
+    kwargs = dict(host = args.host, port = args.port, silent = args.silent)
+    if args.frontend is not None:
+        kwargs["frontend_path"] = Path(args.frontend)
     run_server(**kwargs)
 
     # Keep running
