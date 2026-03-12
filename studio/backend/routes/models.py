@@ -210,27 +210,27 @@ async def list_local_models(
     """
     List local model candidates from custom models dir and HF cache.
     """
+    # Validate models_dir before any filesystem access
+    models_root = Path(models_dir).expanduser().resolve()
+    hf_cache_dir = _resolve_hf_cache_dir()
+
+    allowed_roots = [Path("./models").resolve(), hf_cache_dir]
     try:
-        models_root = Path(models_dir).expanduser().resolve()
-        hf_cache_dir = _resolve_hf_cache_dir()
+        from utils.paths import studio_root, outputs_root
 
-        # Validate models_dir is within allowed roots to prevent path traversal
-        allowed_roots = [Path("./models").resolve(), hf_cache_dir]
-        try:
-            from utils.paths import studio_root, outputs_root
+        allowed_roots.extend([studio_root(), outputs_root()])
+    except Exception:
+        pass
+    if not any(
+        models_root == root or models_root.is_relative_to(root)
+        for root in allowed_roots
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Directory not allowed",
+        )
 
-            allowed_roots.extend([studio_root(), outputs_root()])
-        except Exception:
-            pass
-        if not any(
-            models_root == root or models_root.is_relative_to(root)
-            for root in allowed_roots
-        ):
-            raise HTTPException(
-                status_code = 403,
-                detail = "Directory not allowed",
-            )
-
+    try:
         local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
 
         deduped: dict[str, LocalModelInfo] = {}
