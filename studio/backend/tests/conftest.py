@@ -6,6 +6,7 @@ Shared pytest configuration for the backend test suite.
 Ensures that the backend root is on sys.path so that
 `import utils.utils` (and similar flat imports) resolve correctly.
 """
+
 import sys
 from pathlib import Path
 

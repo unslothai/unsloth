@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Relax strict metadata pins so pip check matches known working single-env stack.
 
 Why:
@@ -48,13 +49,13 @@ def metadata_path(dist_name: str) -> Path | None:
 
 
 def patch_file(path: Path) -> bool:
-    original = path.read_text(encoding="utf-8")
+    original = path.read_text(encoding = "utf-8")
     updated = original
     for pattern, repl in PATCHES:
         updated = pattern.sub(repl, updated)
     if updated == original:
         return False
-    path.write_text(updated, encoding="utf-8")
+    path.write_text(updated, encoding = "utf-8")
     return True
 
 

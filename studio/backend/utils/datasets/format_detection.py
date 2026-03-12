@@ -13,7 +13,10 @@ import re
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
-    return re.search(r'\b' + re.escape(keyword) + r'\b', col_name, re.IGNORECASE) is not None
+    return (
+        re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE)
+        is not None
+    )
 
 
 def detect_dataset_format(dataset):
@@ -37,7 +40,7 @@ def detect_dataset_format(dataset):
             "format": "alpaca",
             "chat_column": None,
             "needs_standardization": False,
-            "sample_keys": []
+            "sample_keys": [],
         }
 
     # Check for chat-based formats (messages or conversations)
@@ -65,7 +68,7 @@ def detect_dataset_format(dataset):
                         "format": "sharegpt",
                         "chat_column": chat_column,
                         "needs_standardization": True,
-                        "sample_keys": list(msg_keys)
+                        "sample_keys": list(msg_keys),
                     }
 
                 # ChatML uses "role" and "content"
@@ -74,7 +77,7 @@ def detect_dataset_format(dataset):
                         "format": "chatml",
                         "chat_column": chat_column,
                         "needs_standardization": False,
-                        "sample_keys": list(msg_keys)
+                        "sample_keys": list(msg_keys),
                     }
 
                 # Unknown structure but has chat column
@@ -83,7 +86,7 @@ def detect_dataset_format(dataset):
                         "format": "unknown",
                         "chat_column": chat_column,
                         "needs_standardization": None,
-                        "sample_keys": list(msg_keys)
+                        "sample_keys": list(msg_keys),
                     }
         except Exception as e:
             return {
@@ -91,7 +94,7 @@ def detect_dataset_format(dataset):
                 "chat_column": chat_column,
                 "needs_standardization": None,
                 "sample_keys": [],
-                "error": str(e)
+                "error": str(e),
             }
 
     # No recognized format
@@ -99,7 +102,7 @@ def detect_dataset_format(dataset):
         "format": "unknown",
         "chat_column": None,
         "needs_standardization": None,
-        "sample_keys": []
+        "sample_keys": [],
     }
 
 
@@ -120,49 +123,86 @@ def detect_custom_format_heuristic(dataset):
 
     # Keywords
     assistant_words = [
-        'output', 'answer', 'response', 'assistant', 'completion',
-        'expected', 'recommendation', 'reply', 'result', 'target',
-        'solution', 'explanation', 'solve'
+        "output",
+        "answer",
+        "response",
+        "assistant",
+        "completion",
+        "expected",
+        "recommendation",
+        "reply",
+        "result",
+        "target",
+        "solution",
+        "explanation",
+        "solve",
     ]
 
     # Split into high/low priority
     user_words_high_priority = [
-        'input', 'question', 'query', 'prompt', 'instruction',
-        'request', 'snippet', 'user', 'text',
-        'problem', 'exercise'
+        "input",
+        "question",
+        "query",
+        "prompt",
+        "instruction",
+        "request",
+        "snippet",
+        "user",
+        "text",
+        "problem",
+        "exercise",
     ]
-    user_words_low_priority = ['task']  # Ambiguous - can be user OR system
+    user_words_low_priority = ["task"]  # Ambiguous - can be user OR system
     user_words = user_words_high_priority + user_words_low_priority
 
     system_words = [
-        'system', 'context', 'description', 'persona', 'role',
-        'template', 'task'  # Also in system
+        "system",
+        "context",
+        "description",
+        "persona",
+        "role",
+        "template",
+        "task",  # Also in system
     ]
 
     # Metadata columns to ignore
     metadata_exact_match = {
-        'id', 'idx', 'index', 'key', 'timestamp', 'date',
-        'metadata', 'source', 'kind', 'type', 'category',
-        'score', 'label', 'tag', 'inference_mode'
+        "id",
+        "idx",
+        "index",
+        "key",
+        "timestamp",
+        "date",
+        "metadata",
+        "source",
+        "kind",
+        "type",
+        "category",
+        "score",
+        "label",
+        "tag",
+        "inference_mode",
     }
 
     metadata_prefix_patterns = [
-        'problem_type', 'problem_source',
-        'generation_model', 'pass_rate',
+        "problem_type",
+        "problem_source",
+        "generation_model",
+        "pass_rate",
     ]
 
     priority_patterns = {
-        'generated': 100,
-        'gen_': 90,
-        'model_': 80,
-        'predicted': 70,
-        'completion': 60,
+        "generated": 100,
+        "gen_": 90,
+        "model_": 80,
+        "predicted": 70,
+        "completion": 60,
     }
 
     def has_keyword(col_name, keywords):
         """Check if any keyword appears in column name."""
         col_lower = col_name.lower()
-        col_normalized = col_lower.replace('_', '').replace('-', '').replace(' ', '')
+        col_normalized = col_lower.replace("_", "").replace("-", "").replace(" ", "")
 
         for keyword in keywords:
             if keyword in col_lower or keyword in col_normalized:
@@ -180,13 +220,16 @@ def detect_custom_format_heuristic(dataset):
             return True
 
         for pattern in metadata_prefix_patterns:
-            if col_lower.startswith(pattern.split('_')[0] + '_') and col_lower != pattern:
-                if '_' in col_lower:
-                    prefix = col_lower.split('_')[0]
-                    if prefix in ['generation', 'pass', 'inference']:
+            if (
+                col_lower.startswith(pattern.split("_")[0] + "_")
+                and col_lower != pattern
+            ):
+                if "_" in col_lower:
+                    prefix = col_lower.split("_")[0]
+                    if prefix in ["generation", "pass", "inference"]:
                         return True
 
-        if len(col_lower) <= 2 and not col_lower in ['qa', 'q', 'a']:
+        if len(col_lower) <= 2 and not col_lower in ["qa", "q", "a"]:
             return True
 
         return False
@@ -221,16 +264,18 @@ def detect_custom_format_heuristic(dataset):
         score += 10
 
         # Penalize ambiguous keywords when scoring for user
-        if role_type == 'user':
+        if role_type == "user":
             col_lower = col_name.lower()
             # If column is ONLY "task" (or task_xxx), give it lower priority for user role
-            if 'task' in col_lower and not any(kw in col_lower for kw in user_words_high_priority):
+            if "task" in col_lower and not any(
+                kw in col_lower for kw in user_words_high_priority
+            ):
                 score -= 15  # Significant penalty so other user columns win
 
         priority_bonus = get_priority_score(col_name)
         score += priority_bonus
 
-        if role_type in ['assistant', 'user']:
+        if role_type in ["assistant", "user"]:
             avg_length = get_content_length(col_name)
 
             if num_candidates > 1:
@@ -256,20 +301,24 @@ def detect_custom_format_heuristic(dataset):
     content_columns = [col for col in all_columns if not is_metadata(col)]
 
     # Count candidates first
-    assistant_potential = [col for col in content_columns if has_keyword(col, assistant_words)]
+    assistant_potential = [
+        col for col in content_columns if has_keyword(col, assistant_words)
+    ]
     user_potential = [col for col in content_columns if has_keyword(col, user_words)]
 
     # STEP 1: Find best ASSISTANT column
     assistant_candidates = []
     for col in assistant_potential:
-        score = score_column(col, assistant_words, 'assistant', len(assistant_potential))
+        score = score_column(
+            col, assistant_words, "assistant", len(assistant_potential)
+        )
         if score > 0:
             assistant_candidates.append((col, score))
 
     if assistant_candidates:
-        assistant_candidates.sort(key=lambda x: x[1], reverse=True)
+        assistant_candidates.sort(key = lambda x: x[1], reverse = True)
         assistant_col = assistant_candidates[0][0]
-        mapping[assistant_col] = 'assistant'
+        mapping[assistant_col] = "assistant"
     else:
         assistant_col = None
 
@@ -278,14 +327,14 @@ def detect_custom_format_heuristic(dataset):
     for col in user_potential:
         if col == assistant_col:
             continue
-        score = score_column(col, user_words, 'user', len(user_potential))
+        score = score_column(col, user_words, "user", len(user_potential))
         if score > 0:
             user_candidates.append((col, score))
 
     if user_candidates:
-        user_candidates.sort(key=lambda x: x[1], reverse=True)
+        user_candidates.sort(key = lambda x: x[1], reverse = True)
         user_col = user_candidates[0][0]
-        mapping[user_col] = 'user'
+        mapping[user_col] = "user"
     else:
         user_col = None
 
@@ -296,7 +345,7 @@ def detect_custom_format_heuristic(dataset):
     for col in remaining_columns:
         if has_keyword(col, system_words):
             # Found a system match in remaining columns
-            mapping[col] = 'system'
+            mapping[col] = "system"
             system_col = col
             break
 
@@ -309,22 +358,22 @@ def detect_custom_format_heuristic(dataset):
 
         # If no strong keyword match, decide based on what's missing
         if not has_keyword(remaining_col, user_words + assistant_words):
-            mapping[remaining_col] = 'system'
+            mapping[remaining_col] = "system"
         elif user_col is None:
             # No user column yet, assign this as user
-            mapping[remaining_col] = 'user'
+            mapping[remaining_col] = "user"
         else:
             # Already have user + assistant, treat as system context
-            mapping[remaining_col] = 'system'
+            mapping[remaining_col] = "system"
 
     # VALIDATION: Ensure we have at least user + assistant
-    has_user = any(role == 'user' for role in mapping.values())
-    has_assistant = any(role == 'assistant' for role in mapping.values())
+    has_user = any(role == "user" for role in mapping.values())
+    has_assistant = any(role == "assistant" for role in mapping.values())
 
     if not has_user and len(remaining_columns) > 0:
         for col in remaining_columns:
             if col not in mapping:
-                mapping[col] = 'user'
+                mapping[col] = "user"
                 has_user = True
                 break
 
@@ -358,14 +407,27 @@ def detect_multimodal_dataset(dataset):
 
     # Keywords that indicate image data
     image_keywords = [
-        'image', 'img', 'pixel',
-        'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tiff', 'svg',
-        'photo', 'pic', 'picture', 'visual',
-        'file_name', 'filename',
+        "image",
+        "img",
+        "pixel",
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
+        "bmp",
+        "gif",
+        "tiff",
+        "svg",
+        "photo",
+        "pic",
+        "picture",
+        "visual",
+        "file_name",
+        "filename",
     ]
 
     # Keywords that indicate audio data
-    audio_keywords = ['audio', 'speech', 'wav', 'waveform', 'sound']
+    audio_keywords = ["audio", "speech", "wav", "waveform", "sound"]
 
     multimodal_columns = []
     audio_columns = []
@@ -419,7 +481,7 @@ def detect_multimodal_dataset(dataset):
     # Detect text column for audio datasets
     detected_text_col = None
     if audio_columns:
-        text_keywords = ['text', 'sentence', 'transcript', 'transcription', 'label']
+        text_keywords = ["text", "sentence", "transcript", "transcription", "label"]
         for col_name in column_names:
             if col_name.lower() in text_keywords:
                 detected_text_col = col_name
@@ -430,7 +492,7 @@ def detect_multimodal_dataset(dataset):
     # Detect speaker_id column for TTS datasets (CSM, Orpheus, Spark)
     detected_speaker_col = None
     if audio_columns:
-        speaker_keywords = ['source', 'speaker', 'speaker_id']
+        speaker_keywords = ["source", "speaker", "speaker_id"]
         for col_name in column_names:
             if col_name.lower() in speaker_keywords:
                 detected_speaker_col = col_name
@@ -456,6 +518,7 @@ def _is_image_value(value) -> bool:
     # PIL Image instance
     try:
         from PIL.Image import Image as PILImage
+
         if isinstance(value, PILImage):
             return True
     except ImportError:
@@ -470,7 +533,9 @@ def _is_image_value(value) -> bool:
         if "bytes" in value and "path" in value:
             # Check path extension to exclude audio files
             path = value.get("path") or ""
-            if isinstance(path, str) and any(path.lower().endswith(ext) for ext in _AUDIO_EXTENSIONS):
+            if isinstance(path, str) and any(
+                path.lower().endswith(ext) for ext in _AUDIO_EXTENSIONS
+            ):
                 return False
             return True
 
@@ -479,11 +544,13 @@ def _is_image_value(value) -> bool:
         return _has_image_header(value)
 
     # String that looks like an image file path or URL
-    _IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.svg')
+    _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".svg")
     if isinstance(value, str) and len(value) < 1000:
         lower = value.strip().lower()
         # Image URL (http://... ending in image extension)
-        if lower.startswith(("http://", "https://")) and any(lower.split("?")[0].endswith(ext) for ext in _IMAGE_EXTS):
+        if lower.startswith(("http://", "https://")) and any(
+            lower.split("?")[0].endswith(ext) for ext in _IMAGE_EXTS
+        ):
             return True
         # Image file path (relative or absolute path ending in image extension)
         if any(lower.endswith(ext) for ext in _IMAGE_EXTS):
@@ -493,7 +560,15 @@ def _is_image_value(value) -> bool:
 
 
 _AUDIO_EXTENSIONS = (
-    ".wav", ".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wma", ".webm",
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".m4a",
+    ".aac",
+    ".wma",
+    ".webm",
 )
 
 
@@ -509,7 +584,9 @@ def _is_audio_value(value) -> bool:
         # Undecoded/streaming → {"bytes": b"...", "path": "some.wav"}
         if "bytes" in value or "path" in value:
             path = value.get("path") or ""
-            if isinstance(path, str) and any(path.lower().endswith(ext) for ext in _AUDIO_EXTENSIONS):
+            if isinstance(path, str) and any(
+                path.lower().endswith(ext) for ext in _AUDIO_EXTENSIONS
+            ):
                 return True
 
     return False
@@ -520,19 +597,19 @@ def _has_image_header(data: bytes) -> bool:
     if len(data) < 4:
         return False
     # JPEG
-    if data[:2] == b'\xff\xd8':
+    if data[:2] == b"\xff\xd8":
         return True
     # PNG
-    if data[:4] == b'\x89PNG':
+    if data[:4] == b"\x89PNG":
         return True
     # GIF
-    if data[:3] == b'GIF':
+    if data[:3] == b"GIF":
         return True
     # WebP
-    if data[:4] == b'RIFF' and len(data) >= 12 and data[8:12] == b'WEBP':
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
         return True
     # BMP
-    if data[:2] == b'BM':
+    if data[:2] == b"BM":
         return True
     return False
 
@@ -568,10 +645,13 @@ def detect_vlm_dataset_structure(dataset):
 
                 if isinstance(content, list) and len(content) > 0:
                     if isinstance(content[0], dict) and "type" in content[0]:
-
                         # Check for llava format
-                        has_index = any('index' in item for item in content if isinstance(item, dict))
-                        has_images_column = 'images' in column_names
+                        has_index = any(
+                            "index" in item
+                            for item in content
+                            if isinstance(item, dict)
+                        )
+                        has_images_column = "images" in column_names
 
                         if has_index and has_images_column:
                             return {
@@ -583,7 +663,11 @@ def detect_vlm_dataset_structure(dataset):
                             }
 
                         # Standard VLM format
-                        has_image = any('image' in item for item in content if isinstance(item, dict))
+                        has_image = any(
+                            "image" in item
+                            for item in content
+                            if isinstance(item, dict)
+                        )
                         if has_image:
                             return {
                                 "format": "vlm_messages",
@@ -637,26 +721,65 @@ def detect_vlm_dataset_structure(dataset):
 
     # Define metadata patterns to EXCLUDE
     metadata_patterns = {
-        'suffixes': ['_id', '_url', '_name', '_filename', '_uri', '_link', '_key', '_index'],
-        'prefixes': ['id_', 'url_', 'name_', 'filename_', 'uri_', 'link_', 'key_', 'index_'],
+        "suffixes": [
+            "_id",
+            "_url",
+            "_name",
+            "_filename",
+            "_uri",
+            "_link",
+            "_key",
+            "_index",
+        ],
+        "prefixes": [
+            "id_",
+            "url_",
+            "name_",
+            "filename_",
+            "uri_",
+            "link_",
+            "key_",
+            "index_",
+        ],
     }
 
     # Image-related keywords
-    image_keywords = ['image', 'img', 'photo', 'picture', 'pic', 'visual', 'scan', 'file_name', 'filename']
+    image_keywords = [
+        "image",
+        "img",
+        "photo",
+        "picture",
+        "pic",
+        "visual",
+        "scan",
+        "file_name",
+        "filename",
+    ]
 
     # Text-related keywords
-    text_keywords = ['text', 'caption', 'captions', 'description', 'answer', 'output', 'response', 'label']
+    text_keywords = [
+        "text",
+        "caption",
+        "captions",
+        "description",
+        "answer",
+        "output",
+        "response",
+        "label",
+    ]
 
     def is_metadata_column(col_name):
         """Check if column name looks like metadata."""
         col_lower = col_name.lower()
 
         # Check suffixes
-        if any(col_lower.endswith(suffix) for suffix in metadata_patterns['suffixes']):
+        if any(col_lower.endswith(suffix) for suffix in metadata_patterns["suffixes"]):
             return True
 
         # Check prefixes
-        if any(col_lower.startswith(prefix) for prefix in metadata_patterns['prefixes']):
+        if any(
+            col_lower.startswith(prefix) for prefix in metadata_patterns["prefixes"]
+        ):
             return True
 
         return False
@@ -664,11 +787,13 @@ def detect_vlm_dataset_structure(dataset):
     def _score_image_candidate(col, sample_value):
         """Score a candidate image column by how resolvable its value is."""
         # PIL Image object (highest priority - already loaded)
-        if hasattr(sample_value, 'size') and hasattr(sample_value, 'mode'):
+        if hasattr(sample_value, "size") and hasattr(sample_value, "mode"):
             return 100
 
         # Dict with image data (bytes/path from HF Image feature)
-        if isinstance(sample_value, dict) and ('bytes' in sample_value or 'path' in sample_value):
+        if isinstance(sample_value, dict) and (
+            "bytes" in sample_value or "path" in sample_value
+        ):
             return 75
 
         if isinstance(sample_value, str):
@@ -693,13 +818,16 @@ def detect_vlm_dataset_structure(dataset):
 
         # Local file — check it exists
         if not sample_value.startswith(("http://", "https://")):
-            return os.path.exists(sample_value)  # bare filenames return False here, that's OK
+            return os.path.exists(
+                sample_value
+            )  # bare filenames return False here, that's OK
 
         # URL — quick HEAD request with short timeout
         try:
             import urllib.request
-            req = urllib.request.Request(sample_value, method="HEAD")
-            resp = urllib.request.urlopen(req, timeout=3)
+
+            req = urllib.request.Request(sample_value, method = "HEAD")
+            resp = urllib.request.urlopen(req, timeout = 3)
             return resp.status < 400
         except Exception:
             return False
@@ -732,7 +860,7 @@ def detect_vlm_dataset_structure(dataset):
         if not candidates:
             return None
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
+        candidates.sort(key = lambda x: x[1], reverse = True)
 
         # Single candidate or top candidate is PIL/dict — no probing needed
         if len(candidates) == 1 or candidates[0][1] >= 75:
@@ -766,14 +894,18 @@ def detect_vlm_dataset_structure(dataset):
                     # Longer text = higher priority (likely content, not just a label)
                     priority = min(len(sample_value), 1000)  # Cap at 1000
                     candidates.append((col, priority))
-                elif isinstance(sample_value, list) and len(sample_value) > 0 and isinstance(sample_value[0], str):
+                elif (
+                    isinstance(sample_value, list)
+                    and len(sample_value) > 0
+                    and isinstance(sample_value[0], str)
+                ):
                     # List of strings (e.g. captions list) — lower priority than plain strings
                     priority = min(len(sample_value[0]), 1000) // 2
                     candidates.append((col, priority))
 
         # Return highest priority candidate
         if candidates:
-            candidates.sort(key=lambda x: x[1], reverse=True)
+            candidates.sort(key = lambda x: x[1], reverse = True)
             return candidates[0][0]
 
         return None

@@ -38,10 +38,10 @@ def create_access_token(
     """
     to_encode = {"sub": subject}
     expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta or timedelta(minutes = ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(to_encode, SECRET_KEY, algorithm = ALGORITHM)
 
 
 def create_refresh_token(subject: str) -> str:
@@ -51,7 +51,7 @@ def create_refresh_token(subject: str) -> str:
     Refresh tokens are opaque (not JWTs) and expire after REFRESH_TOKEN_EXPIRE_DAYS.
     """
     token = secrets.token_urlsafe(48)
-    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
     save_refresh_token(token, subject, expires_at.isoformat())
     return token
 
@@ -66,13 +66,13 @@ def refresh_access_token(refresh_token: str) -> Optional[str]:
     username = verify_refresh_token(refresh_token)
     if username is None:
         return None
-    return create_access_token(subject=username)
+    return create_access_token(subject = username)
 
 
 def reload_secret() -> None:
     """
     Reload the JWT secret from SQLite.
-    
+
     Call this after setup to ensure new tokens use the persistent secret.
     """
     global SECRET_KEY
@@ -93,16 +93,16 @@ async def get_current_subject(
     """
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms = [ALGORITHM])
         subject: Optional[str] = payload.get("sub")
         if subject is None:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload",
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid token payload",
             )
         return subject
     except jwt.InvalidTokenError:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
         )

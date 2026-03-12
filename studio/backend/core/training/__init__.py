@@ -4,10 +4,11 @@
 """
 Training submodule - Training backends and trainer classes
 """
+
 from .training import TrainingBackend, TrainingProgress, get_training_backend
 
 __all__ = [
-    'TrainingProgress',
-    'TrainingBackend',
-    'get_training_backend',
+    "TrainingProgress",
+    "TrainingBackend",
+    "get_training_backend",
 ]

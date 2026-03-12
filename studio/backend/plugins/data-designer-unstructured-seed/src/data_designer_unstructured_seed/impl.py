@@ -18,8 +18,8 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
 
     def get_dataset_uri(self) -> str:
         path, _ = materialize_unstructured_seed_dataset(
-            source_path=Path(self.source.path),
-            chunk_size=self.source.chunk_size,
-            chunk_overlap=self.source.chunk_overlap,
+            source_path = Path(self.source.path),
+            chunk_size = self.source.chunk_size,
+            chunk_overlap = self.source.chunk_overlap,
         )
         return str(path)

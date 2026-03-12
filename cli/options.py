@@ -80,7 +80,9 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
     which will receive a dict of all CLI-provided config values.
     """
     fields = _collect_config_fields(config_class)
-    field_names = {name for name, field_info in fields if not _is_list_type(field_info.annotation)}
+    field_names = {
+        name for name, field_info in fields if not _is_list_type(field_info.annotation)
+    }
 
     def decorator(func: Callable) -> Callable:
         sig = inspect.signature(func)
@@ -105,22 +107,22 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
                 default = typer.Option(
                     None,
                     f"{flag_name}/--no-{field_name.replace('_', '-')}",
-                    help=help_text,
+                    help = help_text,
                 )
                 param = inspect.Parameter(
                     field_name,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    default=default,
-                    annotation=Optional[bool],
+                    default = default,
+                    annotation = Optional[bool],
                 )
             else:
                 py_type = _get_python_type(annotation)
-                default = typer.Option(None, flag_name, help=help_text)
+                default = typer.Option(None, flag_name, help = help_text)
                 param = inspect.Parameter(
                     field_name,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    default=default,
-                    annotation=Optional[py_type],
+                    default = default,
+                    annotation = Optional[py_type],
                 )
             new_params.append(param)
 
@@ -129,7 +131,7 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
             if param.name != "config_overrides":
                 new_params.append(param)
 
-        new_sig = sig.replace(parameters=new_params)
+        new_sig = sig.replace(parameters = new_params)
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):

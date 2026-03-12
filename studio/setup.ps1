@@ -1,6 +1,6 @@
 #Requires -Version 5.1
-# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-# Copyright © 2025 Unsloth AI
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 <#
 .SYNOPSIS
     Full environment setup for Unsloth Studio on Windows (bundled version).
@@ -653,7 +653,7 @@ Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundC
 
 # Always create a .venv for isolation -- even for pip installs.
 # Created in the repo root (parent of studio/).
-$VenvDir = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv"
+$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
@@ -726,7 +726,7 @@ $ErrorActionPreference = $prevEAP
 # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
 Write-Host ""
 Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
-$VenvT5Dir = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv_t5"
+$VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
 if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
@@ -957,63 +957,13 @@ if (Test-Path $LlamaServerBin) {
 }
 
 # ============================================
-# Add shell aliases (PowerShell profile + cmd batch files)
-# ============================================
-Write-Host ""
-$RepoDir = Split-Path -Parent $PSScriptRoot
-$VenvPython = Join-Path $RepoDir ".venv\Scripts\python.exe"
-$CliScript = Join-Path $RepoDir "cli.py"
-$FrontendDist = Join-Path $PSScriptRoot "frontend\dist"
-$AliasAdded = $false
-
-# --- PowerShell profile: add functions ---
-$ProfileDir = Split-Path $PROFILE -Parent
-if (-not (Test-Path $ProfileDir)) { New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null }
-if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
-
-if (-not (Select-String -Path $PROFILE -Pattern "unsloth-studio" -Quiet -ErrorAction SilentlyContinue)) {
-    $block = @"
-
-# Unsloth Studio launcher
-function unsloth-studio { & "$VenvPython" "$CliScript" studio -f "$FrontendDist" @args }
-function unsloth-ui     { & "$VenvPython" "$CliScript" studio -f "$FrontendDist" @args }
-"@
-    Add-Content -Path $PROFILE -Value $block
-    Write-Host "[OK] Aliases 'unsloth-studio' and 'unsloth-ui' added to $PROFILE" -ForegroundColor Green
-    $AliasAdded = $true
-} else {
-    Write-Host "[OK] Aliases 'unsloth-studio' and 'unsloth-ui' already exist in $PROFILE" -ForegroundColor Green
-}
-
-# --- cmd.exe: create batch files and ensure they're on PATH ---
-$BatDir = Join-Path $RepoDir ".venv\Scripts"
-foreach ($name in @("unsloth-studio", "unsloth-ui")) {
-    $batPath = Join-Path $BatDir "$name.bat"
-    if (-not (Test-Path $batPath)) {
-        Set-Content -Path $batPath -Value "@echo off`r`n`"$VenvPython`" `"$CliScript`" studio -f `"$FrontendDist`" %*"
-    }
-}
-# Persist .venv\Scripts to User PATH so commands work in new cmd.exe terminals without activation
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (-not $userPath -or $userPath -notlike "*$BatDir*") {
-    if ($userPath) {
-        [Environment]::SetEnvironmentVariable('Path', "$BatDir;$userPath", 'User')
-    } else {
-        [Environment]::SetEnvironmentVariable('Path', "$BatDir", 'User')
-    }
-    Write-Host "   Persisted $BatDir to User PATH" -ForegroundColor Gray
-}
-Write-Host "[OK] Batch launchers created (works from any new cmd.exe or PowerShell)" -ForegroundColor Green
-
-# ============================================
 # Done
 # ============================================
 Write-Host ""
 Write-Host "+===============================================+" -ForegroundColor Green
 Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  IMPORTANT: Open a NEW terminal, then run:    |" -ForegroundColor Yellow
-Write-Host "|                                               |" -ForegroundColor Green
+Write-Host "|  Launch with:                                 |" -ForegroundColor Green
 Write-Host "|    unsloth studio -H 0.0.0.0 -p 8000         |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "+===============================================+" -ForegroundColor Green

@@ -4,6 +4,7 @@
 """
 SQLite storage for authentication data (user credentials + JWT secret).
 """
+
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
@@ -69,11 +70,11 @@ def is_initialized() -> bool:
 def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
     """
     Create the initial admin user in the database.
-    
+
     Raises sqlite3.IntegrityError if username already exists.
     """
     from .hashing import hash_password
-    
+
     salt, pwd_hash = hash_password(password)
     conn = get_connection()
     try:
@@ -92,7 +93,7 @@ def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
 def delete_user(username: str) -> None:
     """
     Delete a user from the database.
-    
+
     Used for rollback when setup fails after user creation.
     """
     conn = get_connection()
@@ -106,7 +107,7 @@ def delete_user(username: str) -> None:
 def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
     """
     Get user's password salt, hash, and JWT secret.
-    
+
     Returns (password_salt, password_hash, jwt_secret) or None if user not found.
     """
     conn = get_connection()
@@ -130,7 +131,7 @@ def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
 def load_jwt_secret() -> str:
     """
     Load the JWT secret from the database.
-    
+
     Raises RuntimeError if auth is not initialized.
     """
     conn = get_connection()
@@ -138,7 +139,9 @@ def load_jwt_secret() -> str:
         cur = conn.execute("SELECT jwt_secret FROM auth_user LIMIT 1")
         row = cur.fetchone()
         if not row:
-            raise RuntimeError("Auth is not initialized. Please set up a password first.")
+            raise RuntimeError(
+                "Auth is not initialized. Please set up a password first."
+            )
         return row["jwt_secret"]
     finally:
         conn.close()
@@ -161,7 +164,7 @@ def save_setup_token(token: str) -> None:
 def consume_setup_token(token: str) -> bool:
     """
     Verify a setup token and delete it if valid.
-    
+
     Returns True if the token was valid (and is now consumed), False otherwise.
     """
     token_hash = _hash_token(token)

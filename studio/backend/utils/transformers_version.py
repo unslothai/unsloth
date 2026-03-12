@@ -33,7 +33,6 @@ from pathlib import Path
 logger = get_logger(__name__)
 
 
-
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -41,12 +40,12 @@ logger = get_logger(__name__)
 # Lowercase substrings — if ANY appears anywhere in the lowered model name,
 # we need transformers 5.x.
 TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
-    "ministral-3-",       # Ministral-3-{3,8,14}B-{Instruct,Reasoning,Base}-2512
-    "glm-4.7-flash",      # GLM-4.7-Flash
-    "qwen3-30b-a3b",      # Qwen3-30B-A3B-Instruct-2507 and variants
-    "qwen3.5",            # Qwen3.5 family (35B-A3B, etc.)
-    "qwen3-next",         # Qwen3-Next and variants
-    "tiny_qwen3_moe",     # imdatta0/tiny_qwen3_moe_2.8B_0.7B
+    "ministral-3-",  # Ministral-3-{3,8,14}B-{Instruct,Reasoning,Base}-2512
+    "glm-4.7-flash",  # GLM-4.7-Flash
+    "qwen3-30b-a3b",  # Qwen3-30B-A3B-Instruct-2507 and variants
+    "qwen3.5",  # Qwen3.5 family (35B-A3B, etc.)
+    "qwen3-next",  # Qwen3-Next and variants
+    "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
 )
 
 # Versions
@@ -77,7 +76,8 @@ def _resolve_base_model(model_name: str) -> str:
             if base:
                 logger.info(
                     "Resolved LoRA adapter '%s' → base model '%s'",
-                    model_name, base,
+                    model_name,
+                    base,
                 )
                 return base
         except Exception as exc:
@@ -87,18 +87,21 @@ def _resolve_base_model(model_name: str) -> str:
     if local_path.is_dir():
         try:
             from utils.models import get_base_model_from_lora
+
             base = get_base_model_from_lora(model_name)
             if base:
                 logger.info(
                     "Resolved LoRA adapter '%s' → base model '%s' "
                     "(via get_base_model_from_lora)",
-                    model_name, base,
+                    model_name,
+                    base,
                 )
                 return base
         except Exception as exc:
             logger.debug(
                 "get_base_model_from_lora failed for '%s': %s",
-                model_name, exc,
+                model_name,
+                exc,
             )
 
     return model_name
@@ -114,6 +117,7 @@ def needs_transformers_5(model_name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Version switching (in-process — used only by export)
 # ---------------------------------------------------------------------------
+
 
 def _get_in_memory_version() -> str | None:
     """Return the transformers version currently loaded in this process."""
@@ -153,7 +157,8 @@ def _purge_modules() -> int:
     """
     importlib.invalidate_caches()
     to_remove = [
-        k for k in list(sys.modules.keys())
+        k
+        for k in list(sys.modules.keys())
         if any(k == p or k.startswith(p + ".") for p in _PURGE_PREFIXES)
     ]
     for key in to_remove:
@@ -167,15 +172,21 @@ def _ensure_venv_t5_exists() -> bool:
         return True
 
     logger.warning(".venv_t5 not found at %s — installing at runtime", _VENV_T5_DIR)
-    os.makedirs(_VENV_T5_DIR, exist_ok=True)
+    os.makedirs(_VENV_T5_DIR, exist_ok = True)
     for pkg in (f"transformers=={TRANSFORMERS_5_VERSION}", "huggingface_hub==1.3.0"):
         cmd = [
-            sys.executable, "-m", "pip", "install",
-            "--target", _VENV_T5_DIR,
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            _VENV_T5_DIR,
             "--no-deps",
             pkg,
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        result = subprocess.run(
+            cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True
+        )
         if result.returncode != 0:
             logger.error("pip install failed:\n%s", result.stdout)
             return False
@@ -186,7 +197,9 @@ def _ensure_venv_t5_exists() -> bool:
 def _activate_5x() -> None:
     """Prepend .venv_t5/ to sys.path, purge stale modules, reimport."""
     if not _ensure_venv_t5_exists():
-        raise RuntimeError(f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}")
+        raise RuntimeError(
+            f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
+        )
 
     if _VENV_T5_DIR not in sys.path:
         sys.path.insert(0, _VENV_T5_DIR)
@@ -196,6 +209,7 @@ def _activate_5x() -> None:
     logger.info("Purged %d cached modules", count)
 
     import transformers
+
     logger.info("Loaded transformers %s", transformers.__version__)
 
 
@@ -209,6 +223,7 @@ def _deactivate_5x() -> None:
     logger.info("Purged %d cached modules", count)
 
     import transformers
+
     logger.info("Reverted to transformers %s", transformers.__version__)
 
 
@@ -236,7 +251,10 @@ def ensure_transformers_version(model_name: str) -> None:
 
     logger.info(
         "Version check for '%s' (resolved: '%s'): need=%s, in_memory=%s",
-        model_name, resolved, target_version, in_memory,
+        model_name,
+        resolved,
+        target_version,
+        in_memory,
     )
 
     # --- Already correct? ---------------------------------------------------
@@ -245,7 +263,8 @@ def ensure_transformers_version(model_name: str) -> None:
         if in_memory_major == target_major:
             logger.info(
                 "transformers %s already loaded — correct for '%s'",
-                in_memory, model_name,
+                in_memory,
+                model_name,
             )
             return
 
@@ -254,7 +273,9 @@ def ensure_transformers_version(model_name: str) -> None:
         logger.info("Activating transformers %s via .venv_t5…", TRANSFORMERS_5_VERSION)
         _activate_5x()
     else:
-        logger.info("Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION)
+        logger.info(
+            "Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION
+        )
         _deactivate_5x()
 
     final = _get_in_memory_version()

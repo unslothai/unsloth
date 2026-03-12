@@ -4,6 +4,7 @@
 """
 Dataset-related Pydantic models for API requests and responses.
 """
+
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -11,13 +12,14 @@ from pydantic import BaseModel, Field, model_validator
 
 class CheckFormatRequest(BaseModel):
     """Request for dataset format check"""
+
     dataset_name: str  # HuggingFace dataset name or local path
     is_vlm: bool = False
     hf_token: Optional[str] = None
     subset: Optional[str] = None
     train_split: Optional[str] = "train"
 
-    @model_validator(mode="before")
+    @model_validator(mode = "before")
     @classmethod
     def _compat_split(cls, values: Any) -> Any:
         """Accept legacy 'split' field as alias for 'train_split'."""
@@ -28,6 +30,7 @@ class CheckFormatRequest(BaseModel):
 
 class CheckFormatResponse(BaseModel):
     """Response for dataset format check"""
+
     requires_manual_mapping: bool
     detected_format: str
     columns: List[str]
@@ -46,6 +49,7 @@ class CheckFormatResponse(BaseModel):
 
 class AiAssistMappingRequest(BaseModel):
     """Request for LLM-assisted column classification (user-triggered)."""
+
     columns: List[str]
     samples: List[Dict[str, Any]]  # Preview rows already loaded in the dialog
     dataset_name: Optional[str] = None  # For LLM context
@@ -56,6 +60,7 @@ class AiAssistMappingRequest(BaseModel):
 
 class AiAssistMappingResponse(BaseModel):
     """Response from LLM-assisted column classification and conversion advice."""
+
     success: bool
     suggested_mapping: Optional[Dict[str, str]] = None
     warning: Optional[str] = None
@@ -69,8 +74,9 @@ class AiAssistMappingResponse(BaseModel):
 
 class UploadDatasetResponse(BaseModel):
     """Response with stored dataset path for training."""
-    filename: str = Field(..., description="Original filename")
-    stored_path: str = Field(..., description="Absolute path stored on backend")
+
+    filename: str = Field(..., description = "Original filename")
+    stored_path: str = Field(..., description = "Absolute path stored on backend")
 
 
 class LocalDatasetItem(BaseModel):
@@ -90,4 +96,4 @@ class LocalDatasetItem(BaseModel):
 
 
 class LocalDatasetsResponse(BaseModel):
-    datasets: List[LocalDatasetItem] = Field(default_factory=list)
+    datasets: List[LocalDatasetItem] = Field(default_factory = list)

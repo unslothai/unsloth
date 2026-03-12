@@ -8,6 +8,7 @@ The default get_inference_backend() returns an InferenceOrchestrator that
 delegates to a subprocess. The original InferenceBackend runs inside
 the subprocess and can be imported directly from .inference when needed.
 """
+
 from .orchestrator import InferenceOrchestrator, get_inference_backend
 from .llama_cpp import LlamaCppBackend
 
@@ -15,8 +16,8 @@ from .llama_cpp import LlamaCppBackend
 InferenceBackend = InferenceOrchestrator
 
 __all__ = [
-    'InferenceBackend',
-    'InferenceOrchestrator',
-    'get_inference_backend',
-    'LlamaCppBackend',
+    "InferenceBackend",
+    "InferenceOrchestrator",
+    "get_inference_backend",
+    "LlamaCppBackend",
 ]

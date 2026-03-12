@@ -12,19 +12,28 @@ import os
 
 from datasets import IterableDataset
 from loggers import get_logger
+
 logger = get_logger(__name__)
-
-
 
 
 def standardize_chat_format(
     dataset,
-    tokenizer=None,
-    aliases_for_system=["system",],
-    aliases_for_user=["user", "human", "input",],
-    aliases_for_assistant=["gpt", "assistant", "output",],
-    batch_size=1000,
-    num_proc=None,
+    tokenizer = None,
+    aliases_for_system = [
+        "system",
+    ],
+    aliases_for_user = [
+        "user",
+        "human",
+        "input",
+    ],
+    aliases_for_assistant = [
+        "gpt",
+        "assistant",
+        "output",
+    ],
+    batch_size = 1000,
+    num_proc = None,
 ):
     """
     Our own standardization function that handles BOTH messages and conversations.
@@ -67,22 +76,25 @@ def standardize_chat_format(
         return dataset  # Unexpected structure
 
     keys = list(uniques.keys())
-    length_first  = len(set(uniques[keys[0]]))
+    length_first = len(set(uniques[keys[0]]))
     length_second = len(set(uniques[keys[1]]))
 
     # Determine which is role and which is content
     if length_first < length_second:
-        role_key    = keys[0]
+        role_key = keys[0]
         content_key = keys[1]
     else:
-        role_key    = keys[1]
+        role_key = keys[1]
         content_key = keys[0]
 
     # Mapping for aliases
     aliases_mapping = {}
-    for x in aliases_for_system:    aliases_mapping[x] = "system"
-    for x in aliases_for_user:      aliases_mapping[x] = "user"
-    for x in aliases_for_assistant: aliases_mapping[x] = "assistant"
+    for x in aliases_for_system:
+        aliases_mapping[x] = "system"
+    for x in aliases_for_user:
+        aliases_mapping[x] = "user"
+    for x in aliases_for_assistant:
+        aliases_mapping[x] = "assistant"
 
     def _standardize_dataset(examples):
         convos = examples[chat_column]
@@ -109,10 +121,9 @@ def standardize_chat_format(
 
         return {chat_column: all_convos}
 
-
     dataset_map_kwargs = {
-        'batched': True,
-        'batch_size': batch_size,
+        "batched": True,
+        "batch_size": batch_size,
     }
 
     if not isinstance(dataset, IterableDataset):
@@ -123,13 +134,13 @@ def standardize_chat_format(
         else:
             num_proc = safe_num_proc(num_proc)
 
-        dataset_map_kwargs['num_proc'] = num_proc
-        dataset_map_kwargs['desc'] = "Standardizing chat format"
+        dataset_map_kwargs["num_proc"] = num_proc
+        dataset_map_kwargs["desc"] = "Standardizing chat format"
 
     return dataset.map(_standardize_dataset, **dataset_map_kwargs)
 
 
-def convert_chatml_to_alpaca(dataset, batch_size=1000, num_proc=None):
+def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
     """
     Converts ChatML format (messages OR conversations) to Alpaca format.
     Handles both standardized and ShareGPT formats.
@@ -142,10 +153,16 @@ def convert_chatml_to_alpaca(dataset, batch_size=1000, num_proc=None):
 
     def _convert(examples):
         # Auto-detect which column name is used
-        chatml_data = examples.get("messages") or examples.get("conversations") or examples.get("texts")
+        chatml_data = (
+            examples.get("messages")
+            or examples.get("conversations")
+            or examples.get("texts")
+        )
 
         if chatml_data is None:
-            raise ValueError("No 'messages' or 'conversations' or 'texts' column found.")
+            raise ValueError(
+                "No 'messages' or 'conversations' or 'texts' column found."
+            )
 
         instructions = []
         outputs = []
@@ -172,15 +189,11 @@ def convert_chatml_to_alpaca(dataset, batch_size=1000, num_proc=None):
             inputs.append("")  # Alpaca typically has empty input
             outputs.append(output)
 
-        return {
-            "instruction": instructions,
-            "input": inputs,
-            "output": outputs
-        }
+        return {"instruction": instructions, "input": inputs, "output": outputs}
 
     dataset_map_kwargs = {
-        'batched': True,
-        'batch_size': batch_size,
+        "batched": True,
+        "batch_size": batch_size,
     }
 
     if not isinstance(dataset, IterableDataset):
@@ -191,13 +204,13 @@ def convert_chatml_to_alpaca(dataset, batch_size=1000, num_proc=None):
         else:
             num_proc = safe_num_proc(num_proc)
 
-        dataset_map_kwargs['num_proc'] = num_proc
-        dataset_map_kwargs['desc'] = "Converting ChatML to Alpaca format"
+        dataset_map_kwargs["num_proc"] = num_proc
+        dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
 
     return dataset.map(_convert, **dataset_map_kwargs)
 
 
-def convert_alpaca_to_chatml(dataset, batch_size=1000, num_proc=None):
+def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
     """
     Converts Alpaca format to ChatML format.
 
@@ -222,15 +235,15 @@ def convert_alpaca_to_chatml(dataset, batch_size=1000, num_proc=None):
             # Build conversation in standard ChatML format
             convo = [
                 {"role": "user", "content": user_content},
-                {"role": "assistant", "content": output}
+                {"role": "assistant", "content": output},
             ]
             conversations.append(convo)
 
         return {"conversations": conversations}
 
     dataset_map_kwargs = {
-        'batched': True,
-        'batch_size': batch_size,
+        "batched": True,
+        "batch_size": batch_size,
     }
 
     if not isinstance(dataset, IterableDataset):
@@ -241,8 +254,8 @@ def convert_alpaca_to_chatml(dataset, batch_size=1000, num_proc=None):
         else:
             num_proc = safe_num_proc(num_proc)
 
-        dataset_map_kwargs['num_proc'] = num_proc
-        dataset_map_kwargs['desc'] = "Converting Alpaca to ChatML format"
+        dataset_map_kwargs["num_proc"] = num_proc
+        dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
 
     return dataset.map(_convert, **dataset_map_kwargs)
 
@@ -262,11 +275,11 @@ def _format_eta(seconds):
 
 def convert_to_vlm_format(
     dataset,
-    instruction=None,
-    text_column="text",
-    image_column="image",
-    dataset_name=None,
-    progress_callback=None,
+    instruction = None,
+    text_column = "text",
+    image_column = "image",
+    dataset_name = None,
+    progress_callback = None,
 ):
     """
     Converts simple {image, text} format to VLM messages format.
@@ -290,27 +303,31 @@ def convert_to_vlm_format(
     def _notify(msg):
         """Send status update to the training overlay if callback is available."""
         if progress_callback:
-            progress_callback(status_message=msg)
+            progress_callback(status_message = msg)
 
     # Generate smart instruction if not provided
     if instruction is None:
         instruction_info = generate_smart_vlm_instruction(
             dataset,
-            text_column=text_column,
-            image_column=image_column,
-            dataset_name=dataset_name,
+            text_column = text_column,
+            image_column = image_column,
+            dataset_name = dataset_name,
         )
 
         instruction = instruction_info["instruction"]
         instruction_column = instruction_info.get("instruction_column")
         uses_dynamic = instruction_info["uses_dynamic_instruction"]
 
-        logger.info(f"📝 Auto-detected instruction type: {instruction_info['instruction_type']}")
+        logger.info(
+            f"📝 Auto-detected instruction type: {instruction_info['instruction_type']}"
+        )
         logger.info(f"📝 Confidence: {instruction_info['confidence']:.2f}")
         if not uses_dynamic:
             logger.info(f"📝 Using instruction: '{instruction}'")
         else:
-            logger.info(f"📝 Using dynamic instructions from column: '{instruction_column}'")
+            logger.info(
+                f"📝 Using dynamic instructions from column: '{instruction_column}'"
+            )
     else:
         instruction_column = None
         uses_dynamic = False
@@ -324,13 +341,17 @@ def convert_to_vlm_format(
             if image_data.startswith(("http://", "https://")):
                 import fsspec
                 from io import BytesIO
-                with fsspec.open(image_data, "rb", expand=True) as f:
+
+                with fsspec.open(image_data, "rb", expand = True) as f:
                     image_data = Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
+
                 local_path = hf_hub_download(
-                    dataset_name, _image_lookup[image_data], repo_type="dataset",
+                    dataset_name,
+                    _image_lookup[image_data],
+                    repo_type = "dataset",
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
@@ -340,6 +361,7 @@ def convert_to_vlm_format(
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
             import random
+
             text_data = random.choice(text_data)
 
         # Get instruction (static or dynamic)
@@ -354,15 +376,10 @@ def convert_to_vlm_format(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": current_instruction},
-                    {"type": "image", "image": image_data}  # PIL object
-                ]
+                    {"type": "image", "image": image_data},  # PIL object
+                ],
             },
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": text_data}
-                ]
-            }
+            {"role": "assistant", "content": [{"type": "text", "text": text_data}]},
         ]
 
         # Return dict with messages
@@ -370,13 +387,15 @@ def convert_to_vlm_format(
 
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
-    has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    has_urls = isinstance(first_image, str) and first_image.startswith(
+        ("http://", "https://")
+    )
 
     # ── Bare-filename detection: images stored as filenames (e.g. "img_001.png")
     #    that don't exist locally.  Build a basename→repo_path lookup so we can
     #    resolve them via hf_hub_download during conversion.
     _image_lookup = None
-    _IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff')
+    _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
         not has_urls
         and isinstance(first_image, str)
@@ -385,18 +404,25 @@ def convert_to_vlm_format(
     ):
         try:
             from huggingface_hub import HfApi
+
             _notify("Resolving image filenames from HF repo...")
-            logger.info(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
+            logger.info(
+                f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
+            )
+            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
             if first_image in _image_lookup:
-                logger.info(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
+                logger.info(
+                    f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')"
+                )
             else:
-                logger.info(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
+                logger.info(
+                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open"
+                )
                 _image_lookup = None
         except Exception as e:
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
@@ -413,15 +439,19 @@ def convert_to_vlm_format(
 
         num_workers = safe_num_proc()
         _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
-        logger.info(f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers...")
+        logger.info(
+            f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers..."
+        )
 
         probe_samples = [dataset[i] for i in range(PROBE_SIZE)]
         probe_ok = 0
         probe_fail = 0
         probe_start = time.time()
 
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
+        with ThreadPoolExecutor(max_workers = num_workers) as executor:
+            futures = {
+                executor.submit(_convert_single_sample, s): s for s in probe_samples
+            }
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -443,9 +473,12 @@ def convert_to_vlm_format(
             friendly = None
             try:
                 from .llm_assist import llm_generate_dataset_warning
+
                 friendly = llm_generate_dataset_warning(
-                    issues, dataset_name=dataset_name, modality="vision",
-                    column_names=[image_column, text_column],
+                    issues,
+                    dataset_name = dataset_name,
+                    modality = "vision",
+                    column_names = [image_column, text_column],
                 )
             except Exception:
                 pass
@@ -471,7 +504,9 @@ def convert_to_vlm_format(
         if probe_fail > 0:
             info_msg += f" | {fail_rate:.0%} broken URLs will be skipped"
 
-        logger.info(f"✅ Probe passed: {probe_ok}/{probe_total} ok, {probe_fail} failed ({fail_rate:.0%}), {throughput:.1f} img/s")
+        logger.info(
+            f"✅ Probe passed: {probe_ok}/{probe_total} ok, {probe_fail} failed ({fail_rate:.0%}), {throughput:.1f} img/s"
+        )
         logger.info(f"⏱️ Estimated time for {total:,} samples: ~{eta_str}")
         _notify(info_msg)
 
@@ -496,8 +531,11 @@ def convert_to_vlm_format(
             batch_end = min(batch_start + batch_size, total)
             batch_samples = [dataset[i] for i in range(batch_start, batch_end)]
 
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = {executor.submit(_convert_single_sample, s): i for i, s in enumerate(batch_samples)}
+            with ThreadPoolExecutor(max_workers = num_workers) as executor:
+                futures = {
+                    executor.submit(_convert_single_sample, s): i
+                    for i, s in enumerate(batch_samples)
+                }
                 batch_results = [None] * len(batch_samples)
                 for future in as_completed(futures):
                     idx = futures[future]
@@ -506,9 +544,13 @@ def convert_to_vlm_format(
                     except Exception as e:
                         failed_count += 1
                         if failed_count == 1:
-                            print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
+                            print(
+                                f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                            )
                         if failed_count == 1:
-                            logger.info(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
+                            logger.info(
+                                f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                            )
 
             converted_list.extend(r for r in batch_results if r is not None)
 
@@ -519,11 +561,13 @@ def convert_to_vlm_format(
             remaining_time = (total - done) / rate if rate > 0 else 0
             eta_str = _format_eta(remaining_time)
             progress_msg = f"Downloading images: {done:,}/{total:,} ({done*100//total}%) | ~{eta_str} remaining | {failed_count} skipped"
-            logger.info(f"  [{done}/{total}] {rate:.1f} img/s, {failed_count} failed, ETA {eta_str}")
+            logger.info(
+                f"  [{done}/{total}] {rate:.1f} img/s, {failed_count} failed, ETA {eta_str}"
+            )
             _notify(progress_msg)
     else:
         # Sequential conversion for local/embedded images (fast, no I/O bottleneck)
-        pbar = tqdm(dataset, total=total, desc="Converting VLM samples", unit="sample")
+        pbar = tqdm(dataset, total = total, desc = "Converting VLM samples", unit = "sample")
         for sample in pbar:
             try:
                 converted_list.append(_convert_single_sample(sample))
@@ -534,13 +578,17 @@ def convert_to_vlm_format(
                     print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
                 if failed_count == 1:
                     # Log the first failure to aid debugging
-                    logger.info(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
-            pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
+                    logger.info(
+                        f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                    )
+            pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
         pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
-        logger.info(f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images")
+        logger.info(
+            f"⚠️ Skipped {failed_count}/{total} ({fail_rate:.0%}) samples with broken/unreachable images"
+        )
         # For datasets that skipped the probe (small URL datasets), check fail rate now
         if has_urls and fail_rate >= MAX_FAIL_RATE:
             issues = [
@@ -550,9 +598,12 @@ def convert_to_vlm_format(
             friendly = None
             try:
                 from .llm_assist import llm_generate_dataset_warning
+
                 friendly = llm_generate_dataset_warning(
-                    issues, dataset_name=dataset_name, modality="vision",
-                    column_names=[image_column, text_column],
+                    issues,
+                    dataset_name = dataset_name,
+                    modality = "vision",
+                    column_names = [image_column, text_column],
                 )
             except Exception:
                 pass
@@ -573,14 +624,18 @@ def convert_to_vlm_format(
         friendly = None
         try:
             from .llm_assist import llm_generate_dataset_warning
+
             friendly = llm_generate_dataset_warning(
-                issues, dataset_name=dataset_name, modality="vision",
-                column_names=[image_column, text_column],
+                issues,
+                dataset_name = dataset_name,
+                modality = "vision",
+                column_names = [image_column, text_column],
             )
         except Exception:
             pass
         raise ValueError(
-            friendly or (
+            friendly
+            or (
                 f"All {total} samples failed during VLM conversion — no usable images found. "
                 "This dataset may contain only image URLs that are no longer accessible."
             )
@@ -595,10 +650,10 @@ def convert_to_vlm_format(
 
 def convert_sharegpt_with_images_to_vlm_format(
     dataset,
-    image_column="image",
-    messages_column="conversations",
-    dataset_name=None,
-    progress_callback=None,
+    image_column = "image",
+    messages_column = "conversations",
+    dataset_name = None,
+    progress_callback = None,
 ):
     """
     Converts ShareGPT/ChatML datasets that have a separate image column and
@@ -619,16 +674,18 @@ def convert_sharegpt_with_images_to_vlm_format(
     from PIL import Image
     from tqdm import tqdm
 
-    _IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff')
+    _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     _ROLE_MAP = {
-        "human": "user", "user": "user",
-        "gpt": "assistant", "assistant": "assistant",
+        "human": "user",
+        "user": "user",
+        "gpt": "assistant",
+        "assistant": "assistant",
         "system": "system",
     }
 
     def _notify(msg):
         if progress_callback:
-            progress_callback(status_message=msg)
+            progress_callback(status_message = msg)
 
     # ── Resolve image loading strategy (same 3-tier as convert_to_vlm_format) ──
     total = len(dataset)
@@ -643,9 +700,12 @@ def convert_sharegpt_with_images_to_vlm_format(
     ):
         try:
             from huggingface_hub import HfApi
+
             _notify("Resolving image filenames from HF repo...")
-            logger.info(f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup...")
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
+            logger.info(
+                f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
+            )
+            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -656,9 +716,13 @@ def convert_sharegpt_with_images_to_vlm_format(
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
                     _image_lookup[f] = f
             if first_image in _image_lookup:
-                logger.info(f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')")
+                logger.info(
+                    f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')"
+                )
             else:
-                logger.info(f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open")
+                logger.info(
+                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open"
+                )
                 _image_lookup = None
         except Exception as e:
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
@@ -666,25 +730,32 @@ def convert_sharegpt_with_images_to_vlm_format(
 
     def _resolve_image(image_data):
         """Resolve image data to a PIL Image object."""
-        if hasattr(image_data, 'size') and hasattr(image_data, 'mode'):
+        if hasattr(image_data, "size") and hasattr(image_data, "mode"):
             return image_data  # Already PIL
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
                 import fsspec
                 from io import BytesIO
-                with fsspec.open(image_data, "rb", expand=True) as f:
+
+                with fsspec.open(image_data, "rb", expand = True) as f:
                     return Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
+
                 local_path = hf_hub_download(
-                    dataset_name, _image_lookup[image_data], repo_type="dataset",
+                    dataset_name,
+                    _image_lookup[image_data],
+                    repo_type = "dataset",
                 )
                 return Image.open(local_path).convert("RGB")
             else:
                 return Image.open(image_data).convert("RGB")
-        if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
+        if isinstance(image_data, dict) and (
+            "bytes" in image_data or "path" in image_data
+        ):
             if image_data.get("bytes"):
                 from io import BytesIO
+
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
             if image_data.get("path"):
                 return Image.open(image_data["path"]).convert("RGB")
@@ -726,7 +797,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    pbar = tqdm(dataset, total=total, desc="Converting ShareGPT+image", unit="sample")
+    pbar = tqdm(dataset, total = total, desc = "Converting ShareGPT+image", unit = "sample")
     for sample in pbar:
         try:
             converted_list.append(_convert_single_sample(sample))
@@ -734,11 +805,13 @@ def convert_sharegpt_with_images_to_vlm_format(
             failed_count += 1
             if failed_count == 1:
                 logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
-        pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
+        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
     pbar.close()
 
     if failed_count > 0:
-        logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
+        logger.info(
+            f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples"
+        )
 
     if len(converted_list) == 0:
         raise ValueError(
@@ -764,7 +837,9 @@ def convert_llava_to_vlm_format(dataset):
     """
     from PIL import Image
 
-    logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
+    logger.info(
+        f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format..."
+    )
 
     def _convert_single_sample(sample):
         """Convert a single llava sample to standard VLM format."""
@@ -787,10 +862,12 @@ def convert_llava_to_vlm_format(dataset):
                             if isinstance(pil_image, str):
                                 pil_image = Image.open(pil_image).convert("RGB")
 
-                            new_content.append({
-                                "type": "image",
-                                "image": pil_image  # Actual PIL object
-                            })
+                            new_content.append(
+                                {
+                                    "type": "image",
+                                    "image": pil_image,  # Actual PIL object
+                                }
+                            )
                     else:
                         # No index, try to use first image
                         if len(images) > 0:
@@ -798,22 +875,13 @@ def convert_llava_to_vlm_format(dataset):
                             if isinstance(pil_image, str):
                                 pil_image = Image.open(pil_image).convert("RGB")
 
-                            new_content.append({
-                                "type": "image",
-                                "image": pil_image
-                            })
+                            new_content.append({"type": "image", "image": pil_image})
 
                 elif item["type"] == "text":
                     # Keep text as-is (only type + text)
-                    new_content.append({
-                        "type": "text",
-                        "text": item.get("text", "")
-                    })
+                    new_content.append({"type": "text", "text": item.get("text", "")})
 
-            new_messages.append({
-                "role": msg["role"],
-                "content": new_content
-            })
+            new_messages.append({"role": msg["role"], "content": new_content})
 
         return {"messages": new_messages}
 
