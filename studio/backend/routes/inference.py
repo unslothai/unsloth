@@ -931,7 +931,10 @@ async def openai_chat_completions(
                 except Exception as e:
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
                     error_chunk = {
-                        "error": {"message": "An internal error occurred", "type": "server_error"},
+                        "error": {
+                            "message": "An internal error occurred",
+                            "type": "server_error",
+                        },
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
 
@@ -1092,7 +1095,10 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 error_chunk = {
-                    "error": {"message": "An internal error occurred", "type": "server_error"},
+                    "error": {
+                        "message": "An internal error occurred",
+                        "type": "server_error",
+                    },
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
 

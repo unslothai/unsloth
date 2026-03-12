@@ -778,7 +778,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     output_dir = config.get("output_dir")
     if not output_dir:
-        output_dir = str(resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}"))
+        output_dir = str(
+            resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}")
+        )
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

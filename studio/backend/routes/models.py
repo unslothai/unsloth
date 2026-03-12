@@ -218,10 +218,14 @@ async def list_local_models(
         allowed_roots = [Path("./models").resolve(), hf_cache_dir]
         try:
             from utils.paths import studio_root, outputs_root
+
             allowed_roots.extend([studio_root(), outputs_root()])
         except Exception:
             pass
-        if not any(models_root == root or models_root.is_relative_to(root) for root in allowed_roots):
+        if not any(
+            models_root == root or models_root.is_relative_to(root)
+            for root in allowed_roots
+        ):
             raise HTTPException(
                 status_code = 403,
                 detail = "Directory not allowed",
