@@ -12,7 +12,8 @@ from transformers.cache_utils import DynamicCache, Cache
 
 
 # ── Inline copies of the functions under test ──────────────────────────
-# These match the implementations in unsloth/models/llama.py exactly.
+# These match the implementations of _ensure_cache_is_dynamic and
+# _slice_position_ids in unsloth/models/llama.py.
 # Kept inline so the test suite can run on any machine (no GPU needed).
 
 
