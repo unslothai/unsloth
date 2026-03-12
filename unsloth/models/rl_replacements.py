@@ -1311,14 +1311,18 @@ RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
 
 
 def grpo_trainer_fix_generation_batch_size(RLTrainer_source, RLConfig_source):
-    if "generation_batch_size" not in RLConfig_source: return ""
-    if "steps_per_generation" not in RLConfig_source: return ""
+    if "generation_batch_size" not in RLConfig_source:
+        return ""
+    if "steps_per_generation" not in RLConfig_source:
+        return ""
 
-    check_generation_batch_size = \
-    "if generation_batch_size is not None and steps_per_generation is not None:\n"\
-    "    generation_batch_size = None\n"
+    check_generation_batch_size = (
+        "if generation_batch_size is not None and steps_per_generation is not None:\n"
+        "    generation_batch_size = None\n"
+    )
     return check_generation_batch_size
-pass
+
+
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_generation_batch_size)
 
 

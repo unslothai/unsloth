@@ -156,7 +156,6 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
     trainer_class.train = _unsloth_train_with_resume_guard
 
 
-
 def _maybe_prepare_vllm_for_resume(trainer):
     if not torch.cuda.is_available():
         return
@@ -185,10 +184,12 @@ def _maybe_prepare_vllm_for_resume(trainer):
         trainer._unsloth_resume_wake_vllm = True
 
     import gc
+
     for _ in range(3):
         gc.collect()
         torch.cuda.empty_cache()
-pass
+
+
 
 
 def _patch_resume_from_checkpoint_memory(trainer_class):
@@ -206,11 +207,13 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
         if resume_from_checkpoint:
             _maybe_prepare_vllm_for_resume(self)
         return original_train(self, *args, **kwargs)
-    pass
+
 
     _unsloth_train_with_resume_guard._unsloth_resume_guard = True
     trainer_class.train = _unsloth_train_with_resume_guard
-pass
+
+
+
 
 def PatchRL(FastLanguageModel):
     try:
