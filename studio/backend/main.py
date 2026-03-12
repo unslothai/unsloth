@@ -241,7 +241,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
         file_path = (build_path / full_path).resolve()
 
         # Block path traversal — ensure resolved path stays inside build_path
-        if not str(file_path).startswith(str(build_path.resolve())):
+        if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 
         if file_path.is_file():

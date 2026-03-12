@@ -426,7 +426,7 @@ async def generate_stream(
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': 'An internal error occurred'})}\n\n"
 
     return StreamingResponse(
         stream(),
@@ -798,7 +798,7 @@ async def openai_chat_completions(
                         logger.error(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
-                        yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}})}\n\n"
+                        yield f"data: {json.dumps({'error': {'message': 'An internal error occurred', 'type': 'server_error'}})}\n\n"
 
                 return StreamingResponse(
                     audio_input_stream(),
@@ -931,7 +931,7 @@ async def openai_chat_completions(
                 except Exception as e:
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
                     error_chunk = {
-                        "error": {"message": str(e), "type": "server_error"},
+                        "error": {"message": "An internal error occurred", "type": "server_error"},
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
 
@@ -1092,7 +1092,7 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 error_chunk = {
-                    "error": {"message": str(e), "type": "server_error"},
+                    "error": {"message": "An internal error occurred", "type": "server_error"},
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
 
