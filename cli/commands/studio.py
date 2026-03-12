@@ -300,7 +300,7 @@ def _build_llama_cpp():
             import stat
             os.chmod(path, stat.S_IWRITE)
             func(path)
-        shutil.rmtree(llama_dir, onerror=_force_remove_readonly)
+        shutil.rmtree(llama_dir, onerror = _force_remove_readonly)
     unsloth_home.mkdir(parents = True, exist_ok = True)
 
     result = subprocess.run(
