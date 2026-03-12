@@ -16,5 +16,3 @@
 Reserved module for optional GeLU acceleration. Currently unused.
 Left intentionally minimal to address reviewer feedback.
 """
-
-

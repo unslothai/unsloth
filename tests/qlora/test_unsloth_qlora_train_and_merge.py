@@ -222,15 +222,17 @@ def test_unsloth_phi2_load_and_forward_smoke():
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name,
-            max_seq_length=64,
-            load_in_4bit=True,
-            use_exact_model_name=True,
+            max_seq_length = 64,
+            load_in_4bit = True,
+            use_exact_model_name = True,
         )
     except Exception as e:
         pytest.skip(f"Skipping Phi-2 smoke test due to: {e}")
 
     model.eval()
     with torch.no_grad():
-        input_ids = tokenizer("Hello", return_tensors="pt").input_ids.to(next(model.parameters()).device)
-        out = model(input_ids=input_ids)
+        input_ids = tokenizer("Hello", return_tensors = "pt").input_ids.to(
+            next(model.parameters()).device
+        )
+        out = model(input_ids = input_ids)
         assert hasattr(out, "logits")

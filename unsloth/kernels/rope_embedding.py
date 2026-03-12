@@ -463,7 +463,8 @@ def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     torch_device_stream(Q.device).synchronize()
     return Q, K
-pass
+
+
 
 
 @torch.compiler.disable
@@ -483,7 +484,8 @@ def fast_partial_rope_embedding(Q, K, cos, sin, rotary_dim: int):
     Q[..., :rotary_dim] = Q_rot2
     K[..., :rotary_dim] = K_rot2
     return Q, K
-pass
+
+
 
 
 def inplace_partial_rope_embedding(Q, K, cos, sin, position_ids, rotary_dim: int):
@@ -502,4 +504,5 @@ def inplace_partial_rope_embedding(Q, K, cos, sin, position_ids, rotary_dim: int
     Q[..., :rotary_dim] = Q_rot2
     K[..., :rotary_dim] = K_rot2
     return Q, K
-pass
+
+

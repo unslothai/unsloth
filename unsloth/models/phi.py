@@ -23,6 +23,7 @@ from typing import Optional, Tuple
 
 try:
     from transformers import __version__ as transformers_version
+
     transformers_version = Version(transformers_version)
     from transformers.models.phi.modeling_phi import (
         PhiAttention,
@@ -30,8 +31,12 @@ try:
         PhiModel,
         PhiForCausalLM,
     )
+
     try:
-        from transformers.models.phi.modeling_phi import PhiSdpaAttention, PhiFlashAttention2
+        from transformers.models.phi.modeling_phi import (
+            PhiSdpaAttention,
+            PhiFlashAttention2,
+        )
     except Exception:
         PhiSdpaAttention = PhiAttention
         PhiFlashAttention2 = PhiAttention
@@ -72,9 +77,9 @@ def PhiAttention_fast_forward(
     use_cache: bool = False,
     padding_mask: Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-    *args, **kwargs,
+    *args,
+    **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-
     # Clear inference caches if any (mirrors other model fastpaths)
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -84,16 +89,19 @@ def PhiAttention_fast_forward(
         del self.temp_KV
         del self.RH_Q
         del self.attention
-    pass
 
     bsz, q_len, _ = hidden_states.size()
 
     n_heads: int = self.config.num_attention_heads
     n_kv_heads: int = getattr(self.config, "num_key_value_heads", n_heads)
     n_groups_attr = getattr(self, "num_key_value_groups", None)
-    n_groups: int = n_groups_attr if isinstance(n_groups_attr, int) and n_groups_attr > 0 else max(1, n_heads // max(1, n_kv_heads))
+    n_groups: int = (
+        n_groups_attr
+        if isinstance(n_groups_attr, int) and n_groups_attr > 0
+        else max(1, n_heads // max(1, n_kv_heads))
+    )
     head_dim: int = self.head_dim
-    assert (n_kv_heads * n_groups == n_heads)
+    assert n_kv_heads * n_groups == n_heads
 
     # Q, K, V projections
     Q, K, V = self.apply_qkv(self, hidden_states)
@@ -133,12 +141,12 @@ def PhiAttention_fast_forward(
         rope_module = None
         if hasattr(self, "rotary_emb"):
             rope_module = self.rotary_emb
-            rope_module.extend_rope_embedding(V, seq_len=kv_seq_len)
+            rope_module.extend_rope_embedding(V, seq_len = kv_seq_len)
             if position_ids is None:
                 cos = rope_module.cos_cached
                 sin = rope_module.sin_cached
             else:
-                cos, sin = rope_module(V, seq_len=kv_seq_len)
+                cos, sin = rope_module(V, seq_len = kv_seq_len)
         else:
             rope_module = getattr(self, "_unsloth_phi_rope", None)
             if rope_module is None:
@@ -149,16 +157,21 @@ def PhiAttention_fast_forward(
                 except Exception:
                     base = 10000
                     max_pos = 2048
-                rope_module = LlamaRotaryEmbedding(dim=head_dim, max_position_embeddings=max_pos, base=base, device=V.device)
+                rope_module = LlamaRotaryEmbedding(
+                    dim = head_dim,
+                    max_position_embeddings = max_pos,
+                    base = base,
+                    device = V.device,
+                )
                 # Keep for reuse
                 self._unsloth_phi_rope = rope_module
             # Ensure buffers sized appropriately
-            rope_module.extend_rope_embedding(V, seq_len=kv_seq_len)
+            rope_module.extend_rope_embedding(V, seq_len = kv_seq_len)
             if position_ids is None:
                 cos = rope_module.cos_cached
                 sin = rope_module.sin_cached
             else:
-                cos, sin = rope_module(V, seq_len=kv_seq_len)
+                cos, sin = rope_module(V, seq_len = kv_seq_len)
 
         # Apply (partial) RoPE
         if rotary_dim < head_dim:
@@ -172,12 +185,12 @@ def PhiAttention_fast_forward(
 
     # KV cache update
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim=2)
-        V = torch.cat([past_key_value[1], V], dim=2)
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
     # Attention computation (dispatch as in other models)
-    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
+    if not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None:
         # Xformers memory efficient attention with (bsz, seqlen, heads, dim)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -194,27 +207,40 @@ def PhiAttention_fast_forward(
                 V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        A = xformers_attention(Q, K, V, attn_bias=causal_mask)
+        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal=True)
+        A = flash_attn_func(Q, K, V, causal = True)
     else:
         # SDPA fallback, support GQA if available
         if SDPA_HAS_GQA:
-            A = scaled_dot_product_attention(Q, K, V, attn_mask=attention_mask, is_causal=False, enable_gqa=n_groups != 1)
+            A = scaled_dot_product_attention(
+                Q,
+                K,
+                V,
+                attn_mask = attention_mask,
+                is_causal = False,
+                enable_gqa = n_groups != 1,
+            )
             A = A.transpose(1, 2)
         else:
             if n_groups != 1:
-                K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-                V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                K = K[:, :, None, :, :].expand(
+                    bsz, n_kv_heads, n_groups, kv_seq_len, head_dim
+                )
+                V = V[:, :, None, :, :].expand(
+                    bsz, n_kv_heads, n_groups, kv_seq_len, head_dim
+                )
                 K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
                 V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
             Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-            A = scaled_dot_product_attention(Q, K, V, attn_mask=attention_mask, is_causal=False)
+            A = scaled_dot_product_attention(
+                Q, K, V, attn_mask = attention_mask, is_causal = False
+            )
             A = A.transpose(1, 2).contiguous()
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
@@ -228,21 +254,22 @@ def PhiAttention_fast_forward(
 
 
 class FastPhiModel(FastLlamaModel):
-
     @staticmethod
     def pre_patch():
         if PhiAttention is None:
             return
         # Patch attention forward for partial RoPE support and Unsloth compute path
-        PhiAttention     .forward = PhiAttention_fast_forward
+        PhiAttention.forward = PhiAttention_fast_forward
         try:
-            PhiSdpaAttention  .forward = PhiAttention_fast_forward
+            PhiSdpaAttention.forward = PhiAttention_fast_forward
             PhiFlashAttention2.forward = PhiAttention_fast_forward
         except Exception:
             pass
         # Patch CausalLM for Unsloth fastpath when compatible
         try:
-            PhiForCausalLM   .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+            PhiForCausalLM.forward = CausalLM_fast_forward(
+                LlamaModel_fast_forward_inference
+            )
             PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
             fix_prepare_inputs_for_generation(PhiForCausalLM)
         except Exception:
@@ -254,28 +281,42 @@ class FastPhiModel(FastLlamaModel):
         # Ensure Phi-2 defaults for partial RoPE if missing in config
         try:
             if getattr(model.config, "model_type", None) == "phi":
-                if not hasattr(model.config, "partial_rotary_factor") and not hasattr(model.config, "rotary_dim"):
+                if not hasattr(model.config, "partial_rotary_factor") and not hasattr(
+                    model.config, "rotary_dim"
+                ):
                     # Empirically common fraction for Phi-2 partial RoPE
                     model.config.partial_rotary_factor = 0.4
                 # Attach deterministic dropout layers if dropout > 0 for residuals
                 p_attn = float(getattr(model.config, "attention_dropout", 0.0))
-                p_mlp  = float(getattr(model.config, "hidden_dropout", 0.0))
+                p_mlp = float(getattr(model.config, "hidden_dropout", 0.0))
                 if p_attn > 0.0 or p_mlp > 0.0:
                     import os
+
                     seed = int(os.environ.get("UNSLOTH_DROPOUT_SEED", 3407))
                     for layer in model.model.layers:
                         if p_attn > 0.0:
                             # Attach to attention module so it can be used in patched attention forward
-                            layer.self_attn._unsloth_resid_attn_dropout = DeterministicDropout(p_attn, seed)
+                            layer.self_attn._unsloth_resid_attn_dropout = (
+                                DeterministicDropout(p_attn, seed)
+                            )
                         if p_mlp > 0.0:
                             # Apply dropout to MLP outputs via a forward hook (post-MLP, pre-residual add)
-                            layer._unsloth_resid_mlp_dropout  = DeterministicDropout(p_mlp,  seed)
-                            def _mlp_hook(mod, inputs, output, _layer=layer):
-                                if _layer.training and _layer._unsloth_resid_mlp_dropout is not None:
+                            layer._unsloth_resid_mlp_dropout = DeterministicDropout(
+                                p_mlp, seed
+                            )
+
+                            def _mlp_hook(mod, inputs, output, _layer = layer):
+                                if (
+                                    _layer.training
+                                    and _layer._unsloth_resid_mlp_dropout is not None
+                                ):
                                     return _layer._unsloth_resid_mlp_dropout(output)
                                 return output
+
                             # Keep handle to prevent GC
-                            layer._unsloth_mlp_hook = layer.mlp.register_forward_hook(_mlp_hook)
+                            layer._unsloth_mlp_hook = layer.mlp.register_forward_hook(
+                                _mlp_hook
+                            )
         except Exception:
             pass
         return model, tokenizer
@@ -301,22 +342,22 @@ class FastPhiModel(FastLlamaModel):
         **kwargs,
     ):
         return FastBaseModel.get_peft_model(
-            model                      = model,
-            r                          = r,
-            target_modules             = target_modules,
-            lora_alpha                 = lora_alpha,
-            lora_dropout               = lora_dropout,
-            bias                       = bias,
-            layers_to_transform        = layers_to_transform,
-            layers_pattern             = layers_pattern,
+            model = model,
+            r = r,
+            target_modules = target_modules,
+            lora_alpha = lora_alpha,
+            lora_dropout = lora_dropout,
+            bias = bias,
+            layers_to_transform = layers_to_transform,
+            layers_pattern = layers_pattern,
             use_gradient_checkpointing = use_gradient_checkpointing,
-            random_state               = random_state,
-            max_seq_length             = max_seq_length,
-            use_rslora                 = use_rslora,
-            modules_to_save            = modules_to_save,
-            init_lora_weights          = init_lora_weights,
-            loftq_config               = loftq_config,
-            temporary_location         = temporary_location,
+            random_state = random_state,
+            max_seq_length = max_seq_length,
+            use_rslora = use_rslora,
+            modules_to_save = modules_to_save,
+            init_lora_weights = init_lora_weights,
+            loftq_config = loftq_config,
+            temporary_location = temporary_location,
             **kwargs,
         )
 
@@ -336,20 +377,19 @@ class FastPhiModel(FastLlamaModel):
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
-            model_name        = model_name,
-            max_seq_length    = max_seq_length,
-            dtype             = dtype,
-            load_in_4bit      = load_in_4bit,
-            token             = token,
-            device_map        = device_map,
-            rope_scaling      = rope_scaling,
-            fix_tokenizer     = fix_tokenizer,
-            model_patcher     = FastPhiModel,
-            tokenizer_name    = tokenizer_name,
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            fix_tokenizer = fix_tokenizer,
+            model_patcher = FastPhiModel,
+            tokenizer_name = tokenizer_name,
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-    pass
-pass
+
 
 
