@@ -2808,7 +2808,14 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, (PeftModelForCausalLM, PeftModelForSequenceClassification, PeftModelForSeq2SeqLM)):
+        if isinstance(
+            model,
+            (
+                PeftModelForCausalLM,
+                PeftModelForSequenceClassification,
+                PeftModelForSeq2SeqLM,
+            ),
+        ):
             # Check if exactly the same and then pass through!
             assert hasattr(model, "peft_config")
 
@@ -3246,7 +3253,14 @@ class FastLlamaModel:
                 model = model,
                 use_gradient_checkpointing = use_gradient_checkpointing,
             )
-        if not isinstance(model, (PeftModelForCausalLM, PeftModelForSequenceClassification, PeftModelForSeq2SeqLM)):
+        if not isinstance(
+            model,
+            (
+                PeftModelForCausalLM,
+                PeftModelForSequenceClassification,
+                PeftModelForSeq2SeqLM,
+            ),
+        ):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )

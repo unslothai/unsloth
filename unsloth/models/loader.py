@@ -1395,7 +1395,10 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
-            if AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None) is not None:
+            if (
+                AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None)
+                is not None
+            ):
                 auto_model = AutoModelForSeq2SeqLM
             elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.
