@@ -89,7 +89,7 @@ def run(label: str, cmd: list[str], *, quiet: bool = True) -> None:
 
 
 # Packages to skip on Windows (require special build steps)
-WINDOWS_SKIP_PACKAGES = {"open_spiel"}
+WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
@@ -206,13 +206,14 @@ def install_python_stack() -> int:
     )
 
     # 5. Triton kernels (no-deps, from source)
-    pip_install(
-        "Installing triton kernels",
-        "--no-deps",
-        "--no-cache-dir",
-        req = REQ_ROOT / "triton-kernels.txt",
-        constrain = False,
-    )
+    if not IS_WINDOWS:
+        pip_install(
+            "Installing triton kernels",
+            "--no-deps",
+            "--no-cache-dir",
+            req = REQ_ROOT / "triton-kernels.txt",
+            constrain = False,
+        )
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
