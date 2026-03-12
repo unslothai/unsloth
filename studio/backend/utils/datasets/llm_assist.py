@@ -103,7 +103,6 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
         backend = LlamaCppBackend()
         logger.info(f"Loading helper model: {repo} ({variant})")
-        print(f"🤖 Loading helper model: {repo} ({variant})...")
 
         ok = backend.load_model(
             hf_repo = repo,
@@ -141,7 +140,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         if backend is not None:
             try:
                 backend.unload_model()
-                print("🤖 Helper model unloaded")
+                logger.info("Helper model unloaded")
             except Exception:
                 pass
 
@@ -201,7 +200,7 @@ def llm_generate_vlm_instruction(
         logger.warning(f"Helper model returned unusable instruction: {instruction!r}")
         return None
 
-    print(f"🤖 LLM-generated instruction: {instruction}")
+    logger.info(f"LLM-generated instruction: {instruction}")
     return {
         "instruction": instruction,
         "confidence": 0.85,
@@ -297,7 +296,7 @@ def llm_classify_columns(
         logger.warning(f"Helper model mapping missing user/assistant: {cleaned}")
         return None
 
-    print(f"🤖 LLM-classified columns: {cleaned}")
+    logger.info(f"LLM-classified columns: {cleaned}")
     return cleaned
 
 
@@ -347,7 +346,7 @@ def llm_generate_dataset_warning(
     if len(warning) < 10 or len(warning) > 500:
         return None
 
-    print(f"🤖 LLM-generated warning: {warning}")
+    logger.info(f"LLM-generated warning: {warning}")
     return warning
 
 
@@ -480,7 +479,7 @@ def _run_multi_pass_advisor(
         from core.inference.llama_cpp import LlamaCppBackend
 
         backend = LlamaCppBackend()
-        print(f"🤖 Loading advisor model: {repo} ({variant})...")
+        logger.info(f"Loading advisor model: {repo} ({variant})")
         t0 = time.monotonic()
 
         ok = backend.load_model(
@@ -495,8 +494,7 @@ def _run_multi_pass_advisor(
             logger.warning("Advisor model failed to start")
             return None
 
-        print(f"🤖 Advisor model loaded in {time.monotonic() - t0:.1f}s")
-
+        logger.info(f"Advisor model loaded in {time.monotonic() - t0:.1f}s")
         # ── Format samples ──
         samples_text = ""
         for i, row in enumerate(samples[:5], 1):
@@ -542,7 +540,7 @@ def _run_multi_pass_advisor(
             )
 
         # ── Pass 1: Classify ──
-        print("🤖 Pass 1: Classifying dataset...", flush = True)
+        logger.info("Pass 1: Classifying dataset...")
         t1 = time.monotonic()
         messages1 = [
             {
@@ -589,7 +587,7 @@ def _run_multi_pass_advisor(
         ]
         raw1 = _generate_with_backend(backend, messages1, max_tokens = 256)
         pass1 = _parse_json_response(raw1)
-        print(f"🤖 Pass 1 done ({time.monotonic() - t1:.1f}s): {pass1}", flush = True)
+        logger.info(f"Pass 1 done ({time.monotonic() - t1:.1f}s): {pass1}")
 
         if not pass1:
             logger.warning(f"Advisor Pass 1 failed to produce JSON: {raw1[:200]}")
@@ -608,7 +606,9 @@ def _run_multi_pass_advisor(
             }
 
         # ── Pass 2: Map columns to roles ──
-        print("🤖 Pass 2: Mapping columns to roles...", flush = True)
+        logger.info("Pass 2: Mapping columns to roles...")
+
+
         t2 = time.monotonic()
         messages2 = [
             {
@@ -689,7 +689,7 @@ def _run_multi_pass_advisor(
         ]
         raw2 = _generate_with_backend(backend, messages2, max_tokens = 512)
         pass2 = _parse_json_response(raw2)
-        print(f"🤖 Pass 2 done ({time.monotonic() - t2:.1f}s): {pass2}", flush = True)
+        logger.info(f"Pass 2 done ({time.monotonic() - t2:.1f}s): {pass2}")
 
         if not pass2:
             logger.warning(f"Advisor Pass 2 failed to produce JSON: {raw2[:200]}")
@@ -702,10 +702,7 @@ def _run_multi_pass_advisor(
         # Validate: must have at least one user AND one assistant
         roles_present = set(column_roles.values())
         if "user" not in roles_present or "assistant" not in roles_present:
-            print(
-                f"🤖 Pass 2 sanity fail: missing user or assistant role: {column_roles}",
-                flush = True,
-            )
+            logger.warning(f"Pass 2 sanity fail: missing user or assistant role: {column_roles}")
             return None  # triggers fallback to simple classification
 
         # ── Pass 3: System prompt (non-conversational datasets only) ──
@@ -714,7 +711,7 @@ def _run_multi_pass_advisor(
         is_conv = pass1.get("is_conversational", False)
 
         if not is_conv:
-            print("🤖 Pass 3: Generating system prompt...", flush = True)
+            logger.info("Pass 3: Generating system prompt...")
             t3 = time.monotonic()
 
             # Format label mapping info for the prompt
@@ -755,10 +752,7 @@ def _run_multi_pass_advisor(
                 },
             ]
             raw3 = _generate_with_backend(backend, messages3, max_tokens = 256)
-            print(
-                f"🤖 Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}",
-                flush = True,
-            )
+            logger.info(f"Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}")
 
             if raw3:
                 # Pass 3 returns raw text, not JSON — clean it up
@@ -783,11 +777,8 @@ def _run_multi_pass_advisor(
         user_notification = " ".join(note_parts)
 
         total_time = time.monotonic() - t0
-        print(
-            f"🤖 Advisor complete ({total_time:.1f}s): type={dtype}, "
-            f"mapping={suggested_mapping}, sys_prompt={bool(sys_prompt)}, label_map={bool(label_map)}",
-            flush = True,
-        )
+        logger.info(f"Advisor complete ({total_time:.1f}s): type={dtype}, mapping={suggested_mapping}, sys_prompt={bool(sys_prompt)}, label_map={bool(label_map)}")
+
 
         return {
             "success": True,
@@ -807,7 +798,7 @@ def _run_multi_pass_advisor(
         if backend is not None:
             try:
                 backend.unload_model()
-                print("🤖 Advisor model unloaded")
+                logger.info("Advisor model unloaded")
             except Exception:
                 pass
 
@@ -849,7 +840,7 @@ def llm_conversion_advisor(
     )
 
     if result and result.get("success"):
-        print(f"🤖 Conversion advisor succeeded: type={result.get('dataset_type')}")
+        logger.info(f"Conversion advisor succeeded: type={result.get('dataset_type')}")
         return result
 
     # Fallback: simple column classification
