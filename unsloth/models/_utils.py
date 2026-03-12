@@ -2849,9 +2849,7 @@ try:
         if full_name.startswith("model.language_model."):
             aliases.add(full_name[len("model.") :])
         if "language_model.model." in full_name:
-            aliases.add(
-                full_name.replace("language_model.model.", "language_model.")
-            )
+            aliases.add(full_name.replace("language_model.model.", "language_model."))
         if full_name.startswith("model.language_model.model."):
             aliases.add(
                 full_name[len("model.") :].replace(
