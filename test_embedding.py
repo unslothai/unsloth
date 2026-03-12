@@ -2,7 +2,7 @@ import torch
 import mlx.core as mx
 from unsloth.kernels.mlx.bridge import mlx_to_torch
 
-arr = mx.array([[1, 2, 3], [4, 5, 6]], dtype=mx.int32)
+arr = mx.array([[1, 2, 3], [4, 5, 6]], dtype = mx.int32)
 tensor = mlx_to_torch(arr)
 print("Tensor:", tensor)
 print("Tensor device:", tensor.device)
