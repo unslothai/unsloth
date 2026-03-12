@@ -5,6 +5,7 @@
 Model Management API routes
 """
 
+import os
 import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -210,10 +211,9 @@ async def list_local_models(
     """
     List local model candidates from custom models dir and HF cache.
     """
-    # Validate models_dir before any filesystem access
-    models_root = Path(models_dir).expanduser().resolve()
+    # Validate models_dir against allowed roots before any filesystem access.
+    # Uses os.path.realpath + startswith (CodeQL-recognized sanitizer pattern).
     hf_cache_dir = _resolve_hf_cache_dir()
-
     allowed_roots = [Path("./models").resolve(), hf_cache_dir]
     try:
         from utils.paths import studio_root, outputs_root
@@ -221,10 +221,15 @@ async def list_local_models(
         allowed_roots.extend([studio_root(), outputs_root()])
     except Exception:
         pass
-    if not any(
-        models_root == root or models_root.is_relative_to(root)
-        for root in allowed_roots
-    ):
+
+    resolved = os.path.realpath(os.path.expanduser(models_dir))
+    models_root = None
+    for root in allowed_roots:
+        root_str = os.path.realpath(str(root))
+        if resolved == root_str or resolved.startswith(root_str + os.sep):
+            models_root = Path(resolved)
+            break
+    if models_root is None:
         raise HTTPException(
             status_code = 403,
             detail = "Directory not allowed",
