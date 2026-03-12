@@ -48,6 +48,10 @@ def precache_helper_gguf():
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+
+        disable_progress_bars()
+        logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
         # Find the GGUF file matching the variant
         api = HfApi()
@@ -72,6 +76,11 @@ def precache_helper_gguf():
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
     except Exception as e:
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
+    finally:
+      try:
+        enable_progress_bars()
+      except Exception as e:
+        pass
 
 
 def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
