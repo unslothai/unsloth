@@ -227,10 +227,10 @@ def _slice_position_ids(position_ids, input_ids):
         return None
     if position_ids.dim() == 2:
         if position_ids.shape[1] > input_ids.shape[1]:
-            position_ids = position_ids[:, -input_ids.shape[1]:]
+            position_ids = position_ids[:, -input_ids.shape[1] :]
     elif position_ids.dim() == 1:
         if position_ids.shape[0] > input_ids.shape[1]:
-            position_ids = position_ids[-input_ids.shape[1]:]
+            position_ids = position_ids[-input_ids.shape[1] :]
     return position_ids
 
 
@@ -1492,7 +1492,11 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attention_mask = attention_mask,
                 **kwargs,
             )
-        elif past_key_values is not None and input_ids is not None and input_ids.shape[1] > 1:
+        elif (
+            past_key_values is not None
+            and input_ids is not None
+            and input_ids.shape[1] > 1
+        ):
             # Multi-token prefill with user-provided KV cache. The fast inference
             # path only supports single-token decoding (q_len == 1), so fall
             # through to the regular model forward which handles arbitrary lengths.

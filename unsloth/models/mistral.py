@@ -265,7 +265,9 @@ def MistralForCausalLM_fast_forward(
             position_ids = position_ids,
             attention_mask = attention_mask,
         )
-    elif past_key_values is not None and input_ids is not None and input_ids.shape[1] > 1:
+    elif (
+        past_key_values is not None and input_ids is not None and input_ids.shape[1] > 1
+    ):
         # Multi-token prefill with user-provided KV cache
         self.model._has_no_labels = labels is None
         outputs = self.model(

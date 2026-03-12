@@ -24,6 +24,7 @@ def _load_model(model_name, load_in_4bit = True):
     """Load model, raising SkipTest if the model cannot be loaded."""
     try:
         from unsloth import FastLanguageModel
+
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name = model_name,
             max_seq_length = 2048,
