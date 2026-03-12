@@ -72,7 +72,7 @@ def _resolve_external_ip() -> str:
 def run_server(
     host: str = "0.0.0.0",
     port: int = 8000,
-    frontend_path: Path(__file__).resolve().parent.parent / "frontend" / "dist",
+    frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
 ):
     """
