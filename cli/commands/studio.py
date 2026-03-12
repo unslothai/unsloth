@@ -373,7 +373,10 @@ def _build_llama_cpp():
         stderr = subprocess.STDOUT,
     )
 
-    server_bin = build_dir / "bin" / "llama-server"
+    if sys.platform == "win32":
+        server_bin = build_dir / "bin" / "Release" / "llama-server.exe"
+    else:
+        server_bin = build_dir / "bin" / "llama-server"
     if server_bin.is_file():
         typer.echo(f"  llama-server built at {server_bin}")
     else:
