@@ -116,6 +116,7 @@ class TruncatedRouter(nn.Module):
         self,
         input_ids: torch.LongTensor,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -124,6 +125,7 @@ class TruncatedRouter(nn.Module):
         Args:
             input_ids: Input token IDs [batch, seq_len]
             attention_mask: Attention mask [batch, seq_len]
+            position_ids: Position IDs [batch, seq_len]
             
         Returns:
             logits: Output logits [batch, seq_len, vocab_size]
@@ -131,11 +133,26 @@ class TruncatedRouter(nn.Module):
         # Embeddings
         hidden_states = self.embed_tokens(input_ids)
         
+        # Generate position_ids if not provided (needed for RoPE)
+        if position_ids is None:
+            position_ids = torch.arange(
+                input_ids.size(1), device=input_ids.device
+            ).unsqueeze(0).expand(input_ids.size(0), -1)
+        
+        # Simple expansion for 2D mask to 4D if needed by layers
+        mask_input = attention_mask
+        if attention_mask is not None and attention_mask.dim() == 2:
+            # Convert [batch, seq] to [batch, 1, 1, seq]
+            mask_input = attention_mask[:, None, None, :]
+            mask_input = mask_input.to(dtype=hidden_states.dtype)
+            mask_input = (1.0 - mask_input) * torch.finfo(hidden_states.dtype).min
+        
         # Pass through truncated layers
         for layer in self.layers:
             layer_outputs = layer(
                 hidden_states,
-                attention_mask=attention_mask,
+                attention_mask=mask_input,
+                position_ids=position_ids,
                 use_cache=False,
             )
             hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
