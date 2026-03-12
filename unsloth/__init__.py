@@ -283,6 +283,7 @@ from .trainer import *
 # CGGR (Confidence-Gated Gradient Routing) integration
 # Optional: requires `pip install cggr` for full functionality
 from .cggr import CGGR_AVAILABLE
+
 if CGGR_AVAILABLE:
     from .cggr import CGGRUnslothBridge, patch_trainer_for_cggr, create_truncated_router
 
@@ -299,4 +300,3 @@ from unsloth_zoo.rl_environments import (
 
 # Patch TRL trainers for backwards compatibility
 _patch_trl_trainer()
-
