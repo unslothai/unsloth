@@ -294,7 +294,13 @@ def _build_llama_cpp():
     typer.echo("  Building llama.cpp for GGUF inference...")
 
     if llama_dir.exists():
-        shutil.rmtree(llama_dir)
+        # necessary because shutil.rmtree fails on Windows because .git pack files are read-only
+        def _force_remove_readonly(func, path, exc_info):
+            """Clear read-only flag and retry — needed on Windows for .git pack files."""
+            import stat
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        shutil.rmtree(llama_dir, onerror=_force_remove_readonly)
     unsloth_home.mkdir(parents = True, exist_ok = True)
 
     result = subprocess.run(
