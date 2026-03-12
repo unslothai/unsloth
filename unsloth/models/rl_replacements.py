@@ -983,7 +983,7 @@ def grpo_trainer_compute_loss(function_name, function):
             batch_size = None,
             compute_entropy = False,
             compute_efficient = False: self._get_per_token_logps(
-                model, input_ids, attention_mask, logits_to_keep, compute_efficient
+                model, input_ids, attention_mask, pixel_values, image_grid_thw, logits_to_keep
             )
             if hasattr(self, "_get_per_token_logps")
             else self._get_per_token_logps_and_entropies(
