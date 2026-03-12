@@ -138,9 +138,9 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
 
     # Check model files
     assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
-    assert os.path.isfile(
-        os.path.join(save_path, "config.json")
-    ), "config.json not found."
+    assert os.path.isfile(os.path.join(save_path, "config.json")), (
+        "config.json not found."
+    )
 
     weight_files = [
         f
@@ -151,18 +151,18 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
 
     # Check tokenizer files
     for file in tokenizer_files:
-        assert os.path.isfile(
-            os.path.join(save_path, file)
-        ), f"{file} not found in the save directory."
+        assert os.path.isfile(os.path.join(save_path, file)), (
+            f"{file} not found in the save directory."
+        )
 
     # Check config to see if it is 16bit by checking for quantization config
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    assert (
-        "quantization_config" not in config
-    ), "Quantization config not found in the model config."
+    assert "quantization_config" not in config, (
+        "Quantization config not found in the model config."
+    )
 
     # Store the size of the model files
     total_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files)
@@ -191,9 +191,9 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
 
     # Check model files
     assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
-    assert os.path.isfile(
-        os.path.join(save_path, "config.json")
-    ), "config.json not found."
+    assert os.path.isfile(os.path.join(save_path, "config.json")), (
+        "config.json not found."
+    )
 
     weight_files = [
         f
@@ -204,9 +204,9 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
 
     # Check tokenizer files
     for file in tokenizer_files:
-        assert os.path.isfile(
-            os.path.join(save_path, file)
-        ), f"{file} not found in the save directory."
+        assert os.path.isfile(os.path.join(save_path, file)), (
+            f"{file} not found in the save directory."
+        )
 
     # Store the size of the model files
     total_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files)
@@ -214,18 +214,18 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
 
     print(f"Total size of merged_4bit files: {total_size} bytes")
 
-    assert (
-        total_size < save_file_sizes["merged_16bit"][model.config._name_or_path]
-    ), "Merged 4bit files are larger than merged 16bit files."
+    assert total_size < save_file_sizes["merged_16bit"][model.config._name_or_path], (
+        "Merged 4bit files are larger than merged 16bit files."
+    )
 
     # Check config to see if it is 4bit
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    assert (
-        "quantization_config" in config
-    ), "Quantization config not found in the model config."
+    assert "quantization_config" in config, (
+        "Quantization config not found in the model config."
+    )
 
     # Test loading the model from the saved path
     loaded_model, loaded_tokenizer = FastModel.from_pretrained(
@@ -269,12 +269,12 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
     torchao_save_path = save_path + "-torchao"
 
     # Check model files
-    assert os.path.isdir(
-        torchao_save_path
-    ), f"Directory {torchao_save_path} does not exist."
-    assert os.path.isfile(
-        os.path.join(torchao_save_path, "config.json")
-    ), "config.json not found."
+    assert os.path.isdir(torchao_save_path), (
+        f"Directory {torchao_save_path} does not exist."
+    )
+    assert os.path.isfile(os.path.join(torchao_save_path, "config.json")), (
+        "config.json not found."
+    )
 
     weight_files = [
         f
@@ -285,9 +285,9 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
 
     # Check tokenizer files
     for file in tokenizer_files:
-        assert os.path.isfile(
-            os.path.join(torchao_save_path, file)
-        ), f"{file} not found in the save directory."
+        assert os.path.isfile(os.path.join(torchao_save_path, file)), (
+            f"{file} not found in the save directory."
+        )
 
     # Store the size of the model files
     total_size = sum(
@@ -295,18 +295,18 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
     )
     save_file_sizes["torchao"][model.config._name_or_path] = total_size
 
-    assert (
-        total_size < save_file_sizes["merged_16bit"][model.config._name_or_path]
-    ), "torchao files are larger than merged 16bit files."
+    assert total_size < save_file_sizes["merged_16bit"][model.config._name_or_path], (
+        "torchao files are larger than merged 16bit files."
+    )
 
     # Check config to see if it is quantized with torchao
     config_path = os.path.join(torchao_save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    assert (
-        "quantization_config" in config
-    ), "Quantization config not found in the model config."
+    assert "quantization_config" in config, (
+        "Quantization config not found in the model config."
+    )
 
     # Test loading the model from the saved path
     # can't set `load_in_4bit` to True because the model is torchao quantized
@@ -351,9 +351,9 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     torchao_save_path = save_path + "-torchao"
 
     # Verify files exist
-    assert os.path.isdir(
-        torchao_save_path
-    ), f"TorchAO directory {torchao_save_path} does not exist."
+    assert os.path.isdir(torchao_save_path), (
+        f"TorchAO directory {torchao_save_path} does not exist."
+    )
 
     # Load with safe globals
     import torch.serialization
