@@ -604,7 +604,7 @@ def load_correct_tokenizer(
     # Ignore mistral type models since they don't have an add_generation_prompt
     if any(
         s in str(getattr(tokenizer, "name_or_path", "")).lower()
-        for s in ["mistral", "qwen3guard"]
+        for s in ["mistral", "qwen3guard", "hermes"]
     ):
         chat_template = old_chat_template
 
