@@ -38,7 +38,7 @@ NOTE: This is NOT to be used for production as it contains many extra checks and
 @dataclass
 class GroupedGEMMResult:
     """Container for storing intermediate and final results from grouped GEMM operations.
-    
+
     Attributes:
         token_counts_by_expert: Number of tokens assigned to each expert
         gather_indices: Indices used for token permutation and unpermutation
@@ -49,6 +49,7 @@ class GroupedGEMMResult:
         hidden_states_unpermute: Hidden states after unpermutation from expert order to token order
         hidden_states: Final output hidden states
     """
+
     token_counts_by_expert: torch.Tensor
     gather_indices: torch.Tensor
     topk_weights: torch.Tensor
@@ -61,11 +62,11 @@ class GroupedGEMMResult:
 
 class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
     """Reference implementation of Qwen3 Mixture of Experts block using grouped GEMM operations.
-    
+
     This implementation uses torch-native operations and stores intermediate results for debugging.
     It implements the MoE routing mechanism with top-k expert selection and grouped matrix multiplications.
     """
-    
+
     def __init__(
         self,
         config,
@@ -74,7 +75,7 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         down_proj: torch.Tensor,
     ):
         """Initialize the Qwen3 MoE block with expert weights.
-        
+
         Args:
             config: Qwen3MoeConfig containing model configuration parameters
             gate: Router gate weights for expert selection [num_experts, hidden_size]
@@ -111,10 +112,10 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
     @staticmethod
     def extract_hf_weights(moe_block: Qwen3MoeSparseMoeBlock):
         """Extract and reorganize weights from a HuggingFace Qwen3MoeSparseMoeBlock.
-        
+
         Args:
             moe_block: HuggingFace Qwen3MoeSparseMoeBlock instance
-            
+
         Returns:
             Tuple containing:
                 - gate: Router gate weights
@@ -143,10 +144,10 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
     @classmethod
     def from_hf(cls, moe_block: Qwen3MoeSparseMoeBlock):
         """Create a Qwen3MoeGroupedGEMMBlock from a HuggingFace MoE block.
-        
+
         Args:
             moe_block: HuggingFace Qwen3MoeSparseMoeBlock instance
-            
+
         Returns:
             Qwen3MoeGroupedGEMMBlock instance with extracted weights
         """
@@ -156,7 +157,7 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
     def check_weights(self, moe_block: Qwen3MoeSparseMoeBlock):
         """Verify that the weights match those in the original HuggingFace MoE block.
-        
+
         Args:
             moe_block: HuggingFace Qwen3MoeSparseMoeBlock to compare against
         """
@@ -174,10 +175,10 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
     def act_and_mul(self, x: torch.Tensor) -> torch.Tensor:
         """Apply activation function to gate projection and multiply with up projection.
-        
+
         Args:
             x: Input tensor with shape [..., 2 * moe_intermediate_size]
-            
+
         Returns:
             Result of activation(gate_proj) * up_proj with shape [..., moe_intermediate_size]
         """
@@ -188,10 +189,10 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
     def run_router(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Run the routing mechanism to select top-k experts for each token.
-        
+
         Args:
             hidden_states: Input hidden states [batch_size * seq_len, hidden_size]
-            
+
         Returns:
             Tuple containing:
                 - router_logits: Raw logits from the router
@@ -216,10 +217,10 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         self, selected_experts: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute token counts per expert and gather indices for permutation.
-        
+
         Args:
             selected_experts: Indices of selected experts for each token
-            
+
         Returns:
             Tuple containing:
                 - token_counts_by_expert: Number of tokens assigned to each expert
@@ -234,10 +235,10 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Forward pass through the MoE block.
-        
+
         Args:
             hidden_states: Input tensor [batch_size, seq_len, hidden_size]
-            
+
         Returns:
             Tuple containing:
                 - GroupedGEMMResult: Container with all intermediate results
@@ -303,11 +304,11 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
 class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
     """Optimized Qwen3 MoE block using fused grouped GEMM kernels.
-    
+
     This implementation uses Triton-based grouped GEMM kernels for improved performance
     and supports various optimization options like permutation fusion and kernel tuning.
     """
-    
+
     def __init__(
         self,
         config: Qwen3MoeConfig,
@@ -324,7 +325,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         dX_only: bool = False,
     ):
         """Initialize the fused grouped GEMM MoE block.
-        
+
         Args:
             config: Qwen3MoeConfig containing model configuration
             gate: Router gate weights
@@ -369,7 +370,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         dX_only: bool = False,
     ):
         """Create a fused grouped GEMM MoE block from a HuggingFace MoE block.
-        
+
         Args:
             moe_block: HuggingFace Qwen3MoeSparseMoeBlock instance
             permute_x: Whether to fuse input permutation in the first GEMM
@@ -380,7 +381,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             kernel_config_bwd_dX: Manual kernel configuration for input gradients
             dW_only: Whether to compute only weight gradients
             dX_only: Whether to compute only input gradients
-            
+
         Returns:
             Qwen3MoeFusedGroupedGEMMBlock instance with extracted weights and configurations
         """
@@ -405,10 +406,10 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Forward pass using fused grouped GEMM kernels.
-        
+
         Args:
             hidden_states: Input tensor [batch_size, seq_len, hidden_size]
-            
+
         Returns:
             Tuple containing:
                 - hidden_states: Output tensor [batch_size, seq_len, hidden_size]
