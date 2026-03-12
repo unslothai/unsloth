@@ -1171,6 +1171,7 @@ class FastBaseModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -1259,6 +1260,36 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
 
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if use_dora:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if kwargs.get("lora_bias", False):
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_bias = True.\n"
+                    "Please set lora_bias = False when using target_parameters."
+                )
+
+            invalid_params = [
+                p
+                for p in target_parameters
+                if p
+                in ("lm_head.weight", "lm_head", "embed_tokens.weight", "embed_tokens")
+            ]
+            if invalid_params:
+                raise ValueError(
+                    f"Unsloth: target_parameters should not contain {invalid_params}.\n"
+                    f"target_parameters is for targeting nn.Parameter objects directly (e.g., MoE expert weights).\n"
+                    f"For embed_tokens/lm_head, use modules_to_save instead for full fine-tuning."
+                )
+
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
@@ -1270,6 +1301,13 @@ class FastBaseModel:
         }
         del local_variables["kwargs"]
         allowed_parameters = inspect.signature(LoraConfig).parameters.keys()
+        if use_dora and "use_dora" not in allowed_parameters:
+            import peft
+
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support `use_dora`.\n"
+                "Please install a newer PEFT version or disable use_dora."
+            )
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
