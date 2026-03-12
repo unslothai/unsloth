@@ -2836,20 +2836,54 @@ try:
         transformers.quantizers.quantizers_utils.should_convert_module
     )
 
-    def _normalize_module_path(x):
-        if not isinstance(x, str):
-            return x
+    # Dynamic quant checkpoints can encode skip paths as
+    # "language_model.model.*", while the live module tree can surface them as
+    # "model.language_model.*". Preserve upstream matching semantics by
+    # generating the small set of equivalent aliases and delegating to the
+    # original helper for the actual match decision.
+    def _get_full_name_aliases(full_name):
+        aliases = {full_name}
+        if not isinstance(full_name, str):
+            return aliases
 
-        x = x.replace("language_model.model.", "language_model.")
-        if x.startswith("model."):
-            x = x[len("model.") :]
-        return x
+        if full_name.startswith("model.language_model."):
+            aliases.add(full_name[len("model.") :])
+        if "language_model.model." in full_name:
+            aliases.add(
+                full_name.replace("language_model.model.", "language_model.")
+            )
+        if full_name.startswith("model.language_model.model."):
+            aliases.add(
+                full_name[len("model.") :].replace(
+                    "language_model.model.", "language_model."
+                )
+            )
+        return aliases
+
+    def _get_pattern_aliases(pattern):
+        aliases = {pattern}
+        if not isinstance(pattern, str):
+            return aliases
+
+        if "language_model.model." in pattern:
+            aliases.add(pattern.replace("language_model.model.", "language_model."))
+        return aliases
+
+    def _expand_patterns(patterns):
+        expanded = set()
+        for pattern in patterns:
+            expanded.update(_get_pattern_aliases(pattern))
+        return expanded
 
     def patched_should_convert_module(full_name, patterns = None):
-        full_name = _normalize_module_path(full_name)
-        if patterns is not None:
-            patterns = [_normalize_module_path(p) for p in patterns]
-        return _original_should_convert_module(full_name, patterns)
+        if patterns is None:
+            return _original_should_convert_module(full_name, patterns)
+
+        expanded_patterns = _expand_patterns(patterns)
+        return all(
+            _original_should_convert_module(candidate, expanded_patterns)
+            for candidate in _get_full_name_aliases(full_name)
+        )
 
     patched_should_convert_module._original_should_convert_module = (
         _original_should_convert_module
