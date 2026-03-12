@@ -152,10 +152,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    frontend_path = Path(args.frontend) if args.frontend else None
-    run_server(
-        host = args.host, port = args.port, frontend_path = frontend_path, silent = args.silent
-    )
+    kwargs = dict(host = host, port = port, silent = silent)
+    if frontend is not None:
+        kwargs["frontend_path"] = frontend
+    run_server(**kwargs)
 
     # Keep running
     import time
