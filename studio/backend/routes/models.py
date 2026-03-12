@@ -211,8 +211,9 @@ async def list_local_models(
     """
     List local model candidates from custom models dir and HF cache.
     """
-    # Validate models_dir against allowed roots before any filesystem access.
-    # Uses os.path.realpath + startswith (CodeQL-recognized sanitizer pattern).
+    # Validate models_dir against an allowlist of trusted directories.
+    # Only the trusted Path objects are used for filesystem access -- the
+    # user-supplied string is only used for matching, never for path construction.
     hf_cache_dir = _resolve_hf_cache_dir()
     allowed_roots = [Path("./models").resolve(), hf_cache_dir]
     try:
@@ -222,12 +223,12 @@ async def list_local_models(
     except Exception:
         pass
 
-    resolved = os.path.realpath(os.path.expanduser(models_dir))
+    requested = os.path.realpath(os.path.expanduser(models_dir))
     models_root = None
     for root in allowed_roots:
         root_str = os.path.realpath(str(root))
-        if resolved == root_str or resolved.startswith(root_str + os.sep):
-            models_root = Path(resolved)
+        if requested == root_str or requested.startswith(root_str + os.sep):
+            models_root = root  # Use the trusted root, not the user-supplied path
             break
     if models_root is None:
         raise HTTPException(
