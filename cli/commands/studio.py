@@ -298,8 +298,10 @@ def _build_llama_cpp():
         def _force_remove_readonly(func, path, exc_info):
             """Clear read-only flag and retry — needed on Windows for .git pack files."""
             import stat
+
             os.chmod(path, stat.S_IWRITE)
             func(path)
+
         shutil.rmtree(llama_dir, onerror = _force_remove_readonly)
     unsloth_home.mkdir(parents = True, exist_ok = True)
 

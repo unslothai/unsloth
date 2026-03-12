@@ -77,10 +77,10 @@ def precache_helper_gguf():
     except Exception as e:
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:
-      try:
-        enable_progress_bars()
-      except Exception as e:
-        pass
+        try:
+            enable_progress_bars()
+        except Exception as e:
+            pass
 
 
 def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
@@ -608,7 +608,6 @@ def _run_multi_pass_advisor(
         # ── Pass 2: Map columns to roles ──
         logger.info("Pass 2: Mapping columns to roles...")
 
-
         t2 = time.monotonic()
         messages2 = [
             {
@@ -702,7 +701,9 @@ def _run_multi_pass_advisor(
         # Validate: must have at least one user AND one assistant
         roles_present = set(column_roles.values())
         if "user" not in roles_present or "assistant" not in roles_present:
-            logger.warning(f"Pass 2 sanity fail: missing user or assistant role: {column_roles}")
+            logger.warning(
+                f"Pass 2 sanity fail: missing user or assistant role: {column_roles}"
+            )
             return None  # triggers fallback to simple classification
 
         # ── Pass 3: System prompt (non-conversational datasets only) ──
@@ -752,7 +753,9 @@ def _run_multi_pass_advisor(
                 },
             ]
             raw3 = _generate_with_backend(backend, messages3, max_tokens = 256)
-            logger.info(f"Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}")
+            logger.info(
+                f"Pass 3 done ({time.monotonic() - t3:.1f}s): {raw3[:200] if raw3 else None}"
+            )
 
             if raw3:
                 # Pass 3 returns raw text, not JSON — clean it up
@@ -777,8 +780,9 @@ def _run_multi_pass_advisor(
         user_notification = " ".join(note_parts)
 
         total_time = time.monotonic() - t0
-        logger.info(f"Advisor complete ({total_time:.1f}s): type={dtype}, mapping={suggested_mapping}, sys_prompt={bool(sys_prompt)}, label_map={bool(label_map)}")
-
+        logger.info(
+            f"Advisor complete ({total_time:.1f}s): type={dtype}, mapping={suggested_mapping}, sys_prompt={bool(sys_prompt)}, label_map={bool(label_map)}"
+        )
 
         return {
             "success": True,
