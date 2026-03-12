@@ -35,8 +35,6 @@ def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
-
-
 def is_local_path(path: str) -> bool:
     """
     Check if path is a local filesystem path vs HuggingFace model identifier.
@@ -68,8 +66,6 @@ def is_local_path(path: str) -> bool:
     )
 
 
-
-
 def get_cache_path(model_name: str) -> Optional[Path]:
     """Get HuggingFace cache path for a model if it exists."""
     cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
@@ -77,8 +73,6 @@ def get_cache_path(model_name: str) -> Optional[Path]:
     model_cache_path = cache_dir / f"models--{model_cache_name}"
 
     return model_cache_path if model_cache_path.exists() else None
-
-
 
 
 def is_model_cached(model_name: str) -> bool:
@@ -93,5 +87,3 @@ def is_model_cached(model_name: str) -> bool:
             return True
 
     return False
-
-

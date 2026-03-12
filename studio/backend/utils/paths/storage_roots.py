@@ -67,6 +67,7 @@ def ensure_dir(path: Path) -> Path:
     path.mkdir(parents = True, exist_ok = True)
     return path
 
+
 def ensure_studio_directories() -> None:
     """Create all standard studio directories on startup."""
     for dir_fn in (

@@ -74,8 +74,6 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
-
-
 def format_error_message(error: Exception, model_name: str) -> str:
     """
     Format user-friendly error messages for common issues.
@@ -118,5 +116,3 @@ def format_error_message(error: Exception, model_name: str) -> str:
 
     # Generic fallback
     return str(error)
-
-

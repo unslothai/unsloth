@@ -1270,7 +1270,6 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         return None
 
 
-
 # Status indicators that appear in UI dropdowns
 UI_STATUS_INDICATORS = [" (Ready)", " (Loading...)", " (Active)", "↓ "]
 
