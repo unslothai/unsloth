@@ -2844,35 +2844,11 @@ try:
             x = x[len("model."):]
         return x
 
-    def _pattern_blocks(full_name: str, pat: str) -> bool:
-        if "*" in pat:
-            rx = "^" + re.escape(pat).replace("\\*", ".*")
-            return re.match(rx, full_name) is not None
-
-        return (
-            full_name == pat
-            or full_name.startswith(pat + ".")
-            or full_name.endswith("." + pat)
-            or full_name.endswith(pat)
-        )
-
     def patched_should_convert_module(full_name, patterns = None):
-        if patterns is None:
-            return True
-
         full_name = _normalize_module_path(full_name)
-        patterns = [_normalize_module_path(p) for p in patterns]
-
-        for p in patterns:
-            if not isinstance(p, str):
-                if hasattr(p, "search") and p.search(full_name):
-                    return False
-                continue
-
-            if _pattern_blocks(full_name, p):
-                return False
-
-        return True
+        if patterns is not None:
+            patterns = [_normalize_module_path(p) for p in patterns]
+        return _original_should_convert_module(full_name, patterns)
 
     patched_should_convert_module._original_should_convert_module = _original_should_convert_module
     transformers.quantizers.quantizers_utils.should_convert_module = patched_should_convert_module
