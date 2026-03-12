@@ -226,10 +226,16 @@ def determine_attention_implementation(model_class, config):
     model_type = getattr(config, "model_type", "").lower()
 
     # 1. Flash Attention 2
-    if HAS_FLASH_ATTENTION and model_type not in ("gpt_oss", "mllama") and not model_type.startswith("gemma3"):
+    if (
+        HAS_FLASH_ATTENTION
+        and model_type not in ("gpt_oss", "mllama")
+        and not model_type.startswith("gemma3")
+    ):
         supports_fa2 = False
         if model_class is not None:
-            supports_fa2 = getattr(model_class, "_supports_flash_attn_2", False) or getattr(model_class, "_supports_flash_attn", False)
+            supports_fa2 = getattr(
+                model_class, "_supports_flash_attn_2", False
+            ) or getattr(model_class, "_supports_flash_attn", False)
 
         if supports_fa2:
             if config is not None:
@@ -243,8 +249,10 @@ def determine_attention_implementation(model_class, config):
         try:
             from transformers.utils.import_utils import is_torch_flex_attn_available
 
-            if is_torch_flex_attn_available() and (model_class is not None) and getattr(
-                model_class, "_supports_flex_attn", False
+            if (
+                is_torch_flex_attn_available()
+                and (model_class is not None)
+                and getattr(model_class, "_supports_flex_attn", False)
             ):
                 # GPT-OSS, Mllama and Gemma3 use eager/sdpa attention during
                 # inference since flex attention returns incorrect results or errors out.
@@ -254,7 +262,10 @@ def determine_attention_implementation(model_class, config):
                 # decode q_len=1, causing ValueError. Needs transformers update.
                 # Gemma3N: timm vision wrappers (eg Gemma3nVisionConfig) do not
                 # support flex_attention.
-                if model_type not in ("gpt_oss", "mllama") and not model_type.startswith("gemma3"):
+                if model_type not in (
+                    "gpt_oss",
+                    "mllama",
+                ) and not model_type.startswith("gemma3"):
                     if config is not None:
                         setattr(config, "_attn_implementation", "flex_attention")
                         if hasattr(config, "attn_implementation"):
