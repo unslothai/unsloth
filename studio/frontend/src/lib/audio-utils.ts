@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-// Copyright © 2025 Unsloth AI
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/flac,audio/mp4";
 export const MAX_AUDIO_SIZE = 50 * 1024 * 1024;

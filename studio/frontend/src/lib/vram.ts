@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-// Copyright © 2025 Unsloth AI
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
  * VRAM estimation for model loading (4-bit quantization via bitsandbytes).

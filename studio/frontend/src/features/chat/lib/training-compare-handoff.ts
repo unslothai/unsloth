@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-// Copyright © 2025 Unsloth AI
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const TRAINING_COMPARE_HANDOFF_KEY = "chat:training-compare-handoff:v1";
 const HANDOFF_MAX_AGE_MS = 15 * 60 * 1000;

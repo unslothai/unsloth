@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-// Copyright © 2025 Unsloth AI
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";

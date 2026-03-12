@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-// Copyright © 2025 Unsloth AI
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelType, StepConfig } from "@/types/training";
 import type { PipelineType } from "@huggingface/hub";
