@@ -390,6 +390,3 @@ class FastPhiModel(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
-
-
-
