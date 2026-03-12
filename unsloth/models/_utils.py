@@ -763,6 +763,7 @@ for model_name in model_architectures:
     config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
+        exec(f"from transformers.utils import auto_docstring, logging", globals())
     except:
         continue
 
@@ -2820,3 +2821,70 @@ def make_fast_generate_wrapper(original_generate):
         return original_generate(*args, **kwargs)
 
     return _fast_generate_wrapper
+
+# Some (vision) models like gemma3 seem to have issues with this when using dyanmic quants (llm_int8_skip_modules)
+# Ref: https://github.com/unslothai/unsloth/issues/4208 due to mismatch in model.language_model.model vs model.language_model
+# This has been addressed in https://github.com/unslothai/unsloth/pull/4018/changes/e5944ffe18b756c46dd389a4e00b7226bfac6c46
+# But for reasons unknown was reverted in the same PR :(
+# Reintroduce the fix here
+# Without this, transformers/peft seems to wrap these in peft.Linear4bit but the underlying weight is 16bit lol
+try:
+    import transformers
+
+    _original_should_convert_module = (
+        transformers.quantizers.quantizers_utils.should_convert_module
+    )
+
+    def _normalize_module_path(x):
+        if not isinstance(x, str):
+            return x
+
+        x = x.replace("language_model.model.", "language_model.")
+        if x.startswith("model."):
+            x = x[len("model."):]
+        return x
+
+    def _pattern_blocks(full_name: str, pat: str) -> bool:
+        if "*" in pat:
+            rx = "^" + re.escape(pat).replace("\\*", ".*")
+            return re.match(rx, full_name) is not None
+
+        return (
+            full_name == pat
+            or full_name.startswith(pat + ".")
+            or full_name.endswith("." + pat)
+            or full_name.endswith(pat)
+        )
+
+    def patched_should_convert_module(full_name, patterns = None):
+        if patterns is None:
+            return True
+
+        full_name = _normalize_module_path(full_name)
+        patterns = [_normalize_module_path(p) for p in patterns]
+
+        for p in patterns:
+            if not isinstance(p, str):
+                if hasattr(p, "search") and p.search(full_name):
+                    return False
+                continue
+
+            if _pattern_blocks(full_name, p):
+                return False
+
+        return True
+
+    patched_should_convert_module._original_should_convert_module = _original_should_convert_module
+    transformers.quantizers.quantizers_utils.should_convert_module = patched_should_convert_module
+
+    try:
+        import transformers.integrations.bitsandbytes
+        transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
+    except Exception:
+        pass
+except Exception as e:
+    logger.warning(
+        f"Unsloth: Failed to patch should_convert_module: {e}. "
+        "llm_int8_skip_modules might not work for dynamic quants."
+    )
+    pass
