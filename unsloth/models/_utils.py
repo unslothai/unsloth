@@ -2822,6 +2822,7 @@ def make_fast_generate_wrapper(original_generate):
 
     return _fast_generate_wrapper
 
+
 # Some (vision) models like gemma3 seem to have issues with this when using dyanmic quants (llm_int8_skip_modules)
 # Ref: https://github.com/unslothai/unsloth/issues/4208 due to mismatch in model.language_model.model vs model.language_model
 # This has been addressed in https://github.com/unslothai/unsloth/pull/4018/changes/e5944ffe18b756c46dd389a4e00b7226bfac6c46
@@ -2841,7 +2842,7 @@ try:
 
         x = x.replace("language_model.model.", "language_model.")
         if x.startswith("model."):
-            x = x[len("model."):]
+            x = x[len("model.") :]
         return x
 
     def _pattern_blocks(full_name: str, pat: str) -> bool:
@@ -2874,12 +2875,19 @@ try:
 
         return True
 
-    patched_should_convert_module._original_should_convert_module = _original_should_convert_module
-    transformers.quantizers.quantizers_utils.should_convert_module = patched_should_convert_module
+    patched_should_convert_module._original_should_convert_module = (
+        _original_should_convert_module
+    )
+    transformers.quantizers.quantizers_utils.should_convert_module = (
+        patched_should_convert_module
+    )
 
     try:
         import transformers.integrations.bitsandbytes
-        transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
+
+        transformers.integrations.bitsandbytes.should_convert_module = (
+            patched_should_convert_module
+        )
     except Exception:
         pass
 except Exception as e:
@@ -2887,4 +2895,3 @@ except Exception as e:
         f"Unsloth: Failed to patch should_convert_module: {e}. "
         "llm_int8_skip_modules might not work for dynamic quants."
     )
-    pass
