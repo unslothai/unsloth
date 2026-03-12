@@ -1,0 +1,10 @@
+{
+  "name": "unsloth-oxc-validator-runtime",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "dependencies": {
+    "oxc-parser": "^0.116.0",
+    "oxlint": "^1.51.0"
+  }
+}
