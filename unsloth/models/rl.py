@@ -1840,8 +1840,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 new_vllm_part,
                 flags = re.DOTALL,  # Ensure . matches newlines [[5]]
             )
-
-        init = init.replace(vllm_part, new_vllm_part)
         else:
             new_vllm_part = (
                 f"\n{' '*8}if {args}.use_vllm:\n"
@@ -1851,7 +1849,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 f"{' '*12}self.accelerator.wait_for_everyone()\n"
                 f"\n{' '*8}else:\n"
             )
-            init = init.replace(vllm_part, new_vllm_part)
+        init = init.replace(vllm_part, new_vllm_part)
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
