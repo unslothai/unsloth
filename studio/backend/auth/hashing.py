@@ -4,6 +4,7 @@
 """
 Password hashing utilities using PBKDF2.
 """
+
 import hashlib
 import hmac
 import secrets
@@ -13,7 +14,7 @@ from typing import Tuple
 def hash_password(password: str, salt: str | None = None) -> Tuple[str, str]:
     """
     Hash a password using PBKDF2-HMAC-SHA256.
-    
+
     Returns (salt, hex_hash) tuple.
     """
     if salt is None:
@@ -30,7 +31,7 @@ def hash_password(password: str, salt: str | None = None) -> Tuple[str, str]:
 def verify_password(password: str, salt: str, hashed: str) -> bool:
     """
     Verify a password against a stored salt and hash.
-    
+
     Uses constant-time comparison to prevent timing attacks.
     """
     dk = hashlib.pbkdf2_hmac(
@@ -40,4 +41,3 @@ def verify_password(password: str, salt: str, hashed: str) -> bool:
         100_000,
     )
     return hmac.compare_digest(dk.hex(), hashed)
-

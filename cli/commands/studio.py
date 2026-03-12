@@ -10,26 +10,42 @@ from pathlib import Path
 from typing import Optional
 import typer
 
-studio_app = typer.Typer(help="Unsloth Studio commands.")
+studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 STUDIO_HOME = Path.home() / ".unsloth" / "studio"
 
+# __file__ is cli/commands/studio.py — two parents up is the package root
+# (either site-packages or the repo root for editable installs).
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _is_repo_root(path: Path) -> bool:
+    """Check if a directory looks like the repo root (actual git clone, not site-packages)."""
+    return (
+        (path / ".git").exists()
+        and (path / "pyproject.toml").is_file()
+        and (
+            (path / "studio" / "setup.sh").is_file()
+            or (path / "studio" / "setup.ps1").is_file()
+        )
+    )
+
 
 def _get_repo_root() -> Optional[Path]:
-    """Find the git clone repo root, or None if pure pip install."""
+    """Find the git clone repo root.
+
+    Used only by setup() — checks __file__ first (editable install),
+    then walks CWD parents (wheel install, user is inside the clone).
+    """
     # Check 1: __file__ is in the repo (editable install)
-    candidate = Path(__file__).resolve().parent.parent.parent
-    if (candidate / "pyproject.toml").is_file() and (candidate / "studio" / "setup.sh").is_file():
-        return candidate
-    # Check 2: CWD is the repo (non-editable wheel, running from repo dir)
-    cwd = Path.cwd()
-    if (cwd / "pyproject.toml").is_file() and (cwd / "studio" / "setup.sh").is_file():
-        return cwd
+    if _is_repo_root(_PACKAGE_ROOT):
+        return _PACKAGE_ROOT
+    # Check 2: CWD or any parent is the repo
+    cwd = Path.cwd().resolve()
+    for parent in (cwd, *cwd.parents):
+        if _is_repo_root(parent):
+            return parent
     return None
-
-
-def _is_git_clone() -> bool:
-    return _get_repo_root() is not None
 
 
 def _studio_venv_python() -> Optional[Path]:
@@ -42,37 +58,69 @@ def _studio_venv_python() -> Optional[Path]:
 
 
 def _find_run_py() -> Optional[Path]:
-    """Find studio/backend/run.py."""
-    # 1. Repo root (git clone / editable)
-    repo = _get_repo_root()
-    if repo:
-        run_py = repo / "studio" / "backend" / "run.py"
-        if run_py.is_file():
-            return run_py
-    # 2. Studio venv's site-packages
-    for match in (STUDIO_HOME / ".venv").glob("lib/python*/site-packages/studio/backend/run.py"):
-        return match
-    # 3. Current package's site-packages
-    run_py = Path(__file__).resolve().parent.parent.parent / "studio" / "backend" / "run.py"
-    return run_py if run_py.is_file() else None
+    """Find studio/backend/run.py.
+
+    No CWD dependency — works from any directory.
+    Since studio/ is now a proper package (has __init__.py), it lives in
+    site-packages after pip install, right next to cli/.
+    """
+    # 1. Relative to __file__ (site-packages or editable repo root)
+    run_py = _PACKAGE_ROOT / "studio" / "backend" / "run.py"
+    if run_py.is_file():
+        return run_py
+    # 2. Studio venv's site-packages (Linux + Windows layouts)
+    for pattern in (
+        "lib/python*/site-packages/studio/backend/run.py",
+        "Lib/site-packages/studio/backend/run.py",
+    ):
+        for match in (STUDIO_HOME / ".venv").glob(pattern):
+            return match
+    return None
 
 
 def _find_install_script() -> Optional[Path]:
-    """Find studio/install_python_stack.py."""
-    # 1. Repo root
-    repo = _get_repo_root()
-    if repo:
-        s = repo / "studio" / "install_python_stack.py"
-        if s.is_file():
-            return s
-    # 2. Relative to __file__ (in site-packages)
-    s = Path(__file__).resolve().parent.parent.parent / "studio" / "install_python_stack.py"
-    return s if s.is_file() else None
+    """Find studio/install_python_stack.py.
+
+    No CWD dependency — works from any directory.
+    """
+    # 1. Relative to __file__ (site-packages or editable repo root)
+    s = _PACKAGE_ROOT / "studio" / "install_python_stack.py"
+    if s.is_file():
+        return s
+    # 2. Studio venv's site-packages
+    for pattern in (
+        "lib/python*/site-packages/studio/install_python_stack.py",
+        "Lib/site-packages/studio/install_python_stack.py",
+    ):
+        for match in (STUDIO_HOME / ".venv").glob(pattern):
+            return match
+    return None
+
+
+def _find_setup_script() -> Optional[Path]:
+    """Find studio/setup.sh or studio/setup.ps1.
+
+    No CWD dependency — works from any directory.
+    """
+    name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
+    # 1. Relative to __file__ (site-packages or editable repo root)
+    s = _PACKAGE_ROOT / "studio" / name
+    if s.is_file():
+        return s
+    # 2. Studio venv's site-packages
+    for pattern in (
+        f"lib/python*/site-packages/studio/{name}",
+        f"Lib/site-packages/studio/{name}",
+    ):
+        for match in (STUDIO_HOME / ".venv").glob(pattern):
+            return match
+    return None
 
 
 # ── unsloth studio (server) ──────────────────────────────────────────
 
-@studio_app.callback(invoke_without_command=True)
+
+@studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8000, "--port", "-p"),
@@ -94,7 +142,14 @@ def studio_default(
         if studio_python and run_py:
             if not silent:
                 typer.echo("Launching with studio venv...")
-            args = [str(studio_python), str(run_py), "--host", host, "--port", str(port)]
+            args = [
+                str(studio_python),
+                str(run_py),
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ]
             if frontend:
                 args.extend(["--frontend", str(frontend)])
             if silent:
@@ -108,14 +163,15 @@ def studio_default(
 
     if not silent:
         from studio.backend.run import _resolve_external_ip
+
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_server(
-        host=host,
-        port=port,
-        frontend_path=frontend,
-        silent=silent,
+        host = host,
+        port = port,
+        frontend_path = frontend,
+        silent = silent,
     )
 
     try:
@@ -127,25 +183,30 @@ def studio_default(
 
 # ── unsloth studio setup ─────────────────────────────────────────────
 
+
 @studio_app.command()
 def setup():
     """Run one-time Studio environment setup."""
-    if _is_git_clone():
-        _dev_setup()
+    # If we're inside a git clone, use the full setup script (builds frontend, etc.)
+    repo = _get_repo_root()
+    if repo:
+        _dev_setup(repo)
     else:
         _pip_setup()
 
 
-def _dev_setup():
+def _dev_setup(repo_root: Path):
     """Git-clone: run setup.sh / setup.ps1."""
-    repo_root = _get_repo_root()
     studio_dir = repo_root / "studio"
     if platform.system() == "Windows":
         script = studio_dir / "setup.ps1"
-        subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)], check=True)
+        subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            check = True,
+        )
     else:
         script = studio_dir / "setup.sh"
-        subprocess.run(["bash", str(script)], check=True)
+        subprocess.run(["bash", str(script)], check = True)
 
 
 def _pip_setup():
@@ -167,14 +228,14 @@ def _pip_setup():
     # 1. Create venv
     if not venv_python.is_file():
         typer.echo(f"  Creating venv at {venv_dir}...")
-        STUDIO_HOME.mkdir(parents=True, exist_ok=True)
-        _venv.create(str(venv_dir), with_pip=True)
+        STUDIO_HOME.mkdir(parents = True, exist_ok = True)
+        _venv.create(str(venv_dir), with_pip = True)
 
     # 2. Install all Python deps via install_python_stack.py
     install_script = _find_install_script()
     if install_script:
         typer.echo("  Installing Python dependencies...")
-        subprocess.run([str(venv_python), str(install_script)], check=True)
+        subprocess.run([str(venv_python), str(install_script)], check = True)
     else:
         typer.echo("Error: Could not find install_python_stack.py")
         raise typer.Exit(1)
@@ -184,16 +245,28 @@ def _pip_setup():
         typer.echo(f"  Transformers 5.x overlay already at {venv_t5_dir}")
     else:
         typer.echo("  Installing transformers 5.x overlay...")
-        venv_t5_dir.mkdir(parents=True, exist_ok=True)
+        venv_t5_dir.mkdir(parents = True, exist_ok = True)
         subprocess.run(
-            [str(venv_pip), "install",
-             "--target", str(venv_t5_dir), "--no-deps", "transformers==5.2.0"],
-            check=True,
+            [
+                str(venv_pip),
+                "install",
+                "--target",
+                str(venv_t5_dir),
+                "--no-deps",
+                "transformers==5.2.0",
+            ],
+            check = True,
         )
         subprocess.run(
-            [str(venv_pip), "install",
-             "--target", str(venv_t5_dir), "--no-deps", "huggingface_hub==1.3.0"],
-            check=True,
+            [
+                str(venv_pip),
+                "install",
+                "--target",
+                str(venv_t5_dir),
+                "--no-deps",
+                "huggingface_hub==1.3.0",
+            ],
+            check = True,
         )
         typer.echo(f"  Installed to {venv_t5_dir}")
 
@@ -221,12 +294,26 @@ def _build_llama_cpp():
     typer.echo("  Building llama.cpp for GGUF inference...")
 
     if llama_dir.exists():
-        shutil.rmtree(llama_dir)
-    unsloth_home.mkdir(parents=True, exist_ok=True)
+        # necessary because shutil.rmtree fails on Windows because .git pack files are read-only
+        def _force_remove_readonly(func, path, exc_info):
+            """Clear read-only flag and retry — needed on Windows for .git pack files."""
+            import stat
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        shutil.rmtree(llama_dir, onerror = _force_remove_readonly)
+    unsloth_home.mkdir(parents = True, exist_ok = True)
 
     result = subprocess.run(
-        ["git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", str(llama_dir)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "https://github.com/ggml-org/llama.cpp.git",
+            str(llama_dir),
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if result.returncode != 0:
         typer.echo("  Failed to clone llama.cpp")
@@ -245,7 +332,8 @@ def _build_llama_cpp():
     build_dir = llama_dir / "build"
     result = subprocess.run(
         ["cmake", "-S", str(llama_dir), "-B", str(build_dir)] + cmake_args,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if result.returncode != 0:
         typer.echo("  cmake configure failed")
@@ -253,21 +341,42 @@ def _build_llama_cpp():
 
     ncpu = str(os.cpu_count() or 4)
     result = subprocess.run(
-        ["cmake", "--build", str(build_dir), "--config", "Release",
-         "--target", "llama-server", f"-j{ncpu}"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--config",
+            "Release",
+            "--target",
+            "llama-server",
+            f"-j{ncpu}",
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if result.returncode != 0:
         typer.echo("  llama-server build failed")
         return
 
     subprocess.run(
-        ["cmake", "--build", str(build_dir), "--config", "Release",
-         "--target", "llama-quantize", f"-j{ncpu}"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--config",
+            "Release",
+            "--target",
+            "llama-quantize",
+            f"-j{ncpu}",
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
 
-    server_bin = build_dir / "bin" / "llama-server"
+    if sys.platform == "win32":
+        server_bin = build_dir / "bin" / "Release" / "llama-server.exe"
+    else:
+        server_bin = build_dir / "bin" / "llama-server"
     if server_bin.is_file():
         typer.echo(f"  llama-server built at {server_bin}")
     else:

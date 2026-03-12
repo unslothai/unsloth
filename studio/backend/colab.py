@@ -5,6 +5,7 @@
 Colab-specific helpers for running Unsloth Studio.
 Uses Colab's built-in proxy - no external tunneling needed!
 """
+
 from pathlib import Path
 import sys
 
@@ -14,9 +15,8 @@ if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 from loggers import get_logger
+
 logger = get_logger(__name__)
-
-
 
 
 def get_colab_url(port: int = 8000) -> str:
@@ -25,9 +25,9 @@ def get_colab_url(port: int = 8000) -> str:
     """
     try:
         from google.colab.output import eval_js
-        
+
         # Use Colab's proxy mechanism
-        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec=5)
+        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 5)
         return url if url else f"http://localhost:{port}"
     except Exception as e:
         logger.info(f"Note: Could not get Colab URL ({e})")
@@ -37,10 +37,10 @@ def get_colab_url(port: int = 8000) -> str:
 def show_link(port: int = 8000):
     """Display a styled clickable link to the UI."""
     from IPython.display import display, HTML
-    
+
     # Get real Colab proxy URL
     url = get_colab_url(port)
-    
+
     html = f"""
     <div style="padding: 20px; background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -65,32 +65,32 @@ def show_link(port: int = 8000):
 def start(port: int = 8000):
     """
     Start Unsloth Studio server in Colab and display the URL.
-    
+
     Usage:
         from colab import start
         start()
     """
     import sys
-    
+
     logger.info("🦥 Starting Unsloth Studio...")
-    
+
     logger.info("   Loading backend...")
     from run import run_server
-    
+
     # Auto-detect frontend path
     repo_root = Path(__file__).parent.parent
     frontend_path = repo_root / "frontend" / "dist"
-    
+
     if not frontend_path.exists():
         logger.info("❌ Frontend not built! Please run the setup cell first.")
         return
-    
+
     logger.info("   Starting server...")
     # Start server silently
-    run_server(host="0.0.0.0", port=port, frontend_path=frontend_path, silent=True)
-    
+    run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+
     logger.info("   Server started!")
-    
+
     # Show the clickable link with real URL
     show_link(port)
 

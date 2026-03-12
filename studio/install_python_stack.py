@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
@@ -31,6 +32,7 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 
 # ── Color support ──────────────────────────────────────────────────────
 
+
 def _enable_colors() -> bool:
     """Try to enable ANSI color support. Returns True if available."""
     if not hasattr(sys.stdout, "fileno"):
@@ -43,6 +45,7 @@ def _enable_colors() -> bool:
     if IS_WINDOWS:
         try:
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
             # Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) on stdout
             handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
@@ -54,13 +57,17 @@ def _enable_colors() -> bool:
             return False
     return True  # Unix terminals support ANSI by default
 
+
 _HAS_COLOR = _enable_colors()
+
 
 def _green(msg: str) -> str:
     return f"\033[92m{msg}\033[0m" if _HAS_COLOR else msg
 
+
 def _cyan(msg: str) -> str:
     return f"\033[96m{msg}\033[0m" if _HAS_COLOR else msg
+
 
 def _red(msg: str) -> str:
     return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
@@ -71,29 +78,33 @@ def run(label: str, cmd: list[str], *, quiet: bool = True) -> None:
     print(_cyan(f"   {label}..."))
     result = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE if quiet else None,
-        stderr=subprocess.STDOUT if quiet else None,
+        stdout = subprocess.PIPE if quiet else None,
+        stderr = subprocess.STDOUT if quiet else None,
     )
     if result.returncode != 0:
         print(_red(f"❌ {label} failed (exit code {result.returncode}):"))
         if result.stdout:
-            print(result.stdout.decode(errors="replace"))
+            print(result.stdout.decode(errors = "replace"))
         sys.exit(result.returncode)
 
 
 # Packages to skip on Windows (require special build steps)
-WINDOWS_SKIP_PACKAGES = {"open_spiel"}
+WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy of a requirements file with certain packages removed."""
-    lines = req.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
-        line for line in lines
+        line
+        for line in lines
         if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False, encoding="utf-8",
+        mode = "w",
+        suffix = ".txt",
+        delete = False,
+        encoding = "utf-8",
     )
     tmp.writelines(filtered)
     tmp.close()
@@ -121,8 +132,7 @@ def pip_install(
     finally:
         # Clean up temp file if we created one
         if actual_req is not None and actual_req != req:
-            actual_req.unlink(missing_ok=True)
-
+            actual_req.unlink(missing_ok = True)
 
 
 def download_file(url: str, dest: Path) -> None:
@@ -134,7 +144,8 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
     """Download a file from url and overwrite a file inside an installed package."""
     result = subprocess.run(
         [sys.executable, "-m", "pip", "show", package_name],
-        capture_output=True, text=True,
+        capture_output = True,
+        text = True,
     )
     if result.returncode != 0:
         print(_red(f"   ⚠️  Could not find package {package_name}, skipping patch"))
@@ -157,6 +168,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 
 # ── Main install sequence ─────────────────────────────────────────────
 
+
 def install_python_stack() -> int:
     print(_cyan("── Installing Python stack ──"))
 
@@ -165,80 +177,85 @@ def install_python_stack() -> int:
 
     # 2. Core packages: unsloth-zoo + unsloth
     pip_install(
-        "Installing unsloth-zoo + unsloth",
+        "Installing base packages",
         "--no-cache-dir",
-        req=REQ_ROOT / "base.txt",
+        req = REQ_ROOT / "base.txt",
     )
 
     # 3. Extra dependencies
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
-        req=REQ_ROOT / "extras.txt",
+        req = REQ_ROOT / "extras.txt",
     )
 
     # 3b. Extra dependencies (no-deps) — audio model support etc.
     pip_install(
         "Installing extras (no-deps)",
-        "--no-deps", "--no-cache-dir",
-        req=REQ_ROOT / "extras-no-deps.txt",
+        "--no-deps",
+        "--no-cache-dir",
+        req = REQ_ROOT / "extras-no-deps.txt",
     )
 
     # 4. Overrides (torchao, transformers) — force-reinstall
     pip_install(
-        "Installing torchao + transformers overrides",
-        "--force-reinstall", "--no-cache-dir",
-        req=REQ_ROOT / "overrides.txt",
+        "Installing dependency overrides",
+        "--force-reinstall",
+        "--no-cache-dir",
+        req = REQ_ROOT / "overrides.txt",
     )
 
     # 5. Triton kernels (no-deps, from source)
-    pip_install(
-        "Installing triton kernels",
-        "--no-deps", "--no-cache-dir",
-        req=REQ_ROOT / "triton-kernels.txt",
-        constrain=False,
-    )
+    if not IS_WINDOWS:
+        pip_install(
+            "Installing triton kernels",
+            "--no-deps",
+            "--no-cache-dir",
+            req = REQ_ROOT / "triton-kernels.txt",
+            constrain = False,
+        )
 
-    # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
-    patch_package_file(
-        "unsloth-zoo",
-        os.path.join("unsloth_zoo", "llama_cpp.py"),
-        "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py",
-    )
+    # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
+    # patch_package_file(
+    #     "unsloth-zoo",
+    #     os.path.join("unsloth_zoo", "llama_cpp.py"),
+    #     "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py",
+    # )
 
-    # 7a. Patch: override vision.py with fix from unsloth PR #4091
-    patch_package_file(
-        "unsloth",
-        os.path.join("unsloth", "models", "vision.py"),
-        "https://raw.githubusercontent.com/unslothai/unsloth/80e0108a684c882965a02a8ed851e3473c1145ab/unsloth/models/vision.py",
-    )
+    # # 7a. Patch: override vision.py with fix from unsloth PR #4091
+    # patch_package_file(
+    #     "unsloth",
+    #     os.path.join("unsloth", "models", "vision.py"),
+    #     "https://raw.githubusercontent.com/unslothai/unsloth/80e0108a684c882965a02a8ed851e3473c1145ab/unsloth/models/vision.py",
+    # )
 
-    # 7b. Patch : override save.py with fix from feature/llama-cpp-windows-support
-    patch_package_file(
-        "unsloth",
-        os.path.join("unsloth", "save.py"),
-        "https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/unsloth/save.py",
-    )
+    # # 7b. Patch : override save.py with fix from feature/llama-cpp-windows-support
+    # patch_package_file(
+    #     "unsloth",
+    #     os.path.join("unsloth", "save.py"),
+    #     "https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/unsloth/save.py",
+    # )
 
     # 8. Studio dependencies
     pip_install(
         "Installing studio dependencies",
         "--no-cache-dir",
-        req=REQ_ROOT / "studio.txt",
+        req = REQ_ROOT / "studio.txt",
     )
 
     # 9. Data-designer dependencies
     pip_install(
-        "Installing data-designer dependencies",
+        "Installing data-designer base dependencies",
         "--no-cache-dir",
-        req=SINGLE_ENV / "data-designer-deps.txt",
+        req = SINGLE_ENV / "data-designer-deps.txt",
     )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
     pip_install(
         "Installing data-designer",
-        "--no-cache-dir", "--no-deps",
-        req=SINGLE_ENV / "data-designer.txt",
+        "--no-cache-dir",
+        "--no-deps",
+        req = SINGLE_ENV / "data-designer.txt",
     )
 
     # 11. Local Data Designer seed plugin
@@ -251,9 +268,11 @@ def install_python_stack() -> int:
         return 1
     pip_install(
         "Installing local data-designer unstructured plugin",
-        "--no-cache-dir", "--no-deps",
-        "-e", str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
-        constrain=False,
+        "--no-cache-dir",
+        "--no-deps",
+        "-e",
+        str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
+        constrain = False,
     )
 
     # 12. Patch metadata for single-env compatibility
@@ -265,7 +284,8 @@ def install_python_stack() -> int:
     # 13. Final check (silent; third-party conflicts are expected)
     subprocess.run(
         [sys.executable, "-m", "pip", "check"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout = subprocess.DEVNULL,
+        stderr = subprocess.DEVNULL,
     )
 
     print(_green("✅ Python dependencies installed"))

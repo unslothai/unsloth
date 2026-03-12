@@ -22,7 +22,7 @@ from .constants import (
 from .types import Job, ModelUsage, Progress
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ParsedUpdate:
     stage: str | None = None
     current_column: str | None = None
@@ -41,6 +41,7 @@ class ParsedUpdate:
     usage_requests_total: int | None = None
     usage_rpm: float | None = None
     usage_section_start: bool | None = None
+
 
 # kinda of a bummber but currently only option, Best effort parser from data-designer logs -> structured status for UI.
 _RE_SAMPLERS = re.compile(
@@ -66,76 +67,76 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
     m = _RE_SAMPLERS.search(msg)
     if m:
         return ParsedUpdate(
-            stage=STAGE_SAMPLING,
-            rows=int(m.group("rows")),
-            cols=int(m.group("cols")),
+            stage = STAGE_SAMPLING,
+            rows = int(m.group("rows")),
+            cols = int(m.group("cols")),
         )
 
     if "Sorting column configs into a Directed Acyclic Graph" in msg:
-        return ParsedUpdate(stage=STAGE_DAG)
+        return ParsedUpdate(stage = STAGE_DAG)
     if "Running health checks for models" in msg:
-        return ParsedUpdate(stage=STAGE_HEALTHCHECK)
+        return ParsedUpdate(stage = STAGE_HEALTHCHECK)
     if "Preview generation in progress" in msg:
-        return ParsedUpdate(stage=STAGE_PREVIEW)
+        return ParsedUpdate(stage = STAGE_PREVIEW)
     if "Creating Data Designer dataset" in msg:
-        return ParsedUpdate(stage=STAGE_CREATE)
+        return ParsedUpdate(stage = STAGE_CREATE)
     if "Measuring dataset column statistics" in msg:
-        return ParsedUpdate(stage=STAGE_PROFILING)
+        return ParsedUpdate(stage = STAGE_PROFILING)
 
     m = _RE_COLCFG.search(msg)
     if m:
         col = m.group("col")
-        return ParsedUpdate(stage=STAGE_COLUMN_CONFIG, current_column=col)
+        return ParsedUpdate(stage = STAGE_COLUMN_CONFIG, current_column = col)
 
     m = _RE_PROCESSING_COL.search(msg)
     if m:
         col = m.group("col")
-        return ParsedUpdate(stage=STAGE_GENERATING, current_column=col)
+        return ParsedUpdate(stage = STAGE_GENERATING, current_column = col)
 
     m = _RE_PROGRESS.search(msg)
     if m:
         p = Progress(
-            done=int(m.group("done")),
-            total=int(m.group("total")),
-            percent=float(m.group("pct")),
-            ok=int(m.group("ok")),
-            failed=int(m.group("failed")),
-            rate=float(m.group("rate")),
-            eta_sec=float(m.group("eta")),
+            done = int(m.group("done")),
+            total = int(m.group("total")),
+            percent = float(m.group("pct")),
+            ok = int(m.group("ok")),
+            failed = int(m.group("failed")),
+            rate = float(m.group("rate")),
+            eta_sec = float(m.group("eta")),
         )
-        return ParsedUpdate(stage=STAGE_GENERATING, progress=p)
+        return ParsedUpdate(stage = STAGE_GENERATING, progress = p)
 
     m = _RE_BATCH.search(msg)
     if m:
         return ParsedUpdate(
-            stage=STAGE_BATCH,
-            batch_idx=int(m.group("idx")),
-            batch_total=int(m.group("total")),
+            stage = STAGE_BATCH,
+            batch_idx = int(m.group("idx")),
+            batch_total = int(m.group("total")),
         )
 
     if "Model usage summary" in msg:
-        return ParsedUpdate(usage_section_start=True)
+        return ParsedUpdate(usage_section_start = True)
 
     m = _RE_USAGE_MODEL.search(msg)
     if m and "|-- model:" in msg:
-        return ParsedUpdate(usage_model=str(m.group("model")).strip())
+        return ParsedUpdate(usage_model = str(m.group("model")).strip())
 
     m = _RE_USAGE_TOKENS.search(msg)
     if m:
         return ParsedUpdate(
-            usage_input_tokens=int(m.group("input")),
-            usage_output_tokens=int(m.group("output")),
-            usage_total_tokens=int(m.group("total")),
-            usage_tps=float(m.group("tps")),
+            usage_input_tokens = int(m.group("input")),
+            usage_output_tokens = int(m.group("output")),
+            usage_total_tokens = int(m.group("total")),
+            usage_tps = float(m.group("tps")),
         )
 
     m = _RE_USAGE_REQUESTS.search(msg)
     if m:
         return ParsedUpdate(
-            usage_requests_success=int(m.group("success")),
-            usage_requests_failed=int(m.group("failed")),
-            usage_requests_total=int(m.group("total")),
-            usage_rpm=float(m.group("rpm")),
+            usage_requests_success = int(m.group("success")),
+            usage_requests_failed = int(m.group("failed")),
+            usage_requests_total = int(m.group("total")),
+            usage_rpm = float(m.group("rpm")),
         )
 
     return None
@@ -146,7 +147,10 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         job.stage = update.stage
     if update.current_column is not None:
         job.current_column = update.current_column
-        if update.stage == STAGE_GENERATING and update.current_column not in job._seen_generation_columns:
+        if (
+            update.stage == STAGE_GENERATING
+            and update.current_column not in job._seen_generation_columns
+        ):
             job._seen_generation_columns.append(update.current_column)
     if update.rows is not None:
         job.rows = update.rows
@@ -185,7 +189,7 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         name = update.usage_model.strip().strip("'").strip('"')
         job._current_usage_model = name
         if name not in job.model_usage:
-            job.model_usage[name] = ModelUsage(model=name)
+            job.model_usage[name] = ModelUsage(model = name)
 
     if job._current_usage_model is None:
         return
@@ -227,7 +231,9 @@ def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:
     if len(job._column_done) == 0:
         done = current_done
     else:
-        sum_done = sum(max(0, min(value, total_rows)) for value in job._column_done.values())
+        sum_done = sum(
+            max(0, min(value, total_rows)) for value in job._column_done.values()
+        )
         done = int(sum_done / total_columns)
 
     prev_done = int(job.progress.done or 0)
@@ -241,13 +247,13 @@ def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:
         percent = prev_percent
 
     return Progress(
-        done=done,
-        total=total_rows,
-        percent=percent,
-        eta_sec=column_progress.eta_sec,
-        rate=column_progress.rate,
-        ok=column_progress.ok,
-        failed=column_progress.failed,
+        done = done,
+        total = total_rows,
+        percent = percent,
+        eta_sec = column_progress.eta_sec,
+        rate = column_progress.rate,
+        ok = column_progress.ok,
+        failed = column_progress.failed,
     )
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-only - See /studio/LICENSE.AGPL-3.0
-# Copyright © 2025 Unsloth AI
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 set -euo pipefail
 
@@ -322,57 +322,6 @@ rm -rf "$LLAMA_CPP_DIR"
     fi
 }
 
-# ── 9. Add shell alias (skip in Colab) ──
-# Note: venv activation does NOT persist across terminal sessions.
-# This alias hardcodes the venv python path so users don't need to activate.
-if [ "$IS_COLAB" = false ]; then
-echo ""
-REPO_DIR="$REPO_ROOT"
-STUDIO_VENV_PY="$HOME/.unsloth/studio/.venv/bin/python"
-
-# Detect the user's default shell and pick the right rc file
-USER_SHELL="$(basename "${SHELL:-/bin/bash}")"
-case "$USER_SHELL" in
-    zsh)
-        SHELL_RC="$HOME/.zshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
-alias unsloth-ui='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
-        ;;
-    fish)
-        SHELL_RC="$HOME/.config/fish/config.fish"
-        ALIAS_BLOCK="alias unsloth-studio '${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
-alias unsloth-ui '${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
-        ;;
-    ksh)
-        SHELL_RC="$HOME/.kshrc"
-        ALIAS_BLOCK="alias unsloth-studio='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
-alias unsloth-ui='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
-        ;;
-    *)
-        SHELL_RC="$HOME/.bashrc"
-        ALIAS_BLOCK="alias unsloth-studio='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'
-alias unsloth-ui='${STUDIO_VENV_PY} ${REPO_DIR}/cli.py studio'"
-        ;;
-esac
-
-echo "   Detected shell: $USER_SHELL → $SHELL_RC"
-
-ALIAS_ADDED=false
-if ! grep -qF "unsloth-studio" "$SHELL_RC" 2>/dev/null; then
-    mkdir -p "$(dirname "$SHELL_RC")"   # needed for fish's nested config path
-    cat >> "$SHELL_RC" <<UNSLOTH_EOF
-
-# Unsloth Studio launcher
-$ALIAS_BLOCK
-UNSLOTH_EOF
-    echo "✅ Aliases 'unsloth-studio' and 'unsloth-ui' added to $SHELL_RC"
-    ALIAS_ADDED=true
-else
-    echo "✅ Aliases 'unsloth-studio' and 'unsloth-ui' already exist in $SHELL_RC"
-fi
-
-fi  # End of "if not Colab" for shell alias setup
-
 echo ""
 if [ "$IS_COLAB" = true ]; then
     echo "╔══════════════════════════════════════╗"
@@ -385,12 +334,7 @@ else
     echo "╔══════════════════════════════════════╗"
     echo "║           Setup Complete!            ║"
     echo "╠══════════════════════════════════════╣"
-    if [ "$ALIAS_ADDED" = true ]; then
-        echo "║ Run 'source $SHELL_RC'"
-        echo "║ or open a new terminal, then:       ║"
-    else
-        echo "║ Launch with:                         ║"
-    fi
+    echo "║ Launch with:                         ║"
     echo "║                                      ║"
     echo "║ unsloth studio -H 0.0.0.0 -p 8000   ║"
     echo "╚══════════════════════════════════════╝"
