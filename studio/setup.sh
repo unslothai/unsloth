@@ -33,12 +33,6 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
-# ── Detect pip install (no frontend source dir → already bundled) ──
-IS_PIP_INSTALL=false
-if [ ! -f "$SCRIPT_DIR/frontend/package.json" ]; then
-    IS_PIP_INSTALL=true
-fi
-
 # ── Detect Colab (like unsloth does) ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -46,9 +40,11 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
 
-# ── 1. Check existing Node/npm versions (skip if pip-installed) ──
-if [ "$IS_PIP_INSTALL" = true ]; then
-    echo "✅ Running from pip install — frontend already bundled, skipping Node/npm check."
+# ── Detect whether frontend needs building ──
+# Just check if dist/ already exists — no need to guess install mode.
+# Source is always present (include-package-data = true), only dist/ may be missing.
+if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    echo "✅ Frontend already built — skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -129,7 +125,7 @@ run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end IS_PIP_INSTALL check
+fi  # end frontend dist check
 
 # ── 6. Python venv + deps ──
 echo ""
