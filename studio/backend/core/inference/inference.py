@@ -744,13 +744,21 @@ class InferenceBackend:
                 )
             else:
                 logger.info(
-                    f"No registered template for {self.active_model_name}, using tokenizer default"
+                    f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
                 )
         except Exception as e:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
         try:
+            if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
+                raise ValueError(
+                    f"Model '{self.active_model_name}' has no chat_template set in its "
+                    f"tokenizer_config.json. This is usually a problem with the model's "
+                    f"HuggingFace repository — it is missing a 'chat_template' key. "
+                    f"Please use a model that includes a chat template, or manually set "
+                    f"one via tokenizer.chat_template before inference."
+                )
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize = False, add_generation_prompt = True
             )

@@ -85,6 +85,18 @@ if [ "$NEED_NODE" = true ]; then
     set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
+    # ── Fix npmrc conflict with nvm ──
+    # System npm (apt, conda, etc.) may have written `prefix` or `globalconfig`
+    # to ~/.npmrc, which is incompatible with nvm and causes "nvm use" to fail
+    # with: "has a `globalconfig` and/or a `prefix` setting, which are
+    # incompatible with nvm."
+    if [ -f "$HOME/.npmrc" ]; then
+        if grep -qE '^\s*(prefix|globalconfig)\s*=' "$HOME/.npmrc"; then
+            echo "   Removing incompatible prefix/globalconfig from ~/.npmrc for nvm..."
+            sed -i.bak '/^\s*\(prefix\|globalconfig\)\s*=/d' "$HOME/.npmrc"
+        fi
+    fi
+
     # ── 3. Install Node LTS ──
     echo "Installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
