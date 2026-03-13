@@ -151,4 +151,3 @@ def setup():
         )
     else:
         subprocess.run(["bash", str(script)], check = True)
-
