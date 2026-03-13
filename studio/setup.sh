@@ -41,10 +41,13 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Just check if dist/ already exists — no need to guess install mode.
-# Source is always present (include-package-data = true), only dist/ may be missing.
-if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    echo "✅ Frontend already built — skipping Node/npm check."
+# Only skip when BOTH conditions are true:
+#   1. We're inside site-packages (PyPI / pip install, not editable)
+#   2. dist/ already exists (pre-built in the wheel)
+# Otherwise always (re)build — handles upgrades, editable installs, and
+# pip-from-source where dist/ was never built.
+if [[ "$SCRIPT_DIR" == */site-packages/* ]] && [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    echo "✅ Frontend pre-built (PyPI) — skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
