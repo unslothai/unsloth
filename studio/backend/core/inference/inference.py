@@ -751,7 +751,7 @@ class InferenceBackend:
 
         # Step 2: Format with tokenizer.apply_chat_template()
         try:
-            if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
+            if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
                     f"Model '{self.active_model_name}' has no chat_template set in its "
                     f"tokenizer_config.json. This is usually a problem with the model's "
