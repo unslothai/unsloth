@@ -2,6 +2,7 @@ from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register
 
 _IS_PHI_4_REGISTERED = False
 _IS_PHI_4_INSTRUCT_REGISTERED = False
+_IS_PHI_4_MULTIMODAL_INSTRUCT_REGISTERED = False
 
 
 class PhiModelInfo(ModelInfo):
