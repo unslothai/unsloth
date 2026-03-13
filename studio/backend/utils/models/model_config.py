@@ -383,7 +383,10 @@ for canonical_file, model_names in MODEL_NAME_MAPPING.items():
 
 
 def load_model_config(
-    model_name: str, use_auth: bool = False, token: Optional[str] = None
+    model_name: str,
+    use_auth: bool = False,
+    token: Optional[str] = None,
+    trust_remote_code: bool = True,
 ):
     """
     Load model config with optional authentication control.
@@ -392,18 +395,23 @@ def load_model_config(
     if token:
         # Explicit token provided - use it
         return AutoConfig.from_pretrained(
-            model_name, trust_remote_code = True, token = token
+            model_name, trust_remote_code = trust_remote_code, token = token
         )
 
     if not use_auth:
         # Load without any authentication (for public model checks)
         with without_hf_auth():
             return AutoConfig.from_pretrained(
-                model_name, trust_remote_code = True, token = None
+                model_name,
+                trust_remote_code = trust_remote_code,
+                token = None,
             )
 
     # Use default authentication (cached tokens)
-    return AutoConfig.from_pretrained(model_name, trust_remote_code = True)
+    return AutoConfig.from_pretrained(
+        model_name,
+        trust_remote_code = trust_remote_code,
+    )
 
 
 # VLM architecture suffixes and known VLM model_type values.
