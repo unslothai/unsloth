@@ -515,7 +515,12 @@ def _run_multi_pass_advisor(
             try:
                 from utils.models.model_config import load_model_config
 
-                config = load_model_config(model_name, use_auth = True, token = hf_token)
+                config = load_model_config(
+                    model_name,
+                    use_auth = True,
+                    token = hf_token,
+                    trust_remote_code = False,
+                )
                 archs = getattr(config, "architectures", [])
                 if archs and "Gemma3nForConditionalGeneration" in archs:
                     is_gemma_3n = True
