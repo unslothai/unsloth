@@ -270,7 +270,6 @@ def install_python_stack() -> int:
         "Installing local data-designer unstructured plugin",
         "--no-cache-dir",
         "--no-deps",
-        "-e",
         str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
         constrain = False,
     )
