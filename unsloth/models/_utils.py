@@ -2820,3 +2820,78 @@ def make_fast_generate_wrapper(original_generate):
         return original_generate(*args, **kwargs)
 
     return _fast_generate_wrapper
+
+
+# Fix llm_int8_skip_modules not being respected for VLMs with dynamic quantization.
+# Dynamic quant checkpoints (eg gemma-3-4b-it-unsloth-bnb-4bit) encode skip paths as
+# "language_model.model.layers.*", but the live module tree surfaces them as
+# "model.language_model.layers.*". This prefix mismatch causes should_convert_module
+# to miss the skip list, so modules meant to stay in 16-bit get wrapped in Linear4bit
+# without a quant_state, producing "Skipping ... no quant_state found" warnings.
+# We patch should_convert_module to expand both the module name and the skip patterns
+# into all equivalent alias forms before delegating to the original matcher.
+# Ref: https://github.com/unslothai/unsloth/issues/4208
+import transformers.quantizers.quantizers_utils as _quantizers_utils
+
+if (
+    hasattr(_quantizers_utils, "should_convert_module")
+    and getattr(_quantizers_utils.should_convert_module, "__name__", "")
+    != "patched_should_convert_module"
+):
+    _original_should_convert_module = _quantizers_utils.should_convert_module
+
+    def _get_full_name_aliases(full_name):
+        aliases = {full_name}
+        if not isinstance(full_name, str):
+            return aliases
+
+        if full_name.startswith("model.language_model."):
+            aliases.add(full_name[len("model.") :])
+        if "language_model.model." in full_name:
+            aliases.add(full_name.replace("language_model.model.", "language_model."))
+        if full_name.startswith("model.language_model.model."):
+            aliases.add(
+                full_name[len("model.") :].replace(
+                    "language_model.model.", "language_model."
+                )
+            )
+        return aliases
+
+    def _get_pattern_aliases(pattern):
+        aliases = {pattern}
+        if not isinstance(pattern, str):
+            return aliases
+
+        if "language_model.model." in pattern:
+            aliases.add(pattern.replace("language_model.model.", "language_model."))
+        return aliases
+
+    def _expand_patterns(patterns):
+        expanded = set()
+        for pattern in patterns:
+            expanded.update(_get_pattern_aliases(pattern))
+        return expanded
+
+    def patched_should_convert_module(full_name, patterns = None):
+        if patterns is None:
+            return _original_should_convert_module(full_name, patterns)
+
+        expanded_patterns = _expand_patterns(patterns)
+        return all(
+            _original_should_convert_module(candidate, expanded_patterns)
+            for candidate in _get_full_name_aliases(full_name)
+        )
+
+    patched_should_convert_module._original_should_convert_module = (
+        _original_should_convert_module
+    )
+    _quantizers_utils.should_convert_module = patched_should_convert_module
+
+    try:
+        import transformers.integrations.bitsandbytes
+
+        transformers.integrations.bitsandbytes.should_convert_module = (
+            patched_should_convert_module
+        )
+    except Exception:
+        pass
