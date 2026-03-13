@@ -226,7 +226,11 @@ def determine_attention_implementation(model_class, config):
     model_type = getattr(config, "model_type", "").lower()
 
     # 1. Flash Attention 2
-    if HAS_FLASH_ATTENTION and model_type not in ("gpt_oss", "mllama") and not model_type.startswith("gemma3n"):
+    if (
+        HAS_FLASH_ATTENTION
+        and model_type not in ("gpt_oss", "mllama")
+        and not model_type.startswith("gemma3n")
+    ):
         supports_fa2 = False
         if model_class is not None:
             supports_fa2 = getattr(
@@ -258,7 +262,10 @@ def determine_attention_implementation(model_class, config):
                 # decode q_len=1, causing ValueError. Needs transformers update.
                 # Gemma3N: timm vision wrappers (eg Gemma3nVisionConfig) do not
                 # support flex_attention.
-                if model_type not in ("gpt_oss", "mllama") and not model_type.startswith("gemma3n"):
+                if model_type not in (
+                    "gpt_oss",
+                    "mllama",
+                ) and not model_type.startswith("gemma3n"):
                     if config is not None:
                         setattr(config, "_attn_implementation", "flex_attention")
                         if hasattr(config, "attn_implementation"):
