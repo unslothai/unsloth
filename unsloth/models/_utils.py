@@ -2833,9 +2833,11 @@ def make_fast_generate_wrapper(original_generate):
 # Ref: https://github.com/unslothai/unsloth/issues/4208
 import transformers.quantizers.quantizers_utils as _quantizers_utils
 
-if hasattr(_quantizers_utils, "should_convert_module") and \
-    getattr(_quantizers_utils.should_convert_module, "__name__", "") != "patched_should_convert_module":
-
+if (
+    hasattr(_quantizers_utils, "should_convert_module")
+    and getattr(_quantizers_utils.should_convert_module, "__name__", "")
+    != "patched_should_convert_module"
+):
     _original_should_convert_module = _quantizers_utils.should_convert_module
 
     def _get_full_name_aliases(full_name):
@@ -2893,4 +2895,3 @@ if hasattr(_quantizers_utils, "should_convert_module") and \
         )
     except Exception:
         pass
-pass
