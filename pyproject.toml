@@ -15,7 +15,7 @@ authors = [
     {name = "Unsloth AI team"},
 ]
 maintainers = [
-    {name = "Daniel Han", email = "danielhanchen@gmail.com"},
+    {name = "Daniel Han", email = "daniel@unsloth.ai"},
     {name = "Michael Han", email = "info@unsloth.ai"},
 ]
 classifiers = [
@@ -24,12 +24,24 @@ classifiers = [
     "Environment :: GPU :: NVIDIA CUDA",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = [
+    "typer",
+    "pydantic",
+    "pyyaml",
+    "nest-asyncio",
+]
+
+[project.scripts]
+unsloth = "cli:app"
 
 [tool.setuptools.dynamic]
 version = {attr = "unsloth.models._utils.__version__"}
 
 [tool.setuptools]
-include-package-data = false
+include-package-data = true
+
+[tool.setuptools.package-data]
+studio = ["frontend/dist/**/*"]
 
 [tool.setuptools.packages.find]
 exclude = ["images*", "tests*", "kernels/moe*"]
