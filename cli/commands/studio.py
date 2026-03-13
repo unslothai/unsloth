@@ -19,7 +19,6 @@ STUDIO_HOME = Path.home() / ".unsloth" / "studio"
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
@@ -48,7 +47,6 @@ def _find_run_py() -> Optional[Path]:
         for match in (STUDIO_HOME / ".venv").glob(pattern):
             return match
     return None
-
 
 
 def _find_setup_script() -> Optional[Path]:
