@@ -250,7 +250,7 @@ def determine_attention_implementation(model_class, config):
                 and (model_class is not None)
                 and getattr(model_class, "_supports_flex_attn", False)
             ):
-                # GPT-OSS, Mllama and Gemma3 use eager/sdpa attention during
+                # GPT-OSS, Mllama and Gemma3N use eager/sdpa attention during
                 # inference since flex attention returns incorrect results or errors out.
                 # GPT-OSS: left padding issues cause incorrect outputs.
                 # Mllama: _update_causal_mask uses make_flex_block_causal_mask which

@@ -623,9 +623,10 @@ class FastBaseModel:
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = attn_impl
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
-            print(
-                f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
-            )
+            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+                print(
+                    f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
+                )
             del kwargs["attn_implementation"]
 
         bnb_config = None
