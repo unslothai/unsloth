@@ -61,21 +61,6 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
-    # Disable flex attention on Blackwell+ GPUs (sm_120 and above)
-    if get_device() == DeviceType.CUDA:
-        import torch
-
-        props = torch.cuda.get_device_properties(0)
-        sm_version = props.major * 10 + props.minor
-        if sm_version >= 120:
-            os.environ["UNSLOTH_ENABLE_FLEX_ATTENTION"] = "0"
-            import structlog
-            from loggers import get_logger
-
-            get_logger(__name__).info(
-                f"GPU sm_{sm_version} detected — setting UNSLOTH_FLEX_ATTENTION=0"
-            )
-
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
     # Runs in a background thread so it doesn't block server startup.
     import threading
