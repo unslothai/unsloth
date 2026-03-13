@@ -6,6 +6,7 @@ SQLite storage for authentication data (user credentials + JWT secret).
 """
 
 import hashlib
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -13,10 +14,12 @@ from typing import Optional, Tuple
 from utils.paths import auth_db_path, ensure_dir
 
 DB_PATH = auth_db_path()
+DEFAULT_ADMIN_USERNAME = "unsloth"
+DEFAULT_ADMIN_PASSWORD = "unsloth12345"
 
 
 def _hash_token(token: str) -> str:
-    """SHA-256 hash a setup token for safe storage."""
+    """SHA-256 hash helper used for refresh token storage."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -32,15 +35,8 @@ def get_connection() -> sqlite3.Connection:
             username TEXT UNIQUE NOT NULL,
             password_salt TEXT NOT NULL,
             password_hash TEXT NOT NULL,
-            jwt_secret TEXT NOT NULL
-        );
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS setup_tokens (
-            id INTEGER PRIMARY KEY,
-            token_hash TEXT NOT NULL
+            jwt_secret TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -54,12 +50,20 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(auth_user)")
+    }
+    if "must_change_password" not in columns:
+        conn.execute(
+            "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
     return conn
 
 
 def is_initialized() -> bool:
-    """Check if auth has been set up (user exists in DB)."""
+    """Check if auth is ready for login (at least one user exists in DB)."""
     conn = get_connection()
     cur = conn.execute("SELECT COUNT(*) AS c FROM auth_user")
     row = cur.fetchone()
@@ -67,7 +71,13 @@ def is_initialized() -> bool:
     return bool(row["c"])
 
 
-def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
+def create_initial_user(
+    username: str,
+    password: str,
+    jwt_secret: str,
+    *,
+    must_change_password: bool = False,
+) -> None:
     """
     Create the initial admin user in the database.
 
@@ -80,10 +90,16 @@ def create_initial_user(username: str, password: str, jwt_secret: str) -> None:
     try:
         conn.execute(
             """
-            INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO auth_user (
+                username,
+                password_salt,
+                password_hash,
+                jwt_secret,
+                must_change_password
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (username, salt, pwd_hash, jwt_secret),
+            (username, salt, pwd_hash, jwt_secret, int(must_change_password)),
         )
         conn.commit()
     finally:
@@ -94,7 +110,7 @@ def delete_user(username: str) -> None:
     """
     Delete a user from the database.
 
-    Used for rollback when setup fails after user creation.
+    Used for rollback when user creation fails partway through bootstrap.
     """
     conn = get_connection()
     try:
@@ -104,17 +120,18 @@ def delete_user(username: str) -> None:
         conn.close()
 
 
-def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
+def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:
     """
     Get user's password salt, hash, and JWT secret.
 
-    Returns (password_salt, password_hash, jwt_secret) or None if user not found.
+    Returns (password_salt, password_hash, jwt_secret, must_change_password)
+    or None if user not found.
     """
     conn = get_connection()
     try:
         cur = conn.execute(
             """
-            SELECT password_salt, password_hash, jwt_secret
+            SELECT password_salt, password_hash, jwt_secret, must_change_password
             FROM auth_user
             WHERE username = ?
             """,
@@ -123,7 +140,40 @@ def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str]]:
         row = cur.fetchone()
         if not row:
             return None
-        return row["password_salt"], row["password_hash"], row["jwt_secret"]
+        return (
+            row["password_salt"],
+            row["password_hash"],
+            row["jwt_secret"],
+            bool(row["must_change_password"]),
+        )
+    finally:
+        conn.close()
+
+
+def get_jwt_secret(username: str) -> Optional[str]:
+    """Return the current JWT signing secret for a user."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT jwt_secret FROM auth_user WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+        return row["jwt_secret"] if row else None
+    finally:
+        conn.close()
+
+
+def requires_password_change(username: str) -> bool:
+    """Return whether the user must change the seeded default password."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT must_change_password FROM auth_user WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+        return bool(row and row["must_change_password"])
     finally:
         conn.close()
 
@@ -132,7 +182,7 @@ def load_jwt_secret() -> str:
     """
     Load the JWT secret from the database.
 
-    Raises RuntimeError if auth is not initialized.
+    Raises RuntimeError if no auth user has been created yet.
     """
     conn = get_connection()
     try:
@@ -140,56 +190,48 @@ def load_jwt_secret() -> str:
         row = cur.fetchone()
         if not row:
             raise RuntimeError(
-                "Auth is not initialized. Please set up a password first."
+                "Auth is not initialized. Wait for the seeded admin bootstrap to complete."
             )
         return row["jwt_secret"]
     finally:
         conn.close()
 
 
-def save_setup_token(token: str) -> None:
+def ensure_default_admin() -> bool:
+    """Seed the default admin account on first startup.
+
+    Returns True when the default admin was created in this call.
     """
-    Store a hashed setup token, replacing any existing one.
-    """
-    token_hash = _hash_token(token)
-    conn = get_connection()
     try:
-        conn.execute("DELETE FROM setup_tokens")
-        conn.execute("INSERT INTO setup_tokens (token_hash) VALUES (?)", (token_hash,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def consume_setup_token(token: str) -> bool:
-    """
-    Verify a setup token and delete it if valid.
-
-    Returns True if the token was valid (and is now consumed), False otherwise.
-    """
-    token_hash = _hash_token(token)
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            "SELECT id FROM setup_tokens WHERE token_hash = ?", (token_hash,)
+        create_initial_user(
+            username = DEFAULT_ADMIN_USERNAME,
+            password = DEFAULT_ADMIN_PASSWORD,
+            jwt_secret = secrets.token_urlsafe(64),
+            must_change_password = True,
         )
-        row = cur.fetchone()
-        if row is None:
-            return False
-        conn.execute("DELETE FROM setup_tokens WHERE id = ?", (row["id"],))
-        conn.commit()
         return True
-    finally:
-        conn.close()
+    except sqlite3.IntegrityError:
+        return False
 
 
-def has_pending_setup_token() -> bool:
-    """Check if a setup token is waiting to be consumed."""
+def update_password(username: str, new_password: str) -> bool:
+    """Update password, clear first-login requirement, rotate JWT secret."""
+    from .hashing import hash_password
+
+    salt, pwd_hash = hash_password(new_password)
+    jwt_secret = secrets.token_urlsafe(64)
     conn = get_connection()
     try:
-        cur = conn.execute("SELECT COUNT(*) AS c FROM setup_tokens")
-        row = cur.fetchone()
-        return bool(row["c"])
+        cursor = conn.execute(
+            """
+            UPDATE auth_user
+            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            WHERE username = ?
+            """,
+            (salt, pwd_hash, jwt_secret, username),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 

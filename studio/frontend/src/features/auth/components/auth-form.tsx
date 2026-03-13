@@ -11,23 +11,53 @@ import type { FormEvent } from "react";
 import type { ReactElement } from "react";
 import { refreshSession } from "../api";
 import {
+  clearAuthTokens,
+  getAuthToken,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
+  mustChangePassword,
   resetOnboardingDone,
+  setMustChangePassword,
   storeAuthTokens,
 } from "../session";
 
-type AuthMode = "login" | "signup";
+type AuthMode = "login" | "change-password";
 
 type AuthStatusResponse = {
   initialized: boolean;
+  default_username: string;
+  requires_password_change: boolean;
 };
 
 type TokenResponse = {
   access_token: string;
   refresh_token: string;
+  must_change_password: boolean;
 };
+
+async function loginWithPassword(
+  username: string,
+  password: string,
+): Promise<TokenResponse> {
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      username: username.trim(),
+      password,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(errorPayload?.detail ?? "Login failed.");
+  }
+
+  return (await response.json()) as TokenResponse;
+}
 
 type AuthFormProps = {
   mode: AuthMode;
@@ -35,13 +65,15 @@ type AuthFormProps = {
 
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
+  const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
-  const [username, setUsername] = useState("admin");
-  const [setupToken, setSetupToken] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState("unsloth");
+  const [password, setPassword] = useState(isLoginMode ? "" : "unsloth12345");
+  const [newPassword, setNewPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,12 +100,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         const result = (await response.json()) as AuthStatusResponse;
         if (!canceled) {
           setInitialized(result.initialized);
-          // Auto-redirect to the correct page based on init state
-          if (mode === "login" && result.initialized === false) {
-            navigate({ to: "/signup" });
+          setUsername(result.default_username);
+          setRequiresPasswordChange(result.requires_password_change);
+          if (mode === "login" && result.requires_password_change) {
+            navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "signup" && result.initialized === true) {
+          if (mode === "change-password" && !result.requires_password_change && !mustChangePassword()) {
             navigate({ to: "/login" });
             return;
           }
@@ -95,61 +128,106 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   }, [navigate]);
 
   const blockedByState =
-    (mode === "login" && initialized === false) ||
-    (mode === "signup" && initialized === true);
+    initialized === false ||
+    (mode === "login" && requiresPasswordChange) ||
+    (mode === "change-password" && !requiresPasswordChange && !mustChangePassword());
 
-  const isLoginMode = mode === "login";
   let helperText: string | null = null;
-  if (isLoginMode && initialized === false) {
-    helperText = "Auth not initialized. go setup first.";
-  } else if (!isLoginMode && initialized === true) {
-    helperText = "Auth already initialized. use login.";
+  if (initialized === false) {
+    helperText = "Auth is still bootstrapping the default admin account.";
+  } else if (isLoginMode && requiresPasswordChange) {
+    helperText = "Sign in once with the seeded credentials to change the password.";
+  } else if (!isLoginMode && !requiresPasswordChange && !mustChangePassword()) {
+    helperText = "Password already updated. Use the login screen.";
   }
-  const title = isLoginMode ? "Welcome back" : "Welcome to Unsloth Studio!";
+  const title = isLoginMode ? "Welcome back" : "Update your admin password";
   const subtitle = isLoginMode
-    ? "Sign in to continue"
-    : "Create first admin account";
-  const submitLabel = isLoginMode ? "Login" : "Create account";
-  const switchText = isLoginMode ? "Need setup first? " : "Already initialized? ";
-  const switchLinkTo = isLoginMode ? "/signup" : "/login";
-  const switchLinkText = isLoginMode ? "Setup account" : "Login";
+    ? "Sign in with the seeded admin account"
+    : "Use the default admin credentials, then choose a new password";
+  const submitLabel = isLoginMode ? "Login" : "Change password";
+  const showSwitchLink = !isLoginMode;
+  const switchText = "Password already changed? ";
+  const switchLinkTo = "/login";
+  const switchLinkText = "Back to login";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
 
-    if (!isLoginMode && !setupToken.trim()) {
-      setError("Setup token required.");
+    if (!isLoginMode && newPassword.length < 8) {
+      setError("New password must be at least 8 characters.");
+      return;
+    }
+    if (!isLoginMode && password === newPassword) {
+      setError("New password must be different from the default password.");
       return;
     }
 
     setLoading(true);
     try {
-      const endpoint = isLoginMode ? "/api/auth/login" : "/api/auth/setup";
-      const payload: { username: string; password: string; setup_token?: string } = {
-        username: username.trim(),
-        password,
-      };
-      if (!isLoginMode) {
-        payload.setup_token = setupToken.trim();
-      }
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        let message = "Auth failed.";
-        const errorPayload = (await response
-          .json()
-          .catch(() => null)) as { detail?: string } | null;
-        if (errorPayload?.detail) message = errorPayload.detail;
-        throw new Error(message);
-      }
-      const token = (await response.json()) as TokenResponse;
+      let token: TokenResponse;
 
-      if (!isLoginMode) resetOnboardingDone();
-      storeAuthTokens(token.access_token, token.refresh_token);
+      if (isLoginMode) {
+        token = await loginWithPassword(username, password);
+      } else {
+        let accessToken = getAuthToken();
+
+        if (hasRefreshToken()) {
+          const refreshed = await refreshSession();
+          accessToken = getAuthToken();
+          if (!refreshed) {
+            clearAuthTokens();
+            accessToken = null;
+          }
+        }
+
+        if (!accessToken) {
+          const bootstrapToken = await loginWithPassword(username, password);
+          storeAuthTokens(
+            bootstrapToken.access_token,
+            bootstrapToken.refresh_token,
+            bootstrapToken.must_change_password,
+          );
+          setMustChangePassword(bootstrapToken.must_change_password);
+          accessToken = bootstrapToken.access_token;
+        }
+
+        const response = await fetch("/api/auth/change-password", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            current_password: password,
+            new_password: newPassword,
+          }),
+        });
+
+        if (!response.ok) {
+          let message = "Password update failed.";
+          const errorPayload = (await response
+            .json()
+            .catch(() => null)) as { detail?: string } | null;
+          if (errorPayload?.detail) message = errorPayload.detail;
+          throw new Error(message);
+        }
+
+        token = (await response.json()) as TokenResponse;
+      }
+
+      if (!isLoginMode) {
+        resetOnboardingDone();
+        setRequiresPasswordChange(false);
+        setMustChangePassword(false);
+      } else {
+        setMustChangePassword(token.must_change_password);
+      }
+      storeAuthTokens(
+        token.access_token,
+        token.refresh_token,
+        token.must_change_password,
+      );
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Auth failed.");
@@ -177,23 +255,22 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           <Input
             id="username"
             autoComplete="username"
-            placeholder="admin"
+            placeholder="unsloth"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
             required
+            disabled={!isLoginMode}
           />
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="password">Password</Label>
+          <Label htmlFor="password">{isLoginMode ? "Password" : "Current password"}</Label>
           <div className="relative">
             <Input
               id="password"
               type={showPassword ? "text" : "password"}
               className="pr-10"
-              autoComplete={
-                mode === "login" ? "current-password" : "new-password"
-              }
+              autoComplete={isLoginMode ? "current-password" : "current-password"}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               minLength={8}
@@ -213,22 +290,24 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               )}
             </Button>
           </div>
-          {!isLoginMode && (
-            <p className="text-xs text-muted-foreground">Must be at least 8 characters</p>
+          {isLoginMode ? null : (
+            <p className="text-xs text-muted-foreground">Confirm the seeded password before choosing a new one.</p>
           )}
         </div>
 
         {!isLoginMode && (
           <div className="space-y-2">
-            <Label htmlFor="setup-token">Setup token</Label>
+            <Label htmlFor="new-password">New password</Label>
             <Input
-              id="setup-token"
-              autoComplete="off"
-              placeholder="Paste token from backend console"
-              value={setupToken}
-              onChange={(event) => setSetupToken(event.target.value)}
+              id="new-password"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              minLength={8}
               required
             />
+            <p className="text-xs text-muted-foreground">Must be at least 8 characters and different from the default password.</p>
           </div>
         )}
 
@@ -240,18 +319,26 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         <Button
           type="submit"
           className="w-full"
-          disabled={loading || statusLoading || blockedByState || (!isLoginMode && password.length < 8)}
+          disabled={
+            loading ||
+            statusLoading ||
+            blockedByState ||
+            password.length < 8 ||
+            (!isLoginMode && newPassword.length < 8)
+          }
         >
           {loading ? "Please wait..." : submitLabel}
         </Button>
       </form>
 
-      <p className="text-center text-sm text-muted-foreground">
-        {switchText}
-        <Link to={switchLinkTo} className="text-primary hover:underline">
-          {switchLinkText}
-        </Link>
-      </p>
+      {showSwitchLink && (
+        <p className="text-center text-sm text-muted-foreground">
+          {switchText}
+          <Link to={switchLinkTo} className="text-primary hover:underline">
+            {switchLinkText}
+          </Link>
+        </p>
+      )}
     </div>
   );
 }

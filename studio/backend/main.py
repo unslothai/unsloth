@@ -10,7 +10,6 @@ import os
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-import secrets
 import shutil
 import warnings
 from contextlib import asynccontextmanager
@@ -48,7 +47,7 @@ from utils.cache_cleanup import clear_unsloth_compiled_cache
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
+    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
     # Clean up any stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
 
@@ -75,14 +74,12 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
-    if not storage.is_initialized():
-        setup_token = secrets.token_urlsafe(32)
-        storage.save_setup_token(setup_token)
+    if storage.ensure_default_admin():
         print("\n" + "=" * 60)
-        print("FIRST-TIME SETUP REQUIRED")
-        print("Use this one-time setup token to create your admin account:\n")
-        print(f"    {setup_token}\n")
-        print("This token can only be used once.")
+        print("DEFAULT ADMIN ACCOUNT CREATED")
+        print("Sign in with the seeded credentials and change the password immediately:\n")
+        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
+        print(f"    password: {storage.DEFAULT_ADMIN_PASSWORD}\n")
         print("=" * 60 + "\n")
     yield
     # Cleanup

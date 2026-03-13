@@ -3,18 +3,18 @@
 
 import { createRoute } from "@tanstack/react-router";
 import { lazy } from "react";
-import { requireGuest } from "../auth-guards";
+import { requirePasswordChangeFlow } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-const SignupPage = lazy(() =>
+const ChangePasswordPage = lazy(() =>
   import("@/features/auth").then((m) => ({
-    default: m.SignupPage,
+    default: m.ChangePasswordPage,
   })),
 );
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/signup",
-  beforeLoad: () => requireGuest(),
-  component: SignupPage,
+  path: "/change-password",
+  beforeLoad: () => requirePasswordChangeFlow(),
+  component: ChangePasswordPage,
 });
