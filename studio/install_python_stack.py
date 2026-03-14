@@ -101,15 +101,16 @@ USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
 
 
 def _bootstrap_uv() -> bool:
-    """Try to use uv for faster installs. Returns True if uv is available."""
-    if shutil.which("uv"):
-        return True
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "uv"],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
+    """Check if uv is available on PATH. Does not install uv."""
+    return shutil.which("uv") is not None
+
+
+def _in_virtualenv() -> bool:
+    """Check if we are running inside a virtual environment."""
+    return os.environ.get("VIRTUAL_ENV") is not None or (
+        hasattr(sys, "real_prefix")
+        or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
     )
-    return result.returncode == 0 and shutil.which("uv") is not None
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
@@ -154,6 +155,8 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
 def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     """Build a uv pip install command with translated flags."""
     cmd = ["uv", "pip", "install"]
+    if not _in_virtualenv():
+        cmd.append("--system")
     cmd.extend(_translate_pip_args_for_uv(args))
     cmd.append("--torch-backend=auto")
     return cmd
@@ -193,7 +196,7 @@ def pip_install(
                 print(result.stdout.decode(errors = "replace"))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
-        run(label, pip_cmd)
+        run(f"{label} (pip)" if USE_UV else label, pip_cmd)
     finally:
         if actual_req is not None and actual_req != req:
             actual_req.unlink(missing_ok = True)
