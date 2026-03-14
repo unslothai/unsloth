@@ -598,15 +598,15 @@ if ($HasPython) {
 $ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
 if ($ScriptsDir) {
     $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
-        if ($UserPath) {
-            [Environment]::SetEnvironmentVariable('Path', "$ScriptsDir;$UserPath", 'User')
-        } else {
-            [Environment]::SetEnvironmentVariable('Path', "$ScriptsDir", 'User')
-        }
+    $UserPathEntries = if ($UserPath) { $UserPath.Split(';') } else { @() }
+    if (-not ($UserPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
+        $newUserPath = if ($UserPath) { "$ScriptsDir;$UserPath" } else { $ScriptsDir }
+        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+
         # Also add to current process so it's available immediately
-        if ($env:PATH -notlike "*$ScriptsDir*") {
-            [Environment]::SetEnvironmentVariable('PATH', "$ScriptsDir;$env:PATH", 'Process')
+        $ProcessPathEntries = $env:PATH.Split(';')
+        if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
+            $env:PATH = "$ScriptsDir;$env:PATH"
         }
         Write-Host "   Persisted Python Scripts dir to user PATH: $ScriptsDir" -ForegroundColor Gray
     }
