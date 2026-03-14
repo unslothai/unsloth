@@ -65,9 +65,12 @@ export function useMaxStepsEpochsToggle({
   const [prevMaxSteps, setPrevMaxSteps] = useState(() =>
     normalizePrevMaxSteps(readStoredNumber(PREV_MAX_STEPS_KEY, DEFAULT_MAX_STEPS)),
   );
-  const [prevSaveSteps, setPrevSaveSteps] = useState(() =>
-    normalizePrevSaveSteps(readStoredNumber(PREV_SAVE_STEPS_KEY, 0)),
-  );
+  const [prevSaveSteps, setPrevSaveSteps] = useState(() => {
+    if (maxSteps === 0 && saveSteps > 0) {
+      return normalizePrevSaveSteps(saveSteps);
+    }
+    return normalizePrevSaveSteps(readStoredNumber(PREV_SAVE_STEPS_KEY, 0));
+  });
 
   useEffect(() => {
     if (maxSteps > 0) {

@@ -134,12 +134,12 @@ export function HyperparametersStep() {
                   value={[
                     useEpochs
                       ? Math.min(epochsSliderMax, Math.max(1, epochs))
-                      : Math.min(maxStepsSliderMax, Math.max(0, maxSteps)),
+                      : Math.min(maxStepsSliderMax, Math.max(1, maxSteps)),
                   ]}
                   onValueChange={([v]) =>
                     useEpochs ? setEpochs(v) : setMaxSteps(v)
                   }
-                  min={useEpochs ? 1 : 0}
+                  min={1}
                   max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                   step={1}
                   className="w-40"
@@ -152,7 +152,7 @@ export function HyperparametersStep() {
                     if (raw === "") return;
 
                     const value = Number(raw);
-                    if (!Number.isFinite(value)) return;
+                    if (!Number.isFinite(value) || value < 1) return;
 
                     if (useEpochs) {
                       setEpochs(value);
@@ -160,7 +160,7 @@ export function HyperparametersStep() {
                       setMaxSteps(value);
                     }
                   }}
-                  min={useEpochs ? 1 : 0}
+                  min={1}
                   max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                   step={1}
                   className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"

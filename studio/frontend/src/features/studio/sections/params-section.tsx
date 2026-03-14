@@ -194,7 +194,7 @@ export function ParamsSection(): ReactElement {
                       if (raw === "") return;
 
                       const value = Number(raw);
-                      if (!Number.isFinite(value)) return;
+                      if (!Number.isFinite(value) || value < 1) return;
 
                       if (useEpochs) {
                         store.setEpochs(value);
@@ -202,7 +202,7 @@ export function ParamsSection(): ReactElement {
                         store.setMaxSteps(value);
                       }
                     }}
-                    min={useEpochs ? 1 : 0}
+                    min={1}
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
                     className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
@@ -213,12 +213,12 @@ export function ParamsSection(): ReactElement {
                 value={[
                   useEpochs
                     ? Math.min(epochsSliderMax, Math.max(1, store.epochs))
-                    : Math.min(maxStepsSliderMax, Math.max(0, store.maxSteps)),
+                    : Math.min(maxStepsSliderMax, Math.max(1, store.maxSteps)),
                 ]}
                 onValueChange={([v]) =>
                   useEpochs ? store.setEpochs(v) : store.setMaxSteps(v)
                 }
-                min={useEpochs ? 1 : 0}
+                min={1}
                 max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                 step={1}
               />
