@@ -295,17 +295,26 @@ rm -rf "$LLAMA_CPP_DIR"
 
                 # Detect GPU compute capability and limit CUDA architectures
                 # Without this, cmake builds for ALL default archs (very slow)
-                CUDA_ARCH=""
+                CUDA_ARCHS=""
                 if command -v nvidia-smi &>/dev/null; then
-                    _raw_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
-                    if [[ "$_raw_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                        CUDA_ARCH="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                    fi
+                    # Read all GPUs, deduplicate (handles mixed-GPU hosts)
+                    _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                    while IFS= read -r _cap; do
+                        _cap=$(echo "$_cap" | tr -d '[:space:]')
+                        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                            # Append if not already present
+                            case ";$CUDA_ARCHS;" in
+                                *";$_arch;"*) ;;
+                                *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                            esac
+                        fi
+                    done <<< "$_raw_caps"
                 fi
 
-                if [ -n "$CUDA_ARCH" ]; then
-                    echo "   GPU compute capability: sm_${CUDA_ARCH} -- limiting build to this arch"
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH}"
+                if [ -n "$CUDA_ARCHS" ]; then
+                    echo "   GPU compute capabilities: ${CUDA_ARCHS//;/, } -- limiting build to detected archs"
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
                 else
                     echo "   Could not detect GPU arch -- building for all default CUDA architectures (slower)"
                 fi

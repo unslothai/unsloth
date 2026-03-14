@@ -186,13 +186,14 @@ def pip_install(
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
             )
-            if result.returncode != 0:
-                print(_red(f"   uv failed, falling back to pip..."))
-                pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
-                run(label, pip_cmd)
-        else:
-            pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
-            run(label, pip_cmd)
+            if result.returncode == 0:
+                return
+            print(_red(f"   uv failed, falling back to pip..."))
+            if result.stdout:
+                print(result.stdout.decode(errors = "replace"))
+
+        pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
+        run(label, pip_cmd)
     finally:
         if actual_req is not None and actual_req != req:
             actual_req.unlink(missing_ok = True)
