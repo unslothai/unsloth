@@ -92,7 +92,9 @@ async def lifespan(app: FastAPI):
     if storage.ensure_default_admin():
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
-        print("Sign in with the seeded credentials and change the password immediately:\n")
+        print(
+            "Sign in with the seeded credentials and change the password immediately:\n"
+        )
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
         print(f"    password: {storage.DEFAULT_ADMIN_PASSWORD}\n")
         print("=" * 60 + "\n")

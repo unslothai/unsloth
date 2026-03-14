@@ -50,10 +50,7 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(auth_user)")
-    }
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"

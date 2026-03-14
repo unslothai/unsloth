@@ -16,7 +16,8 @@ class Token(BaseModel):
         ..., description = "Session access credential used for authenticated API requests"
     )
     refresh_token: str = Field(
-        ..., description = "Session refresh credential used to renew an expired access credential"
+        ...,
+        description = "Session refresh credential used to renew an expired access credential",
     )
     token_type: str = Field(
         ..., description = "Credential type for the Authorization header, always 'bearer'"

@@ -31,7 +31,8 @@ class AuthStatusResponse(BaseModel):
     )
     default_username: str = Field(..., description = "Default seeded admin username")
     requires_password_change: bool = Field(
-        ..., description = "True if the seeded admin must still change the default password"
+        ...,
+        description = "True if the seeded admin must still change the default password",
     )
 
 

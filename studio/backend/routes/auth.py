@@ -39,7 +39,9 @@ async def auth_status() -> AuthStatusResponse:
         default_username = storage.DEFAULT_ADMIN_USERNAME,
         requires_password_change = storage.requires_password_change(
             storage.DEFAULT_ADMIN_USERNAME
-        ) if storage.is_initialized() else True,
+        )
+        if storage.is_initialized()
+        else True,
     )
 
 
