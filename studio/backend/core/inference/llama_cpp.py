@@ -334,38 +334,28 @@ class LlamaCppBackend:
                     )
 
                 logger.info(f"GGUF downloaded to: {local_path}")
-                cmd = [
-                    binary,
-                    "-m",
-                    local_path,
-                    "--port",
-                    str(self._port),
-                    "-c",
-                    str(n_ctx),
-                    "-ngl",
-                    str(n_gpu_layers),
-                ]
+                model_path = local_path
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                cmd = [
-                    binary,
-                    "-m",
-                    gguf_path,
-                    "--port",
-                    str(self._port),
-                    "-c",
-                    str(n_ctx),
-                    "-ngl",
-                    str(n_gpu_layers),
-                ]
+                model_path = gguf_path
             else:
                 raise ValueError("Either gguf_path or hf_repo must be provided")
+
+            cmd = [
+                binary,
+                "-m", model_path,
+                "--port", str(self._port),
+                "-c", str(n_ctx),
+                "-ngl", str(n_gpu_layers),
+                "--parallel", "1",       # Single-user studio, saves VRAM
+                "--flash-attn", "on",    # Force flash attention for speed
+                "--fit", "on",           # Auto-fit to available device memory
+            ]
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
 
-            # Append mmproj for local vision models
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
                     logger.warning(f"mmproj file not found: {mmproj_path}")
