@@ -23,43 +23,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
-import { useTrainingConfigStore } from "@/features/training";
+import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-
-const PREV_MAX_STEPS_KEY = "unsloth_prev_max_steps";
-const PREV_SAVE_STEPS_KEY = "unsloth_prev_save_steps";
-
-function readStoredNumber(key: string, fallback: number): number {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const value = window.localStorage.getItem(key);
-    if (value === null) return fallback;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeStoredNumber(key: string, value: number): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, String(value));
-  } catch {
-    // Best effort only; ignore storage errors in restricted environments.
-  }
-}
-
-function normalizePrevMaxSteps(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 30;
-}
-
-function normalizePrevSaveSteps(value: number): number {
-  return Number.isFinite(value) && value >= 0 ? value : 0;
-}
 
 export function HyperparametersStep() {
   const {
@@ -104,29 +71,14 @@ export function HyperparametersStep() {
 
   const showLoraParams =
     trainingMethod === "lora" || trainingMethod === "qlora";
-  const useEpochs = maxSteps === 0;
-  const [prevMaxSteps, setPrevMaxSteps] = useState(() =>
-    normalizePrevMaxSteps(readStoredNumber(PREV_MAX_STEPS_KEY, 30)),
-  );
-  const [prevSaveSteps, setPrevSaveSteps] = useState(() =>
-    normalizePrevSaveSteps(readStoredNumber(PREV_SAVE_STEPS_KEY, 0)),
-  );
-
-  useEffect(() => {
-    if (maxSteps > 0) {
-      const normalized = normalizePrevMaxSteps(maxSteps);
-      setPrevMaxSteps(normalized);
-      writeStoredNumber(PREV_MAX_STEPS_KEY, normalized);
-    }
-  }, [maxSteps]);
-
-  useEffect(() => {
-    if (!useEpochs) {
-      const normalized = normalizePrevSaveSteps(saveSteps);
-      setPrevSaveSteps(normalized);
-      writeStoredNumber(PREV_SAVE_STEPS_KEY, normalized);
-    }
-  }, [saveSteps, useEpochs]);
+  const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
+    maxSteps,
+    epochs,
+    saveSteps,
+    setMaxSteps,
+    setEpochs,
+    setSaveSteps,
+  });
 
   const maxStepsSliderMax = Math.max(500, maxSteps, 30);
   const epochsSliderMax = Math.max(10, epochs, 1);
@@ -173,16 +125,7 @@ export function HyperparametersStep() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (useEpochs) {
-                      setMaxSteps(normalizePrevMaxSteps(prevMaxSteps));
-                      setSaveSteps(normalizePrevSaveSteps(prevSaveSteps));
-                    } else {
-                      setMaxSteps(0);
-                      setEpochs(epochs || 3);
-                      setSaveSteps(0);
-                    }
-                  }}
+                  onClick={toggleUseEpochs}
                   className="text-xs text-primary underline cursor-pointer"
                 >
                   {useEpochs ? "Use Max Steps" : "Use Epochs"}
@@ -204,11 +147,19 @@ export function HyperparametersStep() {
                 <input
                   type="number"
                   value={useEpochs ? epochs : maxSteps}
-                  onChange={(e) =>
-                    useEpochs
-                      ? setEpochs(Number(e.target.value))
-                      : setMaxSteps(Number(e.target.value))
-                  }
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") return;
+
+                    const value = Number(raw);
+                    if (!Number.isFinite(value)) return;
+
+                    if (useEpochs) {
+                      setEpochs(value);
+                    } else {
+                      setMaxSteps(value);
+                    }
+                  }}
                   min={useEpochs ? 1 : 0}
                   max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                   step={1}

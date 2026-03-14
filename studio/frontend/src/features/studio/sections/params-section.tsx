@@ -29,7 +29,7 @@ import {
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
-import { useTrainingConfigStore } from "@/features/training";
+import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
 import type { GradientCheckpointing } from "@/types/training";
 import {
   ArrowDown01Icon,
@@ -37,39 +37,7 @@ import {
   Settings04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
-
-const PREV_MAX_STEPS_KEY = "unsloth_prev_max_steps";
-const PREV_SAVE_STEPS_KEY = "unsloth_prev_save_steps";
-
-function readStoredNumber(key: string, fallback: number): number {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const value = window.localStorage.getItem(key);
-    if (value === null) return fallback;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeStoredNumber(key: string, value: number): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, String(value));
-  } catch {
-    // Best effort only; ignore storage errors in restricted environments.
-  }
-}
-
-function normalizePrevMaxSteps(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 30;
-}
-
-function normalizePrevSaveSteps(value: number): number {
-  return Number.isFinite(value) && value >= 0 ? value : 0;
-}
+import { type ReactElement, type ReactNode, useState } from "react";
 
 function Row({
   label,
@@ -152,29 +120,14 @@ export function ParamsSection(): ReactElement {
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
-  const useEpochs = store.maxSteps === 0;
-  const [prevMaxSteps, setPrevMaxSteps] = useState(() =>
-    normalizePrevMaxSteps(readStoredNumber(PREV_MAX_STEPS_KEY, 30)),
-  );
-  const [prevSaveSteps, setPrevSaveSteps] = useState(() =>
-    normalizePrevSaveSteps(readStoredNumber(PREV_SAVE_STEPS_KEY, 0)),
-  );
-
-  useEffect(() => {
-    if (store.maxSteps > 0) {
-      const normalized = normalizePrevMaxSteps(store.maxSteps);
-      setPrevMaxSteps(normalized);
-      writeStoredNumber(PREV_MAX_STEPS_KEY, normalized);
-    }
-  }, [store.maxSteps]);
-
-  useEffect(() => {
-    if (!useEpochs) {
-      const normalized = normalizePrevSaveSteps(store.saveSteps);
-      setPrevSaveSteps(normalized);
-      writeStoredNumber(PREV_SAVE_STEPS_KEY, normalized);
-    }
-  }, [store.saveSteps, useEpochs]);
+  const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
+    maxSteps: store.maxSteps,
+    epochs: store.epochs,
+    saveSteps: store.saveSteps,
+    setMaxSteps: store.setMaxSteps,
+    setEpochs: store.setEpochs,
+    setSaveSteps: store.setSaveSteps,
+  });
 
   const maxStepsSliderMax = Math.max(500, store.maxSteps, 30);
   const epochsSliderMax = Math.max(20, store.epochs, 1);
@@ -228,16 +181,7 @@ export function ParamsSection(): ReactElement {
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => {
-                      if (useEpochs) {
-                        store.setMaxSteps(normalizePrevMaxSteps(prevMaxSteps));
-                        store.setSaveSteps(normalizePrevSaveSteps(prevSaveSteps));
-                      } else {
-                        store.setMaxSteps(0);
-                        store.setEpochs(store.epochs || 3);
-                        store.setSaveSteps(0);
-                      }
-                    }}
+                    onClick={toggleUseEpochs}
                     className="text-xs text-primary underline cursor-pointer"
                   >
                     {useEpochs ? "Use Max Steps" : "Use Epochs"}
@@ -245,11 +189,19 @@ export function ParamsSection(): ReactElement {
                   <input
                     type="number"
                     value={useEpochs ? store.epochs : store.maxSteps}
-                    onChange={(e) =>
-                      useEpochs
-                        ? store.setEpochs(Number(e.target.value))
-                        : store.setMaxSteps(Number(e.target.value))
-                    }
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === "") return;
+
+                      const value = Number(raw);
+                      if (!Number.isFinite(value)) return;
+
+                      if (useEpochs) {
+                        store.setEpochs(value);
+                      } else {
+                        store.setMaxSteps(value);
+                      }
+                    }}
                     min={useEpochs ? 1 : 0}
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
