@@ -300,14 +300,8 @@ class LlamaCppBackend:
                 return None
 
             # Get sizes for all GGUF files
-            path_infos = list(
-                get_paths_info(hf_repo, gguf_files, token = hf_token)
-            )
-            sized = [
-                (p.path, p.size)
-                for p in path_infos
-                if p.size and p.size > 0
-            ]
+            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
+            sized = [(p.path, p.size) for p in path_infos if p.size and p.size > 0]
             if not sized:
                 return None
 
@@ -491,7 +485,9 @@ class LlamaCppBackend:
                         if total_download_bytes > free_bytes:
                             # Try to find a smaller variant that fits
                             smaller = self._find_smallest_fitting_variant(
-                                hf_repo, free_bytes, hf_token,
+                                hf_repo,
+                                free_bytes,
+                                hf_token,
                             )
                             if smaller:
                                 logger.info(
