@@ -98,19 +98,32 @@ WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 # ── uv bootstrap ──────────────────────────────────────────────────────
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
+UV_NEEDS_SYSTEM = False  # Set by _bootstrap_uv() via probe
 
 
 def _bootstrap_uv() -> bool:
-    """Check if uv is available on PATH. Does not install uv."""
-    return shutil.which("uv") is not None
-
-
-def _in_virtualenv() -> bool:
-    """Check if we are running inside a virtual environment."""
-    return os.environ.get("VIRTUAL_ENV") is not None or (
-        hasattr(sys, "real_prefix")
-        or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
+    """Check if uv is available and probe whether --system is needed."""
+    global UV_NEEDS_SYSTEM
+    if not shutil.which("uv"):
+        return False
+    # Probe: try a dry-run install without --system.
+    # If uv can't find a venv it exits with code 2.
+    probe = subprocess.run(
+        ["uv", "pip", "install", "--dry-run", "pip"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
+    if probe.returncode != 0:
+        # Retry with --system to confirm it works
+        probe_sys = subprocess.run(
+            ["uv", "pip", "install", "--dry-run", "--system", "pip"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if probe_sys.returncode != 0:
+            return False  # uv is broken, fall back to pip
+        UV_NEEDS_SYSTEM = True
+    return True
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
@@ -155,7 +168,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
 def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     """Build a uv pip install command with translated flags."""
     cmd = ["uv", "pip", "install"]
-    if not _in_virtualenv():
+    if UV_NEEDS_SYSTEM:
         cmd.append("--system")
     cmd.extend(_translate_pip_args_for_uv(args))
     cmd.append("--torch-backend=auto")
