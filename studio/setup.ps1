@@ -898,30 +898,20 @@ if (Test-Path $LlamaServerBin) {
         }
     }
 
-    # -- Step C: Build llama-server --
+    # -- Step C: Build llama-server + llama-quantize --
     $NumCpu = [Environment]::ProcessorCount
     if ($NumCpu -lt 1) { $NumCpu = 4 }
 
     if ($BuildOk) {
         Write-Host ""
-        Write-Host "--- cmake build (llama-server) ---" -ForegroundColor Cyan
+        Write-Host "--- cmake build (llama-server + llama-quantize) ---" -ForegroundColor Cyan
         Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
         Write-Host ""
 
-        cmake --build $BuildDir --config Release --target llama-server -j $NumCpu
+        cmake --build $BuildDir --config Release --target llama-server llama-quantize -j $NumCpu
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
-            $FailedStep = "cmake build (llama-server)"
-        }
-    }
-
-    # -- Step D: Build llama-quantize (optional, best-effort) --
-    if ($BuildOk) {
-        Write-Host ""
-        Write-Host "--- cmake build (llama-quantize) ---" -ForegroundColor Cyan
-        cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
+            $FailedStep = "cmake build (llama-server + llama-quantize)"
         }
     }
 
