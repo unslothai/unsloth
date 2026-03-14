@@ -409,22 +409,46 @@ if (-not $NvccPath) {
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         if ($DriverMaxCuda) {
-            # Try descending compatible versions
+            # Query winget for available CUDA Toolkit versions
             $drMajor = [int]$DriverMaxCuda.Split('.')[0]
             $drMinor = [int]$DriverMaxCuda.Split('.')[1]
-            for ($m = $drMinor; $m -ge 0; $m--) {
-                $ver = "$drMajor.$m"
-                Write-Host "   Trying CUDA Toolkit $ver via winget..." -ForegroundColor Cyan
+            $AvailableVersions = @()
+            try {
+                $rawOutput = winget show Nvidia.CUDA --versions --accept-source-agreements 2>&1 | Out-String
+                # Parse version lines (e.g. "12.6", "12.5", "11.8")
+                foreach ($line in $rawOutput -split "`n") {
+                    $line = $line.Trim()
+                    if ($line -match '^\d+\.\d+') {
+                        $AvailableVersions += $line
+                    }
+                }
+            } catch {}
+
+            # Filter to compatible versions (<= driver max) and pick the highest
+            $BestVersion = $null
+            foreach ($ver in $AvailableVersions) {
+                $parts = $ver.Split('.')
+                $vMajor = [int]$parts[0]
+                $vMinor = [int]$parts[1]
+                if ($vMajor -lt $drMajor -or ($vMajor -eq $drMajor -and $vMinor -le $drMinor)) {
+                    $BestVersion = $ver
+                    break  # list is descending, first match is highest compatible
+                }
+            }
+
+            if ($BestVersion) {
+                Write-Host "   Installing CUDA Toolkit $BestVersion via winget...  " -ForegroundColor Cyan
                 $prevEAPCuda = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
-                winget install --id=Nvidia.CUDA --version=$ver -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+                winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
                 $ErrorActionPreference = $prevEAPCuda
                 Refresh-Environment
                 $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
                 if ($NvccPath) {
-                    Write-Host "   [OK] CUDA Toolkit $ver installed (nvcc: $NvccPath)" -ForegroundColor Green
-                    break
+                    Write-Host "   [OK] CUDA Toolkit $BestVersion installed (nvcc: $NvccPath)" -ForegroundColor Green
                 }
+            } else {
+                Write-Host "   [WARN] No compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" -ForegroundColor Yellow
             }
         } else {
             Write-Host "   Installing CUDA Toolkit (latest) via winget..." -ForegroundColor Cyan
@@ -631,12 +655,12 @@ Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 
 # Find Python
 $PythonCmd = $null
-foreach ($candidate in @("python3.12", "python3.11", "python3.10", "python3.9", "python3", "python")) {
+foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
     try {
         $ver = & $candidate --version 2>&1
         if ($ver -match 'Python 3\.(\d+)') {
             $minor = [int]$Matches[1]
-            if ($minor -le 12) {
+            if ($minor -ge 11 -and $minor -le 13) {
                 $PythonCmd = $candidate
                 break
             }
@@ -645,7 +669,7 @@ foreach ($candidate in @("python3.12", "python3.11", "python3.10", "python3.9", 
 }
 
 if (-not $PythonCmd) {
-    Write-Host "[ERROR] No Python <= 3.12 found." -ForegroundColor Red
+    Write-Host "[ERROR] No Python 3.11-3.13 found." -ForegroundColor Red
     exit 1
 }
 
@@ -833,14 +857,14 @@ if (Test-Path $LlamaServerBin) {
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
-        git -C $LlamaCppDir pull
+        git -C $LlamaCppDir pull 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "   [WARN] git pull failed -- using existing source" -ForegroundColor Yellow
         }
     } else {
         Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
         if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
-        git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir
+        git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"
@@ -885,13 +909,7 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
         }
 
-        Write-Host "   cmake args:" -ForegroundColor Gray
-        foreach ($arg in $CmakeArgs) {
-            Write-Host "     $arg" -ForegroundColor Gray
-        }
-        Write-Host ""
-
-        cmake @CmakeArgs
+        cmake @CmakeArgs 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake configure"
@@ -908,7 +926,7 @@ if (Test-Path $LlamaServerBin) {
         Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
         Write-Host ""
 
-        cmake --build $BuildDir --config Release --target llama-server -j $NumCpu
+        cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake build (llama-server)"
@@ -919,7 +937,7 @@ if (Test-Path $LlamaServerBin) {
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake build (llama-quantize) ---" -ForegroundColor Cyan
-        cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu
+        cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
         }
