@@ -592,6 +592,7 @@ class LlamaCppBackend:
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
+        in_thinking = False
 
         try:
             with httpx.Client(timeout = None) as client:
@@ -615,6 +616,9 @@ class LlamaCppBackend:
                             if not line:
                                 continue
                             if line == "data: [DONE]":
+                                if in_thinking:
+                                    cumulative += "</think>"
+                                    yield cumulative
                                 return
                             if not line.startswith("data: "):
                                 continue
@@ -624,8 +628,23 @@ class LlamaCppBackend:
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+
+                                    # Handle reasoning/thinking tokens
+                                    # llama-server sends these as "reasoning_content"
+                                    # Wrap in <think> tags for the frontend parser
+                                    reasoning = delta.get("reasoning_content", "")
+                                    if reasoning:
+                                        if not in_thinking:
+                                            cumulative += "<think>"
+                                            in_thinking = True
+                                        cumulative += reasoning
+                                        yield cumulative
+
                                     token = delta.get("content", "")
                                     if token:
+                                        if in_thinking:
+                                            cumulative += "</think>"
+                                            in_thinking = False
                                         cumulative += token
                                         yield cumulative
                             except json.JSONDecodeError:
