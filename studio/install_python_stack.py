@@ -74,7 +74,9 @@ def _red(msg: str) -> str:
     return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
 
 
-def run(label: str, cmd: list[str], *, quiet: bool = True) -> subprocess.CompletedProcess[bytes]:
+def run(
+    label: str, cmd: list[str], *, quiet: bool = True
+) -> subprocess.CompletedProcess[bytes]:
     """Run a command; on failure print output and exit."""
     print(_cyan(f"   {label}..."))
     result = subprocess.run(
@@ -104,8 +106,8 @@ def _bootstrap_uv() -> bool:
         return True
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", "--quiet", "uv"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     return result.returncode == 0 and shutil.which("uv") is not None
 
@@ -181,8 +183,8 @@ def pip_install(
             print(_cyan(f"   {label}..."))
             result = subprocess.run(
                 uv_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
             )
             if result.returncode != 0:
                 print(_red(f"   uv failed, falling back to pip..."))
