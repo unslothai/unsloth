@@ -331,8 +331,12 @@ rm -rf "$LLAMA_CPP_DIR"
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            # Build both targets in one invocation for better parallelism
-            run_quiet "build llama-server + llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server llama-quantize -j"$NCPU" || BUILD_OK=false
+            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+        fi
+
+        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
