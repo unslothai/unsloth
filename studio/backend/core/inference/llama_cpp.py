@@ -279,6 +279,48 @@ class LlamaCppBackend:
         # Model is too large even for all GPUs, let --fit handle it
         return None, True
 
+    # ── Variant fallback ────────────────────────────────────────────
+
+    @staticmethod
+    def _find_smallest_fitting_variant(
+        hf_repo: str,
+        free_bytes: int,
+        hf_token: Optional[str] = None,
+    ) -> Optional[tuple[str, int]]:
+        """Find the smallest single-file GGUF variant that fits in free_bytes.
+
+        Returns (filename, size_bytes) or None if nothing fits.
+        """
+        try:
+            from huggingface_hub import get_paths_info, list_repo_files
+
+            files = list_repo_files(hf_repo, token = hf_token)
+            gguf_files = [f for f in files if f.endswith(".gguf")]
+            if not gguf_files:
+                return None
+
+            # Get sizes for all GGUF files
+            path_infos = list(
+                get_paths_info(hf_repo, gguf_files, token = hf_token)
+            )
+            sized = [
+                (p.path, p.size)
+                for p in path_infos
+                if p.size and p.size > 0
+            ]
+            if not sized:
+                return None
+
+            # Sort by size ascending and pick the smallest that fits
+            sized.sort(key = lambda x: x[1])
+            for filename, size in sized:
+                if size <= free_bytes:
+                    return filename, size
+
+            return None
+        except Exception:
+            return None
+
     # ── Port allocation ───────────────────────────────────────────
 
     @staticmethod
@@ -418,9 +460,11 @@ class LlamaCppBackend:
                         repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                         gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
-                # Check disk space before downloading
+                # Check disk space and fall back to a smaller variant if needed
                 all_gguf_files = [gguf_filename] + gguf_extra_shards
                 try:
+                    import os
+
                     from huggingface_hub import get_paths_info
 
                     path_infos = list(
@@ -429,8 +473,6 @@ class LlamaCppBackend:
                     total_download_bytes = sum((p.size or 0) for p in path_infos)
 
                     if total_download_bytes > 0:
-                        import os
-
                         cache_dir = os.environ.get(
                             "HF_HUB_CACHE",
                             str(Path.home() / ".cache" / "huggingface" / "hub"),
@@ -447,11 +489,22 @@ class LlamaCppBackend:
                         )
 
                         if total_download_bytes > free_bytes:
-                            raise RuntimeError(
-                                f"Not enough disk space to download model. "
-                                f"Need {total_gb:.1f} GB but only "
-                                f"{free_gb:.1f} GB free in {cache_dir}"
+                            # Try to find a smaller variant that fits
+                            smaller = self._find_smallest_fitting_variant(
+                                hf_repo, free_bytes, hf_token,
                             )
+                            if smaller:
+                                logger.info(
+                                    f"Selected variant too large ({total_gb:.1f} GB), "
+                                    f"falling back to {smaller[0]} ({smaller[1] / (1024**3):.1f} GB)"
+                                )
+                                gguf_filename = smaller[0]
+                                gguf_extra_shards = []
+                            else:
+                                raise RuntimeError(
+                                    f"Not enough disk space to download any variant. "
+                                    f"Only {free_gb:.1f} GB free in {cache_dir}"
+                                )
                 except RuntimeError:
                     raise
                 except Exception as e:
