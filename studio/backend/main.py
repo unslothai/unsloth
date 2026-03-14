@@ -75,12 +75,16 @@ async def lifespan(app: FastAPI):
     threading.Thread(target = _precache, daemon = True).start()
 
     if storage.ensure_default_admin():
+        bootstrap_pw = storage.get_bootstrap_password()
+        app.state.bootstrap_password = bootstrap_pw
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
         print("Sign in with the seeded credentials and change the password immediately:\n")
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password: {storage.DEFAULT_ADMIN_PASSWORD}\n")
+        print(f"    password: {bootstrap_pw}\n")
         print("=" * 60 + "\n")
+    else:
+        app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
     _hw_module.DEVICE = None
@@ -196,6 +200,32 @@ async def get_hardware_info():
 # ============ Serve Frontend (Optional) ============
 
 
+def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
+    """Inject bootstrap credentials into HTML when password change is required.
+
+    The script tag is only injected while the default admin account still
+    has ``must_change_password=True``.  Once the user changes the password
+    the HTML is served clean — no credentials leak.
+    """
+    import json as _json
+
+    if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
+        return html_bytes
+
+    bootstrap_pw = getattr(app.state, "bootstrap_password", None)
+    if not bootstrap_pw:
+        return html_bytes
+
+    payload = _json.dumps({
+        "username": storage.DEFAULT_ADMIN_USERNAME,
+        "password": bootstrap_pw,
+    })
+    tag = f'<script>window.__UNSLOTH_BOOTSTRAP__={payload}</script>'
+    html = html_bytes.decode("utf-8")
+    html = html.replace("</head>", f"{tag}</head>", 1)
+    return html.encode("utf-8")
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -209,6 +239,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
     @app.get("/")
     async def serve_root():
         content = (build_path / "index.html").read_bytes()
+        content = _inject_bootstrap(content, app)
         return Response(
             content = content,
             media_type = "text/html",
@@ -231,6 +262,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         # Serve index.html as bytes — avoids Content-Length mismatch
         content = (build_path / "index.html").read_bytes()
+        content = _inject_bootstrap(content, app)
         return Response(
             content = content,
             media_type = "text/html",

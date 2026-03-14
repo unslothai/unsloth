@@ -14,8 +14,10 @@ from .authentication import (
     reload_secret,
 )
 from .storage import (
-    DEFAULT_ADMIN_PASSWORD,
     DEFAULT_ADMIN_USERNAME,
+    clear_bootstrap_password,
+    generate_bootstrap_password,
+    get_bootstrap_password,
     is_initialized,
     create_initial_user,
     ensure_default_admin,
@@ -37,8 +39,10 @@ __all__ = [
     "get_current_subject",
     "get_current_subject_allow_password_change",
     "reload_secret",
-    "DEFAULT_ADMIN_PASSWORD",
     "DEFAULT_ADMIN_USERNAME",
+    "clear_bootstrap_password",
+    "generate_bootstrap_password",
+    "get_bootstrap_password",
     "is_initialized",
     "create_initial_user",
     "ensure_default_admin",

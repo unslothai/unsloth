@@ -15,7 +15,60 @@ from utils.paths import auth_db_path, ensure_dir
 
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
-DEFAULT_ADMIN_PASSWORD = "unsloth12345"
+
+# Plaintext bootstrap password file — lives beside auth.db, deleted on
+# first password change so the credential never lingers on disk.
+_BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
+
+# In-process cache so we don't re-read the file on every HTML serve.
+_bootstrap_password: Optional[str] = None
+
+
+def generate_bootstrap_password() -> str:
+    """Generate a 4-word diceware passphrase and persist it to disk.
+
+    The passphrase is written to ``_BOOTSTRAP_PW_PATH`` so that it
+    survives server restarts (the DB only stores the *hash*).  On
+    subsequent calls / restarts, the persisted value is returned.
+    """
+    global _bootstrap_password
+
+    # 1. Already cached in this process?
+    if _bootstrap_password is not None:
+        return _bootstrap_password
+
+    # 2. Already persisted from a previous run?
+    if _BOOTSTRAP_PW_PATH.is_file():
+        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        if _bootstrap_password:
+            return _bootstrap_password
+
+    # 3. First-ever startup — generate a fresh passphrase.
+    import diceware
+
+    _bootstrap_password = diceware.get_passphrase(
+        options=diceware.handle_options(args=["-n", "4", "-d", "", "-c"])
+    )
+
+    # Persist so the *same* passphrase is used if the server restarts
+    # before the user changes the password.
+    ensure_dir(_BOOTSTRAP_PW_PATH.parent)
+    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
+
+    return _bootstrap_password
+
+
+def get_bootstrap_password() -> Optional[str]:
+    """Return the cached bootstrap password, or None if not yet generated."""
+    return _bootstrap_password
+
+
+def clear_bootstrap_password() -> None:
+    """Delete the persisted bootstrap password file (called after password change)."""
+    global _bootstrap_password
+    _bootstrap_password = None
+    if _BOOTSTRAP_PW_PATH.is_file():
+        _BOOTSTRAP_PW_PATH.unlink(missing_ok=True)
 
 
 def _hash_token(token: str) -> str:
@@ -200,12 +253,14 @@ def load_jwt_secret() -> str:
 def ensure_default_admin() -> bool:
     """Seed the default admin account on first startup.
 
+    Uses a randomly generated diceware passphrase as the bootstrap password.
     Returns True when the default admin was created in this call.
     """
+    bootstrap_pw = generate_bootstrap_password()
     try:
         create_initial_user(
             username = DEFAULT_ADMIN_USERNAME,
-            password = DEFAULT_ADMIN_PASSWORD,
+            password = bootstrap_pw,
             jwt_secret = secrets.token_urlsafe(64),
             must_change_password = True,
         )
@@ -231,6 +286,8 @@ def update_password(username: str, new_password: str) -> bool:
             (salt, pwd_hash, jwt_secret, username),
         )
         conn.commit()
+        if cursor.rowcount > 0:
+            clear_bootstrap_password()
         return cursor.rowcount > 0
     finally:
         conn.close()

@@ -10,6 +10,15 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import type { ReactElement } from "react";
 import { refreshSession } from "../api";
+
+// Bootstrap credentials injected into index.html by the backend
+// (only present while default admin must_change_password is true)
+declare global {
+  interface Window {
+    __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
+  }
+}
+
 import {
   clearAuthTokens,
   getAuthToken,
@@ -68,7 +77,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState("unsloth");
-  const [password, setPassword] = useState(isLoginMode ? "" : "unsloth12345");
+  const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -126,6 +135,19 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       canceled = true;
     };
   }, [navigate]);
+
+  // Seed password from bootstrap credentials injected into HTML
+  useEffect(() => {
+    const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
+    if (bootstrap) {
+      if (!isLoginMode && !password) {
+        setPassword(bootstrap.password);
+      }
+      if (bootstrap.username) {
+        setUsername(bootstrap.username);
+      }
+    }
+  }, []);
 
   const blockedByState =
     initialized === false ||
