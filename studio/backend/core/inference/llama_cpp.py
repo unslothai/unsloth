@@ -418,6 +418,47 @@ class LlamaCppBackend:
                         repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                         gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
+                # Check disk space before downloading
+                all_gguf_files = [gguf_filename] + gguf_extra_shards
+                try:
+                    from huggingface_hub import get_paths_info
+
+                    path_infos = list(
+                        get_paths_info(hf_repo, all_gguf_files, token = hf_token)
+                    )
+                    total_download_bytes = sum(
+                        (p.size or 0) for p in path_infos
+                    )
+
+                    if total_download_bytes > 0:
+                        import os
+
+                        cache_dir = os.environ.get(
+                            "HF_HUB_CACHE",
+                            str(Path.home() / ".cache" / "huggingface" / "hub"),
+                        )
+                        Path(cache_dir).mkdir(parents = True, exist_ok = True)
+                        free_bytes = shutil.disk_usage(cache_dir).free
+
+                        total_gb = total_download_bytes / (1024 ** 3)
+                        free_gb = free_bytes / (1024 ** 3)
+
+                        logger.info(
+                            f"GGUF download: {total_gb:.1f} GB needed, "
+                            f"{free_gb:.1f} GB free on disk"
+                        )
+
+                        if total_download_bytes > free_bytes:
+                            raise RuntimeError(
+                                f"Not enough disk space to download model. "
+                                f"Need {total_gb:.1f} GB but only "
+                                f"{free_gb:.1f} GB free in {cache_dir}"
+                            )
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Could not check disk space: {e}")
+
                 logger.info(
                     f"Downloading GGUF: {hf_repo}/{gguf_filename}"
                     + (
