@@ -217,7 +217,11 @@ Write-Host "+==============================================+" -ForegroundColor G
 # ============================================
 # 1a. GPU requirement check
 # ============================================
-$HasNvidiaSmi = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
+$HasNvidiaSmi = $false
+try {
+    nvidia-smi 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true }
+} catch {}
 if (-not $HasNvidiaSmi) {
     Write-Host ""
     Write-Host "[ERROR] Unsloth Studio requires an NVIDIA GPU." -ForegroundColor Red
