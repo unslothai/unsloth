@@ -596,7 +596,7 @@ if ($HasPython) {
 
 # Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
 $ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
-if ($ScriptsDir) {
+if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
     $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $UserPathEntries = if ($UserPath) { $UserPath.Split(';') } else { @() }
     if (-not ($UserPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
