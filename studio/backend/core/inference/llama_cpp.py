@@ -344,13 +344,20 @@ class LlamaCppBackend:
 
             cmd = [
                 binary,
-                "-m", model_path,
-                "--port", str(self._port),
-                "-c", str(n_ctx),
-                "-ngl", str(n_gpu_layers),
-                "--parallel", "1",       # Single-user studio, saves VRAM
-                "--flash-attn", "on",    # Force flash attention for speed
-                "--fit", "on",           # Auto-fit to available device memory
+                "-m",
+                model_path,
+                "--port",
+                str(self._port),
+                "-c",
+                str(n_ctx),
+                "-ngl",
+                str(n_gpu_layers),
+                "--parallel",
+                "1",  # Single-user studio, saves VRAM
+                "--flash-attn",
+                "on",  # Force flash attention for speed
+                "--fit",
+                "on",  # Auto-fit to available device memory
             ]
 
             if n_threads is not None:
