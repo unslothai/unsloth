@@ -47,7 +47,7 @@ def generate_bootstrap_password() -> str:
     import diceware
 
     _bootstrap_password = diceware.get_passphrase(
-        options=diceware.handle_options(args=["-n", "4", "-d", "", "-c"])
+        options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
     )
 
     # Persist so the *same* passphrase is used if the server restarts
@@ -68,7 +68,7 @@ def clear_bootstrap_password() -> None:
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        _BOOTSTRAP_PW_PATH.unlink(missing_ok=True)
+        _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
 
 
 def _hash_token(token: str) -> str:
@@ -103,10 +103,7 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(auth_user)")
-    }
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"

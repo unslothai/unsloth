@@ -79,7 +79,9 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = bootstrap_pw
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
-        print("Sign in with the seeded credentials and change the password immediately:\n")
+        print(
+            "Sign in with the seeded credentials and change the password immediately:\n"
+        )
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
         print(f"    password: {bootstrap_pw}\n")
         print("=" * 60 + "\n")
@@ -216,11 +218,13 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
     if not bootstrap_pw:
         return html_bytes
 
-    payload = _json.dumps({
-        "username": storage.DEFAULT_ADMIN_USERNAME,
-        "password": bootstrap_pw,
-    })
-    tag = f'<script>window.__UNSLOTH_BOOTSTRAP__={payload}</script>'
+    payload = _json.dumps(
+        {
+            "username": storage.DEFAULT_ADMIN_USERNAME,
+            "password": bootstrap_pw,
+        }
+    )
+    tag = f"<script>window.__UNSLOTH_BOOTSTRAP__={payload}</script>"
     html = html_bytes.decode("utf-8")
     html = html.replace("</head>", f"{tag}</head>", 1)
     return html.encode("utf-8")
