@@ -143,7 +143,11 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     repo_id = payload.repo_id.strip()
     description = payload.description.strip()
     hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
-    artifact_path = payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
+    artifact_path = (
+        payload.artifact_path.strip()
+        if isinstance(payload.artifact_path, str)
+        else None
+    )
 
     if not repo_id:
         raise HTTPException(status_code = 400, detail = "repo_id is required")
