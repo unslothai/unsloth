@@ -1109,7 +1109,7 @@ def fix_vllm_pdl_blackwell():
         if not torch.cuda.is_available():
             return
 
-        # Scan all GPUs for SM100 - fix applies globally via env var and monkey-patch
+        # Scan all GPUs for SM100 - fix applies globally via env vars
         has_sm100 = False
         sm100_gpu_name = None
         for i in range(torch.cuda.device_count()):
@@ -1139,84 +1139,32 @@ def fix_vllm_pdl_blackwell():
     if not has_utils and not has_expand_op and not has_shrink_op:
         # Old vLLM version without PDL support - nothing to patch
         return
-
     # Check if vLLM version includes the fix
     VLLM_PDL_FIX_VERSION = "0.15.0"
     try:
         vllm_version = Version(importlib_version("vllm"))
         if vllm_version >= Version(VLLM_PDL_FIX_VERSION):
-            logger.info(
-                f"Unsloth: SM100 ({sm100_gpu_name}) detected but vLLM {vllm_version} "
-                f"should include PDL fix - skipping workaround"
+            logger.debug(
+                f"Unsloth: SM100 ({sm100_gpu_name}) detected with vLLM {vllm_version}. "
+                f"Applying env-only workaround conservatively; user env overrides win."
             )
-            return
     except Exception as e:
         logger.debug(
             f"Unsloth: vLLM version check failed ({e}), applying PDL workaround."
         )
 
-    # Apply the PDL fix
-    os.environ["TRITON_DISABLE_PDL"] = "1"
+    # Keep the workaround minimally intrusive: do not monkey-patch vLLM internals.
+    # Use official env toggles before vLLM import on affected SM100 setups.
+    # "Arch conditional MMA instruction used without targeting appropriate compute capability"
+    # has been observed in this path on Blackwell with older vLLM/torch combinations.
+    os.environ.setdefault("VLLM_LORA_DISABLE_PDL", "1")
+    os.environ.setdefault("TRITON_DISABLE_PDL", "1")
+    os.environ.setdefault("VLLM_USE_FBGEMM", "0")
 
-    def fake_supports_pdl(*args, **kwargs):
-        return False
-
-    patched = []
-    patched_names = set()
-
-    def _record_patch(name):
-        if name not in patched_names:
-            patched.append(name)
-            patched_names.add(name)
-
-    # First, patch the source module (utils.py) where supports_pdl is defined.
-    # This is critical because supports_pdl uses @lru_cache - we must clear the
-    # cache to prevent stale cached results from the original function.
-    try:
-        utils_module = importlib.import_module("vllm.lora.ops.triton_ops.utils")
-        if hasattr(utils_module, "supports_pdl"):
-            original_fn = utils_module.supports_pdl
-            if hasattr(original_fn, "cache_clear"):
-                original_fn.cache_clear()
-            utils_module.supports_pdl = fake_supports_pdl
-            _record_patch("utils")
-    except (ImportError, ModuleNotFoundError, AttributeError):
-        pass
-
-    # Also patch the consumer modules that import supports_pdl from utils.
-    # This ensures the patched function is used even if the module was already
-    # imported before this fix runs.
-    consumer_modules = {
-        "lora_expand_op": "vllm.lora.ops.triton_ops.lora_expand_op",
-        "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
-        "fused_moe_lora_op": "vllm.lora.ops.triton_ops.fused_moe_lora_op",
-    }
-    for name, path in consumer_modules.items():
-        try:
-            module = importlib.import_module(path)
-            if hasattr(module, "supports_pdl"):
-                module.supports_pdl = fake_supports_pdl
-                _record_patch(name)
-        except (ImportError, ModuleNotFoundError, AttributeError):
-            pass
-
-    # Patch any additional already-loaded triton ops consumers that expose supports_pdl.
-    for module_name, module in tuple(sys.modules.items()):
-        if not module_name.startswith("vllm.lora.ops.triton_ops."):
-            continue
-        if module is None or not hasattr(module, "supports_pdl"):
-            continue
-        module.supports_pdl = fake_supports_pdl
-        _record_patch(module_name.rsplit(".", 1)[-1])
-
-    if patched:
-        logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
-        )
-    else:
-        # Just set the env var - vLLM might be an older version without supports_pdl
-        logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
+    logger.info(
+        f"Unsloth: Applied SM100 ({sm100_gpu_name}) vLLM workaround via env vars: "
+        f"VLLM_LORA_DISABLE_PDL=1, TRITON_DISABLE_PDL=1, VLLM_USE_FBGEMM=0"
+    )
 
 
 def patch_openspiel_env_async():
