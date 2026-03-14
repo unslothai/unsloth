@@ -74,6 +74,7 @@ from transformers.models.llama.modeling_llama import (
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
@@ -206,6 +207,33 @@ def _offload_frozen_module_for_training(
     module.original_module.requires_grad_(False)
 
 
+def _ensure_cache_is_dynamic(past_key_values):
+    """Convert list/tuple of (K, V) pairs to DynamicCache for transformers v5 compat."""
+    if past_key_values is None:
+        return None
+    if isinstance(past_key_values, Cache):
+        return past_key_values
+    if isinstance(past_key_values, (tuple, list)) and len(past_key_values) > 0:
+        cache = DynamicCache()
+        for layer_idx, layer_kv in enumerate(past_key_values):
+            cache.update(layer_kv[0], layer_kv[1], layer_idx)
+        return cache
+    return past_key_values
+
+
+def _slice_position_ids(position_ids, input_ids):
+    """Slice position_ids to match input_ids length if needed."""
+    if position_ids is None:
+        return None
+    if position_ids.dim() == 2:
+        if position_ids.shape[1] > input_ids.shape[1]:
+            position_ids = position_ids[:, -input_ids.shape[1] :]
+    elif position_ids.dim() == 1:
+        if position_ids.shape[0] > input_ids.shape[1]:
+            position_ids = position_ids[-input_ids.shape[1] :]
+    return position_ids
+
+
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(
     self,
@@ -246,23 +274,29 @@ def _fast_prepare_inputs_for_generation(
             kwargs["past_key_values"] = None
             use_inputs_embeds = inputs_embeds is not None
         else:
+            if hasattr(past_key_values, "get_seq_length"):
+                past_len = int(past_key_values.get_seq_length())
+            else:
+                # legacy tuple cache: (layer, (K,V))
+                past_len = int(past_key_values[0][0].shape[-2])
+
             if input_ids is not None and input_ids.numel() > 0:
                 bs = input_ids.shape[0]
-                input_ids = input_ids[:, [-1]]
                 device = input_ids.device
-                seq_length = 1
+                # If input_ids extends beyond the cache, keep only uncached tokens.
+                # This handles user-provided partial KV caches (e.g. multi-turn
+                # conversations where history is pre-encoded in the cache).
+                if input_ids.shape[1] > 1 and past_len < input_ids.shape[1]:
+                    input_ids = input_ids[:, past_len:]
+                else:
+                    input_ids = input_ids[:, [-1]]
+                seq_length = input_ids.shape[1]
             elif inputs_embeds is not None:
                 bs, seq_length, _ = inputs_embeds.shape
                 device = inputs_embeds.device
             else:
                 bs, seq_length = 1, 0
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-            if hasattr(past_key_values, "get_seq_length"):
-                past_len = int(past_key_values.get_seq_length())
-            else:
-                # legacy tuple cache: (layer, (K,V))
-                past_len = int(past_key_values[0][0].shape[-2])
 
             max_cache_len = None
             if hasattr(past_key_values, "get_max_cache_shape"):
@@ -358,6 +392,9 @@ def _fast_prepare_inputs_for_generation(
             if cp.dim() == 1:
                 cp = cp.unsqueeze(0).expand(bs, -1)
             kwargs["position_ids"] = cp
+    else:
+        # User provided position_ids; slice to match (possibly trimmed) input_ids
+        kwargs["position_ids"] = _slice_position_ids(kwargs["position_ids"], input_ids)
 
     result = {
         "attention_mask": attention_mask,
@@ -1442,13 +1479,51 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        if past_key_values is not None:
+        if (
+            past_key_values is not None
+            and input_ids is not None
+            and input_ids.shape[1] == 1
+        ):
             outputs = fast_forward_inference(
                 self,
                 input_ids,
                 past_key_values,
                 position_ids = position_ids,
                 attention_mask = attention_mask,
+                **kwargs,
+            )
+        elif (
+            past_key_values is not None
+            and input_ids is not None
+            and input_ids.shape[1] > 1
+        ):
+            # Multi-token prefill with user-provided KV cache. The fast inference
+            # path only supports single-token decoding (q_len == 1), so fall
+            # through to the regular model forward which handles arbitrary lengths.
+            output_attentions = (
+                output_attentions
+                if output_attentions is not None
+                else self.config.output_attentions
+            )
+            output_hidden_states = (
+                output_hidden_states
+                if output_hidden_states is not None
+                else self.config.output_hidden_states
+            )
+            return_dict = (
+                return_dict if return_dict is not None else self.config.use_return_dict
+            )
+            self.model._has_no_labels = labels is None
+            outputs = self.model(
+                input_ids = input_ids,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
+                past_key_values = past_key_values,
+                inputs_embeds = inputs_embeds,
+                use_cache = use_cache if use_cache is not None else True,
+                output_attentions = output_attentions,
+                output_hidden_states = output_hidden_states,
+                return_dict = return_dict,
                 **kwargs,
             )
         else:
@@ -2102,8 +2177,16 @@ def unsloth_fast_generate(
     #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
     # pass
 
-    # For newer HF
-    kwargs["cache_implementation"] = "dynamic"
+    # For newer HF: only set cache_implementation when the user has not
+    # supplied their own past_key_values, since transformers >= 4.57 raises
+    # ValueError if both are present.
+    _user_past_kv = kwargs.get("past_key_values", None)
+    if _user_past_kv is not None:
+        # Ensure tuple/list KV caches are converted to DynamicCache for
+        # transformers v5 compatibility.
+        kwargs["past_key_values"] = _ensure_cache_is_dynamic(_user_past_kv)
+    else:
+        kwargs["cache_implementation"] = "dynamic"
     # For num_logits_to_keep
     num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
     logits_to_keep = kwargs.get("logits_to_keep", None)
