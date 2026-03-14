@@ -99,7 +99,10 @@ export function useRecipes(): {
         setRecipes(value);
         setReady(true);
       },
-      error: (error) => console.error("data-recipes liveQuery:", error),
+      error: (error) => {
+        console.error("data-recipes liveQuery:", error);
+        setReady(true);
+      },
     });
     return () => sub.unsubscribe();
   }, []);

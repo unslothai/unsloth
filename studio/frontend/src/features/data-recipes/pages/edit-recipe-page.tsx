@@ -53,14 +53,14 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
   });
 
   useEffect(() => {
+    let active = true;
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
       setLoadState({ status: "ready", record: cachedRecipe });
-      return;
+    } else {
+      setLoadState({ status: "loading" });
     }
 
-    let active = true;
-    setLoadState({ status: "loading" });
     void getRecipe(recipeId).then((record) => {
       if (!active) {
         return;

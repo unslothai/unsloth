@@ -41,7 +41,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -50,6 +50,9 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
+
+const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
+  "data-recipes:open-learning-recipes";
 
 type TemplateCard = {
   title: string;
@@ -301,6 +304,14 @@ export function DataRecipesPage(): ReactElement {
     null,
   );
 
+  useEffect(() => {
+    if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {
+      return;
+    }
+    sessionStorage.removeItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY);
+    setLearningDialogOpen(true);
+  }, []);
+
   async function openNewRecipe(): Promise<void> {
     if (creatingRecipe || loadingTemplateId) {
       return;
@@ -503,7 +514,10 @@ export function DataRecipesPage(): ReactElement {
       </main>
 
       <Dialog open={learningDialogOpen} onOpenChange={setLearningDialogOpen}>
-        <DialogContent className="sm:max-w-5xl">
+        <DialogContent
+          className="sm:max-w-5xl"
+          overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
           <DialogHeader>
             <DialogTitle>Learning Recipes</DialogTitle>
             <DialogDescription>
