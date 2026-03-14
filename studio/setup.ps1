@@ -590,6 +590,24 @@ if ($HasPython) {
     $PythonOk = $true
 }
 
+# Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
+$ScriptsDir = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user') if __import__('os').path.exists(sysconfig.get_path('scripts', 'nt_user')) else sysconfig.get_path('scripts'))"
+if ($ScriptsDir) {
+    $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
+        if ($UserPath) {
+            [Environment]::SetEnvironmentVariable('Path', "$ScriptsDir;$UserPath", 'User')
+        } else {
+            [Environment]::SetEnvironmentVariable('Path', "$ScriptsDir", 'User')
+        }
+        # Also add to current process so it's available immediately
+        if ($env:PATH -notlike "*$ScriptsDir*") {
+            [Environment]::SetEnvironmentVariable('PATH', "$ScriptsDir;$env:PATH", 'Process')
+        }
+        Write-Host "   Persisted Python Scripts dir to user PATH: $ScriptsDir" -ForegroundColor Gray
+    }
+}
+
 Write-Host ""
 Write-Host "--- System prerequisites ready ---" -ForegroundColor Green
 Write-Host ""
