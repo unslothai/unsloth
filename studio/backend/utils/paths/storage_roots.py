@@ -84,10 +84,10 @@ def _setup_cache_env() -> None:
     root = cache_root()
     hf_dir = root / "huggingface"
     defaults = {
-        "HF_HOME":         str(hf_dir),
-        "HF_HUB_CACHE":    str(hf_dir / "hub"),
-        "HF_XET_CACHE":    str(hf_dir / "xet"),
-        "UV_CACHE_DIR":    str(root / "uv"),
+        "HF_HOME": str(hf_dir),
+        "HF_HUB_CACHE": str(hf_dir / "hub"),
+        "HF_XET_CACHE": str(hf_dir / "xet"),
+        "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
     for key, value in defaults.items():
