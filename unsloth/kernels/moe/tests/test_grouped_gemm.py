@@ -179,9 +179,9 @@ def _test_grouped_gemm_forward(
 
     Xref = Xperm
 
-    assert (
-        Xperm.shape == (total_tokens, K) if use_W1 else (total_tokens, N)
-    ), f"Xperm.shape: {Xperm.shape}, total_tokens: {total_tokens}, K: {K}"
+    assert Xperm.shape == (total_tokens, K) if use_W1 else (total_tokens, N), (
+        f"Xperm.shape: {Xperm.shape}, total_tokens: {total_tokens}, K: {K}"
+    )
 
     ref_output = torch_grouped_gemm(X = Xref, W = W, m_sizes = expert_token_counts)
 
@@ -267,9 +267,9 @@ def _test_grouped_gemm_forward(
             test_output = unpermute(test_output, gather_indices)
         ref_output = ref_output * topk_weights[:, None]
 
-    assert torch.allclose(
-        ref_output, test_output, atol = atol, rtol = rtol
-    ), f"Grouped gemm forward failed: {(ref_output - test_output).abs().max().item():.6f}"
+    assert torch.allclose(ref_output, test_output, atol = atol, rtol = rtol), (
+        f"Grouped gemm forward failed: {(ref_output - test_output).abs().max().item():.6f}"
+    )
 
 
 # NOTE: Fuse multiplication of topk weights is only supported for inference and not training, although this may change in the future; not currently tested.
@@ -540,9 +540,9 @@ def _test_grouped_gemm_backward_dX(
 
     output_shape = (total_tokens, 2 * N) if use_W1 else (total_tokens, K)
     ref_output = torch_grouped_gemm(X = Xperm, W = W, m_sizes = expert_token_counts)
-    assert (
-        ref_output.shape == output_shape
-    ), f"ref_output.shape: {ref_output.shape}, output_shape: {output_shape}"
+    assert ref_output.shape == output_shape, (
+        f"ref_output.shape: {ref_output.shape}, output_shape: {output_shape}"
+    )
 
     if permute_y:
         ref_output = unpermute(ref_output, gather_indices)
@@ -620,12 +620,12 @@ def _test_grouped_gemm_backward_dX(
             is_first_gemm = use_W1,
             dX_only = True,
         )
-        assert (
-            test_output.shape == ref_output.shape
-        ), f"test_output.shape: {test_output.shape}, ref_output.shape: {ref_output.shape}"
-        assert torch.allclose(
-            test_output, ref_output, atol = atol, rtol = rtol
-        ), f"Grouped gemm backward_dX forward outputs mismatch: {(test_output - ref_output).abs().max().item():.6f}"
+        assert test_output.shape == ref_output.shape, (
+            f"test_output.shape: {test_output.shape}, ref_output.shape: {ref_output.shape}"
+        )
+        assert torch.allclose(test_output, ref_output, atol = atol, rtol = rtol), (
+            f"Grouped gemm backward_dX forward outputs mismatch: {(test_output - ref_output).abs().max().item():.6f}"
+        )
         test_output.backward(grad_output)
         assert X_.grad is not None
 
@@ -636,19 +636,19 @@ def _test_grouped_gemm_backward_dX(
         if permute_x and use_W1:
             X_grad_unperm = unpermute(Xperm.grad, gather_indices)
             manual_grad_check = X_grad_unperm.view(num_tokens, topk, K).sum(dim = 1)
-            assert (
-                manual_grad_check.shape == X_.grad.shape
-            ), f"manual_grad_check.shape: {manual_grad_check.shape}, X_.grad.shape: {X_.grad.shape}"
-            assert torch.allclose(
-                manual_grad_check, X_.grad, atol = atol, rtol = rtol
-            ), f"Grouped gemm backward_dX forward outputs mismatch: {(manual_grad_check - X_.grad).abs().max().item():.6f}"
+            assert manual_grad_check.shape == X_.grad.shape, (
+                f"manual_grad_check.shape: {manual_grad_check.shape}, X_.grad.shape: {X_.grad.shape}"
+            )
+            assert torch.allclose(manual_grad_check, X_.grad, atol = atol, rtol = rtol), (
+                f"Grouped gemm backward_dX forward outputs mismatch: {(manual_grad_check - X_.grad).abs().max().item():.6f}"
+            )
             manual_diff = (X_.grad - manual_grad_check).abs().max().item()
             autograd_diff = (X_.grad - X.grad).abs().max().item()
             print(f"manual_diff: {manual_diff:.6f}, autograd_diff: {autograd_diff:.6f}")
         else:
-            assert torch.allclose(
-                X_.grad, ref_grad, atol = atol, rtol = rtol
-            ), f"Grouped gemm backward_dX forward outputs mismatch: {(X_.grad - ref_grad).abs().max().item():.6f}"
+            assert torch.allclose(X_.grad, ref_grad, atol = atol, rtol = rtol), (
+                f"Grouped gemm backward_dX forward outputs mismatch: {(X_.grad - ref_grad).abs().max().item():.6f}"
+            )
         return
     else:
         dX_test = grouped_gemm_dX(
@@ -677,14 +677,14 @@ def _test_grouped_gemm_backward_dX(
     if permute_x and use_W1:
         ref_grad = unpermute(ref_grad, gather_indices)
 
-    assert (
-        ref_grad.shape == dX_test.shape
-    ), f"Grouped gemm manual backward_dX outputs mismatch: ref_grad: {ref_grad.shape}, dX_test: {dX_test.shape}"
+    assert ref_grad.shape == dX_test.shape, (
+        f"Grouped gemm manual backward_dX outputs mismatch: ref_grad: {ref_grad.shape}, dX_test: {dX_test.shape}"
+    )
     diff = (ref_grad - dX_test).abs().max().item()
 
-    assert torch.allclose(
-        ref_grad, dX_test, atol = atol, rtol = rtol
-    ), f"Grouped gemm manual backward_dX outputs mismatch: {diff:.6f}"
+    assert torch.allclose(ref_grad, dX_test, atol = atol, rtol = rtol), (
+        f"Grouped gemm manual backward_dX outputs mismatch: {diff:.6f}"
+    )
 
     if permute_x and use_W1:
         # Show that reduction results in diffs
@@ -1020,12 +1020,12 @@ def _test_grouped_gemm_backward_dW(
             is_first_gemm = use_W1,
             dW_only = True,
         )
-        assert (
-            test_output.shape == ref_output.shape
-        ), f"Grouped gemm autograd backward_dW outputs mismatch: {test_output.shape} != {ref_output.shape}"
-        assert torch.allclose(
-            test_output, ref_output, atol = atol, rtol = rtol
-        ), f"Grouped gemm autograd backward_dW forward outputs mismatch: {test_output.shape} != {ref_output.shape}"
+        assert test_output.shape == ref_output.shape, (
+            f"Grouped gemm autograd backward_dW outputs mismatch: {test_output.shape} != {ref_output.shape}"
+        )
+        assert torch.allclose(test_output, ref_output, atol = atol, rtol = rtol), (
+            f"Grouped gemm autograd backward_dW forward outputs mismatch: {test_output.shape} != {ref_output.shape}"
+        )
         test_output.backward(grad_output)
         assert W_test.grad is not None
         dW_test = W_test.grad
@@ -1050,9 +1050,9 @@ def _test_grouped_gemm_backward_dW(
             autotune = autotune,
             debug = debug,
         )
-    assert (
-        W.grad.shape == dW_test.shape
-    ), f"Grouped gemm manual backward_dW outputs mismatch: W.grad: {W.grad.shape}, dW_test: {dW_test.shape}"
+    assert W.grad.shape == dW_test.shape, (
+        f"Grouped gemm manual backward_dW outputs mismatch: W.grad: {W.grad.shape}, dW_test: {dW_test.shape}"
+    )
 
     if debug:
         with torch.no_grad():
@@ -1067,14 +1067,14 @@ def _test_grouped_gemm_backward_dW(
                 print(f"Expert {i} diff: {expert_diff:.6f}")
 
             diff = (W.grad - dW_test).abs().max().item()
-            assert (
-                False
-            ), f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
+            assert False, (
+                f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
+            )
     else:
         diff = (W.grad - dW_test).abs().max().item()
-        assert torch.allclose(
-            W.grad, dW_test, atol = atol, rtol = rtol
-        ), f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
+        assert torch.allclose(W.grad, dW_test, atol = atol, rtol = rtol), (
+            f"Grouped gemm manual backward_dW outputs mismatch: {diff:.6f}"
+        )
 
 
 @pytest.mark.parametrize(

@@ -107,30 +107,30 @@ def test_raw_text_loader():
         # Test loading with tokenized output (new efficient mode)
         tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
         assert len(tokenized_dataset) > 0, "Should create at least one tokenized chunk"
-        assert (
-            "input_ids" in tokenized_dataset.column_names
-        ), "Dataset should have 'input_ids' column"
-        assert (
-            "attention_mask" in tokenized_dataset.column_names
-        ), "Dataset should have 'attention_mask' column"
+        assert "input_ids" in tokenized_dataset.column_names, (
+            "Dataset should have 'input_ids' column"
+        )
+        assert "attention_mask" in tokenized_dataset.column_names, (
+            "Dataset should have 'attention_mask' column"
+        )
 
         # Verify tokenized data structure
         first_sample = tokenized_dataset[0]
         assert isinstance(first_sample["input_ids"], list), "input_ids should be a list"
-        assert isinstance(
-            first_sample["attention_mask"], list
-        ), "attention_mask should be a list"
-        assert len(first_sample["input_ids"]) == len(
-            first_sample["attention_mask"]
-        ), "input_ids and attention_mask should have same length"
+        assert isinstance(first_sample["attention_mask"], list), (
+            "attention_mask should be a list"
+        )
+        assert len(first_sample["input_ids"]) == len(first_sample["attention_mask"]), (
+            "input_ids and attention_mask should have same length"
+        )
 
         # Verify labels field exists (for causal LM training)
-        assert (
-            "labels" in tokenized_dataset.column_names
-        ), "Dataset should have 'labels' column"
-        assert (
-            first_sample["labels"] == first_sample["input_ids"]
-        ), "labels should match input_ids"
+        assert "labels" in tokenized_dataset.column_names, (
+            "Dataset should have 'labels' column"
+        )
+        assert first_sample["labels"] == first_sample["input_ids"], (
+            "labels should match input_ids"
+        )
 
         # Test constructor validation
         try:

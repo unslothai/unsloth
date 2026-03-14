@@ -11,9 +11,9 @@ sys.path.insert(0, str(REPO_ROOT))
 from tests.utils.cleanup_utils import safe_remove_directory
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 1: Loading Base Model")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/mistral-7b-v0.3",
@@ -30,9 +30,9 @@ print("✅ Base model loaded successfully!")
 ### Attemtping save merge
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 2: Attempting save_pretrained_merged (Should Warn)")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 with warnings.catch_warnings(record = True) as w:
     warnings.simplefilter("always")
@@ -48,9 +48,9 @@ with warnings.catch_warnings(record = True) as w:
 print("✅ Correct warning detected for non-PeftModel merge attempt!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 3: Using save_pretrained (Should Succeed)")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 try:

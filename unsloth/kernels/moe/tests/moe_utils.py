@@ -142,12 +142,12 @@ def check_gate_up_proj_grad(
         assert test_up_proj_grad is not None
 
         # Sanity check shapes
-        assert (
-            ref_gate_proj_grad.shape == test_gate_proj_grad.shape
-        ), f"{ref_gate_proj_grad.shape} != {test_gate_proj_grad.shape}"
-        assert (
-            ref_up_proj_grad.shape == test_up_proj_grad.shape
-        ), f"{ref_up_proj_grad.shape} != {test_up_proj_grad.shape}"
+        assert ref_gate_proj_grad.shape == test_gate_proj_grad.shape, (
+            f"{ref_gate_proj_grad.shape} != {test_gate_proj_grad.shape}"
+        )
+        assert ref_up_proj_grad.shape == test_up_proj_grad.shape, (
+            f"{ref_up_proj_grad.shape} != {test_up_proj_grad.shape}"
+        )
 
         # Check gradients
         diff = (ref_gate_proj_grad - test_gate_proj_grad).abs().max()
@@ -199,9 +199,9 @@ def check_tensor_allclose(
     diff = (X_ref - X_test).abs().max()
     if verbose:
         print(f"{name} diff: {diff.detach().cpu().item():.6f}")
-    assert torch.allclose(
-        X_ref, X_test, atol = atol, rtol = rtol
-    ), f"{name} diff: {diff.detach().cpu().item():.6f}"
+    assert torch.allclose(X_ref, X_test, atol = atol, rtol = rtol), (
+        f"{name} diff: {diff.detach().cpu().item():.6f}"
+    )
 
 
 def check_expert_grads(
@@ -217,26 +217,26 @@ def check_expert_grads(
     for field in fields_to_check:
         ref_grads = getattr(ref_result, field)
         test_grads = getattr(test_result, field)
-        assert (
-            ref_grads.shape == test_grads.shape
-        ), f"{field}: {ref_grads.shape} != {test_grads.shape}"
+        assert ref_grads.shape == test_grads.shape, (
+            f"{field}: {ref_grads.shape} != {test_grads.shape}"
+        )
 
         # Test each expert
         for i in range(ref_grads.shape[0]):
             ref_grad = ref_grads[i]
             test_grad = test_grads[i]
             diff = (ref_grad - test_grad).abs().max()
-            assert torch.allclose(
-                ref_grad, test_grad, atol = atol, rtol = rtol
-            ), f"{field}[{i}] diff: {diff.detach().cpu().item():.6f}"
+            assert torch.allclose(ref_grad, test_grad, atol = atol, rtol = rtol), (
+                f"{field}[{i}] diff: {diff.detach().cpu().item():.6f}"
+            )
 
         # Test all experts
         diff = (ref_grads - test_grads).abs().max()
         if verbose:
             print(f"{field} diff: {diff.detach().cpu().item():.6f}")
-        assert torch.allclose(
-            ref_grads, test_grads, atol = atol, rtol = rtol
-        ), f"{field} diff: {diff.detach().cpu().item():.6f}"
+        assert torch.allclose(ref_grads, test_grads, atol = atol, rtol = rtol), (
+            f"{field} diff: {diff.detach().cpu().item():.6f}"
+        )
 
 
 def check_grads(
@@ -268,9 +268,9 @@ def check_fwd(
     diff = (ref_output - test_output).abs().max()
     if verbose:
         print(f"output diff: {diff.detach().cpu().item():.6f}")
-    assert torch.allclose(
-        ref_output, test_output, atol = atol, rtol = rtol
-    ), f"output diff: {diff.detach().cpu().item():.6f}"
+    assert torch.allclose(ref_output, test_output, atol = atol, rtol = rtol), (
+        f"output diff: {diff.detach().cpu().item():.6f}"
+    )
 
     # Check router logits
     ref_router_logits = ref_result.router_logits
@@ -304,9 +304,9 @@ def check_grouped_gemm_results(
         if verbose:
             print(f"{field.name} diff: {diff.detach().cpu().item():.6f}")
 
-        assert torch.allclose(
-            ref_value, test_value, atol = atol, rtol = rtol
-        ), f"{field.name} diff: {diff.detach().cpu().item():.6f}"
+        assert torch.allclose(ref_value, test_value, atol = atol, rtol = rtol), (
+            f"{field.name} diff: {diff.detach().cpu().item():.6f}"
+        )
 
 
 def run_forward(model: nn.Module, X: torch.Tensor, is_grouped_gemm: bool = False):

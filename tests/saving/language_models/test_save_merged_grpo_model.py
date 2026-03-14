@@ -40,7 +40,7 @@ def evaluate_merged_model(result_queue, load_in_4bit = False, load_in_8bit = Fal
         gpu_memory_utilization = 0.8,  # Reduce if out of memory
     )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     if load_in_4bit:
         print("🔍 EVALUATION Merged model: 4 bits load")
         model_type = "merged_model_4bits"
@@ -50,7 +50,7 @@ def evaluate_merged_model(result_queue, load_in_4bit = False, load_in_8bit = Fal
     else:
         print("🔍 EVALUATION Merged model: 16 bits load")
         model_type = "merged_model_16bits"
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     evaluate_model_aime(
         model = model,
@@ -374,9 +374,9 @@ def training_run(result_queue):
 
     def compare_model_results(all_results):
         """Generate comprehensive comparison of multiple model results"""
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("COMPREHENSIVE MODEL COMPARISON")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
 
         # Main table
         print(
@@ -395,9 +395,9 @@ def training_run(result_queue):
 
         # Improvement analysis
         if len(all_results) > 1:
-            print(f"\n{'='*50}")
+            print(f"\n{'=' * 50}")
             print("IMPROVEMENT ANALYSIS")
-            print(f"{'='*50}")
+            print(f"{'=' * 50}")
 
             base_result = all_results[0]
             for result in all_results[1:]:
@@ -504,9 +504,9 @@ def training_run(result_queue):
     from transformers import DataCollatorForSeq2Seq, TrainingArguments
     from unsloth import is_bfloat16_supported
 
-    print(f"\n{'*'*60}")
+    print(f"\n{'*' * 60}")
     print("🎯 STAGE 1: Qlora Fine-Tuning on LIMO")
-    print(f"{'*'*60}")
+    print(f"{'*' * 60}")
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -629,9 +629,9 @@ def training_run(result_queue):
                 continue
         return scores
 
-    print(f"\n{'*'*60}")
+    print(f"\n{'*' * 60}")
     print("🎯 STAGE 2: GRPO Fine-Tuning on GSM8K")
-    print(f"{'*'*60}")
+    print(f"{'*' * 60}")
 
     # Get max prompt length
     max_prompt_length, _ = get_max_prompt_length(gsm8k_train, tokenizer)
@@ -691,9 +691,9 @@ def training_run(result_queue):
 
     print("✅ GRPO training completed!")
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("🔍 EVALUATION 3: Final GRPO Model")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     grpo_results = evaluate_model_aime(
         model = model,
@@ -709,9 +709,9 @@ def training_run(result_queue):
     all_results.append(grpo_results)
     print("✅ Final model evaluation complete!")
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("💾 SAVING FINAL MODEL")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Save as merged model
     try:
@@ -817,9 +817,9 @@ if __name__ == "__main__":
 
     # AIME-specific comparison function
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("🏆 FINAL TRAINING PIPELINE RESULTS")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     # Use the AIME-specific comparison
     compare_aime_results(all_results)
