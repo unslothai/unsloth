@@ -5,7 +5,7 @@ import { LightRays } from "@/components/ui/light-rays";
 import { Card } from "@/components/ui/card";
 import { AuthForm } from "./components/auth-form";
 
-export function SignupPage() {
+export function ChangePasswordPage() {
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-8 sm:px-6 sm:py-10 md:px-10">
       <LightRays
@@ -17,7 +17,7 @@ export function SignupPage() {
         style={{ opacity: 0.4 }}
       />
       <Card className="relative z-10 w-full max-w-sm px-5 py-6 shadow-border ring-1 ring-border sm:px-6 sm:py-8">
-        <AuthForm mode="signup" />
+        <AuthForm mode="change-password" />
       </Card>
     </div>
   );

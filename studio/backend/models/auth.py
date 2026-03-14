@@ -8,18 +8,6 @@ Pydantic schemas for Authentication API
 from pydantic import BaseModel, Field
 
 
-class AuthSetupRequest(BaseModel):
-    """First-time setup: create the initial admin user + password."""
-
-    setup_token: str = Field(
-        ..., description = "One-time setup token printed to the server console"
-    )
-    username: str = Field(..., description = "Admin username")
-    password: str = Field(
-        ..., min_length = 8, description = "Admin password (minimum 8 characters)"
-    )
-
-
 class AuthLoginRequest(BaseModel):
     """Login payload: username/password to obtain a JWT."""
 
@@ -36,6 +24,24 @@ class RefreshTokenRequest(BaseModel):
 
 
 class AuthStatusResponse(BaseModel):
-    """Indicate whether auth has been initialized."""
+    """Indicate whether the seeded admin auth flow is ready."""
 
-    initialized: bool = Field(..., description = "True if auth setup has been completed")
+    initialized: bool = Field(
+        ..., description = "True if the auth database contains a login user"
+    )
+    default_username: str = Field(..., description = "Default seeded admin username")
+    requires_password_change: bool = Field(
+        ...,
+        description = "True if the seeded admin must still change the default password",
+    )
+
+
+class ChangePasswordRequest(BaseModel):
+    """Change the current user's password, typically on first login."""
+
+    current_password: str = Field(
+        ..., min_length = 8, description = "Existing password for the authenticated user"
+    )
+    new_password: str = Field(
+        ..., min_length = 8, description = "Replacement password (minimum 8 characters)"
+    )
