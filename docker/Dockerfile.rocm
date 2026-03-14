@@ -1,0 +1,50 @@
+ARG BASE_DOCKER=rocm/vllm-dev:nightly_main_20250914
+FROM $BASE_DOCKER
+
+# ARG GPU_ARCH=gfx942
+WORKDIR /unsloth-workspace
+
+RUN apt update
+RUN apt install -y zip unzip wget
+RUN apt install -y build-essential cmake
+
+ARG COMPUTE_BACKEND="hip"
+ARG BNB_ROCM_ARCHS="gfx942"
+ARG BNB_COMMIT="4b0257482bef447106fcaada67d1c6d081fdc82f"
+ARG BNB_REPO="https://github.com/bitsandbytes-foundation/bitsandbytes.git"
+
+RUN git clone --depth 1 ${BNB_REPO} bitsandbytes \
+    && cd bitsandbytes \
+    && git fetch --depth 1 origin ${BNB_COMMIT} \
+    && git checkout ${BNB_COMMIT} \
+    && rm -rf .git \
+    && cmake -S . -B build \
+         -DCOMPUTE_BACKEND=${COMPUTE_BACKEND} \
+         -DBNB_ROCM_ARCH="${BNB_ROCM_ARCHS}" \
+    && cmake --build build -j"$(nproc)" \
+    && pip install -e . \
+    && rm -rf build
+
+ARG UNSLOTH_REPO="https://github.com/unslothai/unsloth.git"
+ARG UNSLOTH_BRANCH="main"
+
+
+RUN git clone --branch ${UNSLOTH_BRANCH} --depth 1 ${UNSLOTH_REPO} unsloth \
+    && cd unsloth \
+    && rm -rf .git \
+    && pip install -e .
+
+
+ARG UNSLOTH_ZOO_REPO="https://github.com/unslothai/unsloth-zoo.git"
+ARG UNSLOTH_ZOO_BRANCH="main"
+
+RUN git clone --branch ${UNSLOTH_ZOO_BRANCH} --depth 1 ${UNSLOTH_ZOO_REPO} unsloth-zoo \
+    && cd unsloth-zoo \
+    && rm -rf .git \
+    && pip install -e .
+
+
+# Display installed packages for verification
+RUN pip show bitsandbytes || (echo "bitsandbytes not installed!" && exit 1)
+RUN pip show unsloth || (echo "unsloth not installed!" && exit 1)
+RUN pip show unsloth-zoo || (echo "unsloth-zoo not installed!" && exit 1)
