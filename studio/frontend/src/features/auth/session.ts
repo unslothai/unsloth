@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
+
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 
-type PostAuthRoute = "/onboarding" | "/studio";
+type PostAuthRoute = "/onboarding" | "/studio" | "/chat";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -62,5 +64,6 @@ export function resetOnboardingDone(): void {
 }
 
 export function getPostAuthRoute(): PostAuthRoute {
+  if (usePlatformStore.getState().isChatOnly()) return "/chat";
   return isOnboardingDone() ? "/studio" : "/onboarding";
 }

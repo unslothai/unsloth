@@ -141,10 +141,16 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
+    import sys
+
+    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
+    device_type = platform_map.get(sys.platform, sys.platform)
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
+        "device_type": device_type,
     }
 
 

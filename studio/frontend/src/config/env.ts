@@ -1,9 +1,46 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { create } from "zustand";
+
 export const env = {
   MODE: import.meta.env.MODE,
   DEV: import.meta.env.DEV,
   PROD: import.meta.env.PROD,
   BASE_URL: import.meta.env.BASE_URL,
 } as const;
+
+// ── Platform / device type ──────────────────────────────────
+
+export type DeviceType = "mac" | "windows" | "linux" | string;
+
+interface PlatformState {
+  deviceType: DeviceType;
+  fetched: boolean;
+  isChatOnly: () => boolean;
+}
+
+export const usePlatformStore = create<PlatformState>()((_, get) => ({
+  deviceType: "linux",
+  fetched: false,
+  isChatOnly: () => get().deviceType === "mac",
+}));
+
+export async function fetchDeviceType(): Promise<DeviceType> {
+  const { fetched } = usePlatformStore.getState();
+  if (fetched) return usePlatformStore.getState().deviceType;
+
+  let deviceType: DeviceType = "linux";
+  try {
+    const res = await fetch("/api/health");
+    if (res.ok) {
+      const data = (await res.json()) as { device_type?: string };
+      deviceType = data.device_type ?? "linux";
+    }
+  } catch {
+    // fallback to linux
+  }
+
+  usePlatformStore.setState({ deviceType, fetched: true });
+  return deviceType;
+}
