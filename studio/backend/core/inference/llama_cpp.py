@@ -426,9 +426,7 @@ class LlamaCppBackend:
                     path_infos = list(
                         get_paths_info(hf_repo, all_gguf_files, token = hf_token)
                     )
-                    total_download_bytes = sum(
-                        (p.size or 0) for p in path_infos
-                    )
+                    total_download_bytes = sum((p.size or 0) for p in path_infos)
 
                     if total_download_bytes > 0:
                         import os
@@ -440,8 +438,8 @@ class LlamaCppBackend:
                         Path(cache_dir).mkdir(parents = True, exist_ok = True)
                         free_bytes = shutil.disk_usage(cache_dir).free
 
-                        total_gb = total_download_bytes / (1024 ** 3)
-                        free_gb = free_bytes / (1024 ** 3)
+                        total_gb = total_download_bytes / (1024**3)
+                        free_gb = free_bytes / (1024**3)
 
                         logger.info(
                             f"GGUF download: {total_gb:.1f} GB needed, "
