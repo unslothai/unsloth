@@ -157,7 +157,7 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
     if status is not None:
-        if status.get("status") != "completed":
+        if status.get("status") != "completed" or status.get("execution_type") != "full":
             raise HTTPException(
                 status_code = 409,
                 detail = "Only completed full runs can be published.",
