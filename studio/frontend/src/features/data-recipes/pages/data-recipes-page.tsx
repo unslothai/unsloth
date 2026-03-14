@@ -46,6 +46,7 @@ import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
   deleteRecipe,
+  primeRecipeCache,
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
@@ -293,7 +294,7 @@ function LearningRecipeCards({
 
 export function DataRecipesPage(): ReactElement {
   const navigate = useNavigate();
-  const recipes = useRecipes();
+  const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
   const [learningDialogOpen, setLearningDialogOpen] = useState(false);
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
@@ -307,6 +308,7 @@ export function DataRecipesPage(): ReactElement {
     setCreatingRecipe(true);
     try {
       const recipe = await createRecipeDraft();
+      primeRecipeCache(recipe);
       await navigate({
         to: "/data-recipes/$recipeId",
         params: { recipeId: recipe.id },
@@ -338,6 +340,7 @@ export function DataRecipesPage(): ReactElement {
         templateTitle: recipeTemplate.title,
         payload,
       });
+      primeRecipeCache(recipe);
       setLearningDialogOpen(false);
       await navigate({
         to: "/data-recipes/$recipeId",
@@ -353,10 +356,11 @@ export function DataRecipesPage(): ReactElement {
     }
   }
 
-  function openRecipe(recipeId: string): void {
+  function openRecipe(recipe: (typeof recipes)[number]): void {
+    primeRecipeCache(recipe);
     navigate({
       to: "/data-recipes/$recipeId",
-      params: { recipeId },
+      params: { recipeId: recipe.id },
     }).catch(() => undefined);
   }
 
@@ -407,7 +411,16 @@ export function DataRecipesPage(): ReactElement {
           </DropdownMenu>
         </div>
 
-        {recipes.length === 0 ? (
+        {!ready ? (
+          <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
+            <p className="text-sm font-medium text-foreground">
+              Loading recipes
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Fetching your saved recipes and learning templates.
+            </p>
+          </div>
+        ) : recipes.length === 0 ? (
           <Empty className="mt-8 border border-dashed border-border/70">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -448,7 +461,7 @@ export function DataRecipesPage(): ReactElement {
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                  onClick={() => openRecipe(recipe.id)}
+                  onClick={() => openRecipe(recipe)}
                 >
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
                     <HugeiconsIcon

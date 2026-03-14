@@ -8,7 +8,7 @@ export const MAX_RENDER_POINTS = 800;
 export const DEFAULT_VISIBLE_POINTS = 160;
 export const CHART_CONTAINER_CLASS = "h-[220px] w-full";
 export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
-export const DEFAULT_Y_AXIS_WIDTH = 41;
+export const DEFAULT_Y_AXIS_WIDTH = 45;
 const TRAILING_ZEROES_RE = /\.?0+$/;
 const NEGATIVE_ZERO_RE = /^-0$/;
 

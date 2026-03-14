@@ -44,7 +44,7 @@ export function RunValidateFloatingControls({
           disabled={validateLoading || executionLocked}
         >
           <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
-          {validateLoading ? "Validating..." : "Validate"}
+          {validateLoading ? "Checking..." : "Check"}
         </Button>
       </div>
     </div>

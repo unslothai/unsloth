@@ -14,8 +14,8 @@ type DialogShellProps = {
 };
 
 export function DialogShell({
-  title = "Configure block",
-  description = "Adjust block params before running the flow.",
+  title = "Edit step",
+  description = "Update this step before you run the recipe.",
 }: DialogShellProps): ReactElement {
   return (
     <DialogHeader>
