@@ -864,7 +864,7 @@ async def openai_chat_completions(
                 top_p = payload.top_p,
                 top_k = payload.top_k,
                 min_p = payload.min_p,
-                max_tokens = payload.max_tokens or 2048,
+                max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 cancel_event = cancel_event,
             )
