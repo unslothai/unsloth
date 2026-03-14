@@ -40,6 +40,7 @@ def run(args):
     from trl import SFTTrainer, SFTConfig
     from unsloth import is_bfloat16_supported
     from unsloth.models.loader_utils import prepare_device_map
+    from unsloth.trainer import ASFTTrainer, ASFTStreamingConfig
     import logging
     from unsloth import RawTextDataLoader
 
@@ -155,13 +156,33 @@ def run(args):
         packing = args.packing,
     )
 
-    # Initialize trainer
-    trainer = SFTTrainer(
-        model = model,
-        processing_class = tokenizer,
-        train_dataset = dataset,
-        args = training_args,
-    )
+    # Initialize trainer - use ASFTTrainer if ASFT is enabled
+    asft_enabled = getattr(args, "asft", False)
+    if asft_enabled:
+        # Build ASFT streaming config
+        asft_streaming = ASFTStreamingConfig(
+            mode = getattr(args, "asft_streaming", None),
+            ref_microbatch_size = getattr(args, "ref_microbatch_size", None),
+            seq_chunk_size = getattr(args, "seq_chunk_size", None),
+        )
+        trainer = ASFTTrainer(
+            model = model,
+            processing_class = tokenizer,
+            train_dataset = dataset,
+            args = training_args,
+            asft_enabled = True,
+            asft_mode = getattr(args, "asft_mode", "asft"),
+            kl_weight = getattr(args, "kl_weight", 0.0),
+            reference_policy = getattr(args, "reference_policy", "disable_adapter"),
+            asft_streaming = asft_streaming,
+        )
+    else:
+        trainer = SFTTrainer(
+            model = model,
+            processing_class = tokenizer,
+            train_dataset = dataset,
+            args = training_args,
+        )
 
     trainer.train()
 
@@ -206,7 +227,7 @@ def run(args):
         print("Warning: The model is not saved!")
 
 
-if __name__ == "__main__":
+def build_parser():
     parser = argparse.ArgumentParser(
         description = "🦥 Fine-tune your llm faster using unsloth!"
     )
@@ -469,5 +490,73 @@ if __name__ == "__main__":
         "--stride", type = int, default = 512, help = "Overlap between chunks"
     )
 
+    # ASFT Options
+    asft_group = parser.add_argument_group(
+        "🎯 ASFT Options",
+        "Anchored Supervised Fine-Tuning loss configuration (off by default)",
+    )
+    asft_group.add_argument(
+        "--asft",
+        action = "store_true",
+        help = "Enable ASFT (Anchored Supervised Fine-Tuning) loss computation",
+    )
+    asft_group.add_argument(
+        "--asft_mode",
+        type = str,
+        default = "asft",
+        choices = ["sft", "dft", "sft+kl", "asft"],
+        help = (
+            "ASFT loss mode: 'sft' (standard CE), 'dft' (CE weighted by confidence), "
+            "'sft+kl' (CE + KL from reference), 'asft' (DFT + KL). Default: 'asft'"
+        ),
+    )
+    asft_group.add_argument(
+        "--kl_weight",
+        type = float,
+        default = 0.0,
+        help = "Weight for KL divergence term in sft+kl and asft modes. Default: 0.0",
+    )
+    asft_group.add_argument(
+        "--reference_policy",
+        type = str,
+        default = "disable_adapter",
+        choices = ["disable_adapter", "frozen_copy"],
+        help = (
+            "How to compute reference distribution: 'disable_adapter' (use model with LoRA disabled), "
+            "'frozen_copy' (use frozen deepcopy). Default: 'disable_adapter'"
+        ),
+    )
+    asft_group.add_argument(
+        "--asft_streaming",
+        nargs = "?",
+        const = "auto",
+        default = "off",
+        choices = ["off", "auto", "batch", "seq", "hybrid"],
+        help = (
+            "Streaming mode for reference forward: 'off' (full forward), "
+            "'auto' (seq_kv_cache with batch-micro fallback), "
+            "'batch' (microbatch by batch), 'seq' (sequence chunking with KV cache), "
+            "'hybrid' (batch micro + seq_kv_cache). "
+            "Use flag without value for 'auto'."
+        ),
+    )
+    asft_group.add_argument(
+        "--ref_microbatch_size",
+        type = int,
+        default = None,
+        help = "Microbatch size for batch_micro or seq_kv_cache strategy",
+    )
+    asft_group.add_argument(
+        "--seq_chunk_size",
+        type = int,
+        default = None,
+        help = "Sequence chunk size for seq_kv_cache strategy",
+    )
+
+    return parser
+
+
+if __name__ == "__main__":
+    parser = build_parser()
     args = parser.parse_args()
     run(args)
