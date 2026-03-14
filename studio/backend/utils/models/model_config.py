@@ -802,6 +802,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
 # Preferred GGUF quantization levels, in descending priority.
 # Q4_K_M is a good default: small, fast, acceptable quality.
 _GGUF_QUANT_PREFERENCE = [
+    "UD-Q4_K_XL",
     "Q4_K_M",
     "Q4_K_S",
     "Q5_K_M",
@@ -811,6 +812,10 @@ _GGUF_QUANT_PREFERENCE = [
     "Q3_K_M",
     "Q3_K_L",
     "Q2_K",
+    "UD-Q2_K_XL",
+    "UD-IQ2_M",
+    "UD-IQ1_M",
+    "UD-IQ1_S",
     "F16",
     "BF16",
     "F32",
