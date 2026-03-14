@@ -292,6 +292,26 @@ rm -rf "$LLAMA_CPP_DIR"
             if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="-DGGML_CUDA=ON"
+
+                # Detect GPU compute capability and limit CUDA architectures
+                # Without this, cmake builds for ALL default archs (very slow)
+                CUDA_ARCH=""
+                if command -v nvidia-smi &>/dev/null; then
+                    _raw_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
+                    if [[ "$_raw_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                        CUDA_ARCH="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                    fi
+                fi
+
+                if [ -n "$CUDA_ARCH" ]; then
+                    echo "   GPU compute capability: sm_${CUDA_ARCH} -- limiting build to this arch"
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH}"
+                else
+                    echo "   Could not detect GPU arch -- building for all default CUDA architectures (slower)"
+                fi
+
+                # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
@@ -301,16 +321,18 @@ rm -rf "$LLAMA_CPP_DIR"
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            # Use Ninja if available (faster parallel builds than Make)
+            CMAKE_GENERATOR_ARGS=""
+            if command -v ninja &>/dev/null; then
+                CMAKE_GENERATOR_ARGS="-G Ninja"
+            fi
+
+            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
-        fi
-
-        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Build both targets in one invocation for better parallelism
+            run_quiet "build llama-server + llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server llama-quantize -j"$NCPU" || BUILD_OK=false
             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
