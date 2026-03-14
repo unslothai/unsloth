@@ -165,6 +165,102 @@ class LlamaCppBackend:
 
         return None
 
+    # ── GPU allocation ────────────────────────────────────────────
+
+    @staticmethod
+    def _get_gguf_size_bytes(model_path: str) -> int:
+        """Get total GGUF size in bytes, including split shards."""
+        import re
+
+        main = Path(model_path)
+        total = main.stat().st_size
+
+        # Check for split shards (e.g., model-00001-of-00003.gguf)
+        shard_pat = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+        m = shard_pat.match(main.name)
+        if m:
+            prefix, _, num_total = m.group(1), m.group(2), m.group(3)
+            sibling_pat = re.compile(
+                r"^" + re.escape(prefix) + r"-\d{5}-of-"
+                + re.escape(num_total) + r"\.gguf$"
+            )
+            for sibling in main.parent.iterdir():
+                if sibling != main and sibling_pat.match(sibling.name):
+                    total += sibling.stat().st_size
+
+        return total
+
+    @staticmethod
+    def _get_gpu_free_memory() -> list[tuple[int, int]]:
+        """Query free memory per GPU via nvidia-smi.
+
+        Returns list of (gpu_index, free_mib) sorted by index.
+        Returns empty list if nvidia-smi is not available.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode != 0:
+                return []
+            gpus = []
+            for line in result.stdout.strip().splitlines():
+                parts = line.split(",")
+                if len(parts) == 2:
+                    idx = int(parts[0].strip())
+                    free_mib = int(parts[1].strip())
+                    gpus.append((idx, free_mib))
+            return gpus
+        except Exception:
+            return []
+
+    @staticmethod
+    def _select_gpus(
+        model_size_bytes: int,
+        gpus: list[tuple[int, int]],
+    ) -> tuple[Optional[list[int]], bool]:
+        """Pick GPU(s) for a model based on file size and free memory.
+
+        Uses GGUF file size as a rough proxy for VRAM usage (actual usage
+        is higher due to KV cache and compute buffers, but 70% threshold
+        accounts for that).
+
+        Returns (gpu_indices, use_fit):
+          - ([1], False)       model fits on 1 GPU at 70% of free
+          - ([1, 2], False)    model needs 2 GPUs
+          - (None, True)       model too large, let --fit handle it
+        """
+        if not gpus:
+            return None, True
+
+        model_size_mib = model_size_bytes / (1024 * 1024)
+
+        # Sort GPUs by free memory descending
+        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+
+        # Try fitting on 1 GPU (70% of free memory threshold)
+        if ranked[0][1] * 0.70 >= model_size_mib:
+            return [ranked[0][0]], False
+
+        # Try fitting on N GPUs (accumulate free memory from most-free)
+        cumulative = 0
+        selected = []
+        for idx, free_mib in ranked:
+            selected.append(idx)
+            cumulative += free_mib * 0.70
+            if cumulative >= model_size_mib:
+                return sorted(selected), False
+
+        # Model is too large even for all GPUs, let --fit handle it
+        return None, True
+
     # ── Port allocation ───────────────────────────────────────────
 
     @staticmethod
@@ -211,7 +307,6 @@ class LlamaCppBackend:
         model_identifier: str,
         is_vision: bool = False,
         n_ctx: int = 4096,
-        n_gpu_layers: int = -1,
         n_threads: Optional[int] = None,
     ) -> bool:
         """
@@ -342,6 +437,19 @@ class LlamaCppBackend:
             else:
                 raise ValueError("Either gguf_path or hf_repo must be provided")
 
+            # Select GPU(s) based on model size and free memory
+            try:
+                model_size = self._get_gguf_size_bytes(model_path)
+                gpus = self._get_gpu_free_memory()
+                gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                logger.info(
+                    f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                    f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
+                )
+            except Exception as e:
+                logger.warning(f"GPU selection failed ({e}), using --fit on")
+                gpu_indices, use_fit = None, True
+
             cmd = [
                 binary,
                 "-m",
@@ -350,15 +458,14 @@ class LlamaCppBackend:
                 str(self._port),
                 "-c",
                 str(n_ctx),
-                "-ngl",
-                str(n_gpu_layers),
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
                 "on",  # Force flash attention for speed
-                "--fit",
-                "on",  # Auto-fit to available device memory
             ]
+
+            if use_fit:
+                cmd.extend(["--fit", "on"])
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
@@ -400,6 +507,10 @@ class LlamaCppBackend:
                 env["LD_LIBRARY_PATH"] = (
                     f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
                 )
+
+            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            if gpu_indices is not None:
+                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
