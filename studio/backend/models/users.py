@@ -10,8 +10,18 @@ from pydantic import BaseModel, Field
 
 
 class Token(BaseModel):
-    """Authentication token model with access and refresh tokens."""
+    """Authentication response model for session credentials."""
 
-    access_token: str = Field(..., description = "JWT access token (60 min expiry)")
-    refresh_token: str = Field(..., description = "Opaque refresh token (7 day expiry)")
-    token_type: str = Field(..., description = "Token type, always 'bearer'")
+    access_token: str = Field(
+        ..., description = "Session access credential used for authenticated API requests"
+    )
+    refresh_token: str = Field(
+        ...,
+        description = "Session refresh credential used to renew an expired access credential",
+    )
+    token_type: str = Field(
+        ..., description = "Credential type for the Authorization header, always 'bearer'"
+    )
+    must_change_password: bool = Field(
+        ..., description = "True when the user must change the seeded default password"
+    )
