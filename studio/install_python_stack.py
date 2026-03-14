@@ -110,15 +110,15 @@ def _bootstrap_uv() -> bool:
     # If uv can't find a venv it exits with code 2.
     probe = subprocess.run(
         ["uv", "pip", "install", "--dry-run", "pip"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if probe.returncode != 0:
         # Retry with --system to confirm it works
         probe_sys = subprocess.run(
             ["uv", "pip", "install", "--dry-run", "--system", "pip"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
         )
         if probe_sys.returncode != 0:
             return False  # uv is broken, fall back to pip
