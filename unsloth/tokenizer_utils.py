@@ -662,7 +662,9 @@ def _fix_chat_template(chat_template):
     after_endfor_raw = chat_template[where + len(chosen_end) :]
     after_endfor = after_endfor_raw.strip()
     dash = "-" if chosen_end.startswith("{%-") else ""
-    prefix_ws = after_endfor_raw[: len(after_endfor_raw) - len(after_endfor_raw.lstrip())]
+    prefix_ws = after_endfor_raw[
+        : len(after_endfor_raw) - len(after_endfor_raw.lstrip())
+    ]
     suffix_ws = after_endfor_raw[len(after_endfor_raw.rstrip()) :]
 
     if (
@@ -673,14 +675,9 @@ def _fix_chat_template(chat_template):
         and after_endfor.count("{{") == 1
         and after_endfor.count("}}") == 1
     ):
-        wrapped = (
-            "{%" + dash + " if add_generation_prompt %}" + after_endfor + endif
-        )
+        wrapped = "{%" + dash + " if add_generation_prompt %}" + after_endfor + endif
         chat_template = (
-            chat_template[: where + len(chosen_end)]
-            + prefix_ws
-            + wrapped
-            + suffix_ws
+            chat_template[: where + len(chosen_end)] + prefix_ws + wrapped + suffix_ws
         )
     return chat_template
 
