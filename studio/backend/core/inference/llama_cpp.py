@@ -181,8 +181,11 @@ class LlamaCppBackend:
         if m:
             prefix, _, num_total = m.group(1), m.group(2), m.group(3)
             sibling_pat = re.compile(
-                r"^" + re.escape(prefix) + r"-\d{5}-of-"
-                + re.escape(num_total) + r"\.gguf$"
+                r"^"
+                + re.escape(prefix)
+                + r"-\d{5}-of-"
+                + re.escape(num_total)
+                + r"\.gguf$"
             )
             for sibling in main.parent.iterdir():
                 if sibling != main and sibling_pat.match(sibling.name):
