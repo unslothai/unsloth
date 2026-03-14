@@ -69,6 +69,29 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
+def _is_port_free(host: str, port: int) -> bool:
+    """Check if a port is available for binding."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
+    """Find a free port starting from `start`, trying up to max_attempts ports."""
+    for offset in range(max_attempts):
+        candidate = start + offset
+        if _is_port_free(host, candidate):
+            return candidate
+    raise RuntimeError(
+        f"Could not find a free port in range {start}-{start + max_attempts - 1}"
+    )
+
+
 def run_server(
     host: str = "0.0.0.0",
     port: int = 8000,
@@ -80,7 +103,7 @@ def run_server(
 
     Args:
         host: Host to bind to
-        port: Port to bind to
+        port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
     """
@@ -98,6 +121,13 @@ def run_server(
 
     # Create all standard directories on startup
     ensure_studio_directories()
+
+    # Auto-find free port if requested port is in use
+    if not _is_port_free(host, port):
+        original_port = port
+        port = _find_free_port(host, port)
+        if not silent:
+            print(f"Port {original_port} is in use, using port {port} instead")
 
     # Setup frontend if path provided
     if frontend_path:
