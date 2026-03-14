@@ -12,12 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-from .granite import FastGraniteModel
-from .loader import FastLanguageModel, FastVisionModel
 from .llama import FastLlamaModel
+from .loader import FastLanguageModel, FastVisionModel, FastTextModel, FastModel
 from .mistral import FastMistralModel
-from .mixtral import FastMixtralModel
 from .qwen2 import FastQwen2Model
+from .qwen3 import FastQwen3Model
+from .qwen3_moe import FastQwen3MoeModel
+from .granite import FastGraniteModel
+from .sentence_transformer import FastSentenceTransformer
+
+try:
+    from .falcon_h1 import FastFalconH1Model
+except:
+    # transformers_version < 4.53.0 does not have falcon_h1 so silently skip it for now
+    pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
-from ._utils import is_bfloat16_supported
+from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
+from .rl import PatchFastRL, vLLMSamplingParams
