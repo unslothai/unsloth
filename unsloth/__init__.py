@@ -315,6 +315,26 @@ from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
 
+# Export metrics functionality (optional, requires prometheus_client for full features)
+from .metrics import (
+    InferenceStats,
+    TrainingStats,
+    StatsCollector,
+    get_stats_collector,
+    get_metrics_registry,
+    generate_prometheus_metrics,
+    enable_prometheus_metrics,
+    disable_prometheus_metrics,
+    is_prometheus_available,
+    start_metrics_server,
+    stop_metrics_server,
+    is_metrics_server_running,
+    test_metrics_server,
+    enable_telemetry,
+    disable_telemetry,
+    is_telemetry_enabled,
+)
+
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
 from unsloth_zoo.rl_environments import (
