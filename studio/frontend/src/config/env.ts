@@ -37,8 +37,8 @@ export async function fetchDeviceType(): Promise<DeviceType> {
       const data = (await res.json()) as { device_type?: string };
       deviceType = data.device_type ?? "linux";
     }
-  } catch {
-    // fallback to linux
+  } catch (err) {
+    console.warn("[platform] Failed to fetch device type, defaulting to linux", err);
   }
 
   usePlatformStore.setState({ deviceType, fetched: true });
