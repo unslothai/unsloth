@@ -559,7 +559,7 @@ class LlamaCppBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_tokens: int = 512,
+        max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.1,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -584,9 +584,10 @@ class LlamaCppBackend:
             "top_p": top_p,
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
-            "max_tokens": max_tokens,
             "repeat_penalty": repetition_penalty,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if stop:
             payload["stop"] = stop
 
