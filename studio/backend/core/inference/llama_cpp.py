@@ -305,9 +305,7 @@ class LlamaCppBackend:
                 return None
 
             # Get sizes for all GGUF files
-            path_infos = list(
-                get_paths_info(hf_repo, gguf_files, token = hf_token)
-            )
+            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group files by variant: shards share a prefix before -NNNNN-of-NNNNN
