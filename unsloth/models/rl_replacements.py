@@ -908,12 +908,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 )
                             else:
                                 # Model returned logits directly - scaling/softcapping already applied by model forward
-                                logits_chunk = logits_chunk.to(torch.float32)
-                                if temperature != 1.0:
-                                    logits_chunk = logits_chunk / temperature
-                                logprobs_chunk = chunked_selective_log_softmax(
-                                    logits_chunk, completion_input_ids_chunk
-                                )
+                                logprobs_chunk = chunked_selective_log_softmax(logits_chunk, completion_input_ids_chunk, temperature)
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
                     device_synchronize()
