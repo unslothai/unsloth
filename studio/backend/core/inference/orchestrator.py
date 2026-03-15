@@ -75,6 +75,7 @@ class InferenceOrchestrator:
         self.loading_models: set = set()
         self.loaded_local_models: list = []
         from core.inference.defaults import get_default_models
+
         self.default_models = get_default_models()
         self._static_models = [
             "unsloth/Qwen3-4B-Instruct-2507",
