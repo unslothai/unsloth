@@ -612,9 +612,14 @@ async def get_gguf_download_progress(
 ):
     """Return download progress by checking current size of cached GGUF files."""
     import re as _re
+
     try:
         if not _re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo_id):
-            return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
+            return {
+                "downloaded_bytes": 0,
+                "expected_bytes": expected_bytes,
+                "progress": 0,
+            }
 
         from huggingface_hub import constants as hf_constants
 
@@ -634,7 +639,9 @@ async def get_gguf_download_progress(
                             downloaded_bytes += f.stat().st_size
                 break
 
-        progress = min(downloaded_bytes / expected_bytes, 1.0) if expected_bytes > 0 else 0
+        progress = (
+            min(downloaded_bytes / expected_bytes, 1.0) if expected_bytes > 0 else 0
+        )
         return {
             "downloaded_bytes": downloaded_bytes,
             "expected_bytes": expected_bytes,
