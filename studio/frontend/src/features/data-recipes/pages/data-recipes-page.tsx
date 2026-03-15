@@ -41,14 +41,18 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
   deleteRecipe,
+  primeRecipeCache,
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
+
+const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
+  "data-recipes:open-learning-recipes";
 
 type TemplateCard = {
   title: string;
@@ -293,12 +297,20 @@ function LearningRecipeCards({
 
 export function DataRecipesPage(): ReactElement {
   const navigate = useNavigate();
-  const recipes = useRecipes();
+  const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
   const [learningDialogOpen, setLearningDialogOpen] = useState(false);
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
+
+  useEffect(() => {
+    if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {
+      return;
+    }
+    sessionStorage.removeItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY);
+    setLearningDialogOpen(true);
+  }, []);
 
   async function openNewRecipe(): Promise<void> {
     if (creatingRecipe || loadingTemplateId) {
@@ -307,6 +319,7 @@ export function DataRecipesPage(): ReactElement {
     setCreatingRecipe(true);
     try {
       const recipe = await createRecipeDraft();
+      primeRecipeCache(recipe);
       await navigate({
         to: "/data-recipes/$recipeId",
         params: { recipeId: recipe.id },
@@ -338,6 +351,7 @@ export function DataRecipesPage(): ReactElement {
         templateTitle: recipeTemplate.title,
         payload,
       });
+      primeRecipeCache(recipe);
       setLearningDialogOpen(false);
       await navigate({
         to: "/data-recipes/$recipeId",
@@ -353,10 +367,11 @@ export function DataRecipesPage(): ReactElement {
     }
   }
 
-  function openRecipe(recipeId: string): void {
+  function openRecipe(recipe: (typeof recipes)[number]): void {
+    primeRecipeCache(recipe);
     navigate({
       to: "/data-recipes/$recipeId",
-      params: { recipeId },
+      params: { recipeId: recipe.id },
     }).catch(() => undefined);
   }
 
@@ -407,7 +422,16 @@ export function DataRecipesPage(): ReactElement {
           </DropdownMenu>
         </div>
 
-        {recipes.length === 0 ? (
+        {!ready ? (
+          <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
+            <p className="text-sm font-medium text-foreground">
+              Loading recipes
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Fetching your saved recipes and learning templates.
+            </p>
+          </div>
+        ) : recipes.length === 0 ? (
           <Empty className="mt-8 border border-dashed border-border/70">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -448,7 +472,7 @@ export function DataRecipesPage(): ReactElement {
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                  onClick={() => openRecipe(recipe.id)}
+                  onClick={() => openRecipe(recipe)}
                 >
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
                     <HugeiconsIcon
@@ -490,7 +514,10 @@ export function DataRecipesPage(): ReactElement {
       </main>
 
       <Dialog open={learningDialogOpen} onOpenChange={setLearningDialogOpen}>
-        <DialogContent className="sm:max-w-5xl">
+        <DialogContent
+          className="sm:max-w-5xl"
+          overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
           <DialogHeader>
             <DialogTitle>Learning Recipes</DialogTitle>
             <DialogDescription>

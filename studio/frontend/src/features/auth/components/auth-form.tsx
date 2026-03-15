@@ -89,20 +89,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      if (hasRefreshToken()) {
-        const refreshed = await refreshSession();
-        if (refreshed) {
-          if (!canceled) setStatusLoading(false);
-          navigate({ to: getPostAuthRoute() });
-          return;
-        }
-      }
-      if (hasAuthToken()) {
-        if (!canceled) setStatusLoading(false);
-        navigate({ to: getPostAuthRoute() });
-        return;
-      }
-
+      // Always check the server first — localStorage flags can be stale
+      // (e.g. tokens from a previous install attempt).  The server's
+      // /api/auth/status is the source of truth for requires_password_change.
       try {
         const response = await fetch("/api/auth/status");
         if (!response.ok) throw new Error("Failed to load auth status.");
@@ -111,6 +100,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setUsername(result.default_username);
           setRequiresPasswordChange(result.requires_password_change);
+
+          // Redirect between login ↔ change-password based on server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
@@ -118,6 +109,24 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           if (mode === "change-password" && !result.requires_password_change && !mustChangePassword()) {
             navigate({ to: "/login" });
             return;
+          }
+
+          // On login page, if user already has a valid session and no
+          // password change is required, skip straight to the app.
+          if (isLoginMode && !result.requires_password_change) {
+            if (hasRefreshToken()) {
+              const refreshed = await refreshSession();
+              if (refreshed) {
+                if (!canceled) setStatusLoading(false);
+                navigate({ to: getPostAuthRoute() });
+                return;
+              }
+            }
+            if (hasAuthToken()) {
+              if (!canceled) setStatusLoading(false);
+              navigate({ to: getPostAuthRoute() });
+              return;
+            }
           }
         }
       } catch (err: unknown) {

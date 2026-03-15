@@ -145,9 +145,11 @@ def setup():
         raise typer.Exit(1)
 
     if platform.system() == "Windows":
-        subprocess.run(
+        result = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-            check = True,
         )
     else:
-        subprocess.run(["bash", str(script)], check = True)
+        result = subprocess.run(["bash", str(script)])
+
+    if result.returncode != 0:
+        raise typer.Exit(result.returncode)

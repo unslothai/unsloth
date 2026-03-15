@@ -131,7 +131,6 @@ def _apply_data_designer_image_context_patch() -> None:
 
 
 def build_model_providers(recipe: dict[str, Any]):
-    from data_designer.config.default_model_settings import get_default_providers
     from data_designer.config.models import ModelProvider
 
     providers: list[ModelProvider] = []
@@ -151,9 +150,30 @@ def build_model_providers(recipe: dict[str, Any]):
             )
         )
 
-    # DataDesigner currently expects at least one provider even if they only use static samplers,
-    # but it's fine it gives a warning only.
-    return providers or get_default_providers()
+    return providers
+
+
+def _recipe_has_llm_columns(recipe: dict[str, Any]) -> bool:
+    for column in recipe.get("columns", []):
+        if not isinstance(column, dict):
+            continue
+        column_type = column.get("column_type")
+        if isinstance(column_type, str) and column_type.startswith("llm-"):
+            return True
+    return False
+
+
+def _validate_recipe_runtime_support(
+    recipe: dict[str, Any],
+    model_providers: list[Any],
+) -> None:
+    if not _recipe_has_llm_columns(recipe):
+        raise ValueError(
+            "Recipe Studio currently requires at least one AI generation step."
+        )
+
+    if not model_providers:
+        raise ValueError("Add a Provider connection block before running this recipe.")
 
 
 def build_mcp_providers(
@@ -243,9 +263,12 @@ def create_data_designer(
     _apply_data_designer_image_context_patch()
     from data_designer.interface.data_designer import DataDesigner
 
+    model_providers = build_model_providers(recipe)
+    _validate_recipe_runtime_support(recipe, model_providers)
+
     return DataDesigner(
         artifact_path = artifact_path,
-        model_providers = build_model_providers(recipe),
+        model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
     )
 

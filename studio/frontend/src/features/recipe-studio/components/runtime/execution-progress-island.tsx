@@ -74,9 +74,10 @@ export function ExecutionProgressIsland({
   return (
     <div
       className={cn(
-        "w-[clamp(15rem,26vw,20rem)] rounded-b-xl border-x border-b bg-card/96 shadow-sm backdrop-blur-sm transition-all",
+        "w-[clamp(15rem,26vw,20rem)] max-w-[calc(100vw-1rem)] rounded-b-xl border-x border-b bg-card/96 shadow-sm backdrop-blur-sm transition-all",
         minimized ? "min-h-[3rem]" : "min-h-[8.5rem]",
       )}
+      aria-live="polite"
     >
       <div className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -97,15 +98,20 @@ export function ExecutionProgressIsland({
           {showLoadingSpinner && (
             <Spinner className="size-3.5 text-muted-foreground" />
           )}
-          <span className="text-[11px] text-muted-foreground">{formatPercent(progressPercent)}</span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            {formatPercent(progressPercent)}
+          </span>
           <button
             type="button"
             onClick={() => onMinimizedChange(!minimized)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded border border-border/70 text-muted-foreground transition hover:bg-muted/50"
+            className="inline-flex size-8 shrink-0 items-center justify-center rounded border border-border/70 text-muted-foreground transition hover:bg-muted/50"
             aria-label={minimized ? "Expand progress" : "Minimize progress"}
             title={minimized ? "Expand" : "Minimize"}
           >
-            <HugeiconsIcon icon={minimized ? ArrowDown01Icon : ArrowUp01Icon} className="size-3" />
+            <HugeiconsIcon
+              icon={minimized ? ArrowDown01Icon : ArrowUp01Icon}
+              className="size-3.5"
+            />
           </button>
         </div>
       </div>
@@ -116,18 +122,37 @@ export function ExecutionProgressIsland({
 
       {!minimized && (
         <>
-          <div className="grid grid-cols-4 gap-2 px-3 pt-2 text-[11px] text-muted-foreground">
-            <p>Done: {formatMetricValue(execution.progress?.done)}</p>
-            <p>Total: {formatMetricValue(execution.progress?.total)}</p>
-            <p>Rate: {formatMetricValue(execution.progress?.rate)}</p>
-            <p>ETA: {formatEta(execution.progress?.eta_sec)}</p>
+          <div className="grid grid-cols-2 gap-2 px-3 pt-2 text-[11px] text-muted-foreground sm:grid-cols-4">
+            <p className="truncate" title={`Done: ${formatMetricValue(execution.progress?.done)}`}>
+              Done: {formatMetricValue(execution.progress?.done)}
+            </p>
+            <p className="truncate" title={`Total: ${formatMetricValue(execution.progress?.total)}`}>
+              Total: {formatMetricValue(execution.progress?.total)}
+            </p>
+            <p className="truncate" title={`Rate: ${formatMetricValue(execution.progress?.rate)}`}>
+              Rate: {formatMetricValue(execution.progress?.rate)}
+            </p>
+            <p className="truncate" title={`ETA: ${formatEta(execution.progress?.eta_sec)}`}>
+              ETA: {formatEta(execution.progress?.eta_sec)}
+            </p>
           </div>
           <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
-            <HugeiconsIcon icon={currentColumnIcon} className="size-3.5" />
-            <p className="truncate">Column: {execution.current_column ?? "--"}</p>
+            <HugeiconsIcon
+              icon={currentColumnIcon}
+              className="size-3.5 shrink-0"
+            />
+            <p
+              className="truncate"
+              title={execution.current_column ?? "--"}
+            >
+              Column: {execution.current_column ?? "--"}
+            </p>
           </div>
           {showBatch && (
-            <div className="mt-1 px-3 text-[11px] text-muted-foreground">
+            <div
+              className="mt-1 truncate px-3 text-[11px] text-muted-foreground"
+              title={`Batch: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
+            >
               Batch: {execution.batch?.idx ?? "--"}/{execution.batch?.total ?? "--"}
             </div>
           )}
@@ -139,7 +164,7 @@ export function ExecutionProgressIsland({
               className="h-7 w-full text-[11px]"
               onClick={onViewExecutions}
             >
-              View more in executions view
+              View run details
             </Button>
           </div>
         </>

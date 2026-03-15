@@ -6,7 +6,7 @@ import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { getRecipe, saveRecipe } from "../data/recipes-db";
+import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
 
 type EditRecipePageProps = {
@@ -44,10 +44,23 @@ function RecipeLoadState({
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
   const navigate = useNavigate();
-  const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
+  const [loadState, setLoadState] = useState<LoadState>(() => {
+    const cachedRecipe = getCachedRecipe(recipeId);
+    if (cachedRecipe) {
+      return { status: "ready", record: cachedRecipe };
+    }
+    return { status: "loading" };
+  });
 
   useEffect(() => {
     let active = true;
+    const cachedRecipe = getCachedRecipe(recipeId);
+    if (cachedRecipe) {
+      setLoadState({ status: "ready", record: cachedRecipe });
+    } else {
+      setLoadState({ status: "loading" });
+    }
+
     void getRecipe(recipeId).then((record) => {
       if (!active) {
         return;
@@ -56,6 +69,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         setLoadState({ status: "missing" });
         return;
       }
+      primeRecipeCache(record);
       setLoadState({ status: "ready", record });
     });
     return () => {
@@ -70,6 +84,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         name: input.name,
         payload: input.payload,
       });
+      primeRecipeCache(record);
       return { id: record.id, updatedAt: record.updatedAt };
     },
     [recipeId],

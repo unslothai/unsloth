@@ -62,7 +62,7 @@ export function ExpressionDialog({
         <FieldLabel
           label="Output type"
           htmlFor={dtypeId}
-          hint="Cast expression output type in final dataset."
+          hint="Choose how this formula should be stored in the final dataset."
         />
         <Select
           value={config.dtype}
@@ -84,9 +84,9 @@ export function ExpressionDialog({
       </div>
       <div className="grid gap-2">
         <FieldLabel
-          label="Expression (Jinja2)"
+          label="Formula"
           htmlFor={exprId}
-          hint="Use Jinja to combine or transform existing columns."
+          hint="Build this field from other fields."
         />
         <Textarea
           id={exprId}
@@ -98,14 +98,14 @@ export function ExpressionDialog({
         />
         {invalidExprRefs.length > 0 && (
           <p className="text-xs text-destructive">
-            Unknown reference: {invalidExprText}
+            Unknown field: {invalidExprText}
             {invalidExprRefs.length > 3
               ? ` +${invalidExprRefs.length - 3} more`
               : ""}
           </p>
         )}
         <p className="text-xs text-muted-foreground">
-          Use Jinja2. Reference columns like {"{{ column_name }}"}.
+          Insert other fields like {"{{ field_name }}"}.
         </p>
       </div>
     </div>

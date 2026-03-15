@@ -321,7 +321,7 @@ export function ChatPage(): ReactElement {
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
-  const { refresh, selectModel, ejectModel, loadingModel } =
+  const { refresh, selectModel, ejectModel, cancelLoading, loadingModel } =
     useChatModelRuntime();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
@@ -337,7 +337,7 @@ export function ChatPage(): ReactElement {
   }, [inferenceParams.checkpoint, lorasFromStore]);
 
   const handleCheckpointChange = useCallback(
-    (value: string, meta?: { isLora: boolean; ggufVariant?: string }) => {
+    (value: string, meta?: { isLora: boolean; ggufVariant?: string; isDownloaded?: boolean; expectedBytes?: number }) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
@@ -374,6 +374,8 @@ export function ChatPage(): ReactElement {
           id: value,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
+          isDownloaded: meta?.isDownloaded,
+          expectedBytes: meta?.expectedBytes,
         });
       })();
     },
@@ -607,12 +609,21 @@ export function ChatPage(): ReactElement {
               {loadingModel ? (
                 <div
                   className="flex items-center gap-1.5 text-muted-foreground"
-                  title={`Loading ${loadingModel.displayName}. This may include downloading.`}
+                  title={loadingModel.isDownloaded
+                    ? `Loading ${loadingModel.displayName} from cache.`
+                    : `Loading ${loadingModel.displayName}. This may include downloading.`}
                 >
                   <Spinner className="size-3.5 shrink-0" />
                   <span className="text-xs">
-                    Downloading model…
+                    {loadingModel.isDownloaded ? "Loading model…" : "Downloading model…"}
                   </span>
+                  <button
+                    type="button"
+                    onClick={cancelLoading}
+                    className="ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                  >
+                    Cancel
+                  </button>
                 </div>
               ) : null}
             </div>

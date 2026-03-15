@@ -48,6 +48,7 @@ import type {
   SeedSamplingStrategy,
   SeedSelectionType,
 } from "../../types";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { HfDatasetCombobox } from "../../components/shared/hf-dataset-combobox";
 import { FieldLabel } from "../shared/field-label";
 
@@ -626,13 +627,10 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
             onOpenChange={(openState) => onUpdate({ advancedOpen: openState })}
           >
             <CollapsibleTrigger asChild={true}>
-              <button
-                type="button"
-                className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
-              >
-                <span className="font-semibold uppercase">Advanced</span>
-                <span>{advancedOpen ? "Hide" : "Show"}</span>
-              </button>
+              <CollapsibleSectionTriggerButton
+                label="Advanced source options"
+                open={advancedOpen}
+              />
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 space-y-3">
               <div className="grid gap-2">

@@ -129,6 +129,9 @@ class GgufVariantDetail(BaseModel):
     )
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
+    downloaded: bool = Field(
+        False, description = "Whether this variant is already in the local HF cache"
+    )
 
 
 class GgufVariantsResponse(BaseModel):

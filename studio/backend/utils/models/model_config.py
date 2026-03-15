@@ -801,7 +801,29 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
 # Preferred GGUF quantization levels, in descending priority.
 # Q4_K_M is a good default: small, fast, acceptable quality.
+# UD (Unsloth Dynamic) variants are always preferred over standard quants
+# because they provide better quality per bit. If the repo has no UD variants
+# (e.g., bartowski repos), the standard quants are used as fallback.
+# Ordered by best size/quality tradeoff, not raw quality.
 _GGUF_QUANT_PREFERENCE = [
+    # UD variants (best quality per bit) -- Q4 is the sweet spot
+    "UD-Q4_K_XL",
+    "UD-Q4_K_L",
+    "UD-Q5_K_XL",
+    "UD-Q3_K_XL",
+    "UD-Q6_K_XL",
+    "UD-Q6_K_S",
+    "UD-Q8_K_XL",
+    "UD-Q2_K_XL",
+    "UD-IQ4_NL",
+    "UD-IQ4_XS",
+    "UD-IQ3_S",
+    "UD-IQ3_XXS",
+    "UD-IQ2_M",
+    "UD-IQ2_XXS",
+    "UD-IQ1_M",
+    "UD-IQ1_S",
+    # Standard quants (fallback for non-Unsloth repos)
     "Q4_K_M",
     "Q4_K_S",
     "Q5_K_M",
@@ -810,7 +832,15 @@ _GGUF_QUANT_PREFERENCE = [
     "Q8_0",
     "Q3_K_M",
     "Q3_K_L",
+    "Q3_K_S",
     "Q2_K",
+    "Q2_K_L",
+    "IQ4_NL",
+    "IQ4_XS",
+    "IQ3_M",
+    "IQ3_XXS",
+    "IQ2_M",
+    "IQ1_M",
     "F16",
     "BF16",
     "F32",
@@ -931,6 +961,11 @@ def list_gguf_variants(
                 size_bytes = total_size,
             )
         )
+
+    # Sort by size descending (largest = best quality first).
+    # Recommended pinning and OOM demotion are handled client-side
+    # where GPU VRAM info is available.
+    variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
 
