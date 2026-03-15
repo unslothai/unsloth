@@ -482,7 +482,19 @@ class InferenceOrchestrator:
                     break
             time.sleep(0.1)
 
-        self._stop_dispatcher()
+        # Only stop dispatcher if all mailboxes drained.  If compare
+        # requests are still active, leave the dispatcher running so
+        # their token routing isn't killed mid-stream.
+        with self._mailbox_lock:
+            still_active = bool(self._mailboxes)
+        if still_active:
+            logger.warning(
+                "Dispatcher still has %d active mailbox(es); "
+                "leaving dispatcher running for compare requests",
+                len(self._mailboxes),
+            )
+        else:
+            self._stop_dispatcher()
 
     # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend
