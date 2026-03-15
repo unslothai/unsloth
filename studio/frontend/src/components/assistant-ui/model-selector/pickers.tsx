@@ -239,13 +239,14 @@ function GgufVariantExpander({
       return v.downloaded ? base : base + 2;
     };
     return [...variants].sort((a, b) => {
-      const aIsRec = a.quant === effectiveRecommended;
-      const bIsRec = b.quant === effectiveRecommended;
-      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
-
       const aTier = tierOf(a);
       const bTier = tierOf(b);
       if (aTier !== bTier) return aTier - bTier;
+
+      // Within the same tier, recommended goes first
+      const aIsRec = a.quant === effectiveRecommended;
+      const bIsRec = b.quant === effectiveRecommended;
+      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
       // fits/tight: largest first (best quality); OOM: smallest first
       return aTier === 4 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
