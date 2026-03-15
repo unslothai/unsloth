@@ -577,6 +577,49 @@ async def get_gguf_variants(
         )
 
 
+@router.get("/cached-gguf")
+async def list_cached_gguf(
+    current_subject: str = Depends(get_current_subject),
+):
+    """List GGUF repos that have already been downloaded to the HF cache."""
+    try:
+        from huggingface_hub import constants as hf_constants
+
+        cache_dir = Path(hf_constants.HF_HUB_CACHE)
+        cached = []
+        if cache_dir.is_dir():
+            for entry in sorted(cache_dir.iterdir()):
+                if not entry.name.startswith("models--"):
+                    continue
+                # models--unsloth--Qwen3-8B-GGUF -> unsloth/Qwen3-8B-GGUF
+                parts = entry.name.split("--", 1)
+                if len(parts) < 2:
+                    continue
+                repo_id = parts[1].replace("--", "/")
+                if not repo_id.lower().endswith("-gguf"):
+                    continue
+                # Check if there are actual .gguf files in snapshots
+                snapshots = entry / "snapshots"
+                if not snapshots.is_dir():
+                    continue
+                total_size = 0
+                has_gguf = False
+                for snap in snapshots.iterdir():
+                    for f in snap.rglob("*.gguf"):
+                        has_gguf = True
+                        total_size += f.stat().st_size
+                if has_gguf:
+                    cached.append({
+                        "repo_id": repo_id,
+                        "size_bytes": total_size,
+                        "cache_path": str(entry),
+                    })
+        return {"cached": cached}
+    except Exception as e:
+        logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
+        return {"cached": []}
+
+
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(

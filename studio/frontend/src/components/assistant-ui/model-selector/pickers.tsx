@@ -8,7 +8,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listGgufVariants } from "@/features/chat/api/chat-api";
+import { listCachedGguf, listGgufVariants } from "@/features/chat/api/chat-api";
+import type { CachedGgufRepo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import {
   useDebouncedValue,
@@ -348,6 +349,12 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
+  // Cached (already downloaded) GGUF repos
+  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>([]);
+  useEffect(() => {
+    listCachedGguf().then(setCachedGguf).catch(() => {});
+  }, []);
+
   const recommendedIds = useMemo(
     () => dedupe([...models.map((model) => model.id), value ?? ""]),
     [models, value],
@@ -450,6 +457,26 @@ export function HubModelPicker({
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="p-1">
+          {!showHfSection && cachedGguf.length > 0 ? (
+            <>
+              <ListLabel>Downloaded</ListLabel>
+              {cachedGguf.map((c) => (
+                <div key={c.repo_id}>
+                  <ModelRow
+                    label={c.repo_id}
+                    meta={`GGUF · ${formatBytes(c.size_bytes)}`}
+                    selected={value === c.repo_id}
+                    onClick={() => handleModelClick(c.repo_id)}
+                    vramStatus={null}
+                  />
+                  {expandedGguf === c.repo_id && (
+                    <GgufVariantExpander repoId={c.repo_id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                  )}
+                </div>
+              ))}
+            </>
+          ) : null}
+
           {!showHfSection ? (
             <>
               <ListLabel>Recommended</ListLabel>
