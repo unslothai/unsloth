@@ -30,17 +30,17 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched) return usePlatformStore.getState().deviceType;
 
-  let deviceType: DeviceType = "linux";
   try {
     const res = await fetch("/api/health");
     if (res.ok) {
       const data = (await res.json()) as { device_type?: string };
-      deviceType = data.device_type ?? "linux";
+      const deviceType = data.device_type ?? "linux";
+      usePlatformStore.setState({ deviceType, fetched: true });
+      return deviceType;
     }
   } catch (err) {
-    console.warn("[platform] Failed to fetch device type, defaulting to linux", err);
+    console.warn("[platform] Failed to fetch device type, will retry", err);
   }
 
-  usePlatformStore.setState({ deviceType, fetched: true });
-  return deviceType;
+  return usePlatformStore.getState().deviceType;
 }
