@@ -898,6 +898,10 @@ __INT_TO_FLOAT_MAPPER = \
         "microsoft/Phi-4-mini-instruct",
         "unsloth/Phi-4-mini-instruct-bnb-4bit",
     ),
+    "unsloth/phi-4-multimodal-instruct-bnb-4bit" : (
+        "unsloth/phi-4-multimodal-instruct",
+        "microsoft/Phi-4-multimodal-instruct",
+    ),
     "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit" : (
         "unsloth/orpheus-3b-0.1-pretrained",
         "canopylabs/orpheus-3b-0.1-pretrained",
