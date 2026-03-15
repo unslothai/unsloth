@@ -15,12 +15,26 @@ db.version(1).stores({
   recipes: "id, name, updatedAt, createdAt",
 });
 
+const recentRecipeCache = new Map<string, RecipeRecord>();
+
 export function listRecipes(): Promise<RecipeRecord[]> {
   return db.recipes.orderBy("updatedAt").reverse().toArray();
 }
 
 export function getRecipe(id: string): Promise<RecipeRecord | undefined> {
   return db.recipes.get(id);
+}
+
+function writeRecipeCache(record: RecipeRecord): void {
+  recentRecipeCache.set(record.id, record);
+}
+
+export function getCachedRecipe(id: string): RecipeRecord | null {
+  return recentRecipeCache.get(id) ?? null;
+}
+
+export function primeRecipeCache(record: RecipeRecord): void {
+  writeRecipeCache(record);
 }
 
 export async function saveRecipe(
@@ -40,11 +54,13 @@ export async function saveRecipe(
       input.learningRecipeTitle ?? existing?.learningRecipeTitle,
   };
   await db.recipes.put(record);
+  writeRecipeCache(record);
   return record;
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
   await db.recipes.delete(id);
+  recentRecipeCache.delete(id);
 }
 
 export function createRecipeDraft(): Promise<RecipeRecord> {
@@ -67,16 +83,29 @@ export function createRecipeFromLearningRecipe(input: {
   });
 }
 
-export function useRecipes(): RecipeRecord[] {
+export function useRecipes(): {
+  recipes: RecipeRecord[];
+  ready: boolean;
+} {
   const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const sub = liveQuery(() => listRecipes()).subscribe({
-      next: (value) => setRecipes(value),
-      error: (error) => console.error("data-recipes liveQuery:", error),
+      next: (value) => {
+        for (const recipe of value) {
+          writeRecipeCache(recipe);
+        }
+        setRecipes(value);
+        setReady(true);
+      },
+      error: (error) => {
+        console.error("data-recipes liveQuery:", error);
+        setReady(true);
+      },
     });
     return () => sub.unsubscribe();
   }, []);
 
-  return recipes;
+  return { recipes, ready };
 }

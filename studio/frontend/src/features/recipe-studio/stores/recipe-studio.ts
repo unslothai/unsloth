@@ -67,6 +67,7 @@ type RecipeStudioState = {
   llmAuxVisibility: Record<string, boolean>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
+  sheetOpen: boolean;
   sheetView: SheetView;
   activeConfigId: string | null;
   dialogOpen: boolean;
@@ -75,6 +76,7 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
+  setSheetOpen: (open: boolean) => void;
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
   setDialogOpen: (open: boolean) => void;
@@ -122,6 +124,7 @@ const INITIAL_STATE = {
   llmAuxVisibility: {},
   configs: {},
   processors: [],
+  sheetOpen: false,
   sheetView: "root",
   activeConfigId: null,
   dialogOpen: false,
@@ -138,6 +141,7 @@ const INITIAL_STATE = {
   | "llmAuxVisibility"
   | "configs"
   | "processors"
+  | "sheetOpen"
   | "sheetView"
   | "activeConfigId"
   | "dialogOpen"
@@ -260,6 +264,7 @@ function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): b
 
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
+  setSheetOpen: (open) => set({ sheetOpen: open }),
   setSheetView: (view) => set({ sheetView: view }),
   setProcessors: (processors) =>
     set((state) => (state.executionLocked ? state : { processors })),
@@ -314,6 +319,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         direction: state.layoutDirection,
         nodesep: isTopBottom ? 120 : 80,
         ranksep: isTopBottom ? 140 : 80,
+        configs: state.configs,
       });
       const layoutedPositions = new Map(
         nodes.map((node) => [node.id, node.position] as const),
@@ -427,7 +433,37 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (state.executionLocked) {
         return state;
       }
-      return buildAddedNodeState(state, "llm", type, position, openDialog);
+      const added = buildAddedNodeState(state, "llm", type, position, openDialog);
+      const context = getAddedNodeContext(added);
+      if (!context) {
+        return added;
+      }
+      let { nodes, configs } = context;
+      let edges = state.edges;
+      const modelConfigs = Object.values(configs).filter(
+        (config) => config.kind === "model_config",
+      );
+      if (modelConfigs.length === 1) {
+        if (!position) {
+          nodes = placeNodeNear(
+            nodes,
+            context.newNodeId,
+            modelConfigs[0].id,
+            state.layoutDirection,
+            "after",
+          );
+        }
+        const next = connectSemantic(
+          edges,
+          configs,
+          modelConfigs[0].id,
+          context.newNodeId,
+          state.layoutDirection,
+        );
+        edges = next.edges;
+        configs = next.configs;
+      }
+      return { ...added, nodes, edges, configs };
     }),
   addModelProviderNode: (position, openDialog = true) =>
     set((state) => {

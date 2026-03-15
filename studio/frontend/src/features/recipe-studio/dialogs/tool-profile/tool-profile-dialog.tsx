@@ -20,6 +20,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { listMcpTools } from "../../api";
 import { ChipInput } from "../../components/chip-input";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import type { LlmMcpProviderConfig, McpEnvVar, ToolProfileConfig } from "../../types";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -105,14 +106,14 @@ function McpServerCard({
     provider.env && provider.env.length > 0
       ? provider.env
       : [{ key: "", value: "" }];
-  const summaryTitle = provider.name.trim() || `MCP server ${index + 1}`;
+  const summaryTitle = provider.name.trim() || `Tool server ${index + 1}`;
   const transportLabel =
-    provider.provider_type === "stdio" ? "STDIO" : "Streamable HTTP";
+    provider.provider_type === "stdio" ? "Local command" : "HTTP";
   const toolsLabel = typeof toolsCount === "number" ? `${toolsCount} tools` : null;
   const description =
     provider.provider_type === "stdio"
-      ? "Launches a local MCP process over stdio."
-      : "Calls a remote MCP endpoint from the backend.";
+      ? "Runs a local tool server."
+      : "Calls a remote tool server.";
 
   return (
     <Collapsible open={open} onOpenChange={onOpenChange}>
@@ -165,7 +166,7 @@ function McpServerCard({
           )}
 
           <div className="grid gap-2">
-            <FieldLabel label="Server name" hint="Unique name inside this tool profile." />
+            <FieldLabel label="Server name" hint="Name shown in this tool access setup." />
             <Input
               className="nodrag"
               value={provider.name}
@@ -185,16 +186,16 @@ function McpServerCard({
               })
             }
           >
-            <TabsList className="w-full">
-              <TabsTrigger value="stdio">STDIO</TabsTrigger>
-              <TabsTrigger value="streamable_http">Streamable HTTP</TabsTrigger>
-            </TabsList>
+              <TabsList className="w-full">
+                <TabsTrigger value="stdio">Local command</TabsTrigger>
+                <TabsTrigger value="streamable_http">HTTP endpoint</TabsTrigger>
+              </TabsList>
           </Tabs>
 
           {provider.provider_type === "stdio" ? (
             <div className="space-y-4">
               <div className="grid gap-2">
-                <FieldLabel label="Command" hint="Executable used to start the MCP server." />
+                <FieldLabel label="Command" hint="Command used to start the tool server." />
                 <Input
                   className="nodrag"
                   value={provider.command ?? ""}
@@ -207,7 +208,7 @@ function McpServerCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <FieldLabel label="Args" hint="Optional CLI args." />
+                  <FieldLabel label="Arguments" hint="Optional command arguments." />
                   <Button
                     type="button"
                     size="xs"
@@ -242,7 +243,7 @@ function McpServerCard({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <FieldLabel label="Env vars" hint="Optional process env." />
+                  <FieldLabel label="Environment variables" hint="Optional values passed to the tool server." />
                   <Button
                     type="button"
                     size="xs"
@@ -293,7 +294,7 @@ function McpServerCard({
           ) : (
             <div className="space-y-4">
               <div className="grid gap-2">
-                <FieldLabel label="Endpoint" hint="Backend calls this MCP URL." />
+                <FieldLabel label="Endpoint" hint="URL for the tool server." />
                 <Input
                   className="nodrag"
                   value={provider.endpoint ?? ""}
@@ -306,13 +307,13 @@ function McpServerCard({
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="grid gap-2">
                   <FieldLabel
-                    label="API key env"
-                    hint="Optional env var used on the backend."
+                    label="API key environment variable"
+                    hint="Optional environment variable that stores the API key."
                   />
                   <Input
                     className="nodrag"
                     value={provider.api_key_env ?? ""}
-                    placeholder="MCP_API_KEY"
+                    placeholder="TOOL_SERVER_API_KEY"
                     onChange={(event) =>
                       onUpdateProviderAt(index, {
                         // biome-ignore lint/style/useNamingConvention: api schema
@@ -324,7 +325,7 @@ function McpServerCard({
                 <div className="grid gap-2">
                   <FieldLabel
                     label="API key"
-                    hint="Optional inline token."
+                    hint="Optional API key."
                   />
                   <Input
                     className="nodrag"
@@ -352,6 +353,10 @@ export function ToolProfileDialog({
   onUpdate,
 }: ToolProfileDialogProps): ReactElement {
   const providers = config.mcp_providers;
+  const [activeTab, setActiveTab] = useState<"profile" | "servers">(
+    providers.length > 0 ? "profile" : "servers",
+  );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loadingTools, setLoadingTools] = useState(false);
   const [toolsByProvider, setToolsByProvider] = useState<Record<string, string[]>>(
     config.fetched_tools_by_provider ?? {},
@@ -528,8 +533,8 @@ export function ToolProfileDialog({
     const readyProviders = providers.filter(isProviderReadyForToolFetch);
     if (readyProviders.length === 0) {
       toastError(
-        "No MCP servers ready",
-        "Add a server name plus command or endpoint first.",
+        "No tool servers are ready",
+        "Add a server name plus a command or endpoint first.",
       );
       return;
     }
@@ -567,8 +572,8 @@ export function ToolProfileDialog({
       setDuplicateTools(response.duplicate_tools ?? {});
     } catch (error) {
       toastError(
-        "Failed to load tools",
-        error instanceof Error ? error.message : "Could not load MCP tools.",
+        "Couldn't load tools",
+        error instanceof Error ? error.message : "We couldn't load the tools for these servers.",
       );
     } finally {
       setLoadingTools(false);
@@ -588,49 +593,65 @@ export function ToolProfileDialog({
   );
   const hasProviders = providers.length > 0;
 
+  useEffect(() => {
+    if (!hasProviders && activeTab === "profile") {
+      setActiveTab("servers");
+    }
+  }, [activeTab, hasProviders]);
+
   return (
-    <Tabs defaultValue="profile" className="w-full">
+    <Tabs
+      value={activeTab}
+      onValueChange={(value) =>
+        setActiveTab(value === "servers" ? "servers" : "profile")
+      }
+      className="w-full"
+    >
       <TabsList className="w-full">
-        <TabsTrigger value="profile">Profile</TabsTrigger>
-        <TabsTrigger value="servers">MCP servers</TabsTrigger>
+        <TabsTrigger value="servers">1. Add servers</TabsTrigger>
+        <TabsTrigger value="profile">2. Choose tools</TabsTrigger>
       </TabsList>
 
       <TabsContent value="profile" className="space-y-4 pt-3">
         <NameField
-          label="Tool profile name"
+          label="Tool access name"
           value={config.name}
           onChange={(value) => onUpdate({ name: value })}
         />
 
         {!hasProviders ? (
-          <EmptyState
-            title="Add MCP server to configure tools"
-            description="This profile becomes useful after at least one MCP server is configured in the MCP servers tab."
-          />
+          <div className="space-y-3">
+            <EmptyState
+              title="Add a server to start choosing tools"
+              description="Set up a server first, then come back here to choose which tools this step can use."
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setActiveTab("servers")}
+            >
+              Add servers first
+            </Button>
+          </div>
         ) : (
           <>
-            <div className="space-y-2">
-              <FieldLabel
-                label="Configured servers"
-                hint="All servers in this profile are available to any LLM using this tool profile."
-              />
-              <div className="flex flex-wrap gap-2">
-                {providerNames.map((providerName) => (
-                  <Badge key={providerName} variant="secondary" className="rounded-full">
-                    {providerName}
-                  </Badge>
-                ))}
-              </div>
+            <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+              <p className="text-sm font-semibold text-foreground">
+                Pick which tools this setup may use
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                1. Load tool names from your servers. 2. Leave the list empty to
+                allow all tools, or add only the ones this step should use.
+              </p>
             </div>
-
             <div className="space-y-3 rounded-2xl border border-border/60 bg-muted/10 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-foreground">
-                    Available tool refs
+                    Available tools
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Load tools from backend so users pick tool names instead of guessing.
+                    Load tool names so you can pick from a list instead of guessing.
                   </p>
                 </div>
                 <Button
@@ -649,7 +670,7 @@ export function ToolProfileDialog({
               {Object.keys(toolsByProvider).length === 0 &&
                 Object.keys(providerErrors).length === 0 && (
                   <p className="text-xs text-muted-foreground">
-                    No tools loaded yet.
+                    Load tools to browse what's available.
                   </p>
                 )}
 
@@ -675,7 +696,7 @@ export function ToolProfileDialog({
 
               {Object.entries(duplicateTools).length > 0 && (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                  Duplicate tool names across servers:
+                  Some tool names appear on more than one server:
                   {" "}
                   {Object.entries(duplicateTools)
                     .map(([toolName, providerList]) => `${toolName} (${providerList.join(", ")})`)
@@ -686,8 +707,8 @@ export function ToolProfileDialog({
 
             <div className="grid gap-2">
               <FieldLabel
-                label="Allow tools (optional)"
-                hint="Leave empty to allow all tools from configured MCP servers."
+                label="Tools this setup may use"
+                hint="Leave this empty to allow every tool from these servers."
               />
               <ChipInput
                 values={config.allow_tools ?? []}
@@ -710,60 +731,79 @@ export function ToolProfileDialog({
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <FieldLabel
-                  label="Max tool call turns"
-                  hint="Required. Data Designer defaults to 5."
+            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+              <CollapsibleTrigger asChild={true}>
+                <CollapsibleSectionTriggerButton
+                  label="Tool-call limits"
+                  open={advancedOpen}
                 />
-                <Input
-                  className="nodrag"
-                  value={config.max_tool_call_turns ?? ""}
-                  onChange={(event) =>
-                    onUpdate({
-                      // biome-ignore lint/style/useNamingConvention: api schema
-                      max_tool_call_turns: event.target.value,
-                    })
-                  }
-                />
-              </div>
-              <div className="grid gap-2">
-                <FieldLabel
-                  label="Timeout sec"
-                  hint="Optional. Applies to MCP tool loading and calls."
-                />
-                <Input
-                  className="nodrag"
-                  value={config.timeout_sec ?? ""}
-                  onChange={(event) =>
-                    onUpdate({
-                      // biome-ignore lint/style/useNamingConvention: api schema
-                      timeout_sec: event.target.value,
-                    })
-                  }
-                />
-              </div>
-            </div>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-2">
+                    <FieldLabel
+                      label="Max tool-use turns"
+                      hint="How many back-and-forth tool calls an AI step can make."
+                    />
+                    <Input
+                      className="nodrag"
+                      value={config.max_tool_call_turns ?? ""}
+                      onChange={(event) =>
+                        onUpdate({
+                          // biome-ignore lint/style/useNamingConvention: api schema
+                          max_tool_call_turns: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <FieldLabel
+                      label="Timeout (seconds)"
+                      hint="How long to wait when loading or calling tools."
+                    />
+                    <Input
+                      className="nodrag"
+                      value={config.timeout_sec ?? ""}
+                      onChange={(event) =>
+                        onUpdate({
+                          // biome-ignore lint/style/useNamingConvention: api schema
+                          timeout_sec: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </>
         )}
       </TabsContent>
 
       <TabsContent value="servers" className="space-y-4 pt-3">
+        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+          <p className="text-sm font-semibold text-foreground">
+            Add one or more tool servers
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            After your servers are ready, switch to Choose tools to load names
+            and decide which ones this setup should allow.
+          </p>
+        </div>
         <div className="flex items-center justify-between gap-3">
           <FieldLabel
-            label="MCP servers"
-            hint="These server defs are owned by this tool profile and reused by linked LLMs."
+            label="Tool servers"
+            hint="These servers belong to this tool access setup and can be reused by linked AI steps."
           />
           <Button type="button" size="xs" variant="outline" onClick={addProvider}>
             <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-            Add MCP server
+            Add server
           </Button>
         </div>
 
         {!hasProviders ? (
           <EmptyState
-            title="No MCP servers yet"
-            description="Add one or more servers here. Then go back to Profile to load and pick tools."
+            title="No tool servers yet"
+            description="Add one or more servers here, then go back to Access to load and choose tools."
           />
         ) : (
           <div className="space-y-3">
