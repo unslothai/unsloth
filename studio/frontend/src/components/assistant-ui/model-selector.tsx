@@ -9,6 +9,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -111,6 +112,7 @@ function ModelSelectorContent({
   dataTour?: string;
 }) {
   const hasSelection = Boolean(value);
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
 
   return (
     <PopoverContent
@@ -121,24 +123,28 @@ function ModelSelectorContent({
         className,
       )}
     >
-      <Tabs defaultValue="hub" className="w-full">
-        <TabsList className="mb-2 w-full">
-          <TabsTrigger value="hub">Hub models</TabsTrigger>
-          <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
-        </TabsList>
+      {chatOnly ? (
+        <HubModelPicker models={models} value={value} onSelect={onSelect} />
+      ) : (
+        <Tabs defaultValue="hub" className="w-full">
+          <TabsList className="mb-2 w-full">
+            <TabsTrigger value="hub">Hub models</TabsTrigger>
+            <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="hub" className="m-0">
-          <HubModelPicker models={models} value={value} onSelect={onSelect} />
-        </TabsContent>
+          <TabsContent value="hub" className="m-0">
+            <HubModelPicker models={models} value={value} onSelect={onSelect} />
+          </TabsContent>
 
-        <TabsContent value="lora" className="m-0">
-          <LoraModelPicker
-            loraModels={loraModels}
-            value={value}
-            onSelect={onSelect}
-          />
-        </TabsContent>
-      </Tabs>
+          <TabsContent value="lora" className="m-0">
+            <LoraModelPicker
+              loraModels={loraModels}
+              value={value}
+              onSelect={onSelect}
+            />
+          </TabsContent>
+        </Tabs>
+      )}
 
       {hasSelection && onEject ? (
         <div className="mt-2 border-t border-border/70 pt-2">

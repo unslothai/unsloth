@@ -106,7 +106,21 @@ def studio_default(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
-            os.execvp(str(studio_python), args)
+            # On Windows, os.execvp() spawns a child but the parent lingers,
+            # so Ctrl+C only kills the parent leaving the child orphaned.
+            # Use Popen so the parent waits and lets the child's own signal
+            # handler (in run.py __main__) finish graceful shutdown.
+            if sys.platform == "win32":
+                import subprocess as _sp
+                proc = _sp.Popen(args)
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    # Child's signal handler is doing graceful shutdown — wait
+                    rc = proc.wait()
+                raise typer.Exit(rc)
+            else:
+                os.execvp(str(studio_python), args)
         else:
             typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
             raise typer.Exit(1)
@@ -130,6 +144,8 @@ def studio_default(
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        from studio.backend.run import _graceful_shutdown, _server
+        _graceful_shutdown(_server)
         typer.echo("\nShutting down...")
 
 

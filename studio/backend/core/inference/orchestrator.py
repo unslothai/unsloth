@@ -74,14 +74,9 @@ class InferenceOrchestrator:
         self.models: dict = {}
         self.loading_models: set = set()
         self.loaded_local_models: list = []
-        self._static_models = [
-            "unsloth/Qwen3-4B-Instruct-2507",
-            "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",
-            "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-            "unsloth/Phi-3.5-mini-instruct",
-            "unsloth/Gemma-3-4B-it",
-            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
-        ]
+        from core.inference.defaults import get_default_models
+
+        self._static_models = get_default_models()
         self._top_gguf_cache: Optional[list[str]] = None
         self._top_gguf_fetched = False
 
