@@ -7,12 +7,14 @@ export interface GpuInfo {
   available: boolean;
   name: string;
   memoryTotalGb: number;
+  systemRamAvailableGb: number;
 }
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
   memoryTotalGb: 0,
+  systemRamAvailableGb: 0,
 };
 
 // Module-level cache so multiple components share one fetch.
@@ -36,6 +38,7 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
         available: true,
         name: devices[0]?.name ?? "Unknown",
         memoryTotalGb: totalGb,
+        systemRamAvailableGb: data?.memory?.available_gb ?? 0,
       };
       cachedGpu = info;
       return info;
