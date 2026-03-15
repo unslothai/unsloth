@@ -122,9 +122,13 @@ async def load_model(
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
             # Route to HF mode or local mode based on config
+            # Run in a thread so the event loop stays free for progress
+            # polling and other requests during the (potentially long)
+            # GGUF download + llama-server startup.
             if config.gguf_hf_repo:
-                # HF mode: llama-server downloads via -hf "repo:quant"
-                success = llama_backend.load_model(
+                # HF mode: download via huggingface_hub then start llama-server
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
@@ -134,7 +138,8 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                success = llama_backend.load_model(
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     model_identifier = config.identifier,

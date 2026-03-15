@@ -159,12 +159,24 @@ async def get_system_info():
     import psutil
     from utils.hardware import get_device, get_gpu_memory_info, DeviceType
 
-    # GPU Info — try nvidia-smi first to get ALL physical GPUs (not filtered
-    # by CUDA_VISIBLE_DEVICES), since llama-server can use all of them.
+    # GPU Info — query nvidia-smi for physical GPUs, filtered by
+    # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF
+    # fit estimation and llama-server respects CVD too).
+    import os
+
     gpu_info: dict = {"available": False, "devices": []}
 
     device = get_device()
     if device == DeviceType.CUDA:
+        # Parse CUDA_VISIBLE_DEVICES allowlist
+        allowed_indices = None
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and cvd.strip():
+            try:
+                allowed_indices = set(int(x.strip()) for x in cvd.split(","))
+            except ValueError:
+                pass  # Non-numeric (e.g. GPU-uuid), show all
+
         try:
             result = subprocess.run(
                 [
@@ -180,9 +192,12 @@ async def get_system_info():
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) == 3:
+                        idx = int(parts[0])
+                        if allowed_indices is not None and idx not in allowed_indices:
+                            continue
                         gpu_info["devices"].append(
                             {
-                                "index": int(parts[0]),
+                                "index": idx,
                                 "name": parts[1],
                                 "memory_total_gb": round(int(parts[2]) / 1024, 2),
                             }

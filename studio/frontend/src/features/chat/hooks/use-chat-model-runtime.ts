@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   getGgufDownloadProgress,
@@ -151,8 +151,11 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
   } | null>(null);
-  const [loadAbortController, setLoadAbortController] =
+  const [_loadAbortController, setLoadAbortController] =
     useState<AbortController | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const loadingModelRef = useRef<typeof loadingModel>(null);
+  const loadToastIdRef = useRef<string | number | null>(null);
 
   const refresh = useCallback(async () => {
     setModelsError(null);
@@ -224,9 +227,12 @@ export function useChatModelRuntime() {
         .join(" ");
 
       setModelsError(null);
-      setLoadingModel({ id: modelId, displayName, isDownloaded });
+      const loadInfo = { id: modelId, displayName, isDownloaded };
+      setLoadingModel(loadInfo);
+      loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       setLoadAbortController(abortCtrl);
+      loadAbortRef.current = abortCtrl;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -262,12 +268,18 @@ export function useChatModelRuntime() {
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
             });
 
+            // If cancelled while loading, don't update UI to show
+            // the model as active -- it's being unloaded.
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
             await refresh();
           } catch (error) {
+            // Skip rollback if user cancelled -- model is already being unloaded.
+            if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
               try {
@@ -292,13 +304,16 @@ export function useChatModelRuntime() {
           isDownloaded ? "Loading model…" : "Downloading model…",
           {
             description: loadingDescription,
-            duration: Infinity,
+            duration: 10000,
             action: {
               label: "Cancel",
               onClick: () => {
                 abortCtrl.abort();
                 setLoadingModel(null);
                 setLoadAbortController(null);
+                loadingModelRef.current = null;
+                loadAbortRef.current = null;
+                loadToastIdRef.current = null;
                 unloadModel({ model_path: modelId }).catch(() => {});
                 clearCheckpoint();
                 toast.dismiss(toastId);
@@ -307,6 +322,7 @@ export function useChatModelRuntime() {
             },
           },
         );
+        loadToastIdRef.current = toastId;
 
         // Poll download progress for non-cached models
         let progressInterval: ReturnType<typeof setInterval> | null = null;
@@ -330,13 +346,16 @@ export function useChatModelRuntime() {
                     {
                       id: toastId,
                       description: `${dlGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`,
-                      duration: Infinity,
+                      duration: 10000,
                       action: {
                         label: "Cancel",
                         onClick: () => {
                           abortCtrl.abort();
                           setLoadingModel(null);
                           setLoadAbortController(null);
+                          loadingModelRef.current = null;
+                          loadAbortRef.current = null;
+                          loadToastIdRef.current = null;
                           unloadModel({ model_path: modelId }).catch(() => {});
                           clearCheckpoint();
                           toast.dismiss(toastId);
@@ -349,7 +368,7 @@ export function useChatModelRuntime() {
                   toast.loading("Loading model…", {
                     id: toastId,
                     description: "Download complete. Starting inference server…",
-                    duration: Infinity,
+                    duration: 10000,
                   });
                   if (progressInterval) clearInterval(progressInterval);
                 }
@@ -375,9 +394,14 @@ export function useChatModelRuntime() {
           if (progressInterval) clearInterval(progressInterval);
           setLoadingModel(null);
           setLoadAbortController(null);
+          loadingModelRef.current = null;
+          loadAbortRef.current = null;
+          loadToastIdRef.current = null;
         }
       } catch (error) {
+        if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         setLoadingModel(null);
+        loadingModelRef.current = null;
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
@@ -412,19 +436,22 @@ export function useChatModelRuntime() {
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 
-  const cancelLoading = useCallback(async () => {
-    if (!loadingModel) return;
-    loadAbortController?.abort();
+  const cancelLoading = useCallback(() => {
+    const model = loadingModelRef.current;
+    if (!model) return;
+    loadAbortRef.current?.abort();
+    loadAbortRef.current = null;
+    loadingModelRef.current = null;
+    const tid = loadToastIdRef.current;
+    loadToastIdRef.current = null;
     setLoadingModel(null);
     setLoadAbortController(null);
-    try {
-      await unloadModel({ model_path: loadingModel.id });
-    } catch {
-      // Best-effort cleanup
-    }
     clearCheckpoint();
+    if (tid != null) toast.dismiss(tid);
     toast.info("Model loading cancelled");
-  }, [loadingModel, loadAbortController, clearCheckpoint]);
+    // Fire-and-forget: tell backend to stop, don't block UI
+    unloadModel({ model_path: model.id }).catch(() => {});
+  }, [clearCheckpoint]);
 
   return {
     refresh,

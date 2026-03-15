@@ -74,20 +74,66 @@ class InferenceOrchestrator:
         self.models: dict = {}
         self.loading_models: set = set()
         self.loaded_local_models: list = []
-        self.default_models = [
+        self._static_models = [
             "unsloth/Qwen3-4B-Instruct-2507",
-            "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+            "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",
             "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
             "unsloth/Phi-3.5-mini-instruct",
             "unsloth/Gemma-3-4B-it",
             "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
         ]
+        self._top_gguf_cache: Optional[list[str]] = None
+        self._top_gguf_fetched = False
 
         # Version tracking for subprocess reuse
         self._current_transformers_major: Optional[str] = None  # "4" or "5"
 
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
+
+        # Kick off background fetch of top GGUF models
+        threading.Thread(
+            target = self._fetch_top_gguf, daemon = True, name = "top-gguf"
+        ).start()
+
+    # ------------------------------------------------------------------
+    # Default models (top GGUFs fetched dynamically from HF)
+    # ------------------------------------------------------------------
+
+    @property
+    def default_models(self) -> list[str]:
+        top = self._top_gguf_cache or []
+        seen = set(top)
+        return top + [m for m in self._static_models if m not in seen]
+
+    def _fetch_top_gguf(self) -> None:
+        """Fetch top 4 GGUF repos from unsloth by downloads (background)."""
+        try:
+            import httpx
+
+            resp = httpx.get(
+                "https://huggingface.co/api/models",
+                params = {
+                    "author": "unsloth",
+                    "sort": "downloads",
+                    "direction": "-1",
+                    "limit": "40",
+                },
+                timeout = 15,
+            )
+            if resp.status_code == 200:
+                models = resp.json()
+                gguf_ids = [
+                    m["id"] for m in models
+                    if m.get("id", "").upper().endswith("-GGUF")
+                ][:4]
+                if gguf_ids:
+                    self._top_gguf_cache = gguf_ids
+                    logger.info("Top GGUF models: %s", gguf_ids)
+        except Exception as e:
+            logger.warning("Failed to fetch top GGUF models: %s", e)
+        finally:
+            self._top_gguf_fetched = True
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle

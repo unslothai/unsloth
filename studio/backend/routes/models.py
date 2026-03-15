@@ -13,6 +13,12 @@ from typing import List, Optional
 import structlog
 from loggers import get_logger
 
+import re as _re
+_VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+def _is_valid_repo_id(repo_id: str) -> bool:
+    return bool(_VALID_REPO_ID.fullmatch(repo_id))
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -555,17 +561,19 @@ async def get_gguf_variants(
         best = _pick_best_gguf(filenames)
         default_variant = _extract_quant_label(best) if best else None
 
-        # Check which variants are already downloaded in the HF cache
+        # Check which variants are fully downloaded in the HF cache.
+        # For split GGUFs, ALL shards must be present -- sum cached bytes
+        # per variant and compare against the expected total.
         # HF cache dir uses the exact case from the repo_id at download time,
         # which may differ from the canonical HF repo_id, so do a
         # case-insensitive match.
-        cached_files: set = set()
+        cached_bytes_by_quant: dict[str, int] = {}
         try:
             import re as _re
             from huggingface_hub import constants as hf_constants
 
             # Sanitize repo_id: must be "owner/name" with safe chars only
-            if not _re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo_id):
+            if not _is_valid_repo_id(repo_id):
                 raise ValueError(f"Invalid repo_id format: {repo_id}")
 
             cache_dir = Path(hf_constants.HF_HUB_CACHE)
@@ -576,10 +584,20 @@ async def get_gguf_variants(
                     if snapshots.is_dir():
                         for snap in snapshots.iterdir():
                             for f in snap.rglob("*.gguf"):
-                                cached_files.add(f.name)
+                                q = _extract_quant_label(f.name)
+                                cached_bytes_by_quant[q] = (
+                                    cached_bytes_by_quant.get(q, 0) + f.stat().st_size
+                                )
                     break
         except Exception:
             pass
+
+        def _is_fully_downloaded(variant) -> bool:
+            cached = cached_bytes_by_quant.get(variant.quant, 0)
+            if cached == 0 or variant.size_bytes == 0:
+                return False
+            # Allow small rounding tolerance (symlinks vs real sizes)
+            return cached >= variant.size_bytes * 0.99
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -588,7 +606,7 @@ async def get_gguf_variants(
                     filename = v.filename,
                     quant = v.quant,
                     size_bytes = v.size_bytes,
-                    downloaded = Path(v.filename).name in cached_files,
+                    downloaded = _is_fully_downloaded(v),
                 )
                 for v in variants
             ],
@@ -616,10 +634,8 @@ async def get_gguf_download_progress(
     Tracks completed shard downloads in snapshots and in-progress downloads
     in the blobs directory (incomplete files).
     """
-    import re as _re
-
     try:
-        if not _re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo_id):
+        if not _is_valid_repo_id(repo_id):
             return {
                 "downloaded_bytes": 0,
                 "expected_bytes": expected_bytes,
@@ -670,41 +686,43 @@ async def get_gguf_download_progress(
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
 ):
-    """List GGUF repos that have already been downloaded to the HF cache."""
-    try:
-        from huggingface_hub import constants as hf_constants
+    """List GGUF repos that have already been downloaded to the HF cache.
 
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        cached = []
-        if cache_dir.is_dir():
-            for entry in sorted(cache_dir.iterdir()):
-                if not entry.name.startswith("models--"):
-                    continue
-                # models--unsloth--Qwen3-8B-GGUF -> unsloth/Qwen3-8B-GGUF
-                parts = entry.name.split("--", 1)
-                if len(parts) < 2:
-                    continue
-                repo_id = parts[1].replace("--", "/")
-                if not repo_id.lower().endswith("-gguf"):
-                    continue
-                # Check if there are actual .gguf files in snapshots
-                snapshots = entry / "snapshots"
-                if not snapshots.is_dir():
-                    continue
-                total_size = 0
-                has_gguf = False
-                for snap in snapshots.iterdir():
-                    for f in snap.rglob("*.gguf"):
+    Uses scan_cache_dir() for proper repo IDs, then deduplicates by
+    lowercased key (HF cache dirs are lowercased but the canonical repo
+    ID preserves casing).
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        hf_cache = scan_cache_dir()
+        seen_lower: dict[str, dict] = {}
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            repo_id = repo_info.repo_id
+            if not repo_id.upper().endswith("-GGUF"):
+                continue
+            # Check for actual .gguf files and sum sizes
+            total_size = 0
+            has_gguf = False
+            for revision in repo_info.revisions:
+                for f in revision.files:
+                    if f.file_name.endswith(".gguf"):
                         has_gguf = True
-                        total_size += f.stat().st_size
-                if has_gguf:
-                    cached.append(
-                        {
-                            "repo_id": repo_id,
-                            "size_bytes": total_size,
-                            "cache_path": str(entry),
-                        }
-                    )
+                        total_size += f.size_on_disk
+            if not has_gguf:
+                continue
+            # Deduplicate: keep the entry with the most data
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            if existing is None or total_size > existing["size_bytes"]:
+                seen_lower[key] = {
+                    "repo_id": repo_id,
+                    "size_bytes": total_size,
+                    "cache_path": str(repo_info.repo_path),
+                }
+        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)

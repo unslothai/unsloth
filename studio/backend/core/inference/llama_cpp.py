@@ -371,6 +371,178 @@ class LlamaCppBackend:
             # Pipe closed — process is terminating
             pass
 
+    # ── HF download (no lock held) ───────────────────────────────
+
+    def _download_gguf(
+        self,
+        *,
+        hf_repo: str,
+        hf_variant: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> str:
+        """Download GGUF file(s) from HuggingFace. Returns local path.
+
+        Runs WITHOUT self._lock so that unload_model() can set
+        _cancel_event at any time. Checks _cancel_event between
+        each shard download.
+        """
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            raise RuntimeError(
+                "huggingface_hub is required for HF model loading. "
+                "Install it with: pip install huggingface_hub"
+            )
+
+        # Determine the filename from the variant
+        gguf_filename = None
+        gguf_extra_shards: list[str] = []
+        if hf_variant:
+            try:
+                import re
+                from huggingface_hub import list_repo_files
+
+                files = list_repo_files(hf_repo, token = hf_token)
+                variant_lower = hf_variant.lower()
+                boundary = re.compile(
+                    r"(?<![a-zA-Z0-9])"
+                    + re.escape(variant_lower)
+                    + r"(?![a-zA-Z0-9])"
+                )
+                gguf_files = sorted(
+                    f
+                    for f in files
+                    if f.endswith(".gguf") and boundary.search(f.lower())
+                )
+                if gguf_files:
+                    gguf_filename = gguf_files[0]
+                    shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
+                    m = shard_pat.match(gguf_filename)
+                    if m:
+                        prefix = m.group(1)
+                        total = m.group(2)
+                        sibling_pat = re.compile(
+                            r"^"
+                            + re.escape(prefix)
+                            + r"-\d{5}-of-"
+                            + re.escape(total)
+                            + r"\.gguf$"
+                        )
+                        gguf_extra_shards = [
+                            f for f in gguf_files[1:] if sibling_pat.match(f)
+                        ]
+            except Exception as e:
+                logger.warning(f"Could not list repo files: {e}")
+
+            if not gguf_filename:
+                repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+                gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+
+        # Check disk space and fall back to a smaller variant if needed
+        all_gguf_files = [gguf_filename] + gguf_extra_shards
+        try:
+            import os
+
+            from huggingface_hub import get_paths_info
+
+            path_infos = list(
+                get_paths_info(hf_repo, all_gguf_files, token = hf_token)
+            )
+            total_download_bytes = sum((p.size or 0) for p in path_infos)
+
+            if total_download_bytes > 0:
+                cache_dir = os.environ.get(
+                    "HF_HUB_CACHE",
+                    str(Path.home() / ".cache" / "huggingface" / "hub"),
+                )
+                Path(cache_dir).mkdir(parents = True, exist_ok = True)
+                free_bytes = shutil.disk_usage(cache_dir).free
+
+                total_gb = total_download_bytes / (1024**3)
+                free_gb = free_bytes / (1024**3)
+
+                logger.info(
+                    f"GGUF download: {total_gb:.1f} GB needed, "
+                    f"{free_gb:.1f} GB free on disk"
+                )
+
+                if total_download_bytes > free_bytes:
+                    smaller = self._find_smallest_fitting_variant(
+                        hf_repo,
+                        free_bytes,
+                        hf_token,
+                    )
+                    if smaller:
+                        fallback_file, fallback_size = smaller
+                        logger.info(
+                            f"Selected variant too large ({total_gb:.1f} GB), "
+                            f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
+                        )
+                        gguf_filename = fallback_file
+                        import re as _re
+
+                        _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+                        _m = _shard_pat.match(gguf_filename)
+                        _prefix = _m.group(1) if _m else None
+                        if _prefix:
+                            gguf_extra_shards = sorted(
+                                f
+                                for f in all_gguf_files
+                                if f.startswith(_prefix)
+                                and f != gguf_filename
+                                and "mmproj" not in f.lower()
+                            )
+                        else:
+                            gguf_extra_shards = []
+                    else:
+                        raise RuntimeError(
+                            f"Not enough disk space to download any variant. "
+                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                        )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not check disk space: {e}")
+
+        logger.info(
+            f"Downloading GGUF: {hf_repo}/{gguf_filename}"
+            + (
+                f" (+{len(gguf_extra_shards)} shards)"
+                if gguf_extra_shards
+                else ""
+            )
+        )
+        try:
+            if self._cancel_event.is_set():
+                raise RuntimeError("Cancelled")
+            local_path = hf_hub_download(
+                repo_id = hf_repo,
+                filename = gguf_filename,
+                token = hf_token,
+            )
+            for shard in gguf_extra_shards:
+                if self._cancel_event.is_set():
+                    raise RuntimeError("Cancelled")
+                logger.info(f"Downloading GGUF shard: {shard}")
+                hf_hub_download(
+                    repo_id = hf_repo,
+                    filename = shard,
+                    token = hf_token,
+                )
+        except RuntimeError as e:
+            if "Cancelled" in str(e):
+                raise
+            raise RuntimeError(
+                f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+            )
+
+        logger.info(f"GGUF downloaded to: {local_path}")
+        return local_path
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     def load_model(
@@ -404,199 +576,46 @@ class LlamaCppBackend:
         Returns True if server started and health check passed.
         """
         self._cancel_event.clear()
+
+        # ── Phase 1: kill old process (under lock, fast) ──────────
         with self._lock:
             self._kill_process()
 
-            binary = self._find_llama_server_binary()
-            if not binary:
-                raise RuntimeError(
-                    "llama-server binary not found. "
-                    "Run setup.sh to build it, install llama.cpp, "
-                    "or set LLAMA_SERVER_PATH environment variable."
-                )
+        binary = self._find_llama_server_binary()
+        if not binary:
+            raise RuntimeError(
+                "llama-server binary not found. "
+                "Run setup.sh to build it, install llama.cpp, "
+                "or set LLAMA_SERVER_PATH environment variable."
+            )
+
+        # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+        if hf_repo:
+            model_path = self._download_gguf(
+                hf_repo = hf_repo,
+                hf_variant = hf_variant,
+                hf_token = hf_token,
+            )
+        elif gguf_path:
+            if not Path(gguf_path).is_file():
+                raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+            model_path = gguf_path
+        else:
+            raise ValueError("Either gguf_path or hf_repo must be provided")
+
+        # Check cancel after download
+        if self._cancel_event.is_set():
+            logger.info("Load cancelled after download phase")
+            return False
+
+        # ── Phase 3: start llama-server (under lock) ──────────────
+        with self._lock:
+            # Re-check cancel inside lock
+            if self._cancel_event.is_set():
+                logger.info("Load cancelled before server start")
+                return False
 
             self._port = self._find_free_port()
-
-            # Build command based on mode
-            if hf_repo:
-                # Download the GGUF file ourselves using huggingface_hub
-                # (llama-server's -hf flag requires HTTPS/curl which may not
-                #  be available, e.g. Windows builds with -DLLAMA_CURL=OFF)
-                try:
-                    from huggingface_hub import hf_hub_download
-                except ImportError:
-                    raise RuntimeError(
-                        "huggingface_hub is required for HF model loading. "
-                        "Install it with: pip install huggingface_hub"
-                    )
-
-                # Determine the filename from the variant (e.g., "Q4_K_M" -> find matching file)
-                # For split GGUFs (e.g., *-00001-of-00003.gguf) we must download ALL shards.
-                gguf_filename = None
-                gguf_extra_shards: list[str] = []
-                if hf_variant:
-                    # Try common naming patterns
-                    try:
-                        import re
-                        from huggingface_hub import list_repo_files
-
-                        files = list_repo_files(hf_repo, token = hf_token)
-                        variant_lower = hf_variant.lower()
-                        # Use word-boundary matching so "Q8_0" doesn't also
-                        # match "IQ8_0" or other superset variant names.
-                        boundary = re.compile(
-                            r"(?<![a-zA-Z0-9])"
-                            + re.escape(variant_lower)
-                            + r"(?![a-zA-Z0-9])"
-                        )
-                        gguf_files = sorted(
-                            f
-                            for f in files
-                            if f.endswith(".gguf") and boundary.search(f.lower())
-                        )
-                        if gguf_files:
-                            gguf_filename = gguf_files[0]
-                            # For split GGUFs (e.g. model-Q8_0-00001-of-00003.gguf)
-                            # discover siblings by exact basename + total match
-                            # so "model-Q8_0-v2-*" isn't pulled in as a sibling.
-                            shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
-                            m = shard_pat.match(gguf_filename)
-                            if m:
-                                prefix = m.group(1)
-                                total = m.group(2)
-                                sibling_pat = re.compile(
-                                    r"^"
-                                    + re.escape(prefix)
-                                    + r"-\d{5}-of-"
-                                    + re.escape(total)
-                                    + r"\.gguf$"
-                                )
-                                gguf_extra_shards = [
-                                    f for f in gguf_files[1:] if sibling_pat.match(f)
-                                ]
-                    except Exception as e:
-                        logger.warning(f"Could not list repo files: {e}")
-
-                    if not gguf_filename:
-                        # Fallback: construct common filename pattern
-                        # e.g., "unsloth/gemma-3-4b-it-GGUF" + "Q4_K_M" -> try model name
-                        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-                        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
-
-                # Check disk space and fall back to a smaller variant if needed
-                all_gguf_files = [gguf_filename] + gguf_extra_shards
-                try:
-                    import os
-
-                    from huggingface_hub import get_paths_info
-
-                    path_infos = list(
-                        get_paths_info(hf_repo, all_gguf_files, token = hf_token)
-                    )
-                    total_download_bytes = sum((p.size or 0) for p in path_infos)
-
-                    if total_download_bytes > 0:
-                        cache_dir = os.environ.get(
-                            "HF_HUB_CACHE",
-                            str(Path.home() / ".cache" / "huggingface" / "hub"),
-                        )
-                        Path(cache_dir).mkdir(parents = True, exist_ok = True)
-                        free_bytes = shutil.disk_usage(cache_dir).free
-
-                        total_gb = total_download_bytes / (1024**3)
-                        free_gb = free_bytes / (1024**3)
-
-                        logger.info(
-                            f"GGUF download: {total_gb:.1f} GB needed, "
-                            f"{free_gb:.1f} GB free on disk"
-                        )
-
-                        if total_download_bytes > free_bytes:
-                            # Try to find a smaller variant that fits
-                            smaller = self._find_smallest_fitting_variant(
-                                hf_repo,
-                                free_bytes,
-                                hf_token,
-                            )
-                            if smaller:
-                                fallback_file, fallback_size = smaller
-                                logger.info(
-                                    f"Selected variant too large ({total_gb:.1f} GB), "
-                                    f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
-                                )
-                                gguf_filename = fallback_file
-                                # Re-discover shards for the fallback variant
-                                import re as _re
-
-                                _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
-                                _m = _shard_pat.match(gguf_filename)
-                                _prefix = _m.group(1) if _m else None
-                                if _prefix:
-                                    gguf_extra_shards = sorted(
-                                        f
-                                        for f in all_gguf_files
-                                        if f.startswith(_prefix)
-                                        and f != gguf_filename
-                                        and "mmproj" not in f.lower()
-                                    )
-                                else:
-                                    gguf_extra_shards = []
-                            else:
-                                raise RuntimeError(
-                                    f"Not enough disk space to download any variant. "
-                                    f"Only {free_gb:.1f} GB free in {cache_dir}"
-                                )
-                except RuntimeError:
-                    raise
-                except Exception as e:
-                    logger.warning(f"Could not check disk space: {e}")
-
-                logger.info(
-                    f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-                    + (
-                        f" (+{len(gguf_extra_shards)} shards)"
-                        if gguf_extra_shards
-                        else ""
-                    )
-                )
-                try:
-                    if self._cancel_event.is_set():
-                        raise RuntimeError("Cancelled")
-                    local_path = hf_hub_download(
-                        repo_id = hf_repo,
-                        filename = gguf_filename,
-                        token = hf_token,
-                    )
-                    # Download remaining shards for split GGUFs — llama-server
-                    # auto-discovers them when they are in the same directory.
-                    for shard in gguf_extra_shards:
-                        if self._cancel_event.is_set():
-                            raise RuntimeError("Cancelled")
-                        logger.info(f"Downloading GGUF shard: {shard}")
-                        hf_hub_download(
-                            repo_id = hf_repo,
-                            filename = shard,
-                            token = hf_token,
-                        )
-                except RuntimeError as e:
-                    if "Cancelled" in str(e):
-                        raise
-                    raise RuntimeError(
-                        f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
-                    )
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
-                    )
-
-                logger.info(f"GGUF downloaded to: {local_path}")
-                model_path = local_path
-            elif gguf_path:
-                if not Path(gguf_path).is_file():
-                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                model_path = gguf_path
-            else:
-                raise ValueError("Either gguf_path or hf_repo must be provided")
 
             # Select GPU(s) based on model size and free memory
             try:
