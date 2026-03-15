@@ -314,6 +314,7 @@ async def list_models(
                 model_info = ModelDetails(
                     id = model_id,
                     name = model_id.split("/")[-1] if "/" in model_id else model_id,
+                    is_gguf = model_id.upper().endswith("-GGUF"),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
