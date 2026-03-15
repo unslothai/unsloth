@@ -609,11 +609,13 @@ async def list_cached_gguf(
                         has_gguf = True
                         total_size += f.stat().st_size
                 if has_gguf:
-                    cached.append({
-                        "repo_id": repo_id,
-                        "size_bytes": total_size,
-                        "cache_path": str(entry),
-                    })
+                    cached.append(
+                        {
+                            "repo_id": repo_id,
+                            "size_bytes": total_size,
+                            "cache_path": str(entry),
+                        }
+                    )
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
