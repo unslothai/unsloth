@@ -907,15 +907,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     )
                                 )
                             else:
-                                # Model returned logits directly, apply scaling manually
-                                if logit_scale_multiply != 0.0:
-                                    logits_chunk = logits_chunk * logit_scale_multiply
-                                if logit_scale_divide != 0.0:
-                                    logits_chunk = logits_chunk / logit_scale_divide
-                                if logit_softcapping != 0.0:
-                                    logits_chunk = logits_chunk * torch.tanh(
-                                        logits_chunk / logit_softcapping
-                                    )
+                                # Model returned logits directly - scaling/softcapping already applied by model forward
                                 logits_chunk = logits_chunk.to(torch.float32)
                                 if temperature != 1.0:
                                     logits_chunk = logits_chunk / temperature
