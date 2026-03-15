@@ -225,7 +225,8 @@ function GgufVariantExpander({
       const bOom = gpuGb != null && gpuGb > 0 && bGb > 0 && checkVramFit(bGb, gpuGb) === "exceeds";
       if (aOom !== bOom) return aOom ? 1 : -1;
 
-      return b.size_bytes - a.size_bytes;
+      // Non-OOM: largest first (best quality); OOM: smallest first (most likely to fit)
+      return aOom ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
     });
   }, [variants, effectiveRecommended, gpuGb]);
 
