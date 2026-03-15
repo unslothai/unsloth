@@ -21,5 +21,7 @@ export interface ModelSelectorChangeMeta {
   source: "hub" | "lora" | "exported";
   isLora: boolean;
   ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
 }
 

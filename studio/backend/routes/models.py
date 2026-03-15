@@ -604,6 +604,46 @@ async def get_gguf_variants(
         )
 
 
+@router.get("/gguf-download-progress")
+async def get_gguf_download_progress(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return download progress by checking current size of cached GGUF files."""
+    import re as _re
+    try:
+        if not _re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo_id):
+            return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
+
+        from huggingface_hub import constants as hf_constants
+
+        cache_dir = Path(hf_constants.HF_HUB_CACHE)
+        target = f"models--{repo_id.replace('/', '--')}".lower()
+        downloaded_bytes = 0
+        for entry in cache_dir.iterdir():
+            if entry.name.lower() == target:
+                # Sum .gguf files in snapshots + incomplete downloads in blobs
+                for f in entry.rglob("*.gguf"):
+                    downloaded_bytes += f.stat().st_size
+                # Also check incomplete downloads (blobs without extension)
+                blobs_dir = entry / "blobs"
+                if blobs_dir.is_dir():
+                    for f in blobs_dir.iterdir():
+                        if f.is_file():
+                            downloaded_bytes += f.stat().st_size
+                break
+
+        progress = min(downloaded_bytes / expected_bytes, 1.0) if expected_bytes > 0 else 0
+        return {
+            "downloaded_bytes": downloaded_bytes,
+            "expected_bytes": expected_bytes,
+            "progress": round(progress, 3),
+        }
+    except Exception:
+        return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
