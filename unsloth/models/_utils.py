@@ -239,6 +239,7 @@ def prefer_flex_attn_if_supported(model_class, config):
         # instead, but sdpa_dense_backward has a dtype mismatch under fp16
         # autocast (Half @ Float matmul). Skip flex_attention there.
         import torch
+
         if torch.cuda.is_available():
             major, _ = torch.cuda.get_device_capability()
             if major < 8:
