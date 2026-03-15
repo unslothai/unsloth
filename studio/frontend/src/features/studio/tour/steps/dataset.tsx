@@ -14,7 +14,7 @@ export const studioDatasetStep: TourStep = {
       your dataset into a supported training format. If we can’t infer it
       cleanly, we’ll prompt you to map the fields manually. If outputs look off
       in Chat later, dataset formatting/template is the first thing to check.{" "}
-      <ReadMore href="https://docs.unsloth.ai/basics/fine-tuning-llms-guide" />
+      <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide" />
     </>
   ),
 };

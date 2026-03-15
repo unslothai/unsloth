@@ -18,6 +18,7 @@ import {
   Copy02Icon,
   type Database02Icon,
   DragDropVerticalIcon,
+  DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
   Tick02Icon,
@@ -25,6 +26,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  useCallback,
   type DragEvent as ReactDragEvent,
   type ReactElement,
   useMemo,
@@ -38,6 +40,10 @@ import {
   type BlockType,
   type SeedBlockType,
 } from "../blocks/registry";
+import {
+  RECIPE_STUDIO_ONBOARDING_ICON_TONE,
+  RECIPE_STUDIO_ONBOARDING_SURFACE_TONE,
+} from "../utils/ui-tones";
 
 type SheetView =
   | "root"
@@ -94,27 +100,27 @@ export type RecipeBlockDragPayload = {
 
 function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "root") {
-    return "Add a block";
+    return "Add a step";
   }
   if (sheetView === "sampler") {
-    return "Sampler blocks";
+    return "Generated fields";
   }
   if (sheetView === "seed") {
-    return "Seed blocks";
+    return "Source data";
   }
   if (sheetView === "expression") {
-    return "Expression blocks";
+    return "Formulas";
   }
   if (sheetView === "validator") {
-    return "Validator blocks";
+    return "Checks";
   }
   if (sheetView === "note") {
-    return "Note blocks";
+    return "Notes";
   }
   if (sheetView === "processor") {
     return "Processor blocks";
   }
-  return "LLM blocks";
+  return "AI generation";
 }
 
 const VIEW_KIND: Record<SheetView, SheetKind | null> = {
@@ -128,14 +134,10 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   processor: null,
 };
 
-const ROOT_GROUPS: RootGroup[] = [
-  ...BLOCK_GROUPS,
-  {
-    kind: "processor",
-    title: "Processors",
-    description: "Output schema + post batch.",
-    icon: CodeIcon,
-  },
+const ROOT_GROUPS: RootGroup[] = [...BLOCK_GROUPS];
+const ROOT_GROUPS_WITH_SEED_FIRST: RootGroup[] = [
+  ...ROOT_GROUPS.filter((group) => group.kind === "seed"),
+  ...ROOT_GROUPS.filter((group) => group.kind !== "seed"),
 ];
 const SEARCHABLE_KINDS: SheetKind[] = [
   "sampler",
@@ -145,8 +147,14 @@ const SEARCHABLE_KINDS: SheetKind[] = [
   "expression",
   "note",
 ];
-const PROCESSOR_TITLE = "Schema Transform";
-const PROCESSOR_DESCRIPTION = "Transform final dataset schema.";
+const PROCESSOR_TITLE = "Final dataset shape";
+const PROCESSOR_DESCRIPTION = "Rename, reorder, or reshape the final dataset.";
+const SHOW_PROCESSOR_IN_BLOCK_SHEET = false;
+const LLM_SETUP_TYPES = new Set<BlockType>([
+  "model_provider",
+  "model_config",
+  "tool_config",
+]);
 
 function BlockSheetButton({
   icon,
@@ -191,16 +199,20 @@ function BlockSheetButton({
       <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
       </div>
-      <div className="flex-1">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <p className="text-sm font-semibold text-foreground">{title}</p>
+          <p className="break-words text-sm font-semibold text-foreground">
+            {title}
+          </p>
           {badge ? (
             <Badge variant="outline" className="rounded-full text-[10px]">
               {badge}
             </Badge>
           ) : null}
         </div>
-        <p className="text-[11px] text-muted-foreground">{description}</p>
+        <p className="break-words text-[11px] text-muted-foreground">
+          {description}
+        </p>
       </div>
       {trailing === "chevron" ? (
         <HugeiconsIcon
@@ -258,9 +270,12 @@ export function BlockSheet({
     }
     onOpenChange?.(nextOpen);
   };
-  const matchesSearch = (title: string, description: string) =>
-    title.toLowerCase().includes(normalizedSearch) ||
-    description.toLowerCase().includes(normalizedSearch);
+  const matchesSearch = useCallback(
+    (title: string, description: string) =>
+      title.toLowerCase().includes(normalizedSearch) ||
+      description.toLowerCase().includes(normalizedSearch),
+    [normalizedSearch],
+  );
 
   const searchableBlocks = useMemo(
     () => SEARCHABLE_KINDS.flatMap((kind) => getBlocksForKind(kind)),
@@ -273,7 +288,7 @@ export function BlockSheet({
     return searchableBlocks.filter((item) =>
       matchesSearch(item.title, item.description),
     );
-  }, [hasSearch, searchableBlocks, normalizedSearch]);
+  }, [hasSearch, matchesSearch, searchableBlocks]);
 
   const scopedBlocks = useMemo(() => {
     if (!isScopedBlockView) {
@@ -284,11 +299,27 @@ export function BlockSheet({
       return blocks;
     }
     return blocks.filter((item) => matchesSearch(item.title, item.description));
-  }, [hasSearch, isScopedBlockView, normalizedSearch, sheetView]);
+  }, [hasSearch, isScopedBlockView, matchesSearch, sheetView]);
+  const llmCreateBlocks =
+    sheetView === "llm"
+      ? scopedBlocks.filter((item) => !LLM_SETUP_TYPES.has(item.type))
+      : [];
+  const llmSetupBlocks =
+    sheetView === "llm"
+      ? scopedBlocks.filter((item) => LLM_SETUP_TYPES.has(item.type))
+      : [];
+  const featuredSeedBlock =
+    sheetView === "seed" && !hasSearch
+      ? scopedBlocks.find((item) => item.type === "seed_unstructured") ?? null
+      : null;
+  const otherSeedBlocks =
+    sheetView === "seed" && !hasSearch
+      ? scopedBlocks.filter((item) => item.type !== "seed_unstructured")
+      : scopedBlocks;
 
   const rootGroups = useMemo(() => {
     if (!hasSearch) {
-      return ROOT_GROUPS;
+      return ROOT_GROUPS_WITH_SEED_FIRST;
     }
     return ROOT_GROUPS.filter((group) => {
       if (matchesSearch(group.title, group.description)) {
@@ -301,7 +332,7 @@ export function BlockSheet({
         matchesSearch(item.title, item.description),
       );
     });
-  }, [hasSearch, normalizedSearch]);
+  }, [hasSearch, matchesSearch]);
   const showNoMatches =
     (isRootView && hasSearch && rootSearchBlocks.length === 0) ||
     (isScopedBlockView && scopedBlocks.length === 0) ||
@@ -318,7 +349,7 @@ export function BlockSheet({
       event.dataTransfer.setData("text/plain", serialized);
       event.dataTransfer.effectAllowed = "copy";
     };
-  const getTrailing = (_kind: SheetKind): "drag" => "drag";
+  const getTrailing = (): "drag" => "drag";
   const onBlockClick = (kind: SheetKind, type: BlockType) => {
     setSheetOpen(false);
     if (kind === "sampler") {
@@ -375,6 +406,8 @@ export function BlockSheet({
             size="icon"
             className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
             variant="ghost"
+            aria-label="Add a step"
+            title="Add a step"
           >
             <HugeiconsIcon
               icon={PlusSignIcon}
@@ -398,6 +431,8 @@ export function BlockSheet({
                   variant="ghost"
                   size="icon-sm"
                   onClick={() => onViewChange("root")}
+                  aria-label="Back to step groups"
+                  title="Back to step groups"
                 >
                   <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
                 </Button>
@@ -412,37 +447,68 @@ export function BlockSheet({
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search blocks..."
+                placeholder="Search steps..."
                 className="corner-squircle h-9 pl-8"
+                aria-label="Search steps"
               />
             </div>
           </SheetHeader>
-          <div className=" py-4">
+          <div className="flex-1 min-h-0 overflow-y-auto py-4">
             <div className="mt-4 flex flex-col gap-2">
+              {isRootView && !hasSearch && (
+                <div className={`mx-3 mb-2 rounded-2xl border px-4 py-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl ${RECIPE_STUDIO_ONBOARDING_ICON_TONE}`}>
+                      <HugeiconsIcon
+                        icon={DocumentAttachmentIcon}
+                        className="size-4"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">
+                          Need a place to start?
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Open Source data first, then add generation and checks
+                          on top of it.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="corner-squircle justify-start px-0 text-primary hover:bg-transparent hover:text-primary/80"
+                        onClick={() => onViewChange("seed")}
+                      >
+                        Start with source data
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {isRootView &&
                 hasSearch &&
-                rootSearchBlocks.map((item, index) => (
+                rootSearchBlocks.map((item) => (
                   <BlockSheetButton
                     key={`${item.kind}:${item.type}`}
                     icon={item.icon}
                     title={item.title}
                     description={item.description}
-                    isActive={index === 0}
                     draggable={true}
                     onDragStart={buildDragStart(item.kind, item.type)}
-                    trailing={getTrailing(item.kind)}
+                    trailing={getTrailing()}
                     onClick={() => onBlockClick(item.kind, item.type)}
                   />
                 ))}
               {isRootView &&
                 !hasSearch &&
-                rootGroups.map((item, index) => (
+                rootGroups.map((item) => (
                   <BlockSheetButton
                     key={item.kind}
                     icon={item.icon}
                     title={item.title}
                     description={item.description}
-                    isActive={index === 0}
                     draggable={item.kind === "expression" || item.kind === "note"}
                     onDragStart={
                       item.kind === "expression" && expressionBlocks[0]
@@ -454,18 +520,9 @@ export function BlockSheet({
                     trailing={
                       item.kind === "expression" || item.kind === "note"
                         ? "drag"
-                        : item.kind === "processor"
-                          ? "none"
-                          : "chevron"
+                        : "chevron"
                     }
-                    disabled={item.kind === "processor"}
-                    badge={item.kind === "processor" ? "Work in progress" : undefined}
                     onClick={() => {
-                      if (item.kind === "processor") {
-                        setSheetOpen(false);
-                        onOpenProcessors();
-                        return;
-                      }
                       if (item.kind === "seed" && seedBlocks.length === 1) {
                         setSheetOpen(false);
                         onAddSeed(seedBlocks[0].type as SeedBlockType);
@@ -485,37 +542,175 @@ export function BlockSheet({
                     }}
                   />
                 ))}
-              {isProcessorView && (
+              {SHOW_PROCESSOR_IN_BLOCK_SHEET && isProcessorView && (
                 (!hasSearch ||
                   matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION)) && (
                   <BlockSheetButton
                     icon={CodeIcon}
                     title={PROCESSOR_TITLE}
                     description={PROCESSOR_DESCRIPTION}
-                    isActive={true}
                     onClick={onOpenProcessors}
                   />
                 )
               )}
               {isScopedBlockView &&
+                sheetView === "seed" &&
+                featuredSeedBlock && (
+                  <div className="pb-2">
+                    <div className="px-3 pb-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Recommended first step
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Best when you want to turn PDFs, DOCX files, or text
+                        files into source rows.
+                      </p>
+                    </div>
+                    <BlockSheetButton
+                      icon={featuredSeedBlock.icon}
+                      title={featuredSeedBlock.title}
+                      description={featuredSeedBlock.description}
+                      draggable={true}
+                      onDragStart={buildDragStart(
+                        featuredSeedBlock.kind,
+                        featuredSeedBlock.type,
+                      )}
+                      trailing={getTrailing()}
+                      badge="Start here"
+                      onClick={() =>
+                        onBlockClick(
+                          featuredSeedBlock.kind,
+                          featuredSeedBlock.type,
+                        )
+                      }
+                    />
+                  </div>
+                )}
+              {isScopedBlockView &&
+                sheetView === "seed" &&
+                !hasSearch &&
+                otherSeedBlocks.length > 0 && (
+                  <div className="px-3 pt-2 pb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Other source options
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Use a dataset or structured file when your source is
+                      already tabular.
+                    </p>
+                  </div>
+                )}
+              {isScopedBlockView &&
+                sheetView === "llm" &&
+                llmCreateBlocks.length > 0 && (
+                  <div className="px-3 pb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Create
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Start with the kind of output you want to generate.
+                    </p>
+                  </div>
+                )}
+              {isScopedBlockView &&
+                sheetView === "llm" &&
+                llmCreateBlocks.map((item) => (
+                  <BlockSheetButton
+                    key={item.type}
+                    icon={item.icon}
+                    title={item.title}
+                    description={item.description}
+                    draggable={true}
+                    onDragStart={buildDragStart(item.kind, item.type)}
+                    trailing={getTrailing()}
+                    onClick={() => onBlockClick(item.kind, item.type)}
+                  />
+                ))}
+              {isScopedBlockView &&
+                sheetView === "llm" &&
+                llmSetupBlocks.length > 0 && (
+                  <div className="px-3 pt-4 pb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Setup
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Add these only when you need a new model or tool setup.
+                    </p>
+                  </div>
+                )}
+              {isScopedBlockView &&
+                sheetView === "llm" &&
+                llmSetupBlocks.map((item) => (
+                  <BlockSheetButton
+                    key={item.type}
+                    icon={item.icon}
+                    title={item.title}
+                    description={item.description}
+                    draggable={true}
+                    onDragStart={buildDragStart(item.kind, item.type)}
+                    trailing={getTrailing()}
+                    onClick={() => onBlockClick(item.kind, item.type)}
+                  />
+                ))}
+              {isScopedBlockView &&
+                sheetView === "seed" &&
+                otherSeedBlocks.map((item) => (
+                  <BlockSheetButton
+                    key={item.type}
+                    icon={item.icon}
+                    title={item.title}
+                    description={item.description}
+                    draggable={true}
+                    onDragStart={buildDragStart(item.kind, item.type)}
+                    trailing={getTrailing()}
+                    onClick={() => onBlockClick(item.kind, item.type)}
+                  />
+                ))}
+              {isScopedBlockView &&
+                sheetView !== "llm" &&
+                sheetView !== "seed" &&
                 scopedBlocks.map(
-                  (item, index) => (
+                  (item) => (
                     <BlockSheetButton
                       key={item.type}
                       icon={item.icon}
                       title={item.title}
                       description={item.description}
-                      isActive={index === 0}
                       draggable={true}
                       onDragStart={buildDragStart(item.kind, item.type)}
-                      trailing={getTrailing(item.kind)}
+                      trailing={getTrailing()}
                       onClick={() => onBlockClick(item.kind, item.type)}
                     />
                   ),
                 )}
+              {SHOW_PROCESSOR_IN_BLOCK_SHEET && isRootView && !hasSearch && (
+                <div className="px-3 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSheetOpen(false);
+                      onOpenProcessors();
+                    }}
+                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground">
+                        Edit final dataset shape
+                      </p>
+                      <p className="break-words text-xs text-muted-foreground">
+                        Rename, reorder, or reshape your final output.
+                      </p>
+                    </div>
+                    <HugeiconsIcon
+                      icon={CodeIcon}
+                      className="size-4 text-muted-foreground"
+                    />
+                  </button>
+                </div>
+              )}
               {showNoMatches && (
                 <p className="px-3 py-2 text-xs text-muted-foreground">
-                  No blocks match.
+                  No matching steps.
                 </p>
               )}
             </div>
@@ -528,6 +723,8 @@ export function BlockSheet({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={onImport}
+        aria-label="Paste recipe JSON"
+        title="Paste recipe JSON"
       >
         <HugeiconsIcon
           icon={Upload01Icon}
@@ -540,6 +737,8 @@ export function BlockSheet({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={onCopy}
+        aria-label={copied ? "Recipe JSON copied" : "Copy recipe JSON"}
+        title={copied ? "Recipe JSON copied" : "Copy recipe JSON"}
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy02Icon}
