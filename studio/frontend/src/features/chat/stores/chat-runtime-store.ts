@@ -43,6 +43,7 @@ type ChatRuntimeStore = {
   autoTitle: boolean;
   modelsError: string | null;
   activeGgufVariant: string | null;
+  activeThreadId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   setParams: (params: InferenceParams) => void;
@@ -52,6 +53,7 @@ type ChatRuntimeStore = {
   setAutoTitle: (enabled: boolean) => void;
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
+  setActiveThreadId: (threadId: string | null) => void;
   clearCheckpoint: () => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -65,6 +67,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   modelsError: null,
   activeGgufVariant: null,
+  activeThreadId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
   setParams: (params) => set({ params }),
@@ -94,6 +97,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: ggufVariant ?? null,
     })),
+  setActiveThreadId: (activeThreadId) => set({ activeThreadId }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
