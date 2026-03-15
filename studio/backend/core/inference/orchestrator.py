@@ -124,8 +124,7 @@ class InferenceOrchestrator:
             if resp.status_code == 200:
                 models = resp.json()
                 gguf_ids = [
-                    m["id"] for m in models
-                    if m.get("id", "").upper().endswith("-GGUF")
+                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
                 ][:4]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids

@@ -14,10 +14,13 @@ import structlog
 from loggers import get_logger
 
 import re as _re
+
 _VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
 
 def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
+
 
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent

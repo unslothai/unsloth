@@ -405,9 +405,7 @@ class LlamaCppBackend:
                 files = list_repo_files(hf_repo, token = hf_token)
                 variant_lower = hf_variant.lower()
                 boundary = re.compile(
-                    r"(?<![a-zA-Z0-9])"
-                    + re.escape(variant_lower)
-                    + r"(?![a-zA-Z0-9])"
+                    r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
                 )
                 gguf_files = sorted(
                     f
@@ -445,9 +443,7 @@ class LlamaCppBackend:
 
             from huggingface_hub import get_paths_info
 
-            path_infos = list(
-                get_paths_info(hf_repo, all_gguf_files, token = hf_token)
-            )
+            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
             total_download_bytes = sum((p.size or 0) for p in path_infos)
 
             if total_download_bytes > 0:
@@ -506,11 +502,7 @@ class LlamaCppBackend:
 
         logger.info(
             f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-            + (
-                f" (+{len(gguf_extra_shards)} shards)"
-                if gguf_extra_shards
-                else ""
-            )
+            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else "")
         )
         try:
             if self._cancel_event.is_set():
