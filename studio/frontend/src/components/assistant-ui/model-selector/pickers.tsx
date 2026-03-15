@@ -230,17 +230,22 @@ function GgufVariantExpander({
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
+    // Tier: 0 = fits (GPU only), 1 = tight (needs CPU offload), 2 = OOM
+    const tierOf = (v: GgufVariantDetail) => {
+      const f = getGgufFit(v.size_bytes);
+      return f === "fits" ? 0 : f === "tight" ? 1 : 2;
+    };
     return [...variants].sort((a, b) => {
       const aIsRec = a.quant === effectiveRecommended;
       const bIsRec = b.quant === effectiveRecommended;
       if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-      const aOom = getGgufFit(a.size_bytes) === "oom";
-      const bOom = getGgufFit(b.size_bytes) === "oom";
-      if (aOom !== bOom) return aOom ? 1 : -1;
+      const aTier = tierOf(a);
+      const bTier = tierOf(b);
+      if (aTier !== bTier) return aTier - bTier;
 
-      // Non-OOM: largest first (best quality); OOM: smallest first (most likely to fit)
-      return aOom ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
+      // fits/tight: largest first (best quality); OOM: smallest first
+      return aTier === 2 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
     });
   }, [variants, effectiveRecommended, getGgufFit]);
 
