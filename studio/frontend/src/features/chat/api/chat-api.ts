@@ -97,6 +97,32 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+export interface CachedGgufRepo {
+  repo_id: string;
+  size_bytes: number;
+  cache_path: string;
+}
+
+export async function getGgufDownloadProgress(
+  repoId: string,
+  variant: string,
+  expectedBytes: number,
+): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+  const params = new URLSearchParams({
+    repo_id: repoId,
+    variant,
+    expected_bytes: String(expectedBytes),
+  });
+  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  return parseJsonOrThrow(response);
+}
+
+export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
+  const response = await authFetch("/api/models/cached-gguf");
+  const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
+  return data.cached;
+}
+
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
