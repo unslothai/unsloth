@@ -369,18 +369,56 @@ try {
 } catch {}
 
 # -- Find a toolkit that's compatible with the driver --
+# Strategy: prefer the toolkit at CUDA_PATH (user's existing setup) if it's
+# compatible with the driver.  Only fall back to scanning side-by-side installs
+# if CUDA_PATH is missing or points to an incompatible version.  This avoids
+# header/binary mismatches when multiple toolkits are installed.
 $IncompatibleToolkit = $null
+$NvccPath = $null
+
 if ($DriverMaxCuda) {
-    $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
-    if ($NvccPath) {
-        Write-Host "   [OK] Found compatible CUDA Toolkit (nvcc: $NvccPath)" -ForegroundColor Green
-    } else {
-        # Check if there's an incompatible (too new) toolkit installed
-        $AnyNvcc = Find-Nvcc
-        if ($AnyNvcc) {
-            $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
-            if ($NvccOut -match "release\s+([\d]+\.[\d]+)") {
-                $IncompatibleToolkit = $Matches[1]
+    $drMajorCuda = [int]$DriverMaxCuda.Split('.')[0]
+    $drMinorCuda = [int]$DriverMaxCuda.Split('.')[1]
+
+    # --- Step 1: Check existing CUDA_PATH first ---
+    $existingCudaPath = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
+    if (-not $existingCudaPath) {
+        $existingCudaPath = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
+    }
+    if ($existingCudaPath -and (Test-Path (Join-Path $existingCudaPath 'bin\nvcc.exe'))) {
+        $candidateNvcc = Join-Path $existingCudaPath 'bin\nvcc.exe'
+        $verOut = & $candidateNvcc --version 2>&1 | Out-String
+        if ($verOut -match 'release\s+(\d+)\.(\d+)') {
+            $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
+            $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
+            if ($isCompat) {
+                $NvccPath = $candidateNvcc
+                Write-Host "   [OK] Using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)" -ForegroundColor Green
+            } else {
+                Write-Host "   [INFO] CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # --- Step 2: Fall back to scanning side-by-side installs ---
+    if (-not $NvccPath) {
+        $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
+        if ($NvccPath) {
+            Write-Host "   [OK] Found compatible CUDA Toolkit (nvcc: $NvccPath)" -ForegroundColor Green
+            if ($existingCudaPath) {
+                $selectedRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
+                if ($existingCudaPath.TrimEnd('\') -ne $selectedRoot.TrimEnd('\')) {
+                    Write-Host "   [INFO] Overriding CUDA_PATH from $existingCudaPath to $selectedRoot" -ForegroundColor Yellow
+                }
+            }
+        } else {
+            # Check if there's an incompatible (too new) toolkit installed
+            $AnyNvcc = Find-Nvcc
+            if ($AnyNvcc) {
+                $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
+                if ($NvccOut -match "release\s+([\d]+\.[\d]+)") {
+                    $IncompatibleToolkit = $Matches[1]
+                }
             }
         }
     }
@@ -487,6 +525,19 @@ $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # in future sessions (overwrites any existing value pointing to a newer, incompatible version)
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
 Write-Host "   Persisted CUDA_PATH=$CudaToolkitRoot to user environment" -ForegroundColor Gray
+# Clear all versioned CUDA_PATH_V* env vars in this process to prevent
+# cmake/MSBuild from discovering a conflicting CUDA installation.
+$cudaPathVars = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
+foreach ($v in $cudaPathVars) {
+    [Environment]::SetEnvironmentVariable($v, $null, 'Process')
+}
+# Set only the versioned var matching the selected toolkit (e.g. CUDA_PATH_V13_0)
+$tkDirName = Split-Path $CudaToolkitRoot -Leaf
+if ($tkDirName -match '^v(\d+)\.(\d+)') {
+    $cudaPathVerVar = "CUDA_PATH_V$($Matches[1])_$($Matches[2])"
+    [Environment]::SetEnvironmentVariable($cudaPathVerVar, $CudaToolkitRoot, 'Process')
+    Write-Host "   Set $cudaPathVerVar (cleared other CUDA_PATH_V* vars)" -ForegroundColor Gray
+}
 # Ensure nvcc's bin dir is on PATH for this process
 $nvccBinDir = Split-Path $NvccPath -Parent
 if ($env:PATH -notlike "*$nvccBinDir*") {
@@ -921,6 +972,7 @@ if (Test-Path $LlamaServerBin) {
         # CUDA flags (Unsloth-aligned)
         $CmakeArgs += '-DGGML_CUDA=ON'
         $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+        $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
         $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
         $CmakeArgs += '-DGGML_CUDA_FA_ALL_QUANTS=ON'
         $CmakeArgs += '-DGGML_CUDA_F16=OFF'
