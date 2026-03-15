@@ -583,7 +583,7 @@ async def get_gguf_variants(
                     filename = v.filename,
                     quant = v.quant,
                     size_bytes = v.size_bytes,
-                    downloaded = v.filename in cached_files,
+                    downloaded = Path(v.filename).name in cached_files,
                 )
                 for v in variants
             ],
