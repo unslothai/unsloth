@@ -642,6 +642,12 @@ def _find_end_position(template, endfor, endif):
 
 
 def _fix_chat_template(chat_template):
+    """Add {% if add_generation_prompt %} to templates that have a single {{ ... }} after endfor/endif.
+
+    Handles ChatML-style and similar templates where the assistant prompt is a single
+    placeholder after the loop. Supports leading/trailing whitespace (e.g. newlines).
+    See: https://github.com/unslothai/unsloth/issues/4150
+    """
     endfor = "{% endfor %}"
     endif = "{% endif %}"
     chosen_end = _find_end_position(chat_template, endfor, endif)
@@ -653,10 +659,13 @@ def _fix_chat_template(chat_template):
         return chat_template
 
     where = chat_template.find(chosen_end)
-
-    after_endfor = chat_template[where + len(chosen_end) :]
-
+    after_endfor_raw = chat_template[where + len(chosen_end) :]
+    after_endfor = after_endfor_raw.strip()
     dash = "-" if chosen_end.startswith("{%-") else ""
+    prefix_ws = after_endfor_raw[
+        : len(after_endfor_raw) - len(after_endfor_raw.lstrip())
+    ]
+    suffix_ws = after_endfor_raw[len(after_endfor_raw.rstrip()) :]
 
     if (
         "{%" + dash + " if" not in after_endfor
@@ -666,11 +675,10 @@ def _fix_chat_template(chat_template):
         and after_endfor.count("{{") == 1
         and after_endfor.count("}}") == 1
     ):
-        after_endfor = (
-            "{%" + dash + " if add_generation_prompt %}" + after_endfor + endif
+        wrapped = "{%" + dash + " if add_generation_prompt %}" + after_endfor + endif
+        chat_template = (
+            chat_template[: where + len(chosen_end)] + prefix_ws + wrapped + suffix_ws
         )
-
-        chat_template = chat_template[: where + len(chosen_end)] + after_endfor
     return chat_template
 
 
