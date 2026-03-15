@@ -60,9 +60,9 @@ export function ImportDialog({
         </DialogHeader>
         <div className="grid gap-2">
           <FieldLabel
-            label="JSON payload"
+            label="Recipe JSON"
             htmlFor={payloadId}
-            hint="Paste exported recipe payload JSON."
+            hint="Paste JSON exported from Recipe Studio."
           />
           <Textarea
             id={payloadId}
@@ -79,7 +79,7 @@ export function ImportDialog({
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={handleImport}>
-            Import
+            Import recipe
           </Button>
         </DialogFooter>
       </DialogContent>

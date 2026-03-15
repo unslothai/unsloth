@@ -12,7 +12,7 @@ export const studioMethodStep: TourStep = {
       LoRA: trains small adapter weights (fast, common default). QLoRA: LoRA on
       4-bit base weights (much lower VRAM). Full: updates all weights (highest
       cost, usually needs more data to be worth it).{" "}
-      <ReadMore href="https://docs.unsloth.ai/basics/lora-hyperparameters-guide" />
+      <ReadMore href="https://unsloth.ai/docs/basics/lora-hyperparameters-guide" />
     </>
   ),
 };

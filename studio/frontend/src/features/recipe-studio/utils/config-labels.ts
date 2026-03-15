@@ -10,21 +10,21 @@ import type {
 const SAMPLER_LABELS: Record<SamplerType, string> = {
   category: "Category",
   subcategory: "Subcategory",
-  uniform: "Uniform",
-  gaussian: "Gaussian",
-  bernoulli: "Bernoulli",
-  datetime: "Datetime",
-  timedelta: "Timedelta",
-  uuid: "UUID",
-  person: "Person",
-  person_from_faker: "Person (Faker)",
+  uniform: "Random number",
+  gaussian: "Bell-curve number",
+  bernoulli: "Yes/no value",
+  datetime: "Date and time",
+  timedelta: "Time offset",
+  uuid: "Unique ID",
+  person: "Synthetic person",
+  person_from_faker: "Synthetic person",
 };
 
 const LLM_LABELS: Record<LlmType, string> = {
-  text: "LLM Text",
-  structured: "LLM Structured",
-  code: "LLM Code",
-  judge: "LLM Judge",
+  text: "AI text",
+  structured: "AI structured data",
+  code: "AI code",
+  judge: "AI scorer",
 };
 
 const EXPRESSION_LABELS: Record<ExpressionDtype, string> = {
@@ -35,13 +35,13 @@ const EXPRESSION_LABELS: Record<ExpressionDtype, string> = {
 };
 
 export function labelForSampler(type: SamplerType): string {
-  return SAMPLER_LABELS[type] ?? "Sampler";
+  return SAMPLER_LABELS[type] ?? "Generated field";
 }
 
 export function labelForLlm(type: LlmType): string {
-  return LLM_LABELS[type] ?? "LLM";
+  return LLM_LABELS[type] ?? "AI";
 }
 
 export function labelForExpression(type: ExpressionDtype): string {
-  return EXPRESSION_LABELS[type] ?? "Expression";
+  return EXPRESSION_LABELS[type] ?? "Formula";
 }

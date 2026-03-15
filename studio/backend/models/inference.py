@@ -240,7 +240,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(0.7, ge = 0.0, le = 2.0)
     top_p: float = Field(0.9, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
-        2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
+        None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──

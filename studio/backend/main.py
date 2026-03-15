@@ -160,21 +160,69 @@ async def health_check():
 async def get_system_info():
     """Get system information"""
     import platform
+    import subprocess
     import psutil
     from utils.hardware import get_device, get_gpu_memory_info, DeviceType
 
-    # GPU Info — uses the hardware module (works on CUDA, MPS, CPU)
-    mem_info = get_gpu_memory_info()
-    gpu_info = {"available": mem_info.get("available", False), "devices": []}
+    # GPU Info — query nvidia-smi for physical GPUs, filtered by
+    # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF
+    # fit estimation and llama-server respects CVD too).
+    import os
 
-    if mem_info.get("available"):
-        gpu_info["devices"].append(
-            {
-                "index": mem_info.get("device", 0),
-                "name": mem_info.get("device_name", "Unknown"),
-                "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-            }
-        )
+    gpu_info: dict = {"available": False, "devices": []}
+
+    device = get_device()
+    if device == DeviceType.CUDA:
+        # Parse CUDA_VISIBLE_DEVICES allowlist
+        allowed_indices = None
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and cvd.strip():
+            try:
+                allowed_indices = set(int(x.strip()) for x in cvd.split(","))
+            except ValueError:
+                pass  # Non-numeric (e.g. GPU-uuid), show all
+
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,name,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) == 3:
+                        idx = int(parts[0])
+                        if allowed_indices is not None and idx not in allowed_indices:
+                            continue
+                        gpu_info["devices"].append(
+                            {
+                                "index": idx,
+                                "name": parts[1],
+                                "memory_total_gb": round(int(parts[2]) / 1024, 2),
+                            }
+                        )
+                gpu_info["available"] = len(gpu_info["devices"]) > 0
+        except Exception:
+            pass
+
+    # Fallback to torch-based single-GPU detection
+    if not gpu_info["available"]:
+        mem_info = get_gpu_memory_info()
+        if mem_info.get("available"):
+            gpu_info["available"] = True
+            gpu_info["devices"].append(
+                {
+                    "index": mem_info.get("device", 0),
+                    "name": mem_info.get("device_name", "Unknown"),
+                    "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
+                }
+            )
 
     # CPU & Memory
     memory = psutil.virtual_memory()

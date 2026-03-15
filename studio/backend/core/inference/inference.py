@@ -881,6 +881,7 @@ class InferenceBackend:
             output = ""
             from queue import Empty
 
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -888,9 +889,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -898,7 +901,7 @@ class InferenceBackend:
                         cleaned = self._clean_generated_text(output)
                         yield cleaned
             finally:
-                if cancel_event is not None:
+                if cancel_event is not None and not generation_complete:
                     cancel_event.set()
                 thread.join(timeout = 10)
                 if thread.is_alive():
@@ -1162,6 +1165,7 @@ class InferenceBackend:
             output = ""
             from queue import Empty
 
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -1169,9 +1173,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -1179,7 +1185,12 @@ class InferenceBackend:
                         cleaned = self._clean_generated_text(output)
                         yield cleaned
             finally:
-                if cancel_event is not None:
+                # Only set cancel_event when we exited early (user cancel),
+                # NOT on normal completion.  cancel_event is a shared mp.Event
+                # — setting it unconditionally would leave a stale cancel
+                # signal that could interfere with the next serialized
+                # generation request (e.g. in compare mode).
+                if cancel_event is not None and not generation_complete:
                     cancel_event.set()
                 thread.join(timeout = 10)
                 if thread.is_alive():

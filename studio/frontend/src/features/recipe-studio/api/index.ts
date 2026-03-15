@@ -13,6 +13,20 @@ export type JobCreateResponse = {
   job_id: string;
 };
 
+export type PublishRecipeJobRequest = {
+  repo_id: string;
+  description: string;
+  hf_token?: string | null;
+  private?: boolean;
+  artifact_path?: string | null;
+};
+
+export type PublishRecipeJobResponse = {
+  success: boolean;
+  url: string;
+  message: string;
+};
+
 export type JobStatusResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
   job_id: string;
@@ -269,6 +283,13 @@ export async function getRecipeJobDataset(
 
 export async function cancelRecipeJob(jobId: string): Promise<JobStatusResponse> {
   return postJson<JobStatusResponse>(`/jobs/${jobId}/cancel`, {});
+}
+
+export async function publishRecipeJob(
+  jobId: string,
+  payload: PublishRecipeJobRequest,
+): Promise<PublishRecipeJobResponse> {
+  return postJson<PublishRecipeJobResponse>(`/jobs/${jobId}/publish`, payload);
 }
 
 export async function inspectSeedDataset(

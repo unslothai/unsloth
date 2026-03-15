@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  getGgufDownloadProgress,
   getInferenceStatus,
   listLoras,
   listModels,
@@ -24,6 +25,8 @@ type SelectedModelInput = {
   isLora?: boolean;
   ggufVariant?: string;
   loadingDescription?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
 };
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -146,7 +149,13 @@ export function useChatModelRuntime() {
   const [loadingModel, setLoadingModel] = useState<{
     id: string;
     displayName: string;
+    isDownloaded?: boolean;
   } | null>(null);
+  const [_loadAbortController, setLoadAbortController] =
+    useState<AbortController | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const loadingModelRef = useRef<typeof loadingModel>(null);
+  const loadToastIdRef = useRef<string | number | null>(null);
 
   const refresh = useCallback(async () => {
     setModelsError(null);
@@ -187,6 +196,8 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isLora;
       const extraLoadingDescription =
         typeof selection === "string" ? undefined : selection.loadingDescription;
+      const isDownloaded =
+        typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
@@ -208,15 +219,23 @@ export function useChatModelRuntime() {
       const loadingDescription = [
         currentCheckpoint ? "Unloading previous model first." : null,
         extraLoadingDescription ?? null,
-        "This may include downloading. Large models can take a while.",
+        isDownloaded
+          ? "Loading cached model into memory."
+          : "Downloading and loading model. Large models can take a while.",
       ]
         .filter(Boolean)
         .join(" ");
 
       setModelsError(null);
-      setLoadingModel({ id: modelId, displayName });
+      const loadInfo = { id: modelId, displayName, isDownloaded };
+      setLoadingModel(loadInfo);
+      loadingModelRef.current = loadInfo;
+      const abortCtrl = new AbortController();
+      setLoadAbortController(abortCtrl);
+      loadAbortRef.current = abortCtrl;
       try {
         async function performLoad(): Promise<void> {
+          if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
@@ -249,12 +268,18 @@ export function useChatModelRuntime() {
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
             });
 
+            // If cancelled while loading, don't update UI to show
+            // the model as active -- it's being unloaded.
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
             await refresh();
           } catch (error) {
+            // Skip rollback if user cancelled -- model is already being unloaded.
+            if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
               try {
@@ -275,19 +300,108 @@ export function useChatModelRuntime() {
           }
         }
 
-        const loadPromise = performLoad().finally(() => {
-          setLoadingModel(null);
-        });
+        const toastId = toast.loading(
+          isDownloaded ? "Loading model…" : "Downloading model…",
+          {
+            description: loadingDescription,
+            duration: 10000,
+            action: {
+              label: "Cancel",
+              onClick: () => {
+                abortCtrl.abort();
+                setLoadingModel(null);
+                setLoadAbortController(null);
+                loadingModelRef.current = null;
+                loadAbortRef.current = null;
+                loadToastIdRef.current = null;
+                unloadModel({ model_path: modelId }).catch(() => {});
+                clearCheckpoint();
+                toast.dismiss(toastId);
+                toast.info("Model loading cancelled");
+              },
+            },
+          },
+        );
+        loadToastIdRef.current = toastId;
 
-        await toast.promise(loadPromise, {
-          loading: "Loading model…",
-          success: `${displayName} loaded`,
-          error: (err) =>
-            err instanceof Error ? err.message : "Failed to load model",
-          description: loadingDescription,
-        });
+        // Poll download progress for non-cached models
+        let progressInterval: ReturnType<typeof setInterval> | null = null;
+        if (!isDownloaded && ggufVariant) {
+          const expectedBytes =
+            typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
+          if (expectedBytes > 0) {
+            progressInterval = setInterval(async () => {
+              if (abortCtrl.signal.aborted) {
+                if (progressInterval) clearInterval(progressInterval);
+                return;
+              }
+              try {
+                const prog = await getGgufDownloadProgress(modelId, ggufVariant ?? "", expectedBytes);
+                if (prog.progress > 0 && prog.progress < 1) {
+                  const dlGb = prog.downloaded_bytes / (1024 ** 3);
+                  const totalGb = prog.expected_bytes / (1024 ** 3);
+                  const pct = Math.round(prog.progress * 100);
+                  toast.loading(
+                    `Downloading model… ${pct}%`,
+                    {
+                      id: toastId,
+                      description: `${dlGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`,
+                      duration: 10000,
+                      action: {
+                        label: "Cancel",
+                        onClick: () => {
+                          abortCtrl.abort();
+                          setLoadingModel(null);
+                          setLoadAbortController(null);
+                          loadingModelRef.current = null;
+                          loadAbortRef.current = null;
+                          loadToastIdRef.current = null;
+                          unloadModel({ model_path: modelId }).catch(() => {});
+                          clearCheckpoint();
+                          toast.dismiss(toastId);
+                          toast.info("Model loading cancelled");
+                        },
+                      },
+                    },
+                  );
+                } else if (prog.progress >= 1) {
+                  toast.loading("Loading model…", {
+                    id: toastId,
+                    description: "Download complete. Starting inference server…",
+                    duration: 10000,
+                  });
+                  if (progressInterval) clearInterval(progressInterval);
+                }
+              } catch {
+                // Ignore polling errors
+              }
+            }, 2000);
+          }
+        }
+
+        try {
+          await performLoad();
+          toast.success(`${displayName} loaded`, { id: toastId });
+        } catch (err) {
+          if (!abortCtrl.signal.aborted) {
+            toast.error(
+              err instanceof Error ? err.message : "Failed to load model",
+              { id: toastId },
+            );
+          }
+          throw err;
+        } finally {
+          if (progressInterval) clearInterval(progressInterval);
+          setLoadingModel(null);
+          setLoadAbortController(null);
+          loadingModelRef.current = null;
+          loadAbortRef.current = null;
+          loadToastIdRef.current = null;
+        }
       } catch (error) {
+        if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         setLoadingModel(null);
+        loadingModelRef.current = null;
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
@@ -322,10 +436,28 @@ export function useChatModelRuntime() {
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 
+  const cancelLoading = useCallback(() => {
+    const model = loadingModelRef.current;
+    if (!model) return;
+    loadAbortRef.current?.abort();
+    loadAbortRef.current = null;
+    loadingModelRef.current = null;
+    const tid = loadToastIdRef.current;
+    loadToastIdRef.current = null;
+    setLoadingModel(null);
+    setLoadAbortController(null);
+    clearCheckpoint();
+    if (tid != null) toast.dismiss(tid);
+    toast.info("Model loading cancelled");
+    // Fire-and-forget: tell backend to stop, don't block UI
+    unloadModel({ model_path: model.id }).catch(() => {});
+  }, [clearCheckpoint]);
+
   return {
     refresh,
     selectModel,
     ejectModel,
+    cancelLoading,
     loadingModel,
   };
 }

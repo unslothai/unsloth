@@ -122,9 +122,13 @@ async def load_model(
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
             # Route to HF mode or local mode based on config
+            # Run in a thread so the event loop stays free for progress
+            # polling and other requests during the (potentially long)
+            # GGUF download + llama-server startup.
             if config.gguf_hf_repo:
-                # HF mode: llama-server downloads via -hf "repo:quant"
-                success = llama_backend.load_model(
+                # HF mode: download via huggingface_hub then start llama-server
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
@@ -134,7 +138,8 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                success = llama_backend.load_model(
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     model_identifier = config.identifier,
@@ -343,11 +348,11 @@ async def unload_model(
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
-        # Check if the GGUF backend has this model loaded
+        # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_loaded
-            and llama_backend.model_identifier == request.model_path
+        if llama_backend.is_active and (
+            llama_backend.model_identifier == request.model_path
+            or not llama_backend.is_loaded
         ):
             llama_backend.unload_model()
             logger.info(f"Unloaded GGUF model: {request.model_path}")
@@ -864,7 +869,7 @@ async def openai_chat_completions(
                 top_p = payload.top_p,
                 top_k = payload.top_k,
                 min_p = payload.min_p,
-                max_tokens = payload.max_tokens or 2048,
+                max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 cancel_event = cancel_event,
             )
@@ -1051,7 +1056,22 @@ async def openai_chat_completions(
                 yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
                 prev_text = ""
-                for cumulative in generate():
+                # Run sync generator in thread pool to avoid blocking
+                # the event loop. Critical for compare mode: two SSE
+                # requests arrive concurrently but the orchestrator
+                # serializes them via _gen_lock. Without run_in_executor
+                # the second request's blocking lock acquisition would
+                # freeze the entire event loop, stalling both streams.
+                _DONE = object()  # sentinel for generator exhaustion
+                loop = asyncio.get_event_loop()
+                gen = generate()
+                while True:
+                    # next(gen, _DONE) returns _DONE instead of raising
+                    # StopIteration — StopIteration cannot propagate
+                    # through asyncio futures (Python limitation).
+                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+                    if cumulative is _DONE:
+                        break
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()

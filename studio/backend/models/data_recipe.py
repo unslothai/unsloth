@@ -40,6 +40,33 @@ class JobCreateResponse(BaseModel):
     job_id: str
 
 
+class PublishDatasetRequest(BaseModel):
+    repo_id: str = Field(min_length = 3, description = "Hugging Face dataset repo ID")
+    description: str = Field(
+        min_length = 1,
+        max_length = 4000,
+        description = "Short dataset description for the dataset card",
+    )
+    hf_token: str | None = Field(
+        default = None,
+        description = "Optional Hugging Face token for private or write-protected repos",
+    )
+    private: bool = Field(
+        default = False,
+        description = "Create or update the dataset repo as private",
+    )
+    artifact_path: str | None = Field(
+        default = None,
+        description = "Execution artifact path captured by the UI for completed runs",
+    )
+
+
+class PublishDatasetResponse(BaseModel):
+    success: bool = True
+    url: str
+    message: str
+
+
 class SeedInspectRequest(BaseModel):
     dataset_name: str = Field(min_length = 1)
     hf_token: str | None = None
