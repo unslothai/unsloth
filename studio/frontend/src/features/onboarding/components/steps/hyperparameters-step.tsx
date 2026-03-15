@@ -23,7 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
-import { useTrainingConfigStore } from "@/features/training";
+import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
@@ -35,6 +35,8 @@ export function HyperparametersStep() {
     setMaxSteps,
     epochs,
     setEpochs,
+    saveSteps,
+    setSaveSteps,
     contextLength,
     setContextLength,
     learningRate,
@@ -52,6 +54,8 @@ export function HyperparametersStep() {
       setMaxSteps: s.setMaxSteps,
       epochs: s.epochs,
       setEpochs: s.setEpochs,
+      saveSteps: s.saveSteps,
+      setSaveSteps: s.setSaveSteps,
       contextLength: s.contextLength,
       setContextLength: s.setContextLength,
       learningRate: s.learningRate,
@@ -67,6 +71,15 @@ export function HyperparametersStep() {
 
   const showLoraParams =
     trainingMethod === "lora" || trainingMethod === "qlora";
+  const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
+    maxSteps,
+    epochs,
+    saveSteps,
+    setMaxSteps,
+    setEpochs,
+    setSaveSteps,
+  });
+
   const maxStepsSliderMax = Math.max(500, maxSteps, 30);
   const epochsSliderMax = Math.max(10, epochs, 1);
 
@@ -75,52 +88,84 @@ export function HyperparametersStep() {
       <FieldSet>
         <FieldLegend variant="label">Training</FieldLegend>
         <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-              Max Steps
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-muted-foreground/50 hover:text-muted-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3.5"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Override total steps. Set 0 to use epochs instead.{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    Read more
-                  </a>
-                </TooltipContent>
-              </Tooltip>
-            </FieldLabel>
-            <div className="flex items-center gap-3">
-              <Slider
-                value={[Math.min(maxStepsSliderMax, Math.max(0, maxSteps))]}
-                onValueChange={([v]) => setMaxSteps(v)}
-                min={0}
-                max={maxStepsSliderMax}
-                step={1}
-                className="w-40"
-              />
-              <input
-                type="number"
-                value={maxSteps}
-                onChange={(e) => setMaxSteps(Number(e.target.value))}
-                min={0}
-                max={maxStepsSliderMax}
-                step={1}
-                className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
-              />
+          <div
+            key={useEpochs ? "epochs" : "steps"}
+            className="flex flex-col gap-2 animate-in fade-in-1 slide-in-from-bottom-1 duration-200"
+          >
+            <div className="flex items-center justify-between">
+              <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
+                {useEpochs ? "Epochs" : "Max Steps"}
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-muted-foreground/50 hover:text-muted-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3.5"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {useEpochs
+                      ? "Number of full passes over the dataset."
+                      : "Override total optimizer steps."}{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      Read more
+                    </a>
+                  </TooltipContent>
+                </Tooltip>
+              </FieldLabel>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={toggleUseEpochs}
+                  className="text-xs text-primary underline cursor-pointer"
+                >
+                  {useEpochs ? "Use Max Steps" : "Use Epochs"}
+                </button>
+                <Slider
+                  value={[
+                    useEpochs
+                      ? Math.min(epochsSliderMax, Math.max(1, epochs))
+                      : Math.min(maxStepsSliderMax, Math.max(1, maxSteps)),
+                  ]}
+                  onValueChange={([v]) =>
+                    useEpochs ? setEpochs(v) : setMaxSteps(v)
+                  }
+                  min={1}
+                  max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
+                  step={1}
+                  className="w-40"
+                />
+                <input
+                  type="number"
+                  value={useEpochs ? epochs : maxSteps}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") return;
+
+                    const value = Number(raw);
+                    if (!Number.isFinite(value) || value < 1) return;
+
+                    if (useEpochs) {
+                      setEpochs(value);
+                    } else {
+                      setMaxSteps(value);
+                    }
+                  }}
+                  min={1}
+                  max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
+                  step={1}
+                  className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                />
+              </div>
             </div>
           </div>
 
@@ -206,55 +251,6 @@ export function HyperparametersStep() {
             />
           </div>
 
-          <div className="flex items-center justify-between">
-            <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
-              Epochs
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-muted-foreground/50 hover:text-muted-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3.5"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Number of full passes over the dataset. Set 0 to run by max
-                  steps.{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    Read more
-                  </a>
-                </TooltipContent>
-              </Tooltip>
-            </FieldLabel>
-            <div className="flex items-center gap-3">
-              <Slider
-                value={[Math.min(epochsSliderMax, Math.max(0, epochs))]}
-                onValueChange={([v]) => setEpochs(v)}
-                min={0}
-                max={epochsSliderMax}
-                step={1}
-                className="w-40"
-              />
-              <input
-                type="number"
-                value={epochs}
-                onChange={(e) => setEpochs(Number(e.target.value))}
-                min={0}
-                max={epochsSliderMax}
-                step={1}
-                className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
-              />
-            </div>
-          </div>
         </div>
       </FieldSet>
 
