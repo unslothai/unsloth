@@ -49,7 +49,21 @@ def ui(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
-            os.execvp(str(studio_python), args)
+            # On Windows, os.execvp() spawns a child but the parent lingers,
+            # so Ctrl+C only kills the parent leaving the child orphaned.
+            # Use subprocess.run() on Windows so the parent waits for the child.
+            if sys.platform == "win32":
+                import subprocess as _sp
+
+                proc = _sp.Popen(args)
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    # Child has its own signal handler — let it finish
+                    rc = proc.wait()
+                raise typer.Exit(rc)
+            else:
+                os.execvp(str(studio_python), args)
         else:
             typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
             raise typer.Exit(1)
@@ -69,8 +83,16 @@ def ui(
         silent = silent,
     )
 
+    from studio.backend.run import _shutdown_event
+
     try:
-        while True:
-            time.sleep(1)
+        if _shutdown_event is not None:
+            _shutdown_event.wait()
+        else:
+            while True:
+                time.sleep(1)
     except KeyboardInterrupt:
+        from studio.backend.run import _graceful_shutdown, _server
+
+        _graceful_shutdown(_server)
         typer.echo("\nShutting down...")
