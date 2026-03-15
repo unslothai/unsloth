@@ -6,6 +6,18 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+const THUMB_SIZE_PX = 16;
+
+function getThumbInBoundsOffset(width: number, percent: number) {
+  const halfWidth = width / 2;
+  const halfPercent = 50;
+
+  if (percent <= 0) return halfWidth;
+  if (percent >= 100) return -halfWidth;
+
+  return halfWidth - (percent / halfPercent) * halfWidth;
+}
+
 function Slider({
   className,
   defaultValue,
@@ -32,11 +44,6 @@ function Slider({
     },
     [isControlled, onValueChange],
   );
-
-  // For single-thumb horizontal sliders, render the fill bar as a sibling of
-  // the track (outside its overflow-hidden container) so it can align flush
-  // with the thumb center without being clipped. The Range inside the track
-  // is hidden in this case to avoid double-painting.
   const isSingleThumbHorizontal =
     values.length === 1 && orientation === "horizontal";
   const fillPercent = isSingleThumbHorizontal
@@ -48,6 +55,12 @@ function Slider({
         ),
       )
     : null;
+  const fillWidth =
+    fillPercent === null
+      ? undefined
+      : fillPercent <= 0
+        ? "0%"
+        : `calc(${fillPercent}% + ${getThumbInBoundsOffset(THUMB_SIZE_PX, fillPercent)}px)`;
 
   return (
     <SliderPrimitive.Root
@@ -75,19 +88,22 @@ function Slider({
             isSingleThumbHorizontal && "opacity-0",
           )}
         />
+        {isSingleThumbHorizontal && (
+          <div
+            aria-hidden={true}
+            className={cn(
+              "absolute inset-y-0 left-0 bg-primary pointer-events-none",
+              fillPercent === 100 ? "rounded-4xl" : "rounded-l-4xl",
+            )}
+            style={{ width: fillWidth }}
+          />
+        )}
       </SliderPrimitive.Track>
-      {isSingleThumbHorizontal && (
-        <div
-          aria-hidden={true}
-          className="absolute inset-y-0 left-0 my-auto h-3 rounded-4xl bg-primary pointer-events-none"
-          style={{ width: `${fillPercent}%` }}
-        />
-      )}
       {Array.from({ length: values.length }, (_, index) => (
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          className="border-primary ring-ring/50 size-4 rounded-4xl border bg-white shadow-sm block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 transition-transform duration-100 ease-out hover:scale-110 hover:ring-4 active:scale-95 focus-visible:ring-4 focus-visible:outline-hidden"
+          className="border-primary ring-ring/50 relative z-10 size-4 rounded-4xl border bg-white shadow-sm block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 transition-transform duration-100 ease-out hover:scale-110 hover:ring-4 active:scale-95 focus-visible:ring-4 focus-visible:outline-hidden"
         />
       ))}
     </SliderPrimitive.Root>

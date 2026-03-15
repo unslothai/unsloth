@@ -6,8 +6,10 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckmarkCircle02Icon,
   Flag02Icon,
+  Share08Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { publishRecipeJob } from "../../api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -23,6 +25,7 @@ import { ExecutionDataTab } from "./execution-data-tab";
 import { ExecutionOverviewTab } from "./execution-overview-tab";
 import { ExecutionRawTab } from "./execution-raw-tab";
 import { ExecutionSidebar } from "./execution-sidebar";
+import { PublishExecutionDialog } from "./publish-execution-dialog";
 import {
   PREVIEW_DATASET_PAGE_SIZE,
   TERMINAL_STICKY_BOTTOM_THRESHOLD_PX,
@@ -66,6 +69,7 @@ export function ExecutionsView({
   const [previewDatasetPageByExecution, setPreviewDatasetPageByExecution] = useState<
     Record<string, number>
   >({});
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTerminalToBottomRef = useRef(true);
   const selectedExecution = useMemo(
@@ -182,6 +186,13 @@ export function ExecutionsView({
 
   const canCancel = Boolean(
     selectedExecution?.jobId && isExecutionInProgress(selectedExecution.status),
+  );
+  const canPublish = Boolean(
+    selectedExecution &&
+      selectedExecution.kind === "full" &&
+      selectedExecution.status === "completed" &&
+      selectedExecution.jobId &&
+      selectedExecution.artifact_path,
   );
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
@@ -434,16 +445,29 @@ export function ExecutionsView({
                   <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="raw">Raw</TabsTrigger>
                 </TabsList>
-                {canCancel && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onCancelExecution(selectedExecution.id)}
-                  >
-                    Cancel
-                  </Button>
-                )}
+                <div className="flex items-center gap-2">
+                  {canPublish && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPublishDialogOpen(true)}
+                    >
+                      <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
+                      Publish to Hugging Face
+                    </Button>
+                  )}
+                  {canCancel && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onCancelExecution(selectedExecution.id)}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
               </div>
               <TabsContent value="overview">
                 <ExecutionOverviewTab
@@ -460,6 +484,8 @@ export function ExecutionsView({
                   modelUsageRows={modelUsageRows}
                   terminalLines={terminalLines}
                   terminalRef={terminalRef}
+                  canPublish={canPublish}
+                  onOpenPublish={() => setPublishDialogOpen(true)}
                   onTerminalScroll={(event) => {
                     const element = event.currentTarget;
                     const distanceFromBottom =
@@ -538,6 +564,18 @@ export function ExecutionsView({
           </div>
         )}
       </section>
+      <PublishExecutionDialog
+        open={publishDialogOpen}
+        onOpenChange={setPublishDialogOpen}
+        execution={canPublish ? selectedExecution : null}
+        onPublish={async (payload) => {
+          if (!selectedExecution?.jobId) {
+            throw new Error("This run is missing a job id.");
+          }
+          const response = await publishRecipeJob(selectedExecution.jobId, payload);
+          return { url: response.url };
+        }}
+      />
     </div>
   );
 }

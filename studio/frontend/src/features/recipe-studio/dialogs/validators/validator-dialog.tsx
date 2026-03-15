@@ -38,6 +38,7 @@ import {
   OXC_VALIDATION_MODES,
   normalizeOxcValidationMode,
 } from "../../utils/validators/oxc-mode";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
@@ -101,14 +102,16 @@ export function ValidatorDialog({
   return (
     <div className="space-y-4">
       <NameField
+        label="Check name"
+        hint="Name used for this check in the canvas and run results."
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-2">
         <FieldLabel
-          label="Target code column"
+          label="Code to check"
           htmlFor={targetColumnId}
-          hint="Must reference an LLM Code block."
+          hint="Choose the AI code step this check should review."
         />
         <Select
           value={currentTarget || NONE_VALUE}
@@ -146,20 +149,20 @@ export function ValidatorDialog({
           </SelectContent>
         </Select>
         {codeOptions.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            {config.validator_type === "oxc"
-              ? "Add an LLM Code block with javascript/typescript first."
-              : "Add an LLM Code block first."}
-          </p>
+              <p className="text-xs text-muted-foreground">
+                {config.validator_type === "oxc"
+                  ? "Add an AI code step that generates JavaScript or TypeScript first."
+                  : "Add an AI code step first."}
+              </p>
         )}
       </div>
       {config.validator_type === "oxc" && (
         <div className="grid gap-3">
           <div className="grid gap-2">
             <FieldLabel
-              label="Validation mode"
+              label="Check mode"
               htmlFor={oxcModeId}
-              hint="syntax: parser only. lint: oxlint only. syntax+lint: both."
+              hint="Choose whether to check syntax, lint rules, or both."
             />
             <div ref={oxcModeAnchorRef}>
               <Combobox
@@ -198,7 +201,7 @@ export function ValidatorDialog({
             <FieldLabel
               label="Code shape"
               htmlFor={oxcCodeShapeId}
-              hint="auto: detect module/snippet. module: strict file. snippet: wrapped fragment."
+              hint="Choose whether the code should be treated like a full file or a smaller snippet."
             />
             <div ref={oxcCodeShapeAnchorRef}>
               <Combobox
@@ -240,20 +243,17 @@ export function ValidatorDialog({
         onOpenChange={(open) => onUpdate({ advancedOpen: open })}
       >
         <CollapsibleTrigger asChild={true}>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
-          >
-            <span className="font-semibold uppercase">Advanced</span>
-            <span>{advancedOpen ? "Hide" : "Show"}</span>
-          </button>
+          <CollapsibleSectionTriggerButton
+            label="Advanced check settings"
+            open={advancedOpen}
+          />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3">
           <div className="grid gap-2">
             <FieldLabel
               label="Batch size"
               htmlFor={batchSizeId}
-              hint="Records per validation batch."
+              hint="How many records to check at a time."
             />
             <Input
               id={batchSizeId}

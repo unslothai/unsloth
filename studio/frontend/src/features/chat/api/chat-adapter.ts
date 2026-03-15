@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import type { MessageTiming } from "@assistant-ui/core";
 import { toast } from "sonner";
 import { generateAudio, streamChatCompletions } from "./chat-api";
 import { db } from "../db";
@@ -16,6 +17,37 @@ type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+function estimateTokenCount(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return Math.max(1, Math.round(trimmed.length / 4));
+}
+
+function buildTiming(
+  streamStartTime: number,
+  totalChunks: number,
+  firstTokenTime?: number,
+  totalStreamTime?: number,
+  tokenCount?: number,
+): MessageTiming {
+  return {
+    streamStartTime,
+    firstTokenTime,
+    totalStreamTime,
+    tokenCount,
+    tokensPerSecond:
+      typeof totalStreamTime === "number" &&
+      totalStreamTime > 0 &&
+      typeof tokenCount === "number"
+        ? tokenCount / (totalStreamTime / 1000)
+        : undefined,
+    totalChunks,
+    toolCallCount: 0,
+  };
+}
 
 function collectTextParts(message: RunMessage): string[] {
   const textParts = message.content
@@ -227,6 +259,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
+      const streamStartTime = Date.now();
+      let firstTokenTime: number | undefined;
+      let totalChunks = 0;
       let resolveFirstToken: (() => void) | null = null;
       let rejectFirstToken: ((err: unknown) => void) | null = null;
       const firstTokenPromise = new Promise<void>((resolve, reject) => {
@@ -288,12 +323,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
 
         for await (const chunk of stream) {
+          totalChunks += 1;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (!delta) {
             continue;
           }
           if (waitingFirstChunk) {
             waitingFirstChunk = false;
+            firstTokenTime = Date.now() - streamStartTime;
             settleFirstTokenOk();
           }
 
@@ -310,11 +347,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           if (parts.length > 0) {
             yield {
               content: parts,
-              metadata: { custom: { reasoningDuration } },
+              metadata: {
+                timing: buildTiming(
+                  streamStartTime,
+                  totalChunks,
+                  firstTokenTime,
+                ),
+                custom: { reasoningDuration },
+              },
             };
           }
         }
         settleFirstTokenOk();
+        yield {
+          metadata: {
+            timing: buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(cumulativeText),
+            ),
+            custom: { reasoningDuration },
+          },
+        };
       } catch (err) {
         settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
         const isEarly = waitingFirstChunk;

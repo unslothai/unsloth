@@ -12,7 +12,7 @@ export const studioBaseModelStep: TourStep = {
       Paste <span className="font-mono">org/model</span> or search. Pick a base
       model close to your task (chat/instruct vs base). Smaller models iterate
       faster; scale up once prompts + data look good.{" "}
-      <ReadMore href="https://docs.unsloth.ai/basics/fine-tuning-llms-guide" />
+      <ReadMore href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use" />
     </>
   ),
 };
