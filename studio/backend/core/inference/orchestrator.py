@@ -32,6 +32,13 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
+# Dispatcher timeout constants (seconds)
+_DISPATCH_READ_TIMEOUT = 30.0
+_DISPATCH_POLL_INTERVAL = 0.5
+_DISPATCH_STOP_TIMEOUT = 5.0
+_DISPATCH_IDLE_TIMEOUT = 30.0
+_DISPATCH_DRAIN_TIMEOUT = 5.0
+
 
 class InferenceOrchestrator:
     """
@@ -295,7 +302,7 @@ class InferenceOrchestrator:
         if self._dispatcher_thread is None:
             return
         self._dispatcher_stop.set()
-        self._dispatcher_thread.join(timeout = 5.0)
+        self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
         self._dispatcher_thread = None
         logger.debug("Dispatcher thread stopped")
 
@@ -306,7 +313,7 @@ class InferenceOrchestrator:
                 break
 
             try:
-                resp = self._resp_queue.get(timeout = 0.5)
+                resp = self._resp_queue.get(timeout = _DISPATCH_POLL_INTERVAL)
             except queue.Empty:
                 continue
             except (EOFError, OSError, ValueError):
@@ -414,7 +421,7 @@ class InferenceOrchestrator:
         try:
             while True:
                 try:
-                    resp = mailbox.get(timeout = 30.0)
+                    resp = mailbox.get(timeout = _DISPATCH_READ_TIMEOUT)
                 except queue.Empty:
                     # Timeout — check subprocess health
                     if not self._ensure_subprocess_alive():
@@ -448,7 +455,7 @@ class InferenceOrchestrator:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                resp = mailbox.get(timeout = min(0.5, deadline - time.monotonic()))
+                resp = mailbox.get(timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic()))
             except queue.Empty:
                 continue
             rtype = resp.get("type", "")
@@ -466,7 +473,7 @@ class InferenceOrchestrator:
             return
 
         # Wait for all mailboxes to be emptied (dispatched requests complete)
-        deadline = time.monotonic() + 30.0
+        deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
         while time.monotonic() < deadline:
             with self._mailbox_lock:
                 if not self._mailboxes:
