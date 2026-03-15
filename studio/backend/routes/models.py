@@ -649,7 +649,11 @@ async def get_gguf_download_progress(
                 break
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
-        progress = min(total_progress_bytes / expected_bytes, 0.99) if expected_bytes > 0 else 0
+        progress = (
+            min(total_progress_bytes / expected_bytes, 0.99)
+            if expected_bytes > 0
+            else 0
+        )
         # Only report 1.0 when all bytes are in completed files (not in-progress)
         if expected_bytes > 0 and downloaded_bytes >= expected_bytes:
             progress = 1.0
