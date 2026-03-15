@@ -190,7 +190,7 @@ export function LlmGeneralTab({
                   icon={ArrowRight01Icon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
-                <span>Add a Model connection step in AI generation → Setup.</span>
+                <span>Add a Provider connection step in AI generation → Setup.</span>
               </p>
             )}
             {!hasModelConfigs && (
@@ -199,7 +199,7 @@ export function LlmGeneralTab({
                   icon={ArrowRight01Icon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
-                <span>Add a Saved model step, connect it, then choose it below.</span>
+                <span>Add a Model preset step, connect it, then choose it below.</span>
               </p>
             )}
           </div>
@@ -207,7 +207,7 @@ export function LlmGeneralTab({
       ) : needsModelChoice ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
-            Start by choosing a saved model
+            Start by choosing a model preset
           </p>
           <p className="mt-1">
             Once that is in place, write the prompt and add optional tool access
@@ -217,9 +217,9 @@ export function LlmGeneralTab({
       ) : null}
       <div className="grid gap-2">
         <FieldLabel
-          label="Saved model"
+          label="Model preset"
           htmlFor={modelAliasId}
-          hint="Choose the saved model setup for this step."
+          hint="Choose the reusable model setup for this step."
         />
         <div ref={modelAliasAnchorRef}>
           <Combobox
@@ -234,7 +234,7 @@ export function LlmGeneralTab({
             <ComboboxInput
               id={modelAliasId}
               className="nodrag w-full"
-              placeholder="Choose a saved model"
+              placeholder="Choose a model preset"
               onBlur={(event) => {
                 const inputValue = event.target.value;
                 if (inputValue !== config.model_alias) {

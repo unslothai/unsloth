@@ -172,8 +172,8 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "sampler",
     type: "category",
-    title: "Pick from a list",
-    description: "Choose from a list of values, with optional weights or rules.",
+    title: "Category",
+    description: "Generate values from a list you define, with optional weights or rules.",
     icon: Tag01Icon,
     dialogKey: "category",
     createConfig: (id, existing) => makeSamplerConfig(id, "category", existing),
@@ -181,8 +181,8 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "sampler",
     type: "subcategory",
-    title: "Pick from a grouped list",
-    description: "Choose values that depend on another field.",
+    title: "Subcategory",
+    description: "Generate values from groups you define for each category.",
     icon: TagsIcon,
     dialogKey: "subcategory",
     createConfig: (id, existing) => makeSamplerConfig(id, "subcategory", existing),
@@ -289,7 +289,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "llm",
     type: "model_provider",
-    title: "Model connection",
+    title: "Provider connection",
     description: "Choose where model requests go and how to sign in.",
     icon: Shield02Icon,
     dialogKey: "model_provider",
@@ -298,7 +298,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
   {
     kind: "llm",
     type: "model_config",
-    title: "Saved model",
+    title: "Model preset",
     description: "Pick a model and save reusable generation settings.",
     icon: Plant01Icon,
     dialogKey: "model_config",

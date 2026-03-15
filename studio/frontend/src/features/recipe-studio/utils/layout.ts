@@ -4,7 +4,7 @@
 import dagre from "@dagrejs/dagre";
 import type { Edge, Node } from "@xyflow/react";
 import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "../constants";
-import type { LayoutDirection, NodeConfig } from "../types";
+import { INFRA_NODE_KINDS, type LayoutDirection, type NodeConfig } from "../types";
 import { readNodeHeight, readNodeWidth } from "./rf-node-dimensions";
 
 type LayoutOptions = {
@@ -16,8 +16,6 @@ type LayoutOptions = {
   nodeHeight?: number;
   configs?: Record<string, NodeConfig>;
 };
-
-const INFRA_KINDS = new Set(["model_provider", "model_config", "tool_config"]);
 
 /**
  * Pipeline rank order used to enforce a logical flow even for disconnected nodes.
@@ -48,7 +46,7 @@ function isInfraNode(
   configs: Record<string, NodeConfig>,
 ): boolean {
   const config = configs[nodeId];
-  return config ? INFRA_KINDS.has(config.kind) : false;
+  return config ? INFRA_NODE_KINDS.has(config.kind) : false;
 }
 
 function isAuxNode(nodeId: string): boolean {

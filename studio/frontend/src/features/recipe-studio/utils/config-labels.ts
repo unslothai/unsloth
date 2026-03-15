@@ -8,8 +8,8 @@ import type {
 } from "../types";
 
 const SAMPLER_LABELS: Record<SamplerType, string> = {
-  category: "Pick from a list",
-  subcategory: "Pick from a grouped list",
+  category: "Category",
+  subcategory: "Subcategory",
   uniform: "Random number",
   gaussian: "Bell-curve number",
   bernoulli: "Yes/no value",

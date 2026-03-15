@@ -59,7 +59,7 @@ export function ModelConfigDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Saved model name"
+        label="Model preset name"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
@@ -68,13 +68,13 @@ export function ModelConfigDialog({
           Set up one reusable model choice for your AI steps
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Choose the connection, enter the exact model ID, then save any
+          Choose the provider connection, enter the exact model ID, then save any
           generation defaults you want to reuse.
         </p>
       </div>
       <div className="grid gap-2">
         <FieldLabel
-          label="Connection"
+          label="Provider connection"
           htmlFor={providerId}
           hint="Choose where this model should run."
         />
@@ -94,7 +94,7 @@ export function ModelConfigDialog({
             <ComboboxInput
               id={providerId}
               className="nodrag w-full"
-              placeholder="Choose a connection"
+              placeholder="Choose a provider connection"
               onBlur={() => {
                 const next = providerInputRef.current;
                 if (next !== config.provider) {
@@ -116,7 +116,7 @@ export function ModelConfigDialog({
         </div>
         <p className="text-xs text-muted-foreground">
           {providerOptions.length === 0
-            ? "Add a Model connection step first, then come back here."
+            ? "Add a Provider connection step first, then come back here."
             : "Matching blocks are linked automatically on the canvas."}
         </p>
       </div>
@@ -140,7 +140,7 @@ export function ModelConfigDialog({
             Default generation settings
           </p>
           <p className="text-xs text-muted-foreground">
-            These defaults are reused anywhere you choose this saved model.
+            These defaults are reused anywhere you choose this model preset.
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { Edge } from "@xyflow/react";
-import type { NodeConfig } from "../types";
+import { INFRA_NODE_KINDS, type NodeConfig } from "../types";
 
 export type GraphWarning = {
   nodeId?: string;
@@ -37,7 +37,7 @@ function checkLlmModelAlias(allConfigs: NodeConfig[]): GraphWarning[] {
       warnings.push({
         nodeId: config.id,
         nodeName: config.name,
-        message: "Needs a model configuration.",
+        message: "Needs a model preset.",
         severity: "error",
       });
     }
@@ -52,7 +52,7 @@ function checkModelConfigProvider(allConfigs: NodeConfig[]): GraphWarning[] {
       warnings.push({
         nodeId: config.id,
         nodeName: config.name,
-        message: "Needs a model provider.",
+        message: "Needs a provider connection.",
         severity: "error",
       });
     }
@@ -108,9 +108,6 @@ function checkValidatorTargets(allConfigs: NodeConfig[]): GraphWarning[] {
   return warnings;
 }
 
-/** Kinds that are not part of the data pipeline and don't need data edges. */
-const INFRA_KINDS = new Set(["model_provider", "model_config", "tool_config"]);
-
 function checkDisconnectedNodes(
   allConfigs: NodeConfig[],
   edges: Edge[],
@@ -155,14 +152,14 @@ function checkLlmMissingDataInput(
     if (
       sourceConfig?.kind === "llm" &&
       targetConfig &&
-      !INFRA_KINDS.has(targetConfig.kind)
+      !INFRA_NODE_KINDS.has(targetConfig.kind)
     ) {
       llmWithPipelineEdge.add(sourceConfig.id);
     }
     if (
       targetConfig?.kind === "llm" &&
       sourceConfig &&
-      !INFRA_KINDS.has(sourceConfig.kind)
+      !INFRA_NODE_KINDS.has(sourceConfig.kind)
     ) {
       llmWithPipelineEdge.add(targetConfig.id);
     }

@@ -82,7 +82,7 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "model_provider") {
     return {
-      title: "Model connection",
+      title: "Provider connection",
       kind: "model_provider",
       subtype: config.provider_type || "Connection",
       blockType: "model_provider",
@@ -92,7 +92,7 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "model_config") {
     return {
-      title: "Saved model",
+      title: "Model preset",
       kind: "model_config",
       subtype: config.model || "Model",
       blockType: "model_config",

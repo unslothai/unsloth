@@ -4,11 +4,6 @@
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
@@ -23,7 +18,6 @@ import {
   PencilEdit02Icon,
   Plant01Icon,
   Plug01Icon,
-  PlusSignIcon,
   Shield02Icon,
   Tag01Icon,
   TagsIcon,
@@ -36,7 +30,7 @@ import {
   Position,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { type ReactElement, memo, useCallback, useEffect } from "react";
+import { type ReactElement, memo, useEffect } from "react";
 import {
   MAX_NODE_WIDTH,
   MAX_NOTE_NODE_WIDTH,
@@ -123,9 +117,6 @@ const NODE_META = {
     tone: RECIPE_STUDIO_NODE_TONES.tool_config,
   },
 } as const;
-const NODE_PLUS_BUTTON_CLASS =
-  "nodrag absolute top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-primary/45 bg-background text-primary shadow-sm transition-colors hover:bg-primary/10 dark:border-primary/40 dark:bg-background dark:hover:bg-primary/15";
-
 const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   category: Tag01Icon,
   subcategory: TagsIcon,
@@ -363,8 +354,6 @@ function RecipeGraphNodeBase({
   const config = useRecipeStudioStore((state) => state.configs[id]);
   const openConfig = useRecipeStudioStore((state) => state.openConfig);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
-  const setSheetOpen = useRecipeStudioStore((state) => state.setSheetOpen);
-  const setSheetView = useRecipeStudioStore((state) => state.setSheetView);
   const llmAuxVisible = useRecipeStudioStore(
     (state) => state.llmAuxVisibility[id] ?? false,
   );
@@ -375,16 +364,6 @@ function RecipeGraphNodeBase({
   const executionLocked = Boolean(data.executionLocked);
   const runtimeState = data.runtimeState ?? "idle";
   const connectionStatus = useNodeConnectionStatus(id, config);
-
-  const handlePlusClick = useCallback(
-    (
-      view: "root" | "llm" | "sampler" | "seed" | "validator" | "expression",
-    ) => {
-      setSheetView(view);
-      setSheetOpen(true);
-    },
-    [setSheetOpen, setSheetView],
-  );
 
   useEffect(() => {
     updateNodeInternals(id);
@@ -459,13 +438,6 @@ function RecipeGraphNodeBase({
   const hasConnectionIssue =
     connectionStatus.isDisconnected ||
     connectionStatus.missingDataInput;
-  const showDataPlusButton =
-    !executionLocked &&
-    showDataHandles &&
-    (connectionStatus.isDisconnected || connectionStatus.missingDataInput);
-  const showSemanticPlusButton =
-    !executionLocked &&
-    (connectionStatus.needsModelConfig || connectionStatus.needsProvider);
 
   return (
     <BaseNode
@@ -558,50 +530,6 @@ function RecipeGraphNodeBase({
       >
         {nodeBody}
       </BaseNodeContent>
-
-      {showDataPlusButton && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <button
-              type="button"
-              className={cn(NODE_PLUS_BUTTON_CLASS, "-left-3")}
-              onClick={(event) => {
-                event.stopPropagation();
-                handlePlusClick(data.kind === "llm" ? "root" : "llm");
-              }}
-            >
-              <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="left" className="text-xs">
-            {connectionStatus.isDisconnected
-              ? "Connect this block"
-              : "Add a data source"}
-          </TooltipContent>
-        </Tooltip>
-      )}
-
-      {showSemanticPlusButton && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <button
-              type="button"
-              className={cn(NODE_PLUS_BUTTON_CLASS, "-right-3")}
-              onClick={(event) => {
-                event.stopPropagation();
-                handlePlusClick("llm");
-              }}
-            >
-              <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" className="text-xs">
-            {connectionStatus.needsModelConfig
-              ? "Add a model configuration"
-              : "Add a model provider"}
-          </TooltipContent>
-        </Tooltip>
-      )}
 
       {showDataHandles && (
         <>
