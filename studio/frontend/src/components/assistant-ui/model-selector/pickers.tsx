@@ -206,7 +206,24 @@ function GgufVariantExpander({
     );
   }
 
-  if (!variants || variants.length === 0) {
+  const sortedVariants = useMemo(() => {
+    if (!variants) return variants;
+    return [...variants].sort((a, b) => {
+      const aIsRec = a.quant === defaultVariant;
+      const bIsRec = b.quant === defaultVariant;
+      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
+
+      const aGb = a.size_bytes / (1024 ** 3);
+      const bGb = b.size_bytes / (1024 ** 3);
+      const aOom = gpuGb != null && gpuGb > 0 && aGb > 0 && checkVramFit(aGb, gpuGb) === "exceeds";
+      const bOom = gpuGb != null && gpuGb > 0 && bGb > 0 && checkVramFit(bGb, gpuGb) === "exceeds";
+      if (aOom !== bOom) return aOom ? 1 : -1;
+
+      return b.size_bytes - a.size_bytes;
+    });
+  }, [variants, defaultVariant, gpuGb]);
+
+  if (!sortedVariants || sortedVariants.length === 0) {
     return (
       <div className="px-5 py-2 text-xs text-muted-foreground">
         No GGUF variants found.
@@ -224,7 +241,7 @@ function GgufVariantExpander({
           <span className="text-[9px] font-medium text-blue-400">Vision</span>
         )}
       </div>
-      {variants.map((v) => {
+      {sortedVariants.map((v) => {
         const sizeGb = v.size_bytes / (1024 ** 3);
         const fitStatus = gpuGb != null && gpuGb > 0 && sizeGb > 0
           ? checkVramFit(sizeGb, gpuGb)

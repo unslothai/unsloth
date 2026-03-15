@@ -962,18 +962,10 @@ def list_gguf_variants(
             )
         )
 
-    # Sort: recommended first, then UD variants by size, then non-UD by size.
-    best_file = _pick_best_gguf([v.filename for v in variants])
-    best_quant = _extract_quant_label(best_file) if best_file else None
-
-    def _sort_key(v: GgufVariantInfo) -> tuple:
-        is_recommended = v.quant == best_quant
-        is_ud = v.quant.startswith("UD-")
-        # (0, ...) recommended | (1, 0, -size) other UD | (1, 1, -size) non-UD
-        # Negative size so largest (best quality) appears first.
-        return (0 if is_recommended else 1, 0 if is_ud else 1, -v.size_bytes)
-
-    variants.sort(key = _sort_key)
+    # Sort by size descending (largest = best quality first).
+    # Recommended pinning and OOM demotion are handled client-side
+    # where GPU VRAM info is available.
+    variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
 
