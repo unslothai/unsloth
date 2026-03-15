@@ -191,18 +191,27 @@ function GgufVariantExpander({
     [repoId, onSelect],
   );
 
+  // GGUF OOM check: model file size must fit in 70% of total GPU memory,
+  // matching llama-server's _select_gpus logic (30% reserved for KV cache
+  // and compute buffers). gpuGb is already the sum across all GPUs.
+  const ggufBudgetGb = (gpuGb ?? 0) * 0.70;
+  const isGgufOom = useCallback(
+    (sizeBytes: number) => {
+      if (!gpuGb || gpuGb <= 0) return false;
+      const gb = sizeBytes / (1024 ** 3);
+      return gb > 0 && gb > ggufBudgetGb;
+    },
+    [gpuGb, ggufBudgetGb],
+  );
+
   // If the backend-recommended variant is OOM, pick the largest fitting
   // variant instead; if all are OOM, recommend the smallest one.
   const effectiveRecommended = useMemo(() => {
     if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
-    const isOom = (v: GgufVariantDetail) => {
-      const gb = v.size_bytes / (1024 ** 3);
-      return gb > 0 && checkVramFit(gb, gpuGb) === "exceeds";
-    };
     const defaultV = variants.find((v) => v.quant === defaultVariant);
-    if (defaultV && !isOom(defaultV)) return defaultVariant;
+    if (defaultV && !isGgufOom(defaultV.size_bytes)) return defaultVariant;
     // Default is OOM -- pick largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => !isOom(v));
+    const fitting = variants.filter((v) => !isGgufOom(v.size_bytes));
     if (fitting.length > 0) {
       fitting.sort((a, b) => b.size_bytes - a.size_bytes);
       return fitting[0].quant;
@@ -210,7 +219,7 @@ function GgufVariantExpander({
     // All OOM -- recommend smallest (most likely to run with --fit)
     const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
     return sorted[0].quant;
-  }, [variants, defaultVariant, gpuGb]);
+  }, [variants, defaultVariant, gpuGb, isGgufOom]);
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -219,16 +228,14 @@ function GgufVariantExpander({
       const bIsRec = b.quant === effectiveRecommended;
       if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-      const aGb = a.size_bytes / (1024 ** 3);
-      const bGb = b.size_bytes / (1024 ** 3);
-      const aOom = gpuGb != null && gpuGb > 0 && aGb > 0 && checkVramFit(aGb, gpuGb) === "exceeds";
-      const bOom = gpuGb != null && gpuGb > 0 && bGb > 0 && checkVramFit(bGb, gpuGb) === "exceeds";
+      const aOom = isGgufOom(a.size_bytes);
+      const bOom = isGgufOom(b.size_bytes);
       if (aOom !== bOom) return aOom ? 1 : -1;
 
       // Non-OOM: largest first (best quality); OOM: smallest first (most likely to fit)
       return aOom ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
     });
-  }, [variants, effectiveRecommended, gpuGb]);
+  }, [variants, effectiveRecommended, isGgufOom]);
 
   if (loading) {
     return (
@@ -265,9 +272,8 @@ function GgufVariantExpander({
       </div>
       {sortedVariants.map((v) => {
         const sizeGb = v.size_bytes / (1024 ** 3);
-        const fitStatus = gpuGb != null && gpuGb > 0 && sizeGb > 0
-          ? checkVramFit(sizeGb, gpuGb)
-          : null;
+        const oom = isGgufOom(v.size_bytes);
+        const tight = !oom && gpuGb != null && gpuGb > 0 && sizeGb > 0 && sizeGb > gpuGb * 0.50;
         return (
           <button
             key={v.filename}
@@ -286,10 +292,10 @@ function GgufVariantExpander({
               )}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              {fitStatus === "exceeds" && (
+              {oom && (
                 <span className="text-[9px] font-medium text-red-400">OOM</span>
               )}
-              {fitStatus === "tight" && (
+              {tight && (
                 <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
               )}
               <span className="text-[10px] text-muted-foreground">
