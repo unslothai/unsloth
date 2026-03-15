@@ -301,16 +301,15 @@ function GgufVariantExpander({
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
               {v.quant}
-              {v.quant === effectiveRecommended && (
-                <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
-                  recommended
-                </span>
-              )}
-              {v.downloaded && (
+              {v.downloaded ? (
                 <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
                   downloaded
                 </span>
-              )}
+              ) : v.quant === effectiveRecommended ? (
+                <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
+                  recommended
+                </span>
+              ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
               {oom && (
