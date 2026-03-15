@@ -19,7 +19,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={theme as ToasterProps["theme"]}
       className="toaster group"
-      duration={10000}
+      duration={5000}
+      closeButton={true}
       icons={{
         success: (
           <HugeiconsIcon
