@@ -250,8 +250,10 @@ function GgufVariantExpander({
       const bIsRec = b.quant === effectiveRecommended;
       if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-      // fits/tight: largest first (best quality); OOM: smallest first
-      return aTier === 4 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
+      // fits: largest first (best quality that fits in GPU)
+      // tight/OOM: smallest first (closest to fitting, fastest to run)
+      const fitsInGpu = aTier === 0 || aTier === 2;
+      return fitsInGpu ? b.size_bytes - a.size_bytes : a.size_bytes - b.size_bytes;
     });
   }, [variants, effectiveRecommended, getGgufFit]);
 
