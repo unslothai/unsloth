@@ -184,11 +184,13 @@ function GgufVariantExpander({
   }, [repoId]);
 
   const handleVariantClick = useCallback(
-    (quant: string) => {
+    (quant: string, downloaded?: boolean, sizeBytes?: number) => {
       onSelect(repoId, {
         source: "hub",
         isLora: false,
         ggufVariant: quant,
+        isDownloaded: downloaded,
+        expectedBytes: sizeBytes,
       });
     },
     [repoId, onSelect],
@@ -294,7 +296,7 @@ function GgufVariantExpander({
           <button
             key={v.filename}
             type="button"
-            onClick={() => handleVariantClick(v.quant)}
+            onClick={() => handleVariantClick(v.quant, v.downloaded, v.size_bytes)}
             className={cn(
               "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
             )}

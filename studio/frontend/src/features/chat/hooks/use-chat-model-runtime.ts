@@ -4,6 +4,7 @@
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import {
+  getGgufDownloadProgress,
   getInferenceStatus,
   listLoras,
   listModels,
@@ -24,6 +25,8 @@ type SelectedModelInput = {
   isLora?: boolean;
   ggufVariant?: string;
   loadingDescription?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
 };
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -146,6 +149,7 @@ export function useChatModelRuntime() {
   const [loadingModel, setLoadingModel] = useState<{
     id: string;
     displayName: string;
+    isDownloaded?: boolean;
   } | null>(null);
   const [loadAbortController, setLoadAbortController] =
     useState<AbortController | null>(null);
@@ -189,6 +193,8 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isLora;
       const extraLoadingDescription =
         typeof selection === "string" ? undefined : selection.loadingDescription;
+      const isDownloaded =
+        typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
@@ -210,13 +216,15 @@ export function useChatModelRuntime() {
       const loadingDescription = [
         currentCheckpoint ? "Unloading previous model first." : null,
         extraLoadingDescription ?? null,
-        "This may include downloading. Large models can take a while.",
+        isDownloaded
+          ? "Loading cached model into memory."
+          : "This may include downloading. Large models can take a while.",
       ]
         .filter(Boolean)
         .join(" ");
 
       setModelsError(null);
-      setLoadingModel({ id: modelId, displayName });
+      setLoadingModel({ id: modelId, displayName, isDownloaded });
       const abortCtrl = new AbortController();
       setLoadAbortController(abortCtrl);
       try {
@@ -280,21 +288,77 @@ export function useChatModelRuntime() {
           }
         }
 
-        const toastId = toast.loading("Loading model…", {
-          description: loadingDescription,
-          action: {
-            label: "Cancel",
-            onClick: () => {
-              abortCtrl.abort();
-              setLoadingModel(null);
-              setLoadAbortController(null);
-              unloadModel({ model_path: modelId }).catch(() => {});
-              clearCheckpoint();
-              toast.dismiss(toastId);
-              toast.info("Model loading cancelled");
+        const toastId = toast.loading(
+          isDownloaded ? "Loading model…" : "Downloading model…",
+          {
+            description: loadingDescription,
+            duration: Infinity,
+            action: {
+              label: "Cancel",
+              onClick: () => {
+                abortCtrl.abort();
+                setLoadingModel(null);
+                setLoadAbortController(null);
+                unloadModel({ model_path: modelId }).catch(() => {});
+                clearCheckpoint();
+                toast.dismiss(toastId);
+                toast.info("Model loading cancelled");
+              },
             },
           },
-        });
+        );
+
+        // Poll download progress for non-cached models
+        let progressInterval: ReturnType<typeof setInterval> | null = null;
+        if (!isDownloaded && ggufVariant) {
+          const expectedBytes =
+            typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
+          if (expectedBytes > 0) {
+            progressInterval = setInterval(async () => {
+              if (abortCtrl.signal.aborted) {
+                if (progressInterval) clearInterval(progressInterval);
+                return;
+              }
+              try {
+                const prog = await getGgufDownloadProgress(modelId, expectedBytes);
+                if (prog.progress > 0 && prog.progress < 1) {
+                  const dlGb = prog.downloaded_bytes / (1024 ** 3);
+                  const totalGb = prog.expected_bytes / (1024 ** 3);
+                  const pct = Math.round(prog.progress * 100);
+                  toast.loading(
+                    `Downloading model… ${pct}%`,
+                    {
+                      id: toastId,
+                      description: `${dlGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`,
+                      duration: Infinity,
+                      action: {
+                        label: "Cancel",
+                        onClick: () => {
+                          abortCtrl.abort();
+                          setLoadingModel(null);
+                          setLoadAbortController(null);
+                          unloadModel({ model_path: modelId }).catch(() => {});
+                          clearCheckpoint();
+                          toast.dismiss(toastId);
+                          toast.info("Model loading cancelled");
+                        },
+                      },
+                    },
+                  );
+                } else if (prog.progress >= 1) {
+                  toast.loading("Loading model…", {
+                    id: toastId,
+                    description: "Download complete. Starting inference server…",
+                    duration: Infinity,
+                  });
+                  if (progressInterval) clearInterval(progressInterval);
+                }
+              } catch {
+                // Ignore polling errors
+              }
+            }, 2000);
+          }
+        }
 
         try {
           await performLoad();
@@ -308,6 +372,7 @@ export function useChatModelRuntime() {
           }
           throw err;
         } finally {
+          if (progressInterval) clearInterval(progressInterval);
           setLoadingModel(null);
           setLoadAbortController(null);
         }
