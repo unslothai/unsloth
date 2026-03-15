@@ -292,6 +292,35 @@ rm -rf "$LLAMA_CPP_DIR"
             if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="-DGGML_CUDA=ON"
+
+                # Detect GPU compute capability and limit CUDA architectures
+                # Without this, cmake builds for ALL default archs (very slow)
+                CUDA_ARCHS=""
+                if command -v nvidia-smi &>/dev/null; then
+                    # Read all GPUs, deduplicate (handles mixed-GPU hosts)
+                    _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                    while IFS= read -r _cap; do
+                        _cap=$(echo "$_cap" | tr -d '[:space:]')
+                        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                            # Append if not already present
+                            case ";$CUDA_ARCHS;" in
+                                *";$_arch;"*) ;;
+                                *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                            esac
+                        fi
+                    done <<< "$_raw_caps"
+                fi
+
+                if [ -n "$CUDA_ARCHS" ]; then
+                    echo "   GPU compute capabilities: ${CUDA_ARCHS//;/, } -- limiting build to detected archs"
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                else
+                    echo "   Could not detect GPU arch -- building for all default CUDA architectures (slower)"
+                fi
+
+                # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
@@ -301,7 +330,13 @@ rm -rf "$LLAMA_CPP_DIR"
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            # Use Ninja if available (faster parallel builds than Make)
+            CMAKE_GENERATOR_ARGS=""
+            if command -v ninja &>/dev/null; then
+                CMAKE_GENERATOR_ARGS="-G Ninja"
+            fi
+
+            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then

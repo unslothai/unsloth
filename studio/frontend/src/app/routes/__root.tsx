@@ -15,7 +15,7 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/signup"];
+const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });

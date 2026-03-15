@@ -13,6 +13,7 @@ PATH to point at the venv.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -73,7 +74,9 @@ def _red(msg: str) -> str:
     return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
 
 
-def run(label: str, cmd: list[str], *, quiet: bool = True) -> None:
+def run(
+    label: str, cmd: list[str], *, quiet: bool = True
+) -> subprocess.CompletedProcess[bytes]:
     """Run a command; on failure print output and exit."""
     print(_cyan(f"   {label}..."))
     result = subprocess.run(
@@ -86,10 +89,41 @@ def run(label: str, cmd: list[str], *, quiet: bool = True) -> None:
         if result.stdout:
             print(result.stdout.decode(errors = "replace"))
         sys.exit(result.returncode)
+    return result
 
 
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
+
+# ── uv bootstrap ──────────────────────────────────────────────────────
+
+USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
+UV_NEEDS_SYSTEM = False  # Set by _bootstrap_uv() via probe
+
+
+def _bootstrap_uv() -> bool:
+    """Check if uv is available and probe whether --system is needed."""
+    global UV_NEEDS_SYSTEM
+    if not shutil.which("uv"):
+        return False
+    # Probe: try a dry-run install without --system.
+    # If uv can't find a venv it exits with code 2.
+    probe = subprocess.run(
+        ["uv", "pip", "install", "--dry-run", "pip"],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+    )
+    if probe.returncode != 0:
+        # Retry with --system to confirm it works
+        probe_sys = subprocess.run(
+            ["uv", "pip", "install", "--dry-run", "--system", "pip"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+        )
+        if probe_sys.returncode != 0:
+            return False  # uv is broken, fall back to pip
+        UV_NEEDS_SYSTEM = True
+    return True
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
@@ -111,26 +145,72 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     return Path(tmp.name)
 
 
+def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
+    """Translate pip flags to their uv equivalents."""
+    translated: list[str] = []
+    for arg in args:
+        if arg == "--no-cache-dir":
+            continue  # uv cache is fast; drop this flag
+        elif arg == "--force-reinstall":
+            translated.append("--reinstall")
+        else:
+            translated.append(arg)
+    return translated
+
+
+def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
+    """Build a standard pip install command."""
+    cmd = [sys.executable, "-m", "pip", "install"]
+    cmd.extend(args)
+    return cmd
+
+
+def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
+    """Build a uv pip install command with translated flags."""
+    cmd = ["uv", "pip", "install"]
+    if UV_NEEDS_SYSTEM:
+        cmd.append("--system")
+    cmd.extend(_translate_pip_args_for_uv(args))
+    cmd.append("--torch-backend=auto")
+    return cmd
+
+
 def pip_install(
     label: str,
     *args: str,
     req: Path | None = None,
     constrain: bool = True,
 ) -> None:
-    """Build and run a pip install command."""
-    cmd = [sys.executable, "-m", "pip", "install"]
-    cmd.extend(args)
+    """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    constraint_args: list[str] = []
     if constrain and CONSTRAINTS.is_file():
-        cmd.extend(["-c", str(CONSTRAINTS)])
+        constraint_args = ["-c", str(CONSTRAINTS)]
+
     actual_req = req
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+    req_args: list[str] = []
     if actual_req is not None:
-        cmd.extend(["-r", str(actual_req)])
+        req_args = ["-r", str(actual_req)]
+
     try:
-        run(label, cmd)
+        if USE_UV:
+            uv_cmd = _build_uv_cmd(args) + constraint_args + req_args
+            print(_cyan(f"   {label}..."))
+            result = subprocess.run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+            )
+            if result.returncode == 0:
+                return
+            print(_red(f"   uv failed, falling back to pip..."))
+            if result.stdout:
+                print(result.stdout.decode(errors = "replace"))
+
+        pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
+        run(f"{label} (pip)" if USE_UV else label, pip_cmd)
     finally:
-        # Clean up temp file if we created one
         if actual_req is not None and actual_req != req:
             actual_req.unlink(missing_ok = True)
 
@@ -170,10 +250,15 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 
 
 def install_python_stack() -> int:
-    print(_cyan("── Installing Python stack ──"))
+    global USE_UV
 
-    # 1. Upgrade pip
+    # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
     run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+
+    # Try to use uv for faster installs
+    USE_UV = _bootstrap_uv()
+    installer = "uv" if USE_UV else "pip"
+    print(_cyan(f"── Installing Python stack (via {installer}) ──"))
 
     # 2. Core packages: unsloth-zoo + unsloth
     pip_install(
