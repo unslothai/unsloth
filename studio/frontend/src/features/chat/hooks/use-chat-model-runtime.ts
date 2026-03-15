@@ -147,6 +147,8 @@ export function useChatModelRuntime() {
     id: string;
     displayName: string;
   } | null>(null);
+  const [loadAbortController, setLoadAbortController] =
+    useState<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
     setModelsError(null);
@@ -215,8 +217,11 @@ export function useChatModelRuntime() {
 
       setModelsError(null);
       setLoadingModel({ id: modelId, displayName });
+      const abortCtrl = new AbortController();
+      setLoadAbortController(abortCtrl);
       try {
         async function performLoad(): Promise<void> {
+          if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
@@ -277,6 +282,7 @@ export function useChatModelRuntime() {
 
         const loadPromise = performLoad().finally(() => {
           setLoadingModel(null);
+          setLoadAbortController(null);
         });
 
         await toast.promise(loadPromise, {
@@ -322,10 +328,25 @@ export function useChatModelRuntime() {
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 
+  const cancelLoading = useCallback(async () => {
+    if (!loadingModel) return;
+    loadAbortController?.abort();
+    setLoadingModel(null);
+    setLoadAbortController(null);
+    try {
+      await unloadModel({ model_path: loadingModel.id });
+    } catch {
+      // Best-effort cleanup
+    }
+    clearCheckpoint();
+    toast.info("Model loading cancelled");
+  }, [loadingModel, loadAbortController, clearCheckpoint]);
+
   return {
     refresh,
     selectModel,
     ejectModel,
+    cancelLoading,
     loadingModel,
   };
 }
