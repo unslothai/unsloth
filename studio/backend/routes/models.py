@@ -561,7 +561,12 @@ async def get_gguf_variants(
         # case-insensitive match.
         cached_files: set = set()
         try:
+            import re as _re
             from huggingface_hub import constants as hf_constants
+
+            # Sanitize repo_id: must be "owner/name" with safe chars only
+            if not _re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo_id):
+                raise ValueError(f"Invalid repo_id format: {repo_id}")
 
             cache_dir = Path(hf_constants.HF_HUB_CACHE)
             target = f"models--{repo_id.replace('/', '--')}".lower()

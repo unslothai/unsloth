@@ -307,7 +307,10 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
 
             files = list_repo_files(hf_repo, token = hf_token)
-            gguf_files = [f for f in files if f.endswith(".gguf")]
+            gguf_files = [
+                f for f in files
+                if f.endswith(".gguf") and "mmproj" not in f.lower()
+            ]
             if not gguf_files:
                 return None
 
@@ -387,6 +390,7 @@ class LlamaCppBackend:
         is_vision: bool = False,
         n_ctx: int = 4096,
         n_threads: Optional[int] = None,
+        n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -516,12 +520,25 @@ class LlamaCppBackend:
                                 hf_token,
                             )
                             if smaller:
+                                fallback_file, fallback_size = smaller
                                 logger.info(
                                     f"Selected variant too large ({total_gb:.1f} GB), "
-                                    f"falling back to {smaller[0]} ({smaller[1] / (1024**3):.1f} GB)"
+                                    f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                                 )
-                                gguf_filename = smaller[0]
-                                gguf_extra_shards = []
+                                gguf_filename = fallback_file
+                                # Re-discover shards for the fallback variant
+                                import re as _re
+                                _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+                                _m = _shard_pat.match(gguf_filename)
+                                _prefix = _m.group(1) if _m else None
+                                if _prefix:
+                                    gguf_extra_shards = sorted(
+                                        f for f in all_gguf_files
+                                        if f.startswith(_prefix) and f != gguf_filename
+                                        and "mmproj" not in f.lower()
+                                    )
+                                else:
+                                    gguf_extra_shards = []
                             else:
                                 raise RuntimeError(
                                     f"Not enough disk space to download any variant. "
@@ -727,13 +744,18 @@ class LlamaCppBackend:
 
     @staticmethod
     def _kill_orphaned_servers():
-        """Kill any orphaned llama-server processes from previous studio runs."""
+        """Kill orphaned llama-server processes started by studio.
+
+        Only kills processes whose binary lives under ~/.unsloth/llama.cpp/
+        to avoid terminating unrelated llama-server instances on the machine.
+        """
         import os
         import signal
 
         try:
+            # Use pgrep with full command match to identify studio-managed servers
             result = subprocess.run(
-                ["pgrep", "-f", "llama-server"],
+                ["pgrep", "-a", "-f", "llama-server"],
                 capture_output = True,
                 text = True,
                 timeout = 5,
@@ -741,8 +763,15 @@ class LlamaCppBackend:
             if result.returncode != 0:
                 return
             for line in result.stdout.strip().splitlines():
-                pid = int(line.strip())
+                parts = line.strip().split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid = int(parts[0])
+                cmdline = parts[1]
                 if pid == os.getpid():
+                    continue
+                # Only kill if it's a studio-managed server (lives under .unsloth/)
+                if ".unsloth/" not in cmdline and "unsloth" not in cmdline.lower():
                     continue
                 try:
                     os.kill(pid, signal.SIGKILL)
