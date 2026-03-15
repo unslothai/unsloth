@@ -173,9 +173,7 @@ def _validate_recipe_runtime_support(
         )
 
     if not model_providers:
-        raise ValueError(
-            "Add a Provider connection block before running this recipe."
-        )
+        raise ValueError("Add a Provider connection block before running this recipe.")
 
 
 def build_mcp_providers(
