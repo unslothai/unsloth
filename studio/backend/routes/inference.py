@@ -540,7 +540,7 @@ async def generate_audio(
                 top_p = payload.top_p,
                 top_k = payload.top_k,
                 min_p = payload.min_p,
-                max_new_tokens = payload.max_tokens or 2048,
+                max_new_tokens = payload.max_tokens or 512,
                 repetition_penalty = payload.repetition_penalty,
                 use_adapter = payload.use_adapter,
             ),
@@ -741,7 +741,7 @@ async def openai_chat_completions(
                     top_p = payload.top_p,
                     top_k = payload.top_k,
                     min_p = payload.min_p,
-                    max_new_tokens = payload.max_tokens or 2048,
+                    max_new_tokens = payload.max_tokens or 512,
                     repetition_penalty = payload.repetition_penalty,
                     cancel_event = cancel_event,
                 )
@@ -864,7 +864,7 @@ async def openai_chat_completions(
                 top_p = payload.top_p,
                 top_k = payload.top_k,
                 min_p = payload.min_p,
-                max_tokens = payload.max_tokens or 2048,
+                max_tokens = payload.max_tokens or 512,
                 repetition_penalty = payload.repetition_penalty,
                 cancel_event = cancel_event,
             )
@@ -1007,7 +1007,7 @@ async def openai_chat_completions(
         top_p = payload.top_p,
         top_k = payload.top_k,
         min_p = payload.min_p,
-        max_new_tokens = payload.max_tokens or 2048,
+        max_new_tokens = payload.max_tokens or 512,
         repetition_penalty = payload.repetition_penalty,
     )
 
@@ -1051,7 +1051,24 @@ async def openai_chat_completions(
                 yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
                 prev_text = ""
-                for cumulative in generate():
+                # Run sync generator in thread pool to avoid blocking
+                # the event loop. Critical for compare mode: two SSE
+                # requests arrive concurrently but the orchestrator
+                # serializes them via _gen_lock. Without run_in_executor
+                # the second request's blocking lock acquisition would
+                # freeze the entire event loop, stalling both streams.
+                _DONE = object()  # sentinel for generator exhaustion
+                loop = asyncio.get_event_loop()
+                gen = generate()
+                while True:
+                    # next(gen, _DONE) returns _DONE instead of raising
+                    # StopIteration — StopIteration cannot propagate
+                    # through asyncio futures (Python limitation).
+                    cumulative = await loop.run_in_executor(
+                        None, next, gen, _DONE
+                    )
+                    if cumulative is _DONE:
+                        break
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
