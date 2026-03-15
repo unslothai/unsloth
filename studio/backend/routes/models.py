@@ -556,17 +556,23 @@ async def get_gguf_variants(
         default_variant = _extract_quant_label(best) if best else None
 
         # Check which variants are already downloaded in the HF cache
+        # HF cache dir uses the exact case from the repo_id at download time,
+        # which may differ from the canonical HF repo_id, so do a
+        # case-insensitive match.
         cached_files: set = set()
         try:
             from huggingface_hub import constants as hf_constants
 
             cache_dir = Path(hf_constants.HF_HUB_CACHE)
-            repo_dir = cache_dir / f"models--{repo_id.replace('/', '--')}"
-            snapshots = repo_dir / "snapshots"
-            if snapshots.is_dir():
-                for snap in snapshots.iterdir():
-                    for f in snap.rglob("*.gguf"):
-                        cached_files.add(f.name)
+            target = f"models--{repo_id.replace('/', '--')}".lower()
+            for entry in cache_dir.iterdir():
+                if entry.name.lower() == target:
+                    snapshots = entry / "snapshots"
+                    if snapshots.is_dir():
+                        for snap in snapshots.iterdir():
+                            for f in snap.rglob("*.gguf"):
+                                cached_files.add(f.name)
+                    break
         except Exception:
             pass
 
