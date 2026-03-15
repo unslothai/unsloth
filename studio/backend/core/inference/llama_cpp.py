@@ -308,8 +308,7 @@ class LlamaCppBackend:
 
             files = list_repo_files(hf_repo, token = hf_token)
             gguf_files = [
-                f for f in files
-                if f.endswith(".gguf") and "mmproj" not in f.lower()
+                f for f in files if f.endswith(".gguf") and "mmproj" not in f.lower()
             ]
             if not gguf_files:
                 return None
@@ -528,13 +527,16 @@ class LlamaCppBackend:
                                 gguf_filename = fallback_file
                                 # Re-discover shards for the fallback variant
                                 import re as _re
+
                                 _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
                                 _m = _shard_pat.match(gguf_filename)
                                 _prefix = _m.group(1) if _m else None
                                 if _prefix:
                                     gguf_extra_shards = sorted(
-                                        f for f in all_gguf_files
-                                        if f.startswith(_prefix) and f != gguf_filename
+                                        f
+                                        for f in all_gguf_files
+                                        if f.startswith(_prefix)
+                                        and f != gguf_filename
                                         and "mmproj" not in f.lower()
                                     )
                                 else:
