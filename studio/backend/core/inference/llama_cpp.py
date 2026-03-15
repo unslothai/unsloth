@@ -59,6 +59,11 @@ class LlamaCppBackend:
         return self._process is not None and self._healthy
 
     @property
+    def is_active(self) -> bool:
+        """True if a llama-server process exists (loading or loaded)."""
+        return self._process is not None
+
+    @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._port}"
 

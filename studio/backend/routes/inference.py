@@ -343,11 +343,11 @@ async def unload_model(
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
-        # Check if the GGUF backend has this model loaded
+        # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_loaded
-            and llama_backend.model_identifier == request.model_path
+        if llama_backend.is_active and (
+            llama_backend.model_identifier == request.model_path
+            or not llama_backend.is_loaded
         ):
             llama_backend.unload_model()
             logger.info(f"Unloaded GGUF model: {request.model_path}")
