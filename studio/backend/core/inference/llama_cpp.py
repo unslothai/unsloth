@@ -48,6 +48,7 @@ class LlamaCppBackend:
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        self._cancel_event = threading.Event()
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -399,6 +400,7 @@ class LlamaCppBackend:
 
         Returns True if server started and health check passed.
         """
+        self._cancel_event.clear()
         with self._lock:
             self._kill_process()
 
@@ -539,6 +541,8 @@ class LlamaCppBackend:
                     )
                 )
                 try:
+                    if self._cancel_event.is_set():
+                        raise RuntimeError("Cancelled")
                     local_path = hf_hub_download(
                         repo_id = hf_repo,
                         filename = gguf_filename,
@@ -547,12 +551,20 @@ class LlamaCppBackend:
                     # Download remaining shards for split GGUFs — llama-server
                     # auto-discovers them when they are in the same directory.
                     for shard in gguf_extra_shards:
+                        if self._cancel_event.is_set():
+                            raise RuntimeError("Cancelled")
                         logger.info(f"Downloading GGUF shard: {shard}")
                         hf_hub_download(
                             repo_id = hf_repo,
                             filename = shard,
                             token = hf_token,
                         )
+                except RuntimeError as e:
+                    if "Cancelled" in str(e):
+                        raise
+                    raise RuntimeError(
+                        f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+                    )
                 except Exception as e:
                     raise RuntimeError(
                         f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
@@ -680,7 +692,8 @@ class LlamaCppBackend:
             return True
 
     def unload_model(self) -> bool:
-        """Terminate the llama-server subprocess and clean up state."""
+        """Terminate the llama-server subprocess and cancel any in-flight download."""
+        self._cancel_event.set()
         with self._lock:
             self._kill_process()
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
