@@ -55,6 +55,7 @@ export interface GgufVariantDetail {
   filename: string;
   quant: string;
   size_bytes: number;
+  downloaded?: boolean;
 }
 
 export interface GgufVariantsResponse {

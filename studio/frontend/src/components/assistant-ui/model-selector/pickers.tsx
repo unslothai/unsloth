@@ -231,10 +231,12 @@ function GgufVariantExpander({
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
-    // Tier: 0 = fits (GPU only), 1 = tight (needs CPU offload), 2 = OOM
+    // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
     const tierOf = (v: GgufVariantDetail) => {
       const f = getGgufFit(v.size_bytes);
-      return f === "fits" ? 0 : f === "tight" ? 1 : 2;
+      if (f === "oom") return 4;
+      const base = f === "fits" ? 0 : 1;
+      return v.downloaded ? base : base + 2;
     };
     return [...variants].sort((a, b) => {
       const aIsRec = a.quant === effectiveRecommended;
@@ -246,7 +248,7 @@ function GgufVariantExpander({
       if (aTier !== bTier) return aTier - bTier;
 
       // fits/tight: largest first (best quality); OOM: smallest first
-      return aTier === 2 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
+      return aTier === 4 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
     });
   }, [variants, effectiveRecommended, getGgufFit]);
 
@@ -301,6 +303,11 @@ function GgufVariantExpander({
               {v.quant === effectiveRecommended && (
                 <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
                   recommended
+                </span>
+              )}
+              {v.downloaded && (
+                <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                  downloaded
                 </span>
               )}
             </span>

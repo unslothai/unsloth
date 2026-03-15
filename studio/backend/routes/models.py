@@ -555,6 +555,21 @@ async def get_gguf_variants(
         best = _pick_best_gguf(filenames)
         default_variant = _extract_quant_label(best) if best else None
 
+        # Check which variants are already downloaded in the HF cache
+        cached_files: set = set()
+        try:
+            from huggingface_hub import constants as hf_constants
+
+            cache_dir = Path(hf_constants.HF_HUB_CACHE)
+            repo_dir = cache_dir / f"models--{repo_id.replace('/', '--')}"
+            snapshots = repo_dir / "snapshots"
+            if snapshots.is_dir():
+                for snap in snapshots.iterdir():
+                    for f in snap.rglob("*.gguf"):
+                        cached_files.add(f.name)
+        except Exception:
+            pass
+
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [
@@ -562,6 +577,7 @@ async def get_gguf_variants(
                     filename = v.filename,
                     quant = v.quant,
                     size_bytes = v.size_bytes,
+                    downloaded = v.filename in cached_files,
                 )
                 for v in variants
             ],
