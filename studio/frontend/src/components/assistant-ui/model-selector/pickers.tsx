@@ -144,10 +144,12 @@ function GgufVariantExpander({
   repoId,
   onSelect,
   gpuGb,
+  systemRamGb,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
+  systemRamGb?: number;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -191,17 +193,22 @@ function GgufVariantExpander({
     [repoId, onSelect],
   );
 
-  // GGUF OOM check: model file size must fit in 70% of total GPU memory,
-  // matching llama-server's _select_gpus logic (30% reserved for KV cache
-  // and compute buffers). gpuGb is already the sum across all GPUs.
-  const ggufBudgetGb = (gpuGb ?? 0) * 0.70;
-  const isGgufOom = useCallback(
-    (sizeBytes: number) => {
-      if (!gpuGb || gpuGb <= 0) return false;
+  // GGUF fit classification matching llama-server's _select_gpus logic:
+  //   fits  = model <= 0.7 * total GPU memory
+  //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
+  //   oom   = model > 0.7 * GPU + 0.7 * system RAM
+  const gpuBudgetGb = (gpuGb ?? 0) * 0.70;
+  const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.70;
+
+  const getGgufFit = useCallback(
+    (sizeBytes: number): "fits" | "tight" | "oom" => {
+      if (!gpuGb || gpuGb <= 0) return "fits";
       const gb = sizeBytes / (1024 ** 3);
-      return gb > 0 && gb > ggufBudgetGb;
+      if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
+      if (gb <= totalBudgetGb) return "tight";
+      return "oom";
     },
-    [gpuGb, ggufBudgetGb],
+    [gpuGb, gpuBudgetGb, totalBudgetGb],
   );
 
   // If the backend-recommended variant is OOM, pick the largest fitting
@@ -209,17 +216,17 @@ function GgufVariantExpander({
   const effectiveRecommended = useMemo(() => {
     if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
     const defaultV = variants.find((v) => v.quant === defaultVariant);
-    if (defaultV && !isGgufOom(defaultV.size_bytes)) return defaultVariant;
+    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom") return defaultVariant;
     // Default is OOM -- pick largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => !isGgufOom(v.size_bytes));
+    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
     if (fitting.length > 0) {
       fitting.sort((a, b) => b.size_bytes - a.size_bytes);
       return fitting[0].quant;
     }
-    // All OOM -- recommend smallest (most likely to run with --fit)
+    // All OOM -- recommend smallest (most likely to partially run)
     const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
     return sorted[0].quant;
-  }, [variants, defaultVariant, gpuGb, isGgufOom]);
+  }, [variants, defaultVariant, gpuGb, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -228,14 +235,14 @@ function GgufVariantExpander({
       const bIsRec = b.quant === effectiveRecommended;
       if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-      const aOom = isGgufOom(a.size_bytes);
-      const bOom = isGgufOom(b.size_bytes);
+      const aOom = getGgufFit(a.size_bytes) === "oom";
+      const bOom = getGgufFit(b.size_bytes) === "oom";
       if (aOom !== bOom) return aOom ? 1 : -1;
 
       // Non-OOM: largest first (best quality); OOM: smallest first (most likely to fit)
       return aOom ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
     });
-  }, [variants, effectiveRecommended, isGgufOom]);
+  }, [variants, effectiveRecommended, getGgufFit]);
 
   if (loading) {
     return (
@@ -271,9 +278,9 @@ function GgufVariantExpander({
         )}
       </div>
       {sortedVariants.map((v) => {
-        const sizeGb = v.size_bytes / (1024 ** 3);
-        const oom = isGgufOom(v.size_bytes);
-        const tight = !oom && gpuGb != null && gpuGb > 0 && sizeGb > 0 && sizeGb > gpuGb * 0.50;
+        const fit = getGgufFit(v.size_bytes);
+        const oom = fit === "oom";
+        const tight = fit === "tight";
         return (
           <button
             key={v.filename}
@@ -464,7 +471,7 @@ export function HubModelPicker({
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
-                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} />
+                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
                       )}
                     </div>
                   );
@@ -499,7 +506,7 @@ export function HubModelPicker({
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
-                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} />
+                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
                       )}
                     </div>
                   );
