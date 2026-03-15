@@ -92,6 +92,66 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
+def _graceful_shutdown(server = None):
+    """Explicitly shut down all subprocess backends and the uvicorn server.
+
+    Called from signal handlers to ensure child processes are cleaned up
+    before the parent exits. This is critical on Windows where atexit
+    handlers are unreliable after Ctrl+C.
+    """
+    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+
+    # 1. Shut down uvicorn server (releases the listening socket)
+    if server is not None:
+        server.should_exit = True
+
+    # 2. Clean up inference subprocess (if instantiated)
+    try:
+        from core.inference.orchestrator import _inference_backend
+
+        if _inference_backend is not None:
+            _inference_backend._shutdown_subprocess(timeout = 5.0)
+    except Exception as e:
+        logger.warning("Error shutting down inference subprocess: %s", e)
+
+    # 3. Clean up export subprocess (if instantiated)
+    try:
+        from core.export.orchestrator import _export_backend
+
+        if _export_backend is not None:
+            _export_backend._shutdown_subprocess(timeout = 5.0)
+    except Exception as e:
+        logger.warning("Error shutting down export subprocess: %s", e)
+
+    # 4. Clean up training subprocess (if active)
+    try:
+        from core.training.training import _training_backend
+
+        if _training_backend is not None:
+            _training_backend.force_terminate()
+    except Exception as e:
+        logger.warning("Error shutting down training subprocess: %s", e)
+
+    # 5. Kill llama-server subprocess (if loaded)
+    try:
+        from routes.inference import _llama_cpp_backend
+
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._kill_process()
+    except Exception as e:
+        logger.warning("Error shutting down llama-server: %s", e)
+
+    logger.info("All subprocesses cleaned up")
+
+
+# The uvicorn server instance — set by run_server(), used by callers
+# that need to tell the server to exit (e.g. signal handlers).
+_server = None
+
+# Shutdown event — used to wake the main loop on signal
+_shutdown_event = None
+
+
 def run_server(
     host: str = "0.0.0.0",
     port: int = 8000,
@@ -106,13 +166,20 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
+
+    Note:
+        Signal handlers are NOT registered here so that embedders
+        (e.g. Colab notebooks) keep their own interrupt semantics.
+        Standalone callers should register handlers after calling this.
     """
+    global _server, _shutdown_event
+
     import nest_asyncio
 
     nest_asyncio.apply()
 
     import asyncio
-    from threading import Thread
+    from threading import Thread, Event
     import time
     import uvicorn
 
@@ -138,13 +205,16 @@ def run_server(
             if not silent:
                 print(f"⚠️ Frontend not found at {frontend_path}")
 
-    # Run server
+    # Create the uvicorn server and expose it for signal handlers
+    config = uvicorn.Config(
+        app, host = host, port = port, log_level = "info", access_log = False
+    )
+    _server = uvicorn.Server(config)
+    _shutdown_event = Event()
+
+    # Run server in a daemon thread
     def _run():
-        config = uvicorn.Config(
-            app, host = host, port = port, log_level = "info", access_log = False
-        )
-        server = uvicorn.Server(config)
-        asyncio.run(server.serve())
+        asyncio.run(_server.serve())
 
     thread = Thread(target = _run, daemon = True)
     thread.start()
@@ -165,9 +235,10 @@ def run_server(
     return app
 
 
-# For direct execution
+# For direct execution (also invoked by CLI via os.execvp / subprocess)
 if __name__ == "__main__":
     import argparse
+    import signal
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
@@ -187,8 +258,17 @@ if __name__ == "__main__":
         kwargs["frontend_path"] = Path(args.frontend)
     run_server(**kwargs)
 
-    # Keep running
-    import time
+    # ── Signal handler — ensures subprocess cleanup on Ctrl+C ────
+    def _signal_handler(signum, frame):
+        _graceful_shutdown(_server)
+        _shutdown_event.set()
 
-    while True:
-        time.sleep(1)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    # On Windows, some terminals send SIGBREAK for Ctrl+C / Ctrl+Break
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _signal_handler)
+
+    # Keep running until shutdown signal
+    _shutdown_event.wait()
