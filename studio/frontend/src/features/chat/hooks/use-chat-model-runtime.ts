@@ -304,7 +304,7 @@ export function useChatModelRuntime() {
           isDownloaded ? "Loading model…" : "Downloading model…",
           {
             description: loadingDescription,
-            duration: 10000,
+            duration: 5000,
             action: {
               label: "Cancel",
               onClick: () => {
@@ -346,7 +346,7 @@ export function useChatModelRuntime() {
                     {
                       id: toastId,
                       description: `${dlGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`,
-                      duration: 10000,
+                      duration: 5000,
                       action: {
                         label: "Cancel",
                         onClick: () => {
@@ -368,7 +368,7 @@ export function useChatModelRuntime() {
                   toast.loading("Loading model…", {
                     id: toastId,
                     description: "Download complete. Starting inference server…",
-                    duration: 10000,
+                    duration: 5000,
                   });
                   if (progressInterval) clearInterval(progressInterval);
                 }
