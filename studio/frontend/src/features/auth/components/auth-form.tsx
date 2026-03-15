@@ -7,8 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
 import type { ReactElement } from "react";
+import type { SyntheticEvent } from "react";
 import { refreshSession } from "../api";
 
 // Bootstrap credentials injected into index.html by the backend
@@ -169,13 +169,21 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchText = "Password already setup? ";
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
+  const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
+  const invalidChangePasswordForm =
+    !isLoginMode &&
+    (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
+  const showPasswordMismatchWarning =
+    !isLoginMode &&
+    newPassword.length > 0 &&
+    confirmPassword.length > 0 &&
+    newPassword !== confirmPassword;
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
 
     if (!isLoginMode) {
-      const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
       if (!currentPassword) {
         setError("Unable to initialize setup. Reload the page and try again.");
         return;
@@ -201,7 +209,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       if (isLoginMode) {
         token = await loginWithPassword(username, password);
       } else {
-        const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
         let accessToken = getAuthToken();
 
         if (hasRefreshToken()) {
@@ -355,7 +362,16 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 required
               />
             </div>
-            <p className="text-xs text-muted-foreground">Must be at least 8 characters.</p>
+            <p
+              className={`min-h-4 text-xs ${
+                showPasswordMismatchWarning ? "text-destructive" : "text-muted-foreground"
+              }`}
+              aria-live="polite"
+            >
+              {showPasswordMismatchWarning
+                ? "Please ensure passwords match."
+                : "Must be at least 8 characters."}
+            </p>
           </>
         )}
 
@@ -372,7 +388,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             statusLoading ||
             blockedByState ||
             (isLoginMode && password.length < 8) ||
-            (!isLoginMode && (newPassword.length < 8 || newPassword !== confirmPassword))
+            invalidChangePasswordForm
           }
         >
           {loading ? "Please wait..." : submitLabel}
