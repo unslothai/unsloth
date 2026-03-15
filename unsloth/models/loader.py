@@ -66,8 +66,8 @@ from ..device_type import (
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.tiled_mlp import patch_tiled_mlp
-from unsloth_zoo.temporary_patches.glm4_moe import (
-    maybe_patch_glm4_moe_expert_fp8_scales,
+from unsloth_zoo.temporary_patches.moe_utils_fp8 import (
+    maybe_patch_stacked_moe_expert_fp8_scales,
 )
 
 transformers_version = Version(transformers_version)
@@ -810,7 +810,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        maybe_patch_glm4_moe_expert_fp8_scales(
+        maybe_patch_stacked_moe_expert_fp8_scales(
             model,
             model_name = model_name,
             token = token,
@@ -1553,7 +1553,7 @@ class FastModel(FastBaseModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        maybe_patch_glm4_moe_expert_fp8_scales(
+        maybe_patch_stacked_moe_expert_fp8_scales(
             model,
             model_name = model_name,
             token = token,
