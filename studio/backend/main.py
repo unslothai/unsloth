@@ -180,11 +180,13 @@ async def get_system_info():
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) == 3:
-                        gpu_info["devices"].append({
-                            "index": int(parts[0]),
-                            "name": parts[1],
-                            "memory_total_gb": round(int(parts[2]) / 1024, 2),
-                        })
+                        gpu_info["devices"].append(
+                            {
+                                "index": int(parts[0]),
+                                "name": parts[1],
+                                "memory_total_gb": round(int(parts[2]) / 1024, 2),
+                            }
+                        )
                 gpu_info["available"] = len(gpu_info["devices"]) > 0
         except Exception:
             pass
@@ -194,11 +196,13 @@ async def get_system_info():
         mem_info = get_gpu_memory_info()
         if mem_info.get("available"):
             gpu_info["available"] = True
-            gpu_info["devices"].append({
-                "index": mem_info.get("device", 0),
-                "name": mem_info.get("device_name", "Unknown"),
-                "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-            })
+            gpu_info["devices"].append(
+                {
+                    "index": mem_info.get("device", 0),
+                    "name": mem_info.get("device_name", "Unknown"),
+                    "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
+                }
+            )
 
     # CPU & Memory
     memory = psutil.virtual_memory()
