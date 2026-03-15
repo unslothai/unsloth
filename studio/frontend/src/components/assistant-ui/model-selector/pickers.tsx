@@ -11,6 +11,7 @@ import {
 import { listCachedGguf, listGgufVariants } from "@/features/chat/api/chat-api";
 import type { CachedGgufRepo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
+import { usePlatformStore } from "@/config/env";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -377,12 +378,15 @@ export function HubModelPicker({
   const showHfSection = debouncedQuery.trim().length > 0;
   const recommendedSet = useMemo(() => new Set(recommendedIds), [recommendedIds]);
 
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+
   const hfIds = useMemo(() => {
     if (!showHfSection) return [];
     return results
       .map((result) => result.id)
-      .filter((id) => !recommendedSet.has(id));
-  }, [recommendedSet, results, showHfSection]);
+      .filter((id) => !recommendedSet.has(id))
+      .filter((id) => !chatOnly || isGgufRepo(id));
+  }, [recommendedSet, results, showHfSection, chatOnly]);
 
   const metricsById = useMemo(
     () =>

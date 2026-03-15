@@ -36,14 +36,9 @@ class InferenceBackend:
         self.active_model_name = None
         self.loading_models = set()
         self.loaded_local_models = []  # [(display_name, path), ...]
-        self.default_models = [
-            "unsloth/Qwen3-4B-Instruct-2507",
-            "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-            "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-            "unsloth/Phi-3.5-mini-instruct",
-            "unsloth/Gemma-3-4B-it",
-            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
-        ]
+        from core.inference.defaults import get_default_models
+
+        self.default_models = get_default_models()
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
 
