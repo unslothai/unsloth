@@ -63,6 +63,10 @@ export function buildTrainingStartPayload(
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
+    local_eval_datasets:
+      config.datasetSource === "upload" && config.uploadedEvalFile
+        ? [config.uploadedEvalFile]
+        : [],
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,

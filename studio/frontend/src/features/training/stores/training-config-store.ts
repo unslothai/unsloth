@@ -39,6 +39,7 @@ const initialState: TrainingConfigState = {
   datasetSliceStart: null,
   datasetSliceEnd: null,
   uploadedFile: null,
+  uploadedEvalFile: null,
   isCheckingVision: false,
   isVisionModel: false,
   isEmbeddingModel: false,
@@ -253,6 +254,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetAdvisorNotification: null,
         datasetSliceStart: null,
         datasetSliceEnd: null,
+        uploadedEvalFile: null,
         isDatasetImage: null,
         isDatasetAudio: false,
         isCheckingDataset: false,
@@ -449,6 +451,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isCheckingDataset: false,
           });
         },
+        setUploadedEvalFile: (uploadedEvalFile) => set({
+          uploadedEvalFile,
+          evalSteps: uploadedEvalFile ? 0.1 : 0,
+        }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
         setLearningRate: (learningRate) => set({ learningRate }),

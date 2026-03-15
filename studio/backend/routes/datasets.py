@@ -284,25 +284,17 @@ async def upload_dataset(
             detail = f"Unsupported file type: {ext}. Allowed: {allowed}",
         )
 
-    max_size_bytes = 512 * 1024 * 1024
     ensure_dir(DATASET_UPLOAD_DIR)
     stem = Path(filename).stem
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
     # Stream file to disk in chunks to avoid holding entire file in memory
-    size = 0
     with open(stored_path, "wb") as f:
         while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > max_size_bytes:
-                stored_path.unlink(missing_ok = True)
-                raise HTTPException(
-                    status_code = 413, detail = "File too large (max 512MB)"
-                )
             f.write(chunk)
 
-    if size == 0:
+    if stored_path.stat().st_size == 0:
         stored_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 

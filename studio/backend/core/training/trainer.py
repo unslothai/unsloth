@@ -2205,6 +2205,7 @@ class UnslothTrainer:
         dataset_source: str,
         format_type: str = "auto",
         local_datasets: list = None,
+        local_eval_datasets: list = None,
         custom_format_mapping: dict = None,
         subset: str = None,
         train_split: str = "train",
@@ -2296,6 +2297,56 @@ class UnslothTrainer:
                     )
                     logger.info(f"Loaded {len(dataset)} samples from local files\n")
                     logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
+
+                # Load local eval datasets if provided
+                if local_eval_datasets and eval_enabled:
+                    eval_all_files: list[str] = []
+                    for eval_file in local_eval_datasets:
+                        if os.path.isabs(eval_file):
+                            eval_path = eval_file
+                        else:
+                            eval_path = str(resolve_dataset_path(eval_file))
+
+                        eval_path_obj = Path(eval_path)
+
+                        if eval_path_obj.is_dir():
+                            parquet_dir = (
+                                eval_path_obj / "parquet-files"
+                                if (eval_path_obj / "parquet-files").exists()
+                                else eval_path_obj
+                            )
+                            parquet_files = sorted(parquet_dir.glob("*.parquet"))
+                            if parquet_files:
+                                eval_all_files.extend(str(p) for p in parquet_files)
+                                continue
+                            candidates: list[Path] = []
+                            for ext in (".json", ".jsonl", ".csv", ".parquet"):
+                                candidates.extend(sorted(eval_path_obj.glob(f"*{ext}")))
+                            if candidates:
+                                eval_all_files.extend(str(c) for c in candidates)
+                                continue
+                            raise ValueError(
+                                f"No supported data files in eval directory: {eval_path_obj}"
+                            )
+                        else:
+                            eval_all_files.append(str(eval_path_obj))
+
+                    if eval_all_files:
+                        first_ext = Path(eval_all_files[0]).suffix.lower()
+                        if first_ext in (".json", ".jsonl"):
+                            eval_loader = "json"
+                        elif first_ext == ".csv":
+                            eval_loader = "csv"
+                        elif first_ext == ".parquet":
+                            eval_loader = "parquet"
+                        else:
+                            raise ValueError(
+                                f"Unsupported eval dataset format: {eval_all_files[0]}"
+                            )
+
+                        eval_dataset = load_dataset(eval_loader, data_files = eval_all_files, split = "train")
+                        has_separate_eval_source = True
+                        logger.info(f"Loaded {len(eval_dataset)} eval samples from local eval files\n")
 
             elif dataset_source:
                 # Load from Hugging Face

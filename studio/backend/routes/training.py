@@ -133,6 +133,30 @@ async def start_training(
                 )
             request.local_datasets = validated_datasets
 
+        # Validate local eval dataset paths if provided
+        if request.local_eval_datasets:
+            validated_eval_datasets = []
+            missing_eval_datasets = []
+            for dataset_path in request.local_eval_datasets:
+                dataset_file = resolve_dataset_path(dataset_path)
+
+                if not dataset_file.exists():
+                    missing_eval_datasets.append(
+                        f"{dataset_path} (resolved: {dataset_file})"
+                    )
+                    continue
+
+                logger.info(f"Found eval dataset file: {dataset_file}")
+                validated_eval_datasets.append(str(dataset_file))
+
+            if missing_eval_datasets:
+                missing_detail = "; ".join(missing_eval_datasets[:3])
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"Local eval dataset not found: {missing_detail}",
+                )
+            request.local_eval_datasets = validated_eval_datasets
+
         # Convert request to kwargs for backend
         training_kwargs = {
             "model_name": request.model_name,
@@ -142,6 +166,7 @@ async def start_training(
             "max_seq_length": request.max_seq_length,
             "hf_dataset": request.hf_dataset or "",
             "local_datasets": request.local_datasets,
+            "local_eval_datasets": request.local_eval_datasets,
             "format_type": request.format_type,
             "subset": request.subset,
             "train_split": request.train_split,

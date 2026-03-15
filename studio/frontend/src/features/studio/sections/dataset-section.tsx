@@ -49,6 +49,7 @@ import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
+  Cancel01Icon,
   CloudUploadIcon,
   Database02Icon,
   FileAttachmentIcon,
@@ -118,6 +119,8 @@ export function DatasetSection() {
     datasetEvalSplit,
     setDatasetEvalSplit,
     uploadedFile,
+    uploadedEvalFile,
+    setUploadedEvalFile,
     hfToken,
     modelType,
     datasetSliceStart,
@@ -139,6 +142,8 @@ export function DatasetSection() {
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       uploadedFile: s.uploadedFile,
+      uploadedEvalFile: s.uploadedEvalFile,
+      setUploadedEvalFile: s.setUploadedEvalFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
       datasetSliceStart: s.datasetSliceStart,
@@ -342,6 +347,7 @@ export function DatasetSection() {
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const evalFileInputRef = useRef<HTMLInputElement>(null);
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
     hfResults.length,
@@ -367,14 +373,6 @@ export function DatasetSection() {
       return;
     }
 
-    const MAX_SIZE_BYTES = 512 * 1024 * 1024;
-    if (file.size > MAX_SIZE_BYTES) {
-      toast.error("File too large", {
-        description: "Maximum upload size is 512 MB.",
-      });
-      return;
-    }
-
     setIsUploading(true);
     try {
       const uploaded = await uploadTrainingDataset(file);
@@ -382,6 +380,27 @@ export function DatasetSection() {
       selectLocalDataset(uploaded.stored_path);
 
       toast.success("Dataset uploaded", {
+        description: uploaded.filename,
+      });
+    } catch (error) {
+      toast.error("Upload failed", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      const uploaded = await uploadTrainingDataset(file);
+      setUploadedEvalFile(uploaded.stored_path);
+      toast.success("Eval dataset uploaded", {
         description: uploaded.filename,
       });
     } catch (error) {
@@ -732,6 +751,52 @@ export function DatasetSection() {
             </div>
           ) : null}
 
+          {datasetSource === "upload" && uploadedFile && (
+            <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">
+                Eval dataset
+              </p>
+              {uploadedEvalFile ? (
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 overflow-hidden">
+                    <HugeiconsIcon icon={FileAttachmentIcon} className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-xs">
+                      {deriveLocalDatasetName(uploadedEvalFile)}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 shrink-0 cursor-pointer p-0"
+                    onClick={() => setUploadedEvalFile(null)}
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full cursor-pointer gap-1.5"
+                    disabled={isUploading}
+                    onClick={() => evalFileInputRef.current?.click()}
+                  >
+                    {isUploading ? (
+                      <Spinner className="size-3.5" />
+                    ) : (
+                      <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                    )}
+                    {isUploading ? "Uploading..." : "Upload eval file"}
+                  </Button>
+                  <p className="text-[10px] text-muted-foreground/80">
+                    Optional. If not provided, a small portion will be split from the training data.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <HugeiconsIcon
@@ -955,6 +1020,15 @@ export function DatasetSection() {
             className="hidden"
             onChange={(event) => {
               void handleDatasetFileChange(event);
+            }}
+          />
+          <input
+            ref={evalFileInputRef}
+            type="file"
+            accept=".json,.jsonl,.csv,.parquet"
+            className="hidden"
+            onChange={(event) => {
+              void handleEvalFileChange(event);
             }}
           />
           <DocumentUploadRedirectDialog
