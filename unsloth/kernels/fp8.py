@@ -60,6 +60,15 @@ except:
         "Unsloth: Could not find torchao.prototype.blockwise_fp8_inference.blockwise_quantization.blockwise_fp8_gemm"
     )
 
+try:
+    from compressed_tensors.linear.compressed_linear import CompressedLinear
+    from compressed_tensors.quantization.quant_args import QuantizationStrategy
+    from compressed_tensors.quantization.quant_config import QuantizationStatus
+except:
+    CompressedLinear = None
+    QuantizationStrategy = None
+    QuantizationStatus = None
+
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -617,8 +626,75 @@ def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     return patched_forward
 
 
+def _compressed_linear_supports_unsloth_fp8(self):
+    if (
+        CompressedLinear is None or
+        QuantizationStrategy is None or
+        QuantizationStatus is None
+    ):
+        return False
+
+    weight = getattr(self, "weight", None)
+    weight_scale = getattr(self, "weight_scale", None)
+    quantization_scheme = getattr(self, "quantization_scheme", None)
+    quantization_args = getattr(quantization_scheme, "weights", None)
+    if (
+        weight is None or
+        weight_scale is None or
+        quantization_args is None or
+        weight.dtype != torch.float8_e4m3fn
+    ):
+        return False
+
+    if getattr(quantization_args, "type", None) != "float":
+        return False
+    if getattr(quantization_args, "num_bits", None) != 8:
+        return False
+    if getattr(quantization_args, "symmetric", None) is not True:
+        return False
+    if getattr(self, "weight_zero_point", None) is not None:
+        return False
+
+    strategy = getattr(quantization_args, "strategy", None)
+    if strategy not in (
+        QuantizationStrategy.TENSOR,
+        QuantizationStrategy.CHANNEL,
+        QuantizationStrategy.BLOCK,
+        "tensor",
+        "channel",
+        "block",
+    ):
+        return False
+
+    if not torch.is_tensor(weight_scale):
+        return False
+    if weight_scale.numel() == 0:
+        return False
+
+    return True
+
+
+def _compressed_linear_forward_fallback(self, input):
+    if self.quantization_status == QuantizationStatus.COMPRESSED:
+        weight_data = self.compressor.decompress_module(self)
+        param = nn.Parameter(weight_data, requires_grad = False)
+        from compressed_tensors.utils import register_offload_parameter
+        register_offload_parameter(self, "weight", param)
+        self.quantization_status = QuantizationStatus.FROZEN
+
+    return F.linear(input, self.weight, self.bias)
+
+
+def compressed_linear_forward_patch(self, input):
+    if _compressed_linear_supports_unsloth_fp8(self):
+        return fp8_linear(input, self.weight, self.weight_scale, self.bias)
+    return _compressed_linear_forward_fallback(self, input)
+
+
 # Patch the forward functions of the layers (for compiled models)
 if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+if CompressedLinear is not None:
+    CompressedLinear.forward = compressed_linear_forward_patch

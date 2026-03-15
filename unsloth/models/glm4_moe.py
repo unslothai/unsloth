@@ -123,6 +123,15 @@ except ImportError:
 torch_nn_functional_silu = torch.nn.functional.silu
 
 
+def _glm4_supports_grouped_gemm_fp8_safe(experts_module) -> bool:
+    """
+    GLM grouped GEMM expects high-precision expert weights.
+    FP8 routed expert weights must use the existing naive fallback path.
+    """
+    gate_up_proj = getattr(experts_module, "gate_up_proj", None)
+    return gate_up_proj is not None and gate_up_proj.dtype != torch.float8_e4m3fn
+
+
 def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
     """
     Optimized MoE forward pass using grouped GEMM.
@@ -155,7 +164,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
         )
 
     # Use grouped GEMM for expert computation
-    if HAS_GROUPED_GEMM:
+    if HAS_GROUPED_GEMM and _glm4_supports_grouped_gemm_fp8_safe(self.experts):
         # Cast hidden_states to match expert weights dtype
         # Under autocast, hidden_states may be fp32 while weights are bf16
         hidden_states = hidden_states.to(self.experts.gate_up_proj.dtype)
@@ -229,7 +238,7 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
     # Cast routing weights to match hidden_states dtype (Qwen3 pattern)
     top_k_weights = top_k_weights.to(hidden_states.dtype)
 
-    if not HAS_GROUPED_GEMM:
+    if not HAS_GROUPED_GEMM or not _glm4_supports_grouped_gemm_fp8_safe(self):
         # Fallback to original naive implementation
         final_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
