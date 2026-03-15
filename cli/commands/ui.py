@@ -54,6 +54,7 @@ def ui(
             # Use subprocess.run() on Windows so the parent waits for the child.
             if sys.platform == "win32":
                 import subprocess as _sp
+
                 proc = _sp.Popen(args)
                 try:
                     rc = proc.wait()
@@ -92,5 +93,6 @@ def ui(
                 time.sleep(1)
     except KeyboardInterrupt:
         from studio.backend.run import _graceful_shutdown, _server
+
         _graceful_shutdown(_server)
         typer.echo("\nShutting down...")
