@@ -1064,9 +1064,7 @@ async def openai_chat_completions(
                     # next(gen, _DONE) returns _DONE instead of raising
                     # StopIteration — StopIteration cannot propagate
                     # through asyncio futures (Python limitation).
-                    cumulative = await loop.run_in_executor(
-                        None, next, gen, _DONE
-                    )
+                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
                     if cumulative is _DONE:
                         break
                     if await request.is_disconnected():
