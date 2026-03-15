@@ -100,6 +100,7 @@ VLLM_SUPPORTED_VLM = [
     "mistral3",
     "qwen3_vl",
     "qwen3_vl_moe",
+    "idefics3",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -458,8 +459,9 @@ class FastBaseModel:
 
         if is_vlm and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
+                supported = ", ".join(VLLM_SUPPORTED_VLM)
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and [{supported}] among vision models. "
                     f"Found architectures: {', '.join(model_types)}!"
                 )
 
