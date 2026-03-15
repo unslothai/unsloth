@@ -26,7 +26,7 @@ import torch
 import inspect
 import linecache
 from collections import defaultdict
-from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding, chunked_selective_log_softmax
 from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
 from importlib.metadata import version as importlib_version
@@ -859,6 +859,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
+                            logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                logits_chunk,
+                                lm_head,
+                                completion_input_ids_chunk,
+                                chunks = input_ids_chunk.shape[0] * multiplier,
+                                logit_scale_multiply = logit_scale_multiply,
+                                logit_scale_divide = logit_scale_divide,
+                                logit_softcapping = logit_softcapping,
+                                temperature = temperature,
+                            )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
@@ -876,17 +886,30 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -logits_to_keep:
                             ]
-
-                        logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                            logits_chunk,
-                            lm_head,
-                            completion_input_ids_chunk,
-                            chunks = input_ids_chunk.shape[0] * multiplier,
-                            logit_scale_multiply = logit_scale_multiply,
-                            logit_scale_divide = logit_scale_divide,
-                            logit_softcapping = logit_softcapping,
-                            temperature = temperature,
-                        )
+                            # Guard: check if model returned hidden states or logits
+                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                                logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            else:
+                                # Model returned logits directly, apply scaling manually
+                                if logit_scale_multiply != 0.0:
+                                    logits_chunk = logits_chunk * logit_scale_multiply
+                                if logit_scale_divide != 0.0:
+                                    logits_chunk = logits_chunk / logit_scale_divide
+                                if logit_softcapping != 0.0:
+                                    logits_chunk = logits_chunk * torch.tanh(logits_chunk / logit_softcapping)
+                                logits_chunk = logits_chunk.to(torch.float32)
+                                if temperature != 1.0:
+                                    logits_chunk = logits_chunk / temperature
+                                logprobs_chunk = chunked_selective_log_softmax(logits_chunk, completion_input_ids_chunk)
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
                     device_synchronize()
