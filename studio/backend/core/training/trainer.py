@@ -2344,9 +2344,13 @@ class UnslothTrainer:
                                 f"Unsupported eval dataset format: {eval_all_files[0]}"
                             )
 
-                        eval_dataset = load_dataset(eval_loader, data_files = eval_all_files, split = "train")
+                        eval_dataset = load_dataset(
+                            eval_loader, data_files = eval_all_files, split = "train"
+                        )
                         has_separate_eval_source = True
-                        logger.info(f"Loaded {len(eval_dataset)} eval samples from local eval files\n")
+                        logger.info(
+                            f"Loaded {len(eval_dataset)} eval samples from local eval files\n"
+                        )
 
             elif dataset_source:
                 # Load from Hugging Face
