@@ -30,11 +30,12 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
       const data = await res.json();
       const gpuData = data?.gpu;
       if (!gpuData?.available || !gpuData.devices?.length) return DEFAULT_GPU;
-      const dev = gpuData.devices[0];
+      const devices = gpuData.devices as Array<{ name?: string; memory_total_gb?: number }>;
+      const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
       const info: GpuInfo = {
         available: true,
-        name: dev.name ?? "Unknown",
-        memoryTotalGb: dev.memory_total_gb ?? 0,
+        name: devices[0]?.name ?? "Unknown",
+        memoryTotalGb: totalGb,
       };
       cachedGpu = info;
       return info;

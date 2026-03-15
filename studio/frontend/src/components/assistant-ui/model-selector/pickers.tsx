@@ -191,11 +191,32 @@ function GgufVariantExpander({
     [repoId, onSelect],
   );
 
+  // If the backend-recommended variant is OOM, pick the largest fitting
+  // variant instead; if all are OOM, recommend the smallest one.
+  const effectiveRecommended = useMemo(() => {
+    if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
+    const isOom = (v: GgufVariantDetail) => {
+      const gb = v.size_bytes / (1024 ** 3);
+      return gb > 0 && checkVramFit(gb, gpuGb) === "exceeds";
+    };
+    const defaultV = variants.find((v) => v.quant === defaultVariant);
+    if (defaultV && !isOom(defaultV)) return defaultVariant;
+    // Default is OOM -- pick largest non-OOM variant (best quality that fits)
+    const fitting = variants.filter((v) => !isOom(v));
+    if (fitting.length > 0) {
+      fitting.sort((a, b) => b.size_bytes - a.size_bytes);
+      return fitting[0].quant;
+    }
+    // All OOM -- recommend smallest (most likely to run with --fit)
+    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
+    return sorted[0].quant;
+  }, [variants, defaultVariant, gpuGb]);
+
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
     return [...variants].sort((a, b) => {
-      const aIsRec = a.quant === defaultVariant;
-      const bIsRec = b.quant === defaultVariant;
+      const aIsRec = a.quant === effectiveRecommended;
+      const bIsRec = b.quant === effectiveRecommended;
       if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
       const aGb = a.size_bytes / (1024 ** 3);
@@ -206,7 +227,7 @@ function GgufVariantExpander({
 
       return b.size_bytes - a.size_bytes;
     });
-  }, [variants, defaultVariant, gpuGb]);
+  }, [variants, effectiveRecommended, gpuGb]);
 
   if (loading) {
     return (
@@ -257,7 +278,7 @@ function GgufVariantExpander({
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
               {v.quant}
-              {v.quant === defaultVariant && (
+              {v.quant === effectiveRecommended && (
                 <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
                   recommended
                 </span>
