@@ -49,6 +49,7 @@ class LlamaCppBackend:
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
 
+        self._kill_orphaned_servers()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -705,6 +706,33 @@ class LlamaCppBackend:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
+
+    @staticmethod
+    def _kill_orphaned_servers():
+        """Kill any orphaned llama-server processes from previous studio runs."""
+        import os
+        import signal
+
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "llama-server"],
+                capture_output = True, text = True, timeout = 5,
+            )
+            if result.returncode != 0:
+                return
+            for line in result.stdout.strip().splitlines():
+                pid = int(line.strip())
+                if pid == os.getpid():
+                    continue
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    pass
+        except Exception:
+            pass
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
