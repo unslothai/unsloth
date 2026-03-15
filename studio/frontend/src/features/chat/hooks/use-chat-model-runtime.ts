@@ -280,18 +280,37 @@ export function useChatModelRuntime() {
           }
         }
 
-        const loadPromise = performLoad().finally(() => {
-          setLoadingModel(null);
-          setLoadAbortController(null);
+        const toastId = toast.loading("Loading model…", {
+          description: loadingDescription,
+          action: {
+            label: "Cancel",
+            onClick: () => {
+              abortCtrl.abort();
+              setLoadingModel(null);
+              setLoadAbortController(null);
+              unloadModel({ model_path: modelId }).catch(() => {});
+              clearCheckpoint();
+              toast.dismiss(toastId);
+              toast.info("Model loading cancelled");
+            },
+          },
         });
 
-        await toast.promise(loadPromise, {
-          loading: "Loading model…",
-          success: `${displayName} loaded`,
-          error: (err) =>
-            err instanceof Error ? err.message : "Failed to load model",
-          description: loadingDescription,
-        });
+        try {
+          await performLoad();
+          toast.success(`${displayName} loaded`, { id: toastId });
+        } catch (err) {
+          if (!abortCtrl.signal.aborted) {
+            toast.error(
+              err instanceof Error ? err.message : "Failed to load model",
+              { id: toastId },
+            );
+          }
+          throw err;
+        } finally {
+          setLoadingModel(null);
+          setLoadAbortController(null);
+        }
       } catch (error) {
         setLoadingModel(null);
         const message =
