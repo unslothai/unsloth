@@ -455,7 +455,9 @@ class InferenceOrchestrator:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                resp = mailbox.get(timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic()))
+                resp = mailbox.get(
+                    timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
+                )
             except queue.Empty:
                 continue
             rtype = resp.get("type", "")
