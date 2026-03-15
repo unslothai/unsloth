@@ -105,10 +105,12 @@ export interface CachedGgufRepo {
 
 export async function getGgufDownloadProgress(
   repoId: string,
+  variant: string,
   expectedBytes: number,
 ): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
   const params = new URLSearchParams({
     repo_id: repoId,
+    variant,
     expected_bytes: String(expectedBytes),
   });
   const response = await authFetch(`/api/models/gguf-download-progress?${params}`);

@@ -218,7 +218,7 @@ export function useChatModelRuntime() {
         extraLoadingDescription ?? null,
         isDownloaded
           ? "Loading cached model into memory."
-          : "This may include downloading. Large models can take a while.",
+          : "Downloading and loading model. Large models can take a while.",
       ]
         .filter(Boolean)
         .join(" ");
@@ -320,7 +320,7 @@ export function useChatModelRuntime() {
                 return;
               }
               try {
-                const prog = await getGgufDownloadProgress(modelId, expectedBytes);
+                const prog = await getGgufDownloadProgress(modelId, ggufVariant ?? "", expectedBytes);
                 if (prog.progress > 0 && prog.progress < 1) {
                   const dlGb = prog.downloaded_bytes / (1024 ** 3);
                   const totalGb = prog.expected_bytes / (1024 ** 3);
