@@ -84,7 +84,15 @@ export async function authFetch(
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
 
-  const response = await fetch(input, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(input, { ...init, headers });
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error("Studio isn't running -- please relaunch it.");
+    }
+    throw err;
+  }
   if (await isPasswordChangeRequiredResponse(response)) {
     void redirectToAuth();
     return response;
