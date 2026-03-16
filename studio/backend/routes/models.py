@@ -834,9 +834,7 @@ async def list_cached_models(
             if repo_id.upper().endswith("-GGUF"):
                 continue
             total_size = sum(
-                f.size_on_disk
-                for rev in repo_info.revisions
-                for f in rev.files
+                f.size_on_disk for rev in repo_info.revisions for f in rev.files
             )
             if total_size == 0:
                 continue
