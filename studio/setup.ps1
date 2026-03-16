@@ -966,9 +966,10 @@ if (-not $PythonCmd) {
 
 Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
-# Always create a .venv for isolation -- even for pip installs.
-# Created in the repo root (parent of studio/).
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
+# ── Studio home (configurable via UNSLOTH_STUDIO_HOME) ──
+$StudioHome = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { Join-Path $env:USERPROFILE ".unsloth\studio" }
+
+$VenvDir = Join-Path $StudioHome ".venv"
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
@@ -1090,7 +1091,7 @@ $ErrorActionPreference = $prevEAP
 # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
 Write-Host ""
 Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
-$VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+$VenvT5Dir = Join-Path $StudioHome ".venv_t5"
 if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference

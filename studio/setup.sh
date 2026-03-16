@@ -251,6 +251,7 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+<<<<<<< HEAD
 # Create venv under ~/.unsloth/studio/ (shared location, not in repo).
 # All platforms (including Colab) use the same isolated venv so that
 # studio dependencies are never installed into the system Python.
