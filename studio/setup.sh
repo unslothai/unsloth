@@ -137,7 +137,7 @@ while [ "$_dir" != "/" ]; do
 done
 
 _restore_gitignores() {
-    for _gi in "${_HIDDEN_GITIGNORES[@]}"; do
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
         mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
     done
 }
