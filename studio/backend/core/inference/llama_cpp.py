@@ -767,6 +767,9 @@ class LlamaCppBackend:
         else:
             raise ValueError("Either gguf_path or hf_repo must be provided")
 
+        # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
+        self._model_identifier = model_identifier
+
         # Read GGUF metadata (context_length, chat_template) -- fast, header only
         self._read_gguf_metadata(model_path)
 

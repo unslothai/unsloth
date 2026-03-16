@@ -234,6 +234,13 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             const store = useChatRuntimeStore.getState();
             store.setCheckpoint(repo.repo_id, variant.quant);
             store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResp.context_length ?? 131072,
+              supportsReasoning: loadResp.supports_reasoning ?? false,
+              reasoningEnabled: loadResp.supports_reasoning ?? false,
+              defaultChatTemplate: loadResp.chat_template ?? null,
+              chatTemplateOverride: null,
+            });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
             return true;
           }
