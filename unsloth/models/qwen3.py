@@ -300,17 +300,10 @@ def Qwen3Attention_fast_forward_inference(
 
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
-    if position_ids.dim() == 1:
-        position_ids = position_ids[:, None]
-    position_ids = position_ids.to(Qn.device)
-    if position_ids.shape[-1] != Qn.shape[-2]:
-        position_ids = position_ids[:, -Qn.shape[-2]:]
-
-    rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
-    self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)  # +1 slack
-    cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index or 0)
-    cos = cos[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
-    sin = sin[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
+    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    cos = cos[position_ids].unsqueeze(1)
+    sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q

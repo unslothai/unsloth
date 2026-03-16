@@ -761,10 +761,6 @@ def _patch_fp8_moe_experts():
     if experts_interface is None:
         return
 
-    # Pre-quantized FP8 MoE checkpoints replace `.experts` modules with
-    # transformers.integrations.finegrained_fp8.FP8Experts. Route those
-    # implementations to Unsloth's MoE backend so we avoid the optional
-    # Hugging Face `kernels` package at training time.
     experts_interface["grouped_mm"] = forward_moe_backend
     experts_interface["batched_mm"] = forward_native_moe_loop
     if hasattr(finegrained_fp8, "FP8Experts"):
