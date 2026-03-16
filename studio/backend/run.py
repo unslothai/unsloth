@@ -275,4 +275,4 @@ if __name__ == "__main__":
     # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
     # short timeout in a loop lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(timeout=1)
+        _shutdown_event.wait(timeout = 1)
