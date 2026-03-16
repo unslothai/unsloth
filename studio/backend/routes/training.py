@@ -56,7 +56,9 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
+def _validate_local_dataset_paths(
+    paths: list[str], label: str = "Local dataset"
+) -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
     validated = []
     missing = []

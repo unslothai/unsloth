@@ -2306,7 +2306,9 @@ class UnslothTrainer:
                     eval_all_files = self._resolve_local_files(local_eval_datasets)
                     if eval_all_files:
                         eval_loader = self._loader_for_files(eval_all_files)
-                        eval_dataset = load_dataset(eval_loader, data_files = eval_all_files, split = "train")
+                        eval_dataset = load_dataset(
+                            eval_loader, data_files = eval_all_files, split = "train"
+                        )
                         has_separate_eval_source = True
                         logger.info(
                             f"Loaded {len(eval_dataset)} eval samples from local eval files\n"
