@@ -22,7 +22,9 @@ import time
 from itertools import islice
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 DEFAULT_HELPER_MODEL_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "Q8_0"
@@ -129,7 +131,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             cumulative = text  # cumulative — last value is full text
 
         result = cumulative.strip()
-        logger.debug(f"Raw model output:\n{result}")
+        logger.info(f"Raw helper model output:\n{result}")
         # Strip <think>...</think> reasoning blocks (emitted by some models)
         result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
         logger.info(f"Helper model response ({len(result)} chars)")
@@ -403,10 +405,10 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
     ):
         cumulative = text
     result = cumulative.strip()
-    logger.debug(f"Raw model output:\n{result}")
+    logger.info(f"Raw advisor model output:\n{result}")
     # Strip <think>...</think> reasoning blocks (emitted by some models)
     result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
-    logger.debug(f"After think-strip:\n{result}")
+    logger.info(f"After think-strip:\n{result}")
     return result
 
 

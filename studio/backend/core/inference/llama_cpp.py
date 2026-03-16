@@ -366,7 +366,7 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
-                    logger.info(f"[llama-server] {line}")
+                    logger.debug(f"[llama-server] {line}")
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
