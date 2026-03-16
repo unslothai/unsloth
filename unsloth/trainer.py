@@ -302,11 +302,14 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Reinitialising config class with parameters (that were none initially but populated on first init)
             # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
             # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
-            # So we only create config class if the previous init was not TrainingArguments
-            if not isinstance(training_args, TrainingArguments):
-                config = config_class(**config_dict)
-            else:
+            # So we only create config class if training_args is not already the correct type.
+            # We check against config_class (not TrainingArguments) because all TRL configs
+            # (DPOConfig, GRPOConfig, etc.) are subclasses of TrainingArguments, so isinstance
+            # against TrainingArguments is always True and never triggers conversion.
+            if isinstance(training_args, config_class):
                 config = training_args
+            else:
+                config = config_class(**config_dict)
 
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
