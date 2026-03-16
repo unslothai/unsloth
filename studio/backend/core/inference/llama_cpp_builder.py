@@ -176,8 +176,14 @@ class LlamaCppBuilder:
 
                 logger.info("Cloning llama.cpp...")
                 subprocess.run(
-                    ["git", "clone", "--depth", "1",
-                     "https://github.com/ggml-org/llama.cpp.git", str(llama_dir)],
+                    [
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "https://github.com/ggml-org/llama.cpp.git",
+                        str(llama_dir),
+                    ],
                     check = True,
                     capture_output = True,
                 )
@@ -249,8 +255,17 @@ class LlamaCppBuilder:
             # ── Build ────────────────────────────────────────────
             logger.info("Building llama.cpp (this may take a few minutes)...")
             subprocess.run(
-                ["cmake", "--build", str(build_dir), "--config", "Release",
-                 "--target", "llama-server", "llama-quantize", "-j"],
+                [
+                    "cmake",
+                    "--build",
+                    str(build_dir),
+                    "--config",
+                    "Release",
+                    "--target",
+                    "llama-server",
+                    "llama-quantize",
+                    "-j",
+                ],
                 check = True,
                 capture_output = True,
             )
@@ -272,7 +287,9 @@ class LlamaCppBuilder:
                 self._binary_path = str(server_bin)
                 logger.info(f"llama-server built: {self._binary_path}")
             else:
-                self._error = f"Build completed but llama-server not found at {server_bin}"
+                self._error = (
+                    f"Build completed but llama-server not found at {server_bin}"
+                )
                 logger.error(self._error)
 
             if quantize_bin.is_file():
@@ -291,7 +308,9 @@ class LlamaCppBuilder:
                 logger.warning(f"llama-quantize not found at {quantize_bin}")
 
         except subprocess.CalledProcessError as e:
-            stderr = (e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr) or ""
+            stderr = (
+                e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr
+            ) or ""
             self._error = f"llama.cpp build failed: {stderr[-500:]}"
             logger.error(self._error)
         except Exception as e:
