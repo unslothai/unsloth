@@ -559,6 +559,22 @@ function ThreadNewChatSwitch({
   return null;
 }
 
+function ActiveThreadSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const setActiveThreadId = useChatRuntimeStore((state) => state.setActiveThreadId);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveThreadId(mainThreadId ?? null);
+  }, [enabled, mainThreadId, setActiveThreadId]);
+
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -586,6 +602,7 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
+      <ActiveThreadSync enabled={modelType === "base" && !pairId} />
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />
