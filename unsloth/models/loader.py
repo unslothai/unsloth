@@ -66,9 +66,11 @@ from ..device_type import (
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.tiled_mlp import patch_tiled_mlp
-from unsloth_zoo.temporary_patches.moe_utils_fp8 import (
-    maybe_patch_stacked_moe_expert_fp8_scales,
-)
+try:
+    from unsloth_zoo.temporary_patches.moe_utils_fp8 import maybe_patch_stacked_moe_expert_fp8_scales
+except Exception as e:
+    maybe_patch_stacked_moe_expert_fp8_scales = None
+    logger.info(f"Unsloth: Failed to import Moe FP8 patches due to {e}. Please update unsloth and unsloth_zoo using `pip install unsloth unsloth_zoo --upgrade`")
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -220,6 +222,32 @@ def _fix_rope_inv_freq(model):
                             module.multi_gpu_short_sin_cached[device_idx] = (
                                 emb.sin() * module.scaling_factor
                             ).to(dtype = dtype, device = device_obj, non_blocking = True)
+    return model
+
+
+def _apply_post_load_fp8_patches(
+    model,
+    config,
+    load_in_fp8,
+    fp8_mode,
+    model_name,
+    token,
+    revision,
+):
+    if load_in_fp8 != False:
+        _tag_model_with_fp8_torchao_config(model, fp8_mode)
+    quant_config = getattr(config, "quantization_config", None)
+    quant_method = getattr(quant_config, "quant_method", None) if quant_config else None
+    if quant_method and quant_method in ["compressed-tensors", "fp8", "fbgemm_fp8"] and maybe_patch_stacked_moe_expert_fp8_scales is None and is_moe_model(model):
+        raise ValueError("FP8 MoE models need unslot and unsloth_zoo to be updated. Please update via `pip install unsloth unsloth_zoo --upgrade`")
+    if maybe_patch_stacked_moe_expert_fp8_scales is not None:
+        maybe_patch_stacked_moe_expert_fp8_scales(
+            model,
+            model_name = model_name,
+            token = token,
+            revision = revision,
+        )
+
     return model
 
 
@@ -808,10 +836,11 @@ class FastLanguageModel(FastLlamaModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if load_in_fp8 != False:
-            _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        maybe_patch_stacked_moe_expert_fp8_scales(
-            model,
+        model = _apply_post_load_fp8_patches(
+            model = model,
+            config = model_config,
+            load_in_fp8 = load_in_fp8,
+            fp8_mode = fp8_mode,
             model_name = model_name,
             token = token,
             revision = revision if not is_peft else None,
@@ -1551,10 +1580,11 @@ class FastModel(FastBaseModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if load_in_fp8 != False:
-            _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        maybe_patch_stacked_moe_expert_fp8_scales(
-            model,
+        model = _apply_post_load_fp8_patches(
+            model = model,
+            config = model_config,
+            load_in_fp8 = load_in_fp8,
+            fp8_mode = fp8_mode,
             model_name = model_name,
             token = token,
             revision = revision if not is_peft else None,
