@@ -128,15 +128,16 @@ function Get-CudaComputeCapability {
 
 # Check if an nvcc binary supports a given sm_ architecture.
 # Uses `nvcc --list-gpu-arch` (available since CUDA 11.6).
-# Returns $true if supported or if detection fails (safe fallback).
+# Returns $false if the flag isn't supported (old toolkit) — safer to reject
+# and fall back to scanning/PTX than to assume support and fail later.
 function Test-NvccArchSupport {
     param([string]$NvccExe, [string]$Arch)
     try {
         $listArch = & $NvccExe --list-gpu-arch 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) { return $true }  # can't check, assume OK
+        if ($LASTEXITCODE -ne 0) { return $false }
         return ($listArch -match "sm_$Arch")
     } catch {
-        return $true  # can't check, assume OK
+        return $false
     }
 }
 
