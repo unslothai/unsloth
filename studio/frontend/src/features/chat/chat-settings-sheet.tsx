@@ -26,6 +26,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "./types/runtime";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { Switch } from "@/components/ui/switch";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
@@ -67,6 +68,7 @@ function ParamSlider({
   max,
   step,
   onChange,
+  displayValue,
 }: {
   label: string;
   value: number;
@@ -74,13 +76,14 @@ function ParamSlider({
   max: number;
   step: number;
   onChange: (v: number) => void;
+  displayValue?: string;
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium">{label}</span>
         <span className="text-xs tabular-nums text-muted-foreground">
-          {value}
+          {displayValue ?? value}
         </span>
       </div>
       <Slider
@@ -158,6 +161,7 @@ export function ChatSettingsPanel({
   autoTitle,
   onAutoTitleChange,
 }: ChatSettingsPanelProps) {
+  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
@@ -322,21 +326,24 @@ export function ChatSettingsPanel({
                 step={0.05}
                 onChange={set("repetitionPenalty")}
               />
-              <ParamSlider
-                label="Max Seq Length"
-                value={params.maxSeqLength}
-                min={128}
-                max={32768}
-                step={128}
-                onChange={set("maxSeqLength")}
-              />
+              {!isGguf && (
+                <ParamSlider
+                  label="Max Seq Length"
+                  value={params.maxSeqLength}
+                  min={128}
+                  max={32768}
+                  step={128}
+                  onChange={set("maxSeqLength")}
+                />
+              )}
               <ParamSlider
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={4096}
+                max={isGguf ? 131072 : 32768}
                 step={64}
                 onChange={set("maxTokens")}
+                displayValue={isGguf && params.maxTokens >= 131072 ? "Max" : undefined}
               />
             </div>
           </CollapsibleSection>
