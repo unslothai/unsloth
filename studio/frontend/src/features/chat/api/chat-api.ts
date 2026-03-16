@@ -117,9 +117,28 @@ export async function getGgufDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
+export async function getDownloadProgress(
+  repoId: string,
+): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/models/download-progress?${params}`);
+  return parseJsonOrThrow(response);
+}
+
 export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
   const response = await authFetch("/api/models/cached-gguf");
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
+  return data.cached;
+}
+
+export interface CachedModelRepo {
+  repo_id: string;
+  size_bytes: number;
+}
+
+export async function listCachedModels(): Promise<CachedModelRepo[]> {
+  const response = await authFetch("/api/models/cached-models");
+  const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
 }
 

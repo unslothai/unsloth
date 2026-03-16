@@ -4,6 +4,7 @@
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  getDownloadProgress,
   getGgufDownloadProgress,
   getInferenceStatus,
   listLoras,
@@ -326,57 +327,82 @@ export function useChatModelRuntime() {
 
         // Poll download progress for non-cached models
         let progressInterval: ReturnType<typeof setInterval> | null = null;
-        if (!isDownloaded && ggufVariant) {
+        if (!isDownloaded) {
           const expectedBytes =
             typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
-          if (expectedBytes > 0) {
-            progressInterval = setInterval(async () => {
-              if (abortCtrl.signal.aborted) {
-                if (progressInterval) clearInterval(progressInterval);
-                return;
-              }
-              try {
-                const prog = await getGgufDownloadProgress(modelId, ggufVariant ?? "", expectedBytes);
-                if (prog.progress > 0 && prog.progress < 1) {
-                  const dlGb = prog.downloaded_bytes / (1024 ** 3);
-                  const totalGb = prog.expected_bytes / (1024 ** 3);
-                  const pct = Math.round(prog.progress * 100);
-                  toast.loading(
-                    `Downloading model… ${pct}%`,
-                    {
-                      id: toastId,
-                      description: `${dlGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`,
-                      duration: 10000,
-                      action: {
-                        label: "Cancel",
-                        onClick: () => {
-                          abortCtrl.abort();
-                          setLoadingModel(null);
-                          setLoadAbortController(null);
-                          loadingModelRef.current = null;
-                          loadAbortRef.current = null;
-                          loadToastIdRef.current = null;
-                          unloadModel({ model_path: modelId }).catch(() => {});
-                          clearCheckpoint();
-                          toast.dismiss(toastId);
-                          toast.info("Model loading cancelled");
-                        },
-                      },
-                    },
-                  );
-                } else if (prog.progress >= 1) {
-                  toast.loading("Loading model…", {
+
+          const cancelAction = {
+            label: "Cancel",
+            onClick: () => {
+              abortCtrl.abort();
+              setLoadingModel(null);
+              setLoadAbortController(null);
+              loadingModelRef.current = null;
+              loadAbortRef.current = null;
+              loadToastIdRef.current = null;
+              unloadModel({ model_path: modelId }).catch(() => {});
+              clearCheckpoint();
+              toast.dismiss(toastId);
+              toast.info("Model loading cancelled");
+            },
+          };
+
+          const pollProgress = async () => {
+            // Stop if cancelled or if loading already finished
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+              if (progressInterval) clearInterval(progressInterval);
+              return;
+            }
+            try {
+              const prog = ggufVariant && expectedBytes > 0
+                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
+                : await getDownloadProgress(modelId);
+
+              // Re-check after await -- load may have finished while polling
+              if (!loadingModelRef.current) return;
+
+              if (prog.downloaded_bytes > 0 && prog.progress > 0 && prog.progress < 1) {
+                const dlGb = prog.downloaded_bytes / (1024 ** 3);
+                const totalGb = prog.expected_bytes / (1024 ** 3);
+                const pct = Math.round(prog.progress * 100);
+                toast.loading(
+                  `Downloading model... ${pct}%`,
+                  {
                     id: toastId,
-                    description: "Download complete. Starting inference server…",
+                    description: totalGb > 0
+                      ? `${dlGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`
+                      : `${dlGb.toFixed(1)} GB downloaded`,
                     duration: 10000,
-                  });
-                  if (progressInterval) clearInterval(progressInterval);
-                }
-              } catch {
-                // Ignore polling errors
+                    action: cancelAction,
+                  },
+                );
+              } else if (prog.downloaded_bytes > 0 && prog.expected_bytes === 0) {
+                const dlGb = prog.downloaded_bytes / (1024 ** 3);
+                toast.loading(
+                  "Downloading model...",
+                  {
+                    id: toastId,
+                    description: `${dlGb.toFixed(1)} GB downloaded`,
+                    duration: 10000,
+                    action: cancelAction,
+                  },
+                );
+              } else if (prog.progress >= 1) {
+                toast.loading("Loading model...", {
+                  id: toastId,
+                  description: "Download complete. Loading into memory...",
+                  duration: 10000,
+                });
+                if (progressInterval) clearInterval(progressInterval);
               }
-            }, 2000);
-          }
+            } catch {
+              // Ignore polling errors
+            }
+          };
+
+          // First poll after 500ms, then every 2s
+          setTimeout(pollProgress, 500);
+          progressInterval = setInterval(pollProgress, 2000);
         }
 
         try {
