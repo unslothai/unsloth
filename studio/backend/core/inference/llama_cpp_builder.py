@@ -121,10 +121,26 @@ class LlamaCppBuilder:
                 capture_output = True,
             )
 
-            # Detect CUDA
+            # Build configuration: static binary, only needed targets, max parallelism
             cmake_args = [
-                "-DBUILD_SHARED_LIBS=OFF",
+                "-DBUILD_SHARED_LIBS=OFF",     # Self-contained binary, no LD_LIBRARY_PATH needed
+                "-DGGML_NATIVE=ON",            # Native CPU optimizations
+                "-DLLAMA_BUILD_TESTS=OFF",     # Skip tests
+                "-DLLAMA_BUILD_EXAMPLES=OFF",  # Skip examples (we build server explicitly)
+                "-DLLAMA_BUILD_SERVER=ON",     # Ensure server target is available
             ]
+
+            # Use ccache if available (27x faster rebuilds)
+            ccache = shutil.which("ccache")
+            if ccache:
+                cmake_args.extend([
+                    f"-DCMAKE_C_COMPILER_LAUNCHER={ccache}",
+                    f"-DCMAKE_CXX_COMPILER_LAUNCHER={ccache}",
+                    f"-DCMAKE_CUDA_COMPILER_LAUNCHER={ccache}",
+                ])
+                logger.info("Using ccache for faster compilation")
+
+            # Detect CUDA
             nvcc = shutil.which("nvcc")
             if not nvcc:
                 for cuda_dir in sorted(
@@ -138,7 +154,7 @@ class LlamaCppBuilder:
             if nvcc:
                 logger.info(f"CUDA detected: {nvcc}")
                 cmake_args.append("-DGGML_CUDA=ON")
-                # Detect compute capabilities
+                # Detect compute capabilities (build only for this GPU, not all)
                 try:
                     result = subprocess.run(
                         [
@@ -162,11 +178,12 @@ class LlamaCppBuilder:
                             )
                 except Exception:
                     pass
+                # Multi-threaded CUDA compilation
                 cmake_args.append("-DCMAKE_CUDA_FLAGS=--threads=0")
             else:
                 logger.info("No CUDA detected, building CPU-only llama.cpp")
 
-            # Use Ninja if available
+            # Use Ninja if available (faster than Make)
             generator_args = []
             if shutil.which("ninja"):
                 generator_args = ["-G", "Ninja"]
@@ -188,7 +205,7 @@ class LlamaCppBuilder:
                 capture_output = True,
             )
 
-            # Build
+            # Build only the targets we need (llama-server + llama-quantize)
             logger.info("Building llama.cpp (this may take a few minutes)...")
             subprocess.run(
                 [
