@@ -48,10 +48,10 @@ def _strip_think_tags(text: str) -> str:
     if stripped:
         return stripped
 
-    # Everything was inside <think> tags — extract the inner content
-    match = re.search(r"<think>(.*?)</think>", text, flags = re.DOTALL)
-    if match:
-        return match.group(1).strip()
+    # Everything was inside <think> tags — extract the inner content of the last block
+    matches = re.findall(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+    if matches:
+        return matches[-1].strip()
 
     return text
 
