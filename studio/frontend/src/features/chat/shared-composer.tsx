@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
-import { ArrowUpIcon, BrainIcon, HeadphonesIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -400,10 +400,14 @@ export function SharedComposer({
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
-              aria-label={reasoningEnabled ? "Disable reasoning" : "Enable reasoning"}
+              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
             >
-              <BrainIcon className="size-3.5" />
-              <span>{reasoningEnabled ? "Reasoning is ON" : "Reasoning is OFF"}</span>
+              {reasoningEnabled ? (
+                <LightbulbIcon className="size-3.5" />
+              ) : (
+                <LightbulbOffIcon className="size-3.5" />
+              )}
+              <span>Think</span>
             </button>
           )}
         </div>

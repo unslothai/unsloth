@@ -34,13 +34,14 @@ import { motion } from "framer-motion";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  BrainIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
   HeadphonesIcon,
+  LightbulbIcon,
+  LightbulbOffIcon,
   MicIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -280,10 +281,14 @@ const ReasoningToggle: FC = () => {
           ? "bg-primary/10 text-primary hover:bg-primary/20"
           : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
-      aria-label={reasoningEnabled ? "Disable reasoning" : "Enable reasoning"}
+      aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
     >
-      <BrainIcon className="size-3.5" />
-      <span>{reasoningEnabled ? "Reasoning is ON" : "Reasoning is OFF"}</span>
+      {reasoningEnabled ? (
+        <LightbulbIcon className="size-3.5" />
+      ) : (
+        <LightbulbOffIcon className="size-3.5" />
+      )}
+      <span>Think</span>
     </button>
   );
 };
