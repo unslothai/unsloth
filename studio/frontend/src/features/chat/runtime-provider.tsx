@@ -215,7 +215,7 @@ async function generateTitleWithModel(payload: {
       top_p: 0.9,
       max_tokens: 24,
       top_k: 40,
-      repetition_penalty: 1.05,
+      repetition_penalty: 1.0,
       messages: [
         {
           role: "system",

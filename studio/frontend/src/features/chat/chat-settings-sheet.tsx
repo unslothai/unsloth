@@ -45,7 +45,7 @@ const BUILTIN_PRESETS: Preset[] = [
       temperature: 1.2,
       topP: 0.95,
       topK: 80,
-      repetitionPenalty: 1.05,
+      repetitionPenalty: 1.0,
     },
   },
   {
@@ -55,7 +55,7 @@ const BUILTIN_PRESETS: Preset[] = [
       temperature: 0.2,
       topP: 0.7,
       topK: 20,
-      repetitionPenalty: 1.2,
+      repetitionPenalty: 1.0,
     },
   },
 ];
