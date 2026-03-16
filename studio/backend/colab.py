@@ -41,8 +41,9 @@ def show_link(port: int = 8000):
     # Get real Colab proxy URL
     url = get_colab_url(port)
 
+    short_url = url[:url.index("-", url.index("8000-") + 5) + 1] + "..." if "8000-" in url else url
     html = f"""
-    <div style="padding: 20px; background: #ffffff; border: 2px solid #000000;
+    <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
         <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
                    display: flex; align-items: center; gap: 12px;">
@@ -57,9 +58,8 @@ def show_link(port: int = 8000):
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
             Open Unsloth Studio
         </a>
-        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px;
-                  word-break: break-all; font-family: monospace;">
-            {url}
+        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace;">
+            {short_url}
         </p>
     </div>
     """
