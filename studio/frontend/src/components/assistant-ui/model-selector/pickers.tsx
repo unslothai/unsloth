@@ -495,7 +495,7 @@ export function HubModelPicker({
         <div className="p-1">
           {!showHfSection && (cachedGguf.length > 0 || cachedModels.length > 0) ? (
             <>
-              <ListLabel>Downloaded</ListLabel>
+              <ListLabel>{"\uD83E\uDDA5"} Downloaded</ListLabel>
               {cachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
@@ -525,7 +525,7 @@ export function HubModelPicker({
 
           {!showHfSection ? (
             <>
-              <ListLabel>Recommended</ListLabel>
+              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
               {recommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
