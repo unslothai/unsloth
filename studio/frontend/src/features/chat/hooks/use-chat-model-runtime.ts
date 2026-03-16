@@ -30,6 +30,7 @@ type SelectedModelInput = {
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  forceReload?: boolean;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -261,8 +262,10 @@ export function useChatModelRuntime() {
       const modelId = typeof selection === "string" ? selection : selection.id;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
+      const forceReload =
+        typeof selection === "string" ? false : selection.forceReload ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
+      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
       // Prevent duplicate loads if already loading this model
@@ -337,6 +340,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
+            const chatTemplateOverride = useChatRuntimeStore.getState().chatTemplateOverride;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
@@ -345,6 +349,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
+              chat_template_override: chatTemplateOverride,
             });
 
             // If cancelled while loading, don't update UI to show

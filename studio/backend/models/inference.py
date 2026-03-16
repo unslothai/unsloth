@@ -33,6 +33,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Custom Jinja2 chat template to use instead of the model's default",
+    )
 
 
 class UnloadRequest(BaseModel):

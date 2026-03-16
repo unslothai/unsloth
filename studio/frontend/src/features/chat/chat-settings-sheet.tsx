@@ -153,6 +153,7 @@ interface ChatSettingsPanelProps {
   onParamsChange: (params: InferenceParams) => void;
   autoTitle: boolean;
   onAutoTitleChange: (enabled: boolean) => void;
+  onReloadModel?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -161,6 +162,7 @@ export function ChatSettingsPanel({
   onParamsChange,
   autoTitle,
   onAutoTitleChange,
+  onReloadModel,
 }: ChatSettingsPanelProps) {
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
@@ -383,14 +385,18 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
 
-          <ChatTemplateSection />
+          <ChatTemplateSection onReloadModel={onReloadModel} />
         </div>
       </div>
     </aside>
   );
 }
 
-function ChatTemplateSection() {
+function ChatTemplateSection({
+  onReloadModel,
+}: {
+  onReloadModel?: () => void;
+}) {
   const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
   const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
   const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
@@ -410,15 +416,28 @@ function ChatTemplateSection() {
           rows={6}
           spellCheck={false}
         />
-        {isModified && (
-          <button
-            type="button"
-            onClick={() => setOverride(null)}
-            className="self-start rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
-          >
-            Restore default chat template
-          </button>
-        )}
+        <div className="flex flex-wrap gap-1.5">
+          {isModified && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  onReloadModel?.();
+                }}
+                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                Apply & Reload
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverride(null)}
+                className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+              >
+                Revert changes
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </CollapsibleSection>
   );

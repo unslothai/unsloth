@@ -135,6 +135,7 @@ async def load_model(
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
+                    chat_template_override = request.chat_template_override,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -145,6 +146,7 @@ async def load_model(
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
+                    chat_template_override = request.chat_template_override,
                 )
 
             if not success:

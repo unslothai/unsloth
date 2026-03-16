@@ -39,6 +39,7 @@ export interface LoadModelRequest {
   gguf_variant?: string | null;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  chat_template_override?: string | null;
 }
 
 export interface ValidateModelResponse {

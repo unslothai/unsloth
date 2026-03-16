@@ -717,6 +717,7 @@ class LlamaCppBackend:
         model_identifier: str,
         is_vision: bool = False,
         n_ctx: int = 4096,
+        chat_template_override: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -818,6 +819,18 @@ class LlamaCppBackend:
 
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])
+
+            # Apply custom chat template override if provided
+            if chat_template_override:
+                import tempfile
+                self._chat_template_file = tempfile.NamedTemporaryFile(
+                    mode = "w", suffix = ".jinja", delete = False,
+                    prefix = "unsloth_chat_template_",
+                )
+                self._chat_template_file.write(chat_template_override)
+                self._chat_template_file.close()
+                cmd.extend(["--chat-template-file", self._chat_template_file.name])
+                logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
 
             # For reasoning models, default to thinking ON (user can toggle per-request)
             if self._supports_reasoning:
@@ -926,6 +939,14 @@ class LlamaCppBackend:
             self._context_length = None
             self._chat_template = None
             self._supports_reasoning = False
+            # Clean up temp chat template file
+            if hasattr(self, "_chat_template_file") and self._chat_template_file:
+                try:
+                    import os
+                    os.unlink(self._chat_template_file.name)
+                except Exception:
+                    pass
+                self._chat_template_file = None
             # Free audio codec GPU memory
             if LlamaCppBackend._codec_mgr is not None:
                 LlamaCppBackend._codec_mgr.unload()
