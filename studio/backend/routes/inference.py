@@ -165,6 +165,7 @@ async def load_model(
                 is_lora = False,
                 is_gguf = True,
                 inference = inference_config,
+                context_length = llama_backend.context_length,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────

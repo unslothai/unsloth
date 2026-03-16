@@ -194,7 +194,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 async function autoLoadSmallestModel(): Promise<boolean> {
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
-    duration: Infinity,
+    duration: 5000,
+    closeButton: true,
   });
   try {
     const [ggufRepos, modelRepos] = await Promise.all([
@@ -214,7 +215,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
-            await loadModel({
+            const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: null,
               max_seq_length: 4096,
@@ -223,7 +224,9 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               gguf_variant: variant.quant,
               trust_remote_code: false,
             });
-            useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
+            const store = useChatRuntimeStore.getState();
+            store.setCheckpoint(repo.repo_id, variant.quant);
+            store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
             return true;
           }
@@ -247,7 +250,9 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             gguf_variant: null,
             trust_remote_code: false,
           });
-          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
+          const store = useChatRuntimeStore.getState();
+          store.setCheckpoint(repo.repo_id);
+          store.setParams({ ...store.params, maxTokens: 4096 });
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
           return true;
         } catch {

@@ -82,6 +82,7 @@ export interface LoadModelResponse {
     min_p?: number;
     trust_remote_code?: boolean;
   };
+  context_length?: number | null;
 }
 
 export interface UnloadModelRequest {

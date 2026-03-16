@@ -10,6 +10,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import json
+import struct
 import structlog
 from loggers import get_logger
 import shutil
@@ -45,6 +46,8 @@ class LlamaCppBackend:
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
+        self._context_length: Optional[int] = None
+        self._chat_template: Optional[str] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -79,6 +82,14 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return self._context_length
+
+    @property
+    def chat_template(self) -> Optional[str]:
+        return self._chat_template
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -371,6 +382,85 @@ class LlamaCppBackend:
             # Pipe closed — process is terminating
             pass
 
+    # GGUF KV type sizes for fast skipping
+    _GGUF_TYPE_SIZE = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+    @staticmethod
+    def _gguf_skip_value(f, vtype: int) -> None:
+        """Skip a GGUF KV value without reading it."""
+        sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(vtype)
+        if sz is not None:
+            f.seek(sz, 1)
+        elif vtype == 8:  # STRING
+            slen = struct.unpack("<Q", f.read(8))[0]
+            f.seek(slen, 1)
+        elif vtype == 9:  # ARRAY
+            atype = struct.unpack("<I", f.read(4))[0]
+            alen = struct.unpack("<Q", f.read(8))[0]
+            elem_sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(atype)
+            if elem_sz is not None:
+                f.seek(elem_sz * alen, 1)
+            elif atype == 8:
+                for _ in range(alen):
+                    slen = struct.unpack("<Q", f.read(8))[0]
+                    f.seek(slen, 1)
+            else:
+                for _ in range(alen):
+                    LlamaCppBackend._gguf_skip_value(f, atype)
+
+    def _read_gguf_metadata(self, gguf_path: str) -> None:
+        """Read context_length and chat_template from a GGUF file's KV header.
+
+        Parses only the KV pairs we need (~30ms even for multi-GB files).
+        For split GGUFs, metadata is always in shard 1.
+        """
+        try:
+            WANTED = {"general.architecture", "tokenizer.chat_template"}
+            arch = None
+            ctx_key = None
+
+            with open(gguf_path, "rb") as f:
+                magic = struct.unpack("<I", f.read(4))[0]
+                if magic != 0x46554747:  # b"GGUF" as little-endian u32
+                    return
+                _version = struct.unpack("<I", f.read(4))[0]
+                _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+
+                for _ in range(kv_count):
+                    key_len = struct.unpack("<Q", f.read(8))[0]
+                    key = f.read(key_len).decode("utf-8")
+                    vtype = struct.unpack("<I", f.read(4))[0]
+
+                    if key in WANTED or (ctx_key and key == ctx_key):
+                        # Read this value
+                        if vtype == 8:  # STRING
+                            slen = struct.unpack("<Q", f.read(8))[0]
+                            val_s = f.read(slen).decode("utf-8")
+                            if key == "general.architecture":
+                                arch = val_s
+                                ctx_key = f"{arch}.context_length"
+                            elif key == "tokenizer.chat_template":
+                                self._chat_template = val_s
+                        elif vtype == 4:  # UINT32
+                            val_i = struct.unpack("<I", f.read(4))[0]
+                            if ctx_key and key == ctx_key:
+                                self._context_length = val_i
+                        elif vtype == 10:  # UINT64
+                            val_i = struct.unpack("<Q", f.read(8))[0]
+                            if ctx_key and key == ctx_key:
+                                self._context_length = val_i
+                        else:
+                            self._gguf_skip_value(f, vtype)
+                    else:
+                        self._gguf_skip_value(f, vtype)
+
+            if self._context_length:
+                logger.info(f"GGUF metadata: context_length={self._context_length}")
+            if self._chat_template:
+                logger.info(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
+        except Exception as e:
+            logger.warning(f"Failed to read GGUF metadata: {e}")
+
     # ── HF download (no lock held) ───────────────────────────────
 
     def _download_gguf(
@@ -642,6 +732,9 @@ class LlamaCppBackend:
         else:
             raise ValueError("Either gguf_path or hf_repo must be provided")
 
+        # Read GGUF metadata (context_length, chat_template) -- fast, header only
+        self._read_gguf_metadata(model_path)
+
         # Check cancel after download
         if self._cancel_event.is_set():
             logger.info("Load cancelled after download phase")
@@ -781,6 +874,8 @@ class LlamaCppBackend:
             self._is_vision = False
             self._port = None
             self._healthy = False
+            self._context_length = None
+            self._chat_template = None
             return True
 
     def _kill_process(self):

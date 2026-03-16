@@ -119,6 +119,9 @@ class LoadResponse(BaseModel):
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
+    context_length: Optional[int] = Field(
+        None, description = "Model's native context length (from GGUF metadata)"
+    )
 
 
 class UnloadResponse(BaseModel):

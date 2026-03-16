@@ -132,9 +132,11 @@ function mergeRecommendedInference(
   modelId: string,
 ): InferenceParams {
   const inference = response.inference;
-  // GGUF: max tokens = 131072 (effectively unlimited, model decides)
-  // Non-GGUF: max tokens = 4096
-  const defaultMaxTokens = response.is_gguf ? 131072 : 4096;
+  // GGUF: use actual context length from GGUF metadata, fallback to 131072
+  // Non-GGUF: 4096
+  const defaultMaxTokens = response.is_gguf
+    ? (response.context_length ?? 131072)
+    : 4096;
   return {
     ...current,
     checkpoint: modelId,

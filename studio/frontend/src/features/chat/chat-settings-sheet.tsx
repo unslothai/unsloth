@@ -340,10 +340,10 @@ export function ChatSettingsPanel({
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={isGguf ? 131072 : 32768}
-                step={64}
+                max={isGguf ? params.maxTokens : 32768}
+                step={isGguf ? params.maxTokens : 64}
                 onChange={set("maxTokens")}
-                displayValue={isGguf && params.maxTokens >= 131072 ? "Max" : undefined}
+                displayValue={isGguf ? "Max" : undefined}
               />
             </div>
           </CollapsibleSection>
