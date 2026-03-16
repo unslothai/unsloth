@@ -607,6 +607,31 @@ if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
     Write-Host "   Persisted CUDA bin dir to user PATH" -ForegroundColor Gray
 }
 
+# -- Ensure CUDA ↔ Visual Studio integration files exist --
+# When CUDA is installed before VS Build Tools (or VS is reinstalled after CUDA),
+# the MSBuild .targets/.props files that let VS compile .cu files are missing.
+# cmake fails with "No CUDA toolset found". Fix: copy from CUDA extras dir.
+if ($VsInstallPath -and $CudaToolkitRoot) {
+    $vsCustomizations = Join-Path $VsInstallPath "MSBuild\Microsoft\VC\v170\BuildCustomizations"
+    $cudaExtras = Join-Path $CudaToolkitRoot "extras\visual_studio_integration\MSBuildExtensions"
+    if ((Test-Path $cudaExtras) -and (Test-Path $vsCustomizations)) {
+        $hasTargets = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
+        if (-not $hasTargets) {
+            Write-Host "   [INFO] CUDA VS integration missing -- copying .targets files..." -ForegroundColor Yellow
+            try {
+                Copy-Item "$cudaExtras\*" $vsCustomizations -Force -ErrorAction Stop
+                Write-Host "   [OK] CUDA VS integration files installed" -ForegroundColor Green
+            } catch {
+                Write-Host "   [WARN] Could not copy CUDA VS integration files (may need admin)" -ForegroundColor Yellow
+                Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
+                Write-Host "            $cudaExtras" -ForegroundColor Cyan
+                Write-Host "          into:" -ForegroundColor Yellow
+                Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+            }
+        }
+    }
+}
+
 Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
 Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
 Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
