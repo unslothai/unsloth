@@ -668,11 +668,11 @@ def _extract_content_parts(
     (``[{type: "text", ...}, {type: "image_url", ...}]``).
 
     Returns:
-        system_prompt:  The system message text (or a default).
+        system_prompt:  The system message text (empty string if none provided).
         chat_messages:  Non-system messages with content flattened to strings.
         image_base64:   Base64 data of the *first* image found, or ``None``.
     """
-    system_prompt = "You are a helpful AI assistant."
+    system_prompt = ""
     chat_messages: list[dict] = []
     first_image_b64: Optional[str] = None
 

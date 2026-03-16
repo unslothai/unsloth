@@ -82,7 +82,7 @@ class GenerateRequest(BaseModel):
 
     messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
     system_prompt: str = Field(
-        "You are a helpful AI assistant.", description = "System prompt"
+        "", description = "System prompt"
     )
     temperature: float = Field(0.7, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.9, ge = 0.0, le = 1.0, description = "Top-p sampling")
