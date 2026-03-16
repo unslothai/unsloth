@@ -12,7 +12,13 @@ import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
-STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+
+def _studio_home() -> Path:
+    """Studio root, overridable via UNSLOTH_STUDIO_HOME."""
+    custom = os.environ.get("UNSLOTH_STUDIO_HOME")
+    if custom:
+        return Path(custom).expanduser().resolve()
+    return Path.home() / ".unsloth" / "studio"
 
 # __file__ is cli/commands/studio.py — two parents up is the package root
 # (either site-packages or the repo root for editable installs).
@@ -22,9 +28,9 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
-        p = STUDIO_HOME / ".venv" / "Scripts" / "python.exe"
+        p = _studio_home() / ".venv" / "Scripts" / "python.exe"
     else:
-        p = STUDIO_HOME / ".venv" / "bin" / "python"
+        p = _studio_home() / ".venv" / "bin" / "python"
     return p if p.is_file() else None
 
 
@@ -44,7 +50,7 @@ def _find_run_py() -> Optional[Path]:
         "lib/python*/site-packages/studio/backend/run.py",
         "Lib/site-packages/studio/backend/run.py",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (_studio_home() / ".venv").glob(pattern):
             return match
     return None
 
@@ -64,7 +70,7 @@ def _find_setup_script() -> Optional[Path]:
         f"lib/python*/site-packages/studio/{name}",
         f"Lib/site-packages/studio/{name}",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (_studio_home() / ".venv").glob(pattern):
             return match
     return None
 
@@ -85,7 +91,7 @@ def studio_default(
         return
 
     # Always use the studio venv if it exists and we're not already in it
-    studio_venv_dir = STUDIO_HOME / ".venv"
+    studio_venv_dir = _studio_home() / ".venv"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
     if not in_studio_venv:

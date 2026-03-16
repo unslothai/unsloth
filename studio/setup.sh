@@ -227,8 +227,9 @@ if [ "$IS_COLAB" = true ]; then
     # Colab: install packages directly without venv
     install_python_stack
 else
-    # Local: create venv under ~/.unsloth/studio/ (shared location, not in repo)
-    STUDIO_HOME="$HOME/.unsloth/studio"
+    # Local: create venv under studio home (shared location, not in repo)
+    # Configurable via UNSLOTH_STUDIO_HOME; defaults to ~/.unsloth/studio
+    STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
     VENV_DIR="$STUDIO_HOME/.venv"
     VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
     mkdir -p "$STUDIO_HOME"

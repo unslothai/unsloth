@@ -9,12 +9,15 @@ import tempfile
 
 
 def studio_root() -> Path:
+    custom = os.environ.get("UNSLOTH_STUDIO_HOME")
+    if custom:
+        return Path(custom).expanduser().resolve()
     return Path.home() / ".unsloth" / "studio"
 
 
 def cache_root() -> Path:
     """Central cache directory for all studio downloads (models, datasets, etc.)."""
-    return Path.home() / ".unsloth" / "studio" / "cache"
+    return studio_root() / "cache"
 
 
 def assets_root() -> Path:
