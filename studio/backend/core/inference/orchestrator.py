@@ -133,12 +133,12 @@ class InferenceOrchestrator:
                 # Top 8 GGUFs (frontend deduplicates against downloaded,
                 # so we fetch extra to always fill 4 slots)
                 gguf_ids = [
-                    m["id"] for m in models
-                    if m.get("id", "").upper().endswith("-GGUF")
+                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
                 ][:8]
                 # Top 8 non-GGUF hub models
                 hub_ids = [
-                    m["id"] for m in models
+                    m["id"]
+                    for m in models
                     if not m.get("id", "").upper().endswith("-GGUF")
                 ][:8]
                 if gguf_ids:
