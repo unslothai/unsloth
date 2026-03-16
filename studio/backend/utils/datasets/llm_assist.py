@@ -44,12 +44,12 @@ def _strip_think_tags(text: str) -> str:
         return text
 
     # Try stripping think blocks — keep content outside them
-    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
+    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
     if stripped:
         return stripped
 
     # Everything was inside <think> tags — extract the inner content
-    match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+    match = re.search(r"<think>(.*?)</think>", text, flags = re.DOTALL)
     if match:
         return match.group(1).strip()
 

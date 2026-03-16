@@ -500,9 +500,8 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Could not check disk space: {e}")
 
-        gguf_label = (
-            f"{hf_repo}/{gguf_filename}"
-            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else "")
+        gguf_label = f"{hf_repo}/{gguf_filename}" + (
+            f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""
         )
         logger.info(f"Resolving GGUF: {gguf_label}")
         try:
