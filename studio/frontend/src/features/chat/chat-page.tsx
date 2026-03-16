@@ -352,6 +352,18 @@ export function ChatPage(): ReactElement {
               .where("threadId")
               .equals(activeThreadId)
               .toArray();
+            if (messages.length === 0) {
+              // No history -- just switch silently
+              await db.threads.update(activeThreadId, { modelId: value });
+              await selectModel({
+                id: value,
+                isLora: meta?.isLora,
+                ggufVariant: meta?.ggufVariant,
+                isDownloaded: meta?.isDownloaded,
+                expectedBytes: meta?.expectedBytes,
+              });
+              return;
+            }
             const hasImage = messages.some(messageHasImage);
             const targetModel = modelsFromStore.find((model) => model.id === value);
             const nonVisionWithImages = hasImage && targetModel?.isVision === false;
