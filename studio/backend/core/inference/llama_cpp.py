@@ -366,7 +366,7 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
-                    logger.info(f"[llama-server] {line}")
+                    logger.debug(f"[llama-server] {line}")
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
@@ -500,13 +500,14 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Could not check disk space: {e}")
 
-        logger.info(
-            f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else "")
+        gguf_label = f"{hf_repo}/{gguf_filename}" + (
+            f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""
         )
+        logger.info(f"Resolving GGUF: {gguf_label}")
         try:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
+            dl_start = time.monotonic()
             local_path = hf_hub_download(
                 repo_id = hf_repo,
                 filename = gguf_filename,
@@ -515,7 +516,7 @@ class LlamaCppBackend:
             for shard in gguf_extra_shards:
                 if self._cancel_event.is_set():
                     raise RuntimeError("Cancelled")
-                logger.info(f"Downloading GGUF shard: {shard}")
+                logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download(
                     repo_id = hf_repo,
                     filename = shard,
@@ -532,7 +533,11 @@ class LlamaCppBackend:
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
             )
 
-        logger.info(f"GGUF downloaded to: {local_path}")
+        dl_elapsed = time.monotonic() - dl_start
+        if dl_elapsed < 2.0:
+            logger.info(f"GGUF resolved from cache: {local_path}")
+        else:
+            logger.info(f"GGUF downloaded in {dl_elapsed:.1f}s: {local_path}")
         return local_path
 
     def _download_mmproj(
