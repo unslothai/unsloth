@@ -78,6 +78,8 @@ SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
+# Qwen3.5 only exists in transformers 5.x (not in any 4.x release)
+SUPPORTS_QWEN3_5 = transformers_version >= Version("5.0.0")
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq).
 # See _fix_rope_inv_freq() below for details.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
@@ -87,6 +89,11 @@ if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 if SUPPORTS_FALCON_H1:
     from .falcon_h1 import FastFalconH1Model
+if SUPPORTS_QWEN3_5:
+    try:
+        from .qwen3_5 import FastQwen3_5Model
+    except ImportError:
+        SUPPORTS_QWEN3_5 = False
 import torch
 from ._utils import (
     patch_compiling_bitsandbytes,
@@ -615,6 +622,15 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "qwen3_5":
+            if not SUPPORTS_QWEN3_5:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                    f"The minimum required version is 5.0.0.\n"
+                    f'Try `pip install --upgrade "transformers>=5.0.0"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            dispatch_model = FastQwen3_5Model
         elif model_type == "qwen3":  # or model_type == "qwen3_moe":
             if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
                 raise ImportError(
