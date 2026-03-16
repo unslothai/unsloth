@@ -292,6 +292,7 @@ Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 ## 📜 Documentation
 * Go to our official [Documentation](https://unsloth.ai/docs) for [running models](https://unsloth.ai/docs/basics/inference-and-deployment), [saving to GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), [checkpointing](https://unsloth.ai/docs/basics/finetuning-from-last-checkpoint), [evaluation](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide#evaluation) and more!
 * Read our Guides for: [Fine-tuning](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [Vision](https://unsloth.ai/docs/basics/vision-fine-tuning) and [any model](https://unsloth.ai/docs/models/tutorials).
+* **[Exporting Models from Colab](docs/exporting_models_from_colab.md)**: Step-by-step guide for saving to Google Drive, pushing to Hugging Face Hub, GGUF export, and downloading large files.
 * We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer and Pytorch code.
 
 Unsloth example code to fine-tune gpt-oss-20b:
