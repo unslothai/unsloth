@@ -551,8 +551,7 @@ class LlamaCppBackend:
 
             files = list_repo_files(hf_repo, token = hf_token)
             mmproj_files = sorted(
-                f for f in files
-                if f.endswith(".gguf") and "mmproj" in f.lower()
+                f for f in files if f.endswith(".gguf") and "mmproj" in f.lower()
             )
             if not mmproj_files:
                 return None
