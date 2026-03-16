@@ -41,21 +41,29 @@ def show_link(port: int = 8000):
     # Get real Colab proxy URL
     url = get_colab_url(port)
 
+    short_url = (
+        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
+        if "8000-" in url
+        else url
+    )
     html = f"""
-    <div style="padding: 20px; background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
-        <h2 style="color: white; margin: 0 0 12px 0; font-size: 24px;">
-            🦥 Unsloth Studio is Ready!
+        <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
+                   display: flex; align-items: center; gap: 12px;">
+            <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
+                 height="48" style="display:block;">
+            Unsloth Studio is Ready!
         </h2>
         <a href="{url}" target="_blank"
-           style="display: inline-block; padding: 14px 28px; background: white; color: #16a34a;
-                  text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;
-                  box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            🚀 Open Unsloth Studio
+           style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
+                  background: #000000; color: white; text-decoration: none; border-radius: 8px;
+                  font-weight: 800; font-size: 16px;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
+            Open Unsloth Studio
         </a>
-        <p style="color: rgba(255,255,255,0.9); margin: 16px 0 0 0; font-size: 13px;
-                  word-break: break-all; font-family: monospace;">
-            {url}
+        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace;">
+            {short_url}
         </p>
     </div>
     """
