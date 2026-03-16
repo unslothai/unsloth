@@ -741,6 +741,7 @@ class LlamaCppBackend:
                 LlamaCppBackend._codec_mgr.unload()
                 LlamaCppBackend._codec_mgr = None
                 import torch
+
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             return True
