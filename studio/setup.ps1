@@ -127,15 +127,16 @@ function Get-CudaComputeCapability {
 }
 
 # Check if an nvcc binary supports a given sm_ architecture.
-# Uses `nvcc --list-gpu-arch` (available since CUDA 11.6).
+# Uses `nvcc --list-gpu-code` which outputs sm_* tokens (--list-gpu-arch
+# outputs compute_* tokens instead).  Available since CUDA 11.6.
 # Returns $false if the flag isn't supported (old toolkit) — safer to reject
 # and fall back to scanning/PTX than to assume support and fail later.
 function Test-NvccArchSupport {
     param([string]$NvccExe, [string]$Arch)
     try {
-        $listArch = & $NvccExe --list-gpu-arch 2>&1 | Out-String
+        $listCode = & $NvccExe --list-gpu-code 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) { return $false }
-        return ($listArch -match "sm_$Arch")
+        return ($listCode -match "sm_$Arch")
     } catch {
         return $false
     }
@@ -146,10 +147,10 @@ function Test-NvccArchSupport {
 function Get-NvccMaxArch {
     param([string]$NvccExe)
     try {
-        $listArch = & $NvccExe --list-gpu-arch 2>&1 | Out-String
+        $listCode = & $NvccExe --list-gpu-code 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) { return $null }
         $arches = @()
-        foreach ($line in $listArch -split "`n") {
+        foreach ($line in $listCode -split "`n") {
             if ($line.Trim() -match '^sm_(\d+)') {
                 $arches += [int]$Matches[1]
             }
