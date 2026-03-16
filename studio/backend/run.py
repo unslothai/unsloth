@@ -270,5 +270,9 @@ if __name__ == "__main__":
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
 
-    # Keep running until shutdown signal
-    _shutdown_event.wait()
+    # Keep running until shutdown signal.
+    # NOTE: Event.wait() without a timeout blocks at the C level on Linux,
+    # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
+    # short timeout in a loop lets the interpreter process pending signals.
+    while not _shutdown_event.is_set():
+        _shutdown_event.wait(timeout=1)

@@ -144,7 +144,10 @@ def studio_default(
 
     try:
         if _shutdown_event is not None:
-            _shutdown_event.wait()
+            # NOTE: Event.wait() without a timeout blocks at the C level
+            # on Linux, preventing Python from delivering SIGINT (Ctrl+C).
+            while not _shutdown_event.is_set():
+                _shutdown_event.wait(timeout=1)
         else:
             while True:
                 time.sleep(1)
