@@ -81,9 +81,7 @@ class GenerateRequest(BaseModel):
     """Request for text generation (legacy /generate/stream endpoint)"""
 
     messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
-    system_prompt: str = Field(
-        "", description = "System prompt"
-    )
+    system_prompt: str = Field("", description = "System prompt")
     temperature: float = Field(0.7, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.9, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(40, ge = -1, le = 100, description = "Top-k sampling")
