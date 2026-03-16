@@ -129,6 +129,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             cumulative = text  # cumulative — last value is full text
 
         result = cumulative.strip()
+        logger.debug(f"Raw model output:\n{result}")
         # Strip <think>...</think> reasoning blocks (emitted by some models)
         result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
         logger.info(f"Helper model response ({len(result)} chars)")
@@ -402,8 +403,10 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
     ):
         cumulative = text
     result = cumulative.strip()
+    logger.debug(f"Raw model output:\n{result}")
     # Strip <think>...</think> reasoning blocks (emitted by some models)
     result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
+    logger.debug(f"After think-strip:\n{result}")
     return result
 
 
