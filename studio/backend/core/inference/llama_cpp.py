@@ -732,8 +732,17 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._hf_variant = None
             self._is_vision = False
+            self._is_audio = False
+            self._audio_type = None
             self._port = None
             self._healthy = False
+            # Free audio codec GPU memory
+            if LlamaCppBackend._codec_mgr is not None:
+                LlamaCppBackend._codec_mgr.unload()
+                LlamaCppBackend._codec_mgr = None
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             return True
 
     def _kill_process(self):
@@ -1079,6 +1088,7 @@ class LlamaCppBackend:
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 50,
+        min_p: float = 0.0,
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
     ) -> tuple:
@@ -1098,6 +1108,7 @@ class LlamaCppBackend:
             "temperature": temperature,
             "top_p": top_p,
             "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
             "repeat_penalty": repetition_penalty,
         }
         if stop:

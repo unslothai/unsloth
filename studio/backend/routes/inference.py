@@ -159,9 +159,7 @@ async def load_model(
             from utils.models import is_audio_input_type
 
             _gguf_audio = llama_backend.detect_audio_type()
-            _gguf_is_audio = _gguf_audio is not None and _gguf_audio not in (
-                "audio_vlm",
-            )
+            _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
             llama_backend._audio_type = _gguf_audio
             if _gguf_is_audio:
@@ -547,11 +545,9 @@ async def generate_audio(
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
         model_name = llama_backend.model_identifier
         gen = lambda: llama_backend.generate_audio_response(
-            text = text,
-            audio_type = llama_backend._audio_type,
-            temperature = payload.temperature,
-            top_p = payload.top_p,
-            top_k = payload.top_k,
+            text = text, audio_type = llama_backend._audio_type,
+            temperature = payload.temperature, top_p = payload.top_p,
+            top_k = payload.top_k, min_p = payload.min_p,
             max_new_tokens = payload.max_tokens or 2048,
             repetition_penalty = payload.repetition_penalty,
         )
