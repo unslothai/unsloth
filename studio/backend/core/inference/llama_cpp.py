@@ -48,7 +48,9 @@ class LlamaCppBackend:
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        self._cancel_event = threading.Event()
 
+        self._kill_orphaned_servers()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -56,6 +58,11 @@ class LlamaCppBackend:
     @property
     def is_loaded(self) -> bool:
         return self._process is not None and self._healthy
+
+    @property
+    def is_active(self) -> bool:
+        """True if a llama-server process exists (loading or loaded)."""
+        return self._process is not None
 
     @property
     def base_url(self) -> str:
@@ -165,6 +172,176 @@ class LlamaCppBackend:
 
         return None
 
+    # ── GPU allocation ────────────────────────────────────────────
+
+    @staticmethod
+    def _get_gguf_size_bytes(model_path: str) -> int:
+        """Get total GGUF size in bytes, including split shards."""
+        import re
+
+        main = Path(model_path)
+        total = main.stat().st_size
+
+        # Check for split shards (e.g., model-00001-of-00003.gguf)
+        shard_pat = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+        m = shard_pat.match(main.name)
+        if m:
+            prefix, _, num_total = m.group(1), m.group(2), m.group(3)
+            sibling_pat = re.compile(
+                r"^"
+                + re.escape(prefix)
+                + r"-\d{5}-of-"
+                + re.escape(num_total)
+                + r"\.gguf$"
+            )
+            for sibling in main.parent.iterdir():
+                if sibling != main and sibling_pat.match(sibling.name):
+                    total += sibling.stat().st_size
+
+        return total
+
+    @staticmethod
+    def _get_gpu_free_memory() -> list[tuple[int, int]]:
+        """Query free memory per GPU via nvidia-smi.
+
+        Returns list of (gpu_index, free_mib) sorted by index.
+        Respects CUDA_VISIBLE_DEVICES if set.
+        Returns empty list if nvidia-smi is not available.
+        """
+        import os
+
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode != 0:
+                return []
+
+            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
+            allowed = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None and cvd.strip():
+                try:
+                    allowed = set(int(x.strip()) for x in cvd.split(","))
+                except ValueError:
+                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
+
+            gpus = []
+            for line in result.stdout.strip().splitlines():
+                parts = line.split(",")
+                if len(parts) == 2:
+                    idx = int(parts[0].strip())
+                    free_mib = int(parts[1].strip())
+                    if allowed is not None and idx not in allowed:
+                        continue
+                    gpus.append((idx, free_mib))
+            return gpus
+        except Exception:
+            return []
+
+    @staticmethod
+    def _select_gpus(
+        model_size_bytes: int,
+        gpus: list[tuple[int, int]],
+    ) -> tuple[Optional[list[int]], bool]:
+        """Pick GPU(s) for a model based on file size and free memory.
+
+        Uses GGUF file size as a rough proxy for VRAM usage (actual usage
+        is higher due to KV cache and compute buffers, but 70% threshold
+        accounts for that).
+
+        Returns (gpu_indices, use_fit):
+          - ([1], False)       model fits on 1 GPU at 70% of free
+          - ([1, 2], False)    model needs 2 GPUs
+          - (None, True)       model too large, let --fit handle it
+        """
+        if not gpus:
+            return None, True
+
+        model_size_mib = model_size_bytes / (1024 * 1024)
+
+        # Sort GPUs by free memory descending
+        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+
+        # Try fitting on 1 GPU (70% of free memory threshold)
+        if ranked[0][1] * 0.70 >= model_size_mib:
+            return [ranked[0][0]], False
+
+        # Try fitting on N GPUs (accumulate free memory from most-free)
+        cumulative = 0
+        selected = []
+        for idx, free_mib in ranked:
+            selected.append(idx)
+            cumulative += free_mib * 0.70
+            if cumulative >= model_size_mib:
+                return sorted(selected), False
+
+        # Model is too large even for all GPUs, let --fit handle it
+        return None, True
+
+    # ── Variant fallback ────────────────────────────────────────────
+
+    @staticmethod
+    def _find_smallest_fitting_variant(
+        hf_repo: str,
+        free_bytes: int,
+        hf_token: Optional[str] = None,
+    ) -> Optional[tuple[str, int]]:
+        """Find the smallest GGUF variant (including all shards) that fits.
+
+        Groups split shards by variant prefix and sums their sizes.
+        For example, UD-Q4_K_XL with 9 shards of 50 GB each = 450 GB total.
+
+        Returns (first_shard_filename, total_size_bytes) or None if nothing fits.
+        """
+        import re
+
+        try:
+            from huggingface_hub import get_paths_info, list_repo_files
+
+            files = list_repo_files(hf_repo, token = hf_token)
+            gguf_files = [
+                f for f in files if f.endswith(".gguf") and "mmproj" not in f.lower()
+            ]
+            if not gguf_files:
+                return None
+
+            # Get sizes for all GGUF files
+            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
+            size_map = {p.path: (p.size or 0) for p in path_infos}
+
+            # Group files by variant: shards share a prefix before -NNNNN-of-NNNNN
+            shard_pat = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+            variants: dict[str, list[str]] = {}
+            for f in gguf_files:
+                m = shard_pat.match(f)
+                key = m.group(1) if m else f
+                variants.setdefault(key, []).append(f)
+
+            # Sum shard sizes per variant, track the first shard (for download)
+            variant_sizes: list[tuple[str, int, list[str]]] = []
+            for key, shard_files in variants.items():
+                total = sum(size_map.get(f, 0) for f in shard_files)
+                first = sorted(shard_files)[0]
+                variant_sizes.append((first, total, shard_files))
+
+            # Sort by total size ascending and pick the smallest that fits
+            variant_sizes.sort(key = lambda x: x[1])
+            for first_file, total_size, _ in variant_sizes:
+                if total_size > 0 and total_size <= free_bytes:
+                    return first_file, total_size
+
+            return None
+        except Exception:
+            return None
+
     # ── Port allocation ───────────────────────────────────────────
 
     @staticmethod
@@ -194,6 +371,170 @@ class LlamaCppBackend:
             # Pipe closed — process is terminating
             pass
 
+    # ── HF download (no lock held) ───────────────────────────────
+
+    def _download_gguf(
+        self,
+        *,
+        hf_repo: str,
+        hf_variant: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> str:
+        """Download GGUF file(s) from HuggingFace. Returns local path.
+
+        Runs WITHOUT self._lock so that unload_model() can set
+        _cancel_event at any time. Checks _cancel_event between
+        each shard download.
+        """
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            raise RuntimeError(
+                "huggingface_hub is required for HF model loading. "
+                "Install it with: pip install huggingface_hub"
+            )
+
+        # Determine the filename from the variant
+        gguf_filename = None
+        gguf_extra_shards: list[str] = []
+        if hf_variant:
+            try:
+                import re
+                from huggingface_hub import list_repo_files
+
+                files = list_repo_files(hf_repo, token = hf_token)
+                variant_lower = hf_variant.lower()
+                boundary = re.compile(
+                    r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
+                )
+                gguf_files = sorted(
+                    f
+                    for f in files
+                    if f.endswith(".gguf") and boundary.search(f.lower())
+                )
+                if gguf_files:
+                    gguf_filename = gguf_files[0]
+                    shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
+                    m = shard_pat.match(gguf_filename)
+                    if m:
+                        prefix = m.group(1)
+                        total = m.group(2)
+                        sibling_pat = re.compile(
+                            r"^"
+                            + re.escape(prefix)
+                            + r"-\d{5}-of-"
+                            + re.escape(total)
+                            + r"\.gguf$"
+                        )
+                        gguf_extra_shards = [
+                            f for f in gguf_files[1:] if sibling_pat.match(f)
+                        ]
+            except Exception as e:
+                logger.warning(f"Could not list repo files: {e}")
+
+            if not gguf_filename:
+                repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+                gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+
+        # Check disk space and fall back to a smaller variant if needed
+        all_gguf_files = [gguf_filename] + gguf_extra_shards
+        try:
+            import os
+
+            from huggingface_hub import get_paths_info
+
+            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
+            total_download_bytes = sum((p.size or 0) for p in path_infos)
+
+            if total_download_bytes > 0:
+                cache_dir = os.environ.get(
+                    "HF_HUB_CACHE",
+                    str(Path.home() / ".cache" / "huggingface" / "hub"),
+                )
+                Path(cache_dir).mkdir(parents = True, exist_ok = True)
+                free_bytes = shutil.disk_usage(cache_dir).free
+
+                total_gb = total_download_bytes / (1024**3)
+                free_gb = free_bytes / (1024**3)
+
+                logger.info(
+                    f"GGUF download: {total_gb:.1f} GB needed, "
+                    f"{free_gb:.1f} GB free on disk"
+                )
+
+                if total_download_bytes > free_bytes:
+                    smaller = self._find_smallest_fitting_variant(
+                        hf_repo,
+                        free_bytes,
+                        hf_token,
+                    )
+                    if smaller:
+                        fallback_file, fallback_size = smaller
+                        logger.info(
+                            f"Selected variant too large ({total_gb:.1f} GB), "
+                            f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
+                        )
+                        gguf_filename = fallback_file
+                        import re as _re
+
+                        _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+                        _m = _shard_pat.match(gguf_filename)
+                        _prefix = _m.group(1) if _m else None
+                        if _prefix:
+                            gguf_extra_shards = sorted(
+                                f
+                                for f in all_gguf_files
+                                if f.startswith(_prefix)
+                                and f != gguf_filename
+                                and "mmproj" not in f.lower()
+                            )
+                        else:
+                            gguf_extra_shards = []
+                    else:
+                        raise RuntimeError(
+                            f"Not enough disk space to download any variant. "
+                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                        )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not check disk space: {e}")
+
+        logger.info(
+            f"Downloading GGUF: {hf_repo}/{gguf_filename}"
+            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else "")
+        )
+        try:
+            if self._cancel_event.is_set():
+                raise RuntimeError("Cancelled")
+            local_path = hf_hub_download(
+                repo_id = hf_repo,
+                filename = gguf_filename,
+                token = hf_token,
+            )
+            for shard in gguf_extra_shards:
+                if self._cancel_event.is_set():
+                    raise RuntimeError("Cancelled")
+                logger.info(f"Downloading GGUF shard: {shard}")
+                hf_hub_download(
+                    repo_id = hf_repo,
+                    filename = shard,
+                    token = hf_token,
+                )
+        except RuntimeError as e:
+            if "Cancelled" in str(e):
+                raise
+            raise RuntimeError(
+                f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+            )
+
+        logger.info(f"GGUF downloaded to: {local_path}")
+        return local_path
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     def load_model(
@@ -211,8 +552,8 @@ class LlamaCppBackend:
         model_identifier: str,
         is_vision: bool = False,
         n_ctx: int = 4096,
-        n_gpu_layers: int = -1,
         n_threads: Optional[int] = None,
+        n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -226,146 +567,81 @@ class LlamaCppBackend:
 
         Returns True if server started and health check passed.
         """
+        self._cancel_event.clear()
+
+        # ── Phase 1: kill old process (under lock, fast) ──────────
         with self._lock:
             self._kill_process()
 
-            binary = self._find_llama_server_binary()
-            if not binary:
-                raise RuntimeError(
-                    "llama-server binary not found. "
-                    "Run setup.sh to build it, install llama.cpp, "
-                    "or set LLAMA_SERVER_PATH environment variable."
-                )
+        binary = self._find_llama_server_binary()
+        if not binary:
+            raise RuntimeError(
+                "llama-server binary not found. "
+                "Run setup.sh to build it, install llama.cpp, "
+                "or set LLAMA_SERVER_PATH environment variable."
+            )
+
+        # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+        if hf_repo:
+            model_path = self._download_gguf(
+                hf_repo = hf_repo,
+                hf_variant = hf_variant,
+                hf_token = hf_token,
+            )
+        elif gguf_path:
+            if not Path(gguf_path).is_file():
+                raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+            model_path = gguf_path
+        else:
+            raise ValueError("Either gguf_path or hf_repo must be provided")
+
+        # Check cancel after download
+        if self._cancel_event.is_set():
+            logger.info("Load cancelled after download phase")
+            return False
+
+        # ── Phase 3: start llama-server (under lock) ──────────────
+        with self._lock:
+            # Re-check cancel inside lock
+            if self._cancel_event.is_set():
+                logger.info("Load cancelled before server start")
+                return False
 
             self._port = self._find_free_port()
 
-            # Build command based on mode
-            if hf_repo:
-                # Download the GGUF file ourselves using huggingface_hub
-                # (llama-server's -hf flag requires HTTPS/curl which may not
-                #  be available, e.g. Windows builds with -DLLAMA_CURL=OFF)
-                try:
-                    from huggingface_hub import hf_hub_download
-                except ImportError:
-                    raise RuntimeError(
-                        "huggingface_hub is required for HF model loading. "
-                        "Install it with: pip install huggingface_hub"
-                    )
-
-                # Determine the filename from the variant (e.g., "Q4_K_M" -> find matching file)
-                # For split GGUFs (e.g., *-00001-of-00003.gguf) we must download ALL shards.
-                gguf_filename = None
-                gguf_extra_shards: list[str] = []
-                if hf_variant:
-                    # Try common naming patterns
-                    try:
-                        import re
-                        from huggingface_hub import list_repo_files
-
-                        files = list_repo_files(hf_repo, token = hf_token)
-                        variant_lower = hf_variant.lower()
-                        # Use word-boundary matching so "Q8_0" doesn't also
-                        # match "IQ8_0" or other superset variant names.
-                        boundary = re.compile(
-                            r"(?<![a-zA-Z0-9])"
-                            + re.escape(variant_lower)
-                            + r"(?![a-zA-Z0-9])"
-                        )
-                        gguf_files = sorted(
-                            f
-                            for f in files
-                            if f.endswith(".gguf") and boundary.search(f.lower())
-                        )
-                        if gguf_files:
-                            gguf_filename = gguf_files[0]
-                            # For split GGUFs (e.g. model-Q8_0-00001-of-00003.gguf)
-                            # discover siblings by exact basename + total match
-                            # so "model-Q8_0-v2-*" isn't pulled in as a sibling.
-                            shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
-                            m = shard_pat.match(gguf_filename)
-                            if m:
-                                prefix = m.group(1)
-                                total = m.group(2)
-                                sibling_pat = re.compile(
-                                    r"^"
-                                    + re.escape(prefix)
-                                    + r"-\d{5}-of-"
-                                    + re.escape(total)
-                                    + r"\.gguf$"
-                                )
-                                gguf_extra_shards = [
-                                    f for f in gguf_files[1:] if sibling_pat.match(f)
-                                ]
-                    except Exception as e:
-                        logger.warning(f"Could not list repo files: {e}")
-
-                    if not gguf_filename:
-                        # Fallback: construct common filename pattern
-                        # e.g., "unsloth/gemma-3-4b-it-GGUF" + "Q4_K_M" -> try model name
-                        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-                        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
-
+            # Select GPU(s) based on model size and free memory
+            try:
+                model_size = self._get_gguf_size_bytes(model_path)
+                gpus = self._get_gpu_free_memory()
+                gpu_indices, use_fit = self._select_gpus(model_size, gpus)
                 logger.info(
-                    f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-                    + (
-                        f" (+{len(gguf_extra_shards)} shards)"
-                        if gguf_extra_shards
-                        else ""
-                    )
+                    f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                    f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                 )
-                try:
-                    local_path = hf_hub_download(
-                        repo_id = hf_repo,
-                        filename = gguf_filename,
-                        token = hf_token,
-                    )
-                    # Download remaining shards for split GGUFs — llama-server
-                    # auto-discovers them when they are in the same directory.
-                    for shard in gguf_extra_shards:
-                        logger.info(f"Downloading GGUF shard: {shard}")
-                        hf_hub_download(
-                            repo_id = hf_repo,
-                            filename = shard,
-                            token = hf_token,
-                        )
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
-                    )
+            except Exception as e:
+                logger.warning(f"GPU selection failed ({e}), using --fit on")
+                gpu_indices, use_fit = None, True
 
-                logger.info(f"GGUF downloaded to: {local_path}")
-                cmd = [
-                    binary,
-                    "-m",
-                    local_path,
-                    "--port",
-                    str(self._port),
-                    "-c",
-                    str(n_ctx),
-                    "-ngl",
-                    str(n_gpu_layers),
-                ]
-            elif gguf_path:
-                if not Path(gguf_path).is_file():
-                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                cmd = [
-                    binary,
-                    "-m",
-                    gguf_path,
-                    "--port",
-                    str(self._port),
-                    "-c",
-                    str(n_ctx),
-                    "-ngl",
-                    str(n_gpu_layers),
-                ]
-            else:
-                raise ValueError("Either gguf_path or hf_repo must be provided")
+            cmd = [
+                binary,
+                "-m",
+                model_path,
+                "--port",
+                str(self._port),
+                "-c",
+                str(n_ctx),
+                "--parallel",
+                "1",  # Single-user studio, saves VRAM
+                "--flash-attn",
+                "on",  # Force flash attention for speed
+            ]
+
+            if use_fit:
+                cmd.extend(["--fit", "on"])
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
 
-            # Append mmproj for local vision models
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
                     logger.warning(f"mmproj file not found: {mmproj_path}")
@@ -403,6 +679,10 @@ class LlamaCppBackend:
                 env["LD_LIBRARY_PATH"] = (
                     f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
                 )
+
+            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            if gpu_indices is not None:
+                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -442,7 +722,8 @@ class LlamaCppBackend:
             return True
 
     def unload_model(self) -> bool:
-        """Terminate the llama-server subprocess and clean up state."""
+        """Terminate the llama-server subprocess and cancel any in-flight download."""
+        self._cancel_event.set()
         with self._lock:
             self._kill_process()
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
@@ -473,6 +754,47 @@ class LlamaCppBackend:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
+
+    @staticmethod
+    def _kill_orphaned_servers():
+        """Kill orphaned llama-server processes started by studio.
+
+        Only kills processes whose binary lives under ~/.unsloth/llama.cpp/
+        to avoid terminating unrelated llama-server instances on the machine.
+        """
+        import os
+        import signal
+
+        try:
+            # Use pgrep with full command match to identify studio-managed servers
+            result = subprocess.run(
+                ["pgrep", "-a", "-f", "llama-server"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode != 0:
+                return
+            for line in result.stdout.strip().splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid = int(parts[0])
+                cmdline = parts[1]
+                if pid == os.getpid():
+                    continue
+                # Only kill if it's a studio-managed server (lives under .unsloth/)
+                if ".unsloth/" not in cmdline and "unsloth" not in cmdline.lower():
+                    continue
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    pass
+        except Exception:
+            pass
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -559,7 +881,7 @@ class LlamaCppBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_tokens: int = 512,
+        max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.1,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -584,14 +906,16 @@ class LlamaCppBackend:
             "top_p": top_p,
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
-            "max_tokens": max_tokens,
             "repeat_penalty": repetition_penalty,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if stop:
             payload["stop"] = stop
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
+        in_thinking = False
 
         try:
             with httpx.Client(timeout = None) as client:
@@ -615,6 +939,9 @@ class LlamaCppBackend:
                             if not line:
                                 continue
                             if line == "data: [DONE]":
+                                if in_thinking:
+                                    cumulative += "</think>"
+                                    yield cumulative
                                 return
                             if not line.startswith("data: "):
                                 continue
@@ -624,8 +951,23 @@ class LlamaCppBackend:
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+
+                                    # Handle reasoning/thinking tokens
+                                    # llama-server sends these as "reasoning_content"
+                                    # Wrap in <think> tags for the frontend parser
+                                    reasoning = delta.get("reasoning_content", "")
+                                    if reasoning:
+                                        if not in_thinking:
+                                            cumulative += "<think>"
+                                            in_thinking = True
+                                        cumulative += reasoning
+                                        yield cumulative
+
                                     token = delta.get("content", "")
                                     if token:
+                                        if in_thinking:
+                                            cumulative += "</think>"
+                                            in_thinking = False
                                         cumulative += token
                                         yield cumulative
                             except json.JSONDecodeError:

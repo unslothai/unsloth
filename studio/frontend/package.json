@@ -13,7 +13,7 @@
     "biome:fix": "biome check . --write"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.12.10",
+    "@assistant-ui/react": "^0.12.17",
     "@assistant-ui/react-markdown": "^0.12.3",
     "@assistant-ui/react-streamdown": "^0.1.2",
     "@base-ui/react": "^1.2.0",

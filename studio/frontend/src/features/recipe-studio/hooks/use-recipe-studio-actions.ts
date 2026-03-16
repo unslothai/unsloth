@@ -37,6 +37,7 @@ type UseRecipeStudioActionsParams = {
 };
 
 type UseRecipeStudioActionsResult = {
+  initialRecipeReady: boolean;
   workflowName: string;
   setWorkflowName: (value: string) => void;
   saveLoading: boolean;
@@ -116,6 +117,7 @@ export function useRecipeStudioActions({
   });
 
   return {
+    initialRecipeReady: persistence.initialRecipeReady,
     workflowName: persistence.workflowName,
     setWorkflowName: persistence.setWorkflowName,
     saveLoading: persistence.saveLoading,

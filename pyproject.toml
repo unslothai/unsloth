@@ -41,7 +41,24 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
-studio = ["frontend/dist/**/*"]
+studio = [
+    "*.sh",
+    "*.ps1",
+    "*.bat",
+    "frontend/dist/**/*",
+    "frontend/public/**/*",
+    "frontend/src/**/*",
+    "frontend/*.json",
+    "frontend/*.ts",
+    "frontend/*.js",
+    "frontend/*.lock",
+    "frontend/*.html",
+    "frontend/*.yaml",
+    "frontend/.git*",
+    "backend/requirements/**/*",
+    "backend/core/data_recipe/oxc-validator/*.json",
+    "backend/core/data_recipe/oxc-validator/*.mjs",
+]
 
 [tool.setuptools.packages.find]
 exclude = ["images*", "tests*", "kernels/moe*"]

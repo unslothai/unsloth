@@ -8,8 +8,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listGgufVariants } from "@/features/chat/api/chat-api";
+import { listCachedGguf, listGgufVariants } from "@/features/chat/api/chat-api";
+import type { CachedGgufRepo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
+import { usePlatformStore } from "@/config/env";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -144,10 +146,12 @@ function GgufVariantExpander({
   repoId,
   onSelect,
   gpuGb,
+  systemRamGb,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
+  systemRamGb?: number;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -181,15 +185,78 @@ function GgufVariantExpander({
   }, [repoId]);
 
   const handleVariantClick = useCallback(
-    (quant: string) => {
+    (quant: string, downloaded?: boolean, sizeBytes?: number) => {
       onSelect(repoId, {
         source: "hub",
         isLora: false,
         ggufVariant: quant,
+        isDownloaded: downloaded,
+        expectedBytes: sizeBytes,
       });
     },
     [repoId, onSelect],
   );
+
+  // GGUF fit classification matching llama-server's _select_gpus logic:
+  //   fits  = model <= 0.7 * total GPU memory
+  //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
+  //   oom   = model > 0.7 * GPU + 0.7 * system RAM
+  const gpuBudgetGb = (gpuGb ?? 0) * 0.70;
+  const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.70;
+
+  const getGgufFit = useCallback(
+    (sizeBytes: number): "fits" | "tight" | "oom" => {
+      if (!gpuGb || gpuGb <= 0) return "fits";
+      const gb = sizeBytes / (1024 ** 3);
+      if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
+      if (gb <= totalBudgetGb) return "tight";
+      return "oom";
+    },
+    [gpuGb, gpuBudgetGb, totalBudgetGb],
+  );
+
+  // If the backend-recommended variant is OOM, pick the largest fitting
+  // variant instead; if all are OOM, recommend the smallest one.
+  const effectiveRecommended = useMemo(() => {
+    if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
+    const defaultV = variants.find((v) => v.quant === defaultVariant);
+    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom") return defaultVariant;
+    // Default is OOM -- pick largest non-OOM variant (best quality that fits)
+    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
+    if (fitting.length > 0) {
+      fitting.sort((a, b) => b.size_bytes - a.size_bytes);
+      return fitting[0].quant;
+    }
+    // All OOM -- recommend smallest (most likely to partially run)
+    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
+    return sorted[0].quant;
+  }, [variants, defaultVariant, gpuGb, getGgufFit]);
+
+  const sortedVariants = useMemo(() => {
+    if (!variants) return variants;
+    // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
+    const tierOf = (v: GgufVariantDetail) => {
+      const f = getGgufFit(v.size_bytes);
+      if (f === "oom") return 4;
+      const base = f === "fits" ? 0 : 1;
+      return v.downloaded ? base : base + 2;
+    };
+    return [...variants].sort((a, b) => {
+      const aTier = tierOf(a);
+      const bTier = tierOf(b);
+      if (aTier !== bTier) return aTier - bTier;
+
+      // Within the same tier, recommended goes first
+      const aIsRec = a.quant === effectiveRecommended;
+      const bIsRec = b.quant === effectiveRecommended;
+      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
+
+      // fits: largest first (best quality that fits in GPU)
+      // tight/OOM: smallest first (closest to fitting, fastest to run)
+      const fitsInGpu = aTier === 0 || aTier === 2;
+      return fitsInGpu ? b.size_bytes - a.size_bytes : a.size_bytes - b.size_bytes;
+    });
+  }, [variants, effectiveRecommended, getGgufFit]);
 
   if (loading) {
     return (
@@ -206,7 +273,7 @@ function GgufVariantExpander({
     );
   }
 
-  if (!variants || variants.length === 0) {
+  if (!sortedVariants || sortedVariants.length === 0) {
     return (
       <div className="px-5 py-2 text-xs text-muted-foreground">
         No GGUF variants found.
@@ -224,33 +291,36 @@ function GgufVariantExpander({
           <span className="text-[9px] font-medium text-blue-400">Vision</span>
         )}
       </div>
-      {variants.map((v) => {
-        const sizeGb = v.size_bytes / (1024 ** 3);
-        const fitStatus = gpuGb != null && gpuGb > 0 && sizeGb > 0
-          ? checkVramFit(sizeGb, gpuGb)
-          : null;
+      {sortedVariants.map((v) => {
+        const fit = getGgufFit(v.size_bytes);
+        const oom = fit === "oom";
+        const tight = fit === "tight";
         return (
           <button
             key={v.filename}
             type="button"
-            onClick={() => handleVariantClick(v.quant)}
+            onClick={() => handleVariantClick(v.quant, v.downloaded, v.size_bytes)}
             className={cn(
               "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
             )}
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
               {v.quant}
-              {v.quant === defaultVariant && (
+              {v.downloaded ? (
+                <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                  downloaded
+                </span>
+              ) : v.quant === effectiveRecommended ? (
                 <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
                   recommended
                 </span>
-              )}
+              ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              {fitStatus === "exceeds" && (
+              {oom && (
                 <span className="text-[9px] font-medium text-red-400">OOM</span>
               )}
-              {fitStatus === "tight" && (
+              {tight && (
                 <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
               )}
               <span className="text-[10px] text-muted-foreground">
@@ -291,6 +361,12 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
+  // Cached (already downloaded) GGUF repos
+  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>([]);
+  useEffect(() => {
+    listCachedGguf().then(setCachedGguf).catch(() => {});
+  }, []);
+
   const recommendedIds = useMemo(
     () => dedupe([...models.map((model) => model.id), value ?? ""]),
     [models, value],
@@ -302,12 +378,15 @@ export function HubModelPicker({
   const showHfSection = debouncedQuery.trim().length > 0;
   const recommendedSet = useMemo(() => new Set(recommendedIds), [recommendedIds]);
 
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+
   const hfIds = useMemo(() => {
     if (!showHfSection) return [];
     return results
       .map((result) => result.id)
-      .filter((id) => !recommendedSet.has(id));
-  }, [recommendedSet, results, showHfSection]);
+      .filter((id) => !recommendedSet.has(id))
+      .filter((id) => !chatOnly || isGgufRepo(id));
+  }, [recommendedSet, results, showHfSection, chatOnly]);
 
   const metricsById = useMemo(
     () =>
@@ -393,6 +472,26 @@ export function HubModelPicker({
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="p-1">
+          {!showHfSection && cachedGguf.length > 0 ? (
+            <>
+              <ListLabel>Downloaded</ListLabel>
+              {cachedGguf.map((c) => (
+                <div key={c.repo_id}>
+                  <ModelRow
+                    label={c.repo_id}
+                    meta={`GGUF · ${formatBytes(c.size_bytes)}`}
+                    selected={value === c.repo_id}
+                    onClick={() => handleModelClick(c.repo_id)}
+                    vramStatus={null}
+                  />
+                  {expandedGguf === c.repo_id && (
+                    <GgufVariantExpander repoId={c.repo_id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                  )}
+                </div>
+              ))}
+            </>
+          ) : null}
+
           {!showHfSection ? (
             <>
               <ListLabel>Recommended</ListLabel>
@@ -419,7 +518,7 @@ export function HubModelPicker({
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
-                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} />
+                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
                       )}
                     </div>
                   );
@@ -454,7 +553,7 @@ export function HubModelPicker({
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                       />
                       {expandedGguf === id && (
-                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} />
+                        <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
                       )}
                     </div>
                   );

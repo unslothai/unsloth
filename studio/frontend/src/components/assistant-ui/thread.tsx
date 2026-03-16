@@ -6,6 +6,7 @@ import {
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
+import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
@@ -61,7 +62,6 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
       }}
     >
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
         className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
       >
         {!hideWelcome && (
@@ -139,10 +139,10 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               className="size-20"
             />
             <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-semibold text-2xl duration-200">
-              Test Your Fine-tuned Model
+              Run LLMs or test your fine-tune
             </h1>
             <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-base delay-75 duration-200">
-              Start a conversation to see how your model performs.
+              Run GGUFs, safetensors, vision and audio models!
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -401,6 +401,7 @@ const AssistantActionBar: FC = () => {
           <RefreshCwIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
+      <MessageTiming side="top" />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
           <TooltipIconButton

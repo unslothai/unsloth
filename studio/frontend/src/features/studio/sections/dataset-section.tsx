@@ -46,6 +46,7 @@ import {
 } from "@/features/training";
 import { listLocalDatasets } from "@/features/training/api/datasets-api";
 import type { LocalDatasetInfo } from "@/features/training/types/datasets";
+import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
   CloudUploadIcon,
@@ -59,8 +60,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
+import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
+
+const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
+  "data-recipes:open-learning-recipes";
 
 function isLikelyLocalDatasetRef(value: string) {
   return (
@@ -97,6 +103,7 @@ function normalizeSliceInput(value: string): string | null {
 }
 
 export function DatasetSection() {
+  const navigate = useNavigate();
   const {
     dataset,
     datasetSource,
@@ -341,6 +348,8 @@ export function DatasetSection() {
   );
 
   const [isUploading, setIsUploading] = useState(false);
+  const [documentRedirectOpen, setDocumentRedirectOpen] = useState(false);
+  const [redirectFileName, setRedirectFileName] = useState<string | null>(null);
 
   const handleUploadButtonClick = () => {
     fileInputRef.current?.click();
@@ -350,6 +359,13 @@ export function DatasetSection() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+
+    const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+    if (DOCUMENT_REDIRECT_EXTENSIONS.has(extension)) {
+      setRedirectFileName(file.name);
+      setDocumentRedirectOpen(true);
+      return;
+    }
 
     const MAX_SIZE_BYTES = 512 * 1024 * 1024;
     if (file.size > MAX_SIZE_BYTES) {
@@ -376,6 +392,12 @@ export function DatasetSection() {
       setIsUploading(false);
     }
   };
+
+  const handleOpenLearningRecipes = useCallback(() => {
+    sessionStorage.setItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY, "1");
+    setDocumentRedirectOpen(false);
+    void navigate({ to: "/data-recipes" });
+  }, [navigate]);
 
   return (
     <div data-tour="studio-dataset" className="col-span-1 xl:col-span-4">
@@ -929,11 +951,17 @@ export function DatasetSection() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json,.jsonl,.csv,.parquet"
+            accept=".json,.jsonl,.csv,.parquet,.pdf,.docx,.txt"
             className="hidden"
             onChange={(event) => {
               void handleDatasetFileChange(event);
             }}
+          />
+          <DocumentUploadRedirectDialog
+            open={documentRedirectOpen}
+            onOpenChange={setDocumentRedirectOpen}
+            fileName={redirectFileName}
+            onOpenLearningRecipes={handleOpenLearningRecipes}
           />
       </div>
       </SectionCard>

@@ -121,8 +121,33 @@ echo "✅ Node $(node -v) | npm $(npm -v)"
 echo ""
 echo "Building frontend..."
 cd "$SCRIPT_DIR/frontend"
+
+# Tailwind v4's oxide scanner respects .gitignore in parent directories.
+# Python venvs create a .gitignore with "*" (ignore everything), which
+# prevents Tailwind from scanning .tsx source files for class names.
+# Temporarily hide any such .gitignore during the build, then restore it.
+_HIDDEN_GITIGNORES=()
+_dir="$(pwd)"
+while [ "$_dir" != "/" ]; do
+    _dir="$(dirname "$_dir")"
+    if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+        mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+        _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+    fi
+done
+
+_restore_gitignores() {
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+    done
+}
+trap _restore_gitignores EXIT
+
 run_quiet "npm install" npm install
 run_quiet "npm run build" npm run build
+
+_restore_gitignores
+trap - EXIT
 cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
 run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
