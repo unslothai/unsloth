@@ -56,6 +56,27 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
+    """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
+    validated = []
+    missing = []
+    for dataset_path in paths:
+        dataset_file = resolve_dataset_path(dataset_path)
+        if not dataset_file.exists():
+            missing.append(f"{dataset_path} (resolved: {dataset_file})")
+            continue
+        logger.info(f"Found {label.lower()} file: {dataset_file}")
+        validated.append(str(dataset_file))
+
+    if missing:
+        missing_detail = "; ".join(missing[:3])
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{label} not found: {missing_detail}",
+        )
+    return validated
+
+
 @router.get("/hardware")
 async def get_hardware_utilization(
     current_subject: str = Depends(get_current_subject),
@@ -111,51 +132,13 @@ async def start_training(
 
         # Validate dataset paths if provided
         if request.local_datasets:
-            validated_datasets = []
-            missing_datasets = []
-            for dataset_path in request.local_datasets:
-                dataset_file = resolve_dataset_path(dataset_path)
-
-                if not dataset_file.exists():
-                    missing_datasets.append(
-                        f"{dataset_path} (resolved: {dataset_file})"
-                    )
-                    continue
-
-                logger.info(f"Found dataset file: {dataset_file}")
-                validated_datasets.append(str(dataset_file))
-
-            if missing_datasets:
-                missing_detail = "; ".join(missing_datasets[:3])
-                raise HTTPException(
-                    status_code = 400,
-                    detail = f"Local dataset not found: {missing_detail}",
-                )
-            request.local_datasets = validated_datasets
-
-        # Validate local eval dataset paths if provided
+            request.local_datasets = _validate_local_dataset_paths(
+                request.local_datasets, "Local dataset"
+            )
         if request.local_eval_datasets:
-            validated_eval_datasets = []
-            missing_eval_datasets = []
-            for dataset_path in request.local_eval_datasets:
-                dataset_file = resolve_dataset_path(dataset_path)
-
-                if not dataset_file.exists():
-                    missing_eval_datasets.append(
-                        f"{dataset_path} (resolved: {dataset_file})"
-                    )
-                    continue
-
-                logger.info(f"Found eval dataset file: {dataset_file}")
-                validated_eval_datasets.append(str(dataset_file))
-
-            if missing_eval_datasets:
-                missing_detail = "; ".join(missing_eval_datasets[:3])
-                raise HTTPException(
-                    status_code = 400,
-                    detail = f"Local eval dataset not found: {missing_detail}",
-                )
-            request.local_eval_datasets = validated_eval_datasets
+            request.local_eval_datasets = _validate_local_dataset_paths(
+                request.local_eval_datasets, "Local eval dataset"
+            )
 
         # Convert request to kwargs for backend
         training_kwargs = {

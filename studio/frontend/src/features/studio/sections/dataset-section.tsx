@@ -361,6 +361,25 @@ export function DatasetSection() {
     fileInputRef.current?.click();
   };
 
+  const handleFileUpload = async (
+    file: File,
+    onSuccess: (storedPath: string) => void,
+    successMessage: string,
+  ) => {
+    setIsUploading(true);
+    try {
+      const uploaded = await uploadTrainingDataset(file);
+      onSuccess(uploaded.stored_path);
+      toast.success(successMessage, { description: uploaded.filename });
+    } catch (error) {
+      toast.error("Upload failed", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -373,22 +392,7 @@ export function DatasetSection() {
       return;
     }
 
-    setIsUploading(true);
-    try {
-      const uploaded = await uploadTrainingDataset(file);
-
-      selectLocalDataset(uploaded.stored_path);
-
-      toast.success("Dataset uploaded", {
-        description: uploaded.filename,
-      });
-    } catch (error) {
-      toast.error("Upload failed", {
-        description: error instanceof Error ? error.message : "Unknown error",
-      });
-    } finally {
-      setIsUploading(false);
-    }
+    await handleFileUpload(file, selectLocalDataset, "Dataset uploaded");
   };
 
   const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -396,20 +400,7 @@ export function DatasetSection() {
     event.target.value = "";
     if (!file) return;
 
-    setIsUploading(true);
-    try {
-      const uploaded = await uploadTrainingDataset(file);
-      setUploadedEvalFile(uploaded.stored_path);
-      toast.success("Eval dataset uploaded", {
-        description: uploaded.filename,
-      });
-    } catch (error) {
-      toast.error("Upload failed", {
-        description: error instanceof Error ? error.message : "Unknown error",
-      });
-    } finally {
-      setIsUploading(false);
-    }
+    await handleFileUpload(file, setUploadedEvalFile, "Eval dataset uploaded");
   };
 
   const handleOpenLearningRecipes = useCallback(() => {
