@@ -8,11 +8,14 @@ On server startup, if the llama-server binary is not found, a background
 thread clones and builds llama.cpp from source. Features that need
 llama.cpp (GGUF chat, export, AI Assist) can await `wait_for_ready()`
 which blocks until compilation finishes or fails.
+
+Cross-platform: Linux, macOS, Windows.
 """
 
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -21,6 +24,9 @@ import structlog
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+_IS_WIN = sys.platform == "win32"
+_IS_MAC = sys.platform == "darwin"
 
 
 class LlamaCppBuilder:
@@ -71,15 +77,75 @@ class LlamaCppBuilder:
         """Block until llama.cpp is ready. Returns True if ready, False on timeout."""
         return self._ready.wait(timeout = timeout)
 
+    # ── Platform helpers ─────────────────────────────────────────
+
+    @staticmethod
+    def _find_nvcc() -> Optional[str]:
+        """Find nvcc across platforms."""
+        nvcc = shutil.which("nvcc")
+        if nvcc:
+            return nvcc
+
+        if _IS_WIN:
+            # Windows: check CUDA_PATH env, then standard install dirs
+            cuda_path = os.environ.get("CUDA_PATH", "")
+            if cuda_path:
+                candidate = Path(cuda_path) / "bin" / "nvcc.exe"
+                if candidate.is_file():
+                    return str(candidate)
+            toolkit_base = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
+            if toolkit_base.is_dir():
+                for d in sorted(toolkit_base.iterdir(), reverse = True):
+                    candidate = d / "bin" / "nvcc.exe"
+                    if candidate.is_file():
+                        return str(candidate)
+        else:
+            # Linux: check standard locations
+            if Path("/usr/local/cuda/bin/nvcc").is_file():
+                return "/usr/local/cuda/bin/nvcc"
+            for cuda_dir in sorted(
+                Path("/usr/local").glob("cuda-*/bin/nvcc"), reverse = True
+            ):
+                return str(cuda_dir)
+
+        return None
+
+    @staticmethod
+    def _detect_cuda_architectures() -> Optional[str]:
+        """Detect GPU compute capabilities via nvidia-smi."""
+        nvidia_smi = "nvidia-smi"
+        if _IS_WIN:
+            # nvidia-smi is typically in System32 on Windows
+            win_path = Path(r"C:\Windows\System32\nvidia-smi.exe")
+            if win_path.is_file():
+                nvidia_smi = str(win_path)
+
+        try:
+            result = subprocess.run(
+                [nvidia_smi, "--query-gpu=compute_cap", "--format=csv,noheader"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0:
+                caps = set()
+                for line in result.stdout.strip().split("\n"):
+                    cap = line.strip().replace(".", "")
+                    if cap:
+                        caps.add(cap)
+                if caps:
+                    return ";".join(sorted(caps))
+        except Exception:
+            pass
+        return None
+
+    # ── Build ────────────────────────────────────────────────────
+
     def _build(self) -> None:
         """Clone and build llama.cpp in the background."""
         try:
-            import sys
-
             llama_dir = Path.home() / ".unsloth" / "llama.cpp"
-            binary_name = (
-                "llama-server.exe" if sys.platform == "win32" else "llama-server"
-            )
+            binary_name = "llama-server.exe" if _IS_WIN else "llama-server"
 
             # Don't rebuild if binary appeared while we were starting
             from core.inference.llama_cpp import LlamaCppBackend
@@ -103,34 +169,31 @@ class LlamaCppBuilder:
                 logger.warning(self._error)
                 return
 
-            # Clone
-            if llama_dir.exists():
-                shutil.rmtree(llama_dir, ignore_errors = True)
+            # Clone (don't delete if already exists -- might be a partial build)
+            if not (llama_dir / "CMakeLists.txt").is_file():
+                if llama_dir.exists():
+                    shutil.rmtree(llama_dir, ignore_errors = True)
 
-            logger.info("Cloning llama.cpp...")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/ggml-org/llama.cpp.git",
-                    str(llama_dir),
-                ],
-                check = True,
-                capture_output = True,
-            )
+                logger.info("Cloning llama.cpp...")
+                subprocess.run(
+                    ["git", "clone", "--depth", "1",
+                     "https://github.com/ggml-org/llama.cpp.git", str(llama_dir)],
+                    check = True,
+                    capture_output = True,
+                )
+            else:
+                logger.info("llama.cpp source already present, building...")
 
-            # Build configuration: static binary, only needed targets, max parallelism
+            # ── CMake arguments ──────────────────────────────────
             cmake_args = [
-                "-DBUILD_SHARED_LIBS=OFF",  # Self-contained binary, no LD_LIBRARY_PATH needed
+                "-DBUILD_SHARED_LIBS=OFF",  # Self-contained binary
                 "-DGGML_NATIVE=ON",  # Native CPU optimizations
                 "-DLLAMA_BUILD_TESTS=OFF",  # Skip tests
-                "-DLLAMA_BUILD_EXAMPLES=OFF",  # Skip examples (we build server explicitly)
-                "-DLLAMA_BUILD_SERVER=ON",  # Ensure server target is available
+                "-DLLAMA_BUILD_EXAMPLES=OFF",  # Skip examples
+                "-DLLAMA_BUILD_SERVER=ON",  # Ensure server target
             ]
 
-            # Use ccache if available (27x faster rebuilds)
+            # ccache (27x faster rebuilds when available)
             ccache = shutil.which("ccache")
             if ccache:
                 cmake_args.extend(
@@ -142,109 +205,93 @@ class LlamaCppBuilder:
                 )
                 logger.info("Using ccache for faster compilation")
 
-            # Detect CUDA
-            nvcc = shutil.which("nvcc")
-            if not nvcc:
-                for cuda_dir in sorted(
-                    Path("/usr/local").glob("cuda-*/bin/nvcc"), reverse = True
-                ):
-                    nvcc = str(cuda_dir)
-                    break
-            if not nvcc and Path("/usr/local/cuda/bin/nvcc").is_file():
-                nvcc = "/usr/local/cuda/bin/nvcc"
-
-            if nvcc:
-                logger.info(f"CUDA detected: {nvcc}")
-                cmake_args.append("-DGGML_CUDA=ON")
-                # Detect compute capabilities (build only for this GPU, not all)
-                try:
-                    result = subprocess.run(
-                        [
-                            "nvidia-smi",
-                            "--query-gpu=compute_cap",
-                            "--format=csv,noheader",
-                        ],
-                        capture_output = True,
-                        text = True,
-                        timeout = 10,
-                    )
-                    if result.returncode == 0:
-                        caps = set()
-                        for line in result.stdout.strip().split("\n"):
-                            cap = line.strip().replace(".", "")
-                            if cap:
-                                caps.add(cap)
-                        if caps:
-                            cmake_args.append(
-                                f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(sorted(caps))}"
-                            )
-                except Exception:
-                    pass
-                # Multi-threaded CUDA compilation
-                cmake_args.append("-DCMAKE_CUDA_FLAGS=--threads=0")
+            # ── GPU backend ──────────────────────────────────────
+            if _IS_MAC:
+                # macOS: Metal is enabled by default in llama.cpp, no extra flags needed
+                logger.info("macOS detected, Metal backend enabled by default")
             else:
-                logger.info("No CUDA detected, building CPU-only llama.cpp")
+                nvcc = self._find_nvcc()
+                if nvcc:
+                    logger.info(f"CUDA detected: {nvcc}")
+                    cmake_args.append("-DGGML_CUDA=ON")
+                    # Build only for the detected GPU architecture(s)
+                    archs = self._detect_cuda_architectures()
+                    if archs:
+                        cmake_args.append(f"-DCMAKE_CUDA_ARCHITECTURES={archs}")
+                    # Multi-threaded CUDA compilation
+                    cmake_args.append("-DCMAKE_CUDA_FLAGS=--threads=0")
+                else:
+                    logger.info("No CUDA detected, building CPU-only llama.cpp")
 
-            # Use Ninja if available (faster than Make)
+            # ── Generator ────────────────────────────────────────
             generator_args = []
-            if shutil.which("ninja"):
-                generator_args = ["-G", "Ninja"]
+            if _IS_WIN:
+                # Windows: prefer Ninja, fall back to VS generator
+                if shutil.which("ninja"):
+                    generator_args = ["-G", "Ninja"]
+                # else: cmake will use default VS generator
+            else:
+                # Linux/Mac: prefer Ninja
+                if shutil.which("ninja"):
+                    generator_args = ["-G", "Ninja"]
 
-            # Configure
+            # ── Configure ────────────────────────────────────────
             build_dir = llama_dir / "build"
             logger.info("Configuring llama.cpp build...")
             subprocess.run(
-                [
-                    "cmake",
-                    "-B",
-                    str(build_dir),
-                    "-S",
-                    str(llama_dir),
-                ]
+                ["cmake", "-B", str(build_dir), "-S", str(llama_dir)]
                 + generator_args
                 + cmake_args,
                 check = True,
                 capture_output = True,
             )
 
-            # Build only the targets we need (llama-server + llama-quantize)
+            # ── Build ────────────────────────────────────────────
             logger.info("Building llama.cpp (this may take a few minutes)...")
             subprocess.run(
-                [
-                    "cmake",
-                    "--build",
-                    str(build_dir),
-                    "--config",
-                    "Release",
-                    "--target",
-                    "llama-server",
-                    "llama-quantize",
-                    "-j",
-                ],
+                ["cmake", "--build", str(build_dir), "--config", "Release",
+                 "--target", "llama-server", "llama-quantize", "-j"],
                 check = True,
                 capture_output = True,
             )
 
-            # Symlink llama-quantize for unsloth-zoo's check_llama_cpp()
-            quantize_src = build_dir / "bin" / "llama-quantize"
-            quantize_link = llama_dir / "llama-quantize"
-            if quantize_src.is_file() and not quantize_link.exists():
-                try:
-                    quantize_link.symlink_to(quantize_src)
-                except Exception:
-                    pass
-
-            # Verify
-            expected = build_dir / "bin" / binary_name
-            if expected.is_file():
-                self._binary_path = str(expected)
-                logger.info(f"llama.cpp build complete: {self._binary_path}")
+            # ── Verify binaries ──────────────────────────────────
+            # Windows VS generator puts binaries in build/bin/Release/
+            if _IS_WIN:
+                bin_dir = build_dir / "bin" / "Release"
+                if not (bin_dir / binary_name).is_file():
+                    bin_dir = build_dir / "bin"  # Ninja puts them here
             else:
-                self._error = f"Build completed but binary not found at {expected}"
+                bin_dir = build_dir / "bin"
+
+            server_bin = bin_dir / binary_name
+            quantize_name = "llama-quantize.exe" if _IS_WIN else "llama-quantize"
+            quantize_bin = bin_dir / quantize_name
+
+            if server_bin.is_file():
+                self._binary_path = str(server_bin)
+                logger.info(f"llama-server built: {self._binary_path}")
+            else:
+                self._error = f"Build completed but llama-server not found at {server_bin}"
                 logger.error(self._error)
 
+            if quantize_bin.is_file():
+                logger.info(f"llama-quantize built: {quantize_bin}")
+                # Create symlink/copy for unsloth-zoo's check_llama_cpp()
+                quantize_link = llama_dir / quantize_name
+                if not quantize_link.exists():
+                    try:
+                        if _IS_WIN:
+                            shutil.copy2(str(quantize_bin), str(quantize_link))
+                        else:
+                            quantize_link.symlink_to(quantize_bin)
+                    except Exception:
+                        pass
+            else:
+                logger.warning(f"llama-quantize not found at {quantize_bin}")
+
         except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode() if e.stderr else ""
+            stderr = (e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr) or ""
             self._error = f"llama.cpp build failed: {stderr[-500:]}"
             logger.error(self._error)
         except Exception as e:
