@@ -36,7 +36,7 @@ import torch.nn as nn
 
 def _make_fake_unsloth_fused_ce_loss():
     """Return a mock that records calls and returns a scalar loss tensor."""
-    mock = MagicMock(return_value=torch.tensor(1.23))
+    mock = MagicMock(return_value = torch.tensor(1.23))
     return mock
 
 
@@ -72,7 +72,7 @@ HIDDEN_DIM = 16
 VOCAB_SIZE = 64
 
 
-def _make_self(bsz=2, q_len=8, hidden_dim=HIDDEN_DIM, vocab_size=VOCAB_SIZE):
+def _make_self(bsz = 2, q_len = 8, hidden_dim = HIDDEN_DIM, vocab_size = VOCAB_SIZE):
     """
     Build a minimal mock `self` (the model instance) with:
     - lm_head: a real nn.Linear (CPU) so the matmul paths work
@@ -80,7 +80,7 @@ def _make_self(bsz=2, q_len=8, hidden_dim=HIDDEN_DIM, vocab_size=VOCAB_SIZE):
     - accelerator_scaler: None
     - config.text_config.vocab_size / config.vocab_size: vocab_size
     """
-    lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
+    lm_head = nn.Linear(hidden_dim, vocab_size, bias = False)
 
     cfg_text = MagicMock()
     cfg_text.vocab_size = vocab_size
@@ -92,11 +92,11 @@ def _make_self(bsz=2, q_len=8, hidden_dim=HIDDEN_DIM, vocab_size=VOCAB_SIZE):
     self.lm_head = lm_head
     self.config = cfg
     self.accelerator_scaler = None
-    self.loss_function = MagicMock(return_value=torch.tensor(0.99))
+    self.loss_function = MagicMock(return_value = torch.tensor(0.99))
     return self
 
 
-def _make_outputs(bsz=2, q_len=8, hidden_dim=HIDDEN_DIM):
+def _make_outputs(bsz = 2, q_len = 8, hidden_dim = HIDDEN_DIM):
     """Return a mock outputs object whose [0] is a random hidden_states tensor."""
     hidden = torch.randn(bsz, q_len, hidden_dim)
     outputs = MagicMock()
@@ -122,7 +122,7 @@ class TestComputeLossOrLogits(unittest.TestCase):
         self.orig_fused_ce = mod.unsloth_fused_ce_loss
         self.orig_empty_logits = mod.EMPTY_LOGITS
         # Install fresh mocks for each test
-        self.mock_fused_ce = MagicMock(return_value=torch.tensor(1.23))
+        self.mock_fused_ce = MagicMock(return_value = torch.tensor(1.23))
         self.mock_empty_logits = torch.zeros(1)
         mod.unsloth_fused_ce_loss = self.mock_fused_ce
         mod.EMPTY_LOGITS = self.mock_empty_logits
@@ -136,12 +136,12 @@ class TestComputeLossOrLogits(unittest.TestCase):
     def test_single_token_decode_uses_mv_not_lm_head(self):
         """bsz=1, q_len=1 → fast torch.mv, no full lm_head call, no loss."""
         helper = self.mod._qwen3_5_compute_loss_or_logits
-        self_ = _make_self(bsz=1, q_len=1)
+        self_ = _make_self(bsz = 1, q_len = 1)
         hidden = torch.randn(1, 1, HIDDEN_DIM)
 
-        with patch.object(torch, "mv", wraps=torch.mv) as mv_spy:
+        with patch.object(torch, "mv", wraps = torch.mv) as mv_spy:
             loss, logits, early_return = helper(
-                self_, hidden, labels=None, logits_to_keep=0, vocab_size=VOCAB_SIZE
+                self_, hidden, labels = None, logits_to_keep = 0, vocab_size = VOCAB_SIZE
             )
 
         self.assertIsNone(loss)
@@ -159,7 +159,7 @@ class TestComputeLossOrLogits(unittest.TestCase):
         hidden = torch.randn(2, 8, HIDDEN_DIM)
 
         loss, logits, early_return = helper(
-            self_, hidden, labels=None, logits_to_keep=3, vocab_size=VOCAB_SIZE
+            self_, hidden, labels = None, logits_to_keep = 3, vocab_size = VOCAB_SIZE
         )
 
         self.assertIsNone(loss)
@@ -174,11 +174,11 @@ class TestComputeLossOrLogits(unittest.TestCase):
         helper = self.mod._qwen3_5_compute_loss_or_logits
         self_ = _make_self()
         hidden = torch.randn(2, 8, HIDDEN_DIM)
-        labels = torch.zeros(2, 8, dtype=torch.long)
+        labels = torch.zeros(2, 8, dtype = torch.long)
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "0"}):
             loss, logits, early_return = helper(
-                self_, hidden, labels=labels, logits_to_keep=0, vocab_size=VOCAB_SIZE
+                self_, hidden, labels = labels, logits_to_keep = 0, vocab_size = VOCAB_SIZE
             )
 
         self.assertTrue(early_return)
@@ -196,16 +196,16 @@ class TestComputeLossOrLogits(unittest.TestCase):
         helper = self.mod._qwen3_5_compute_loss_or_logits
         self_ = _make_self()
         hidden = torch.randn(2, 8, HIDDEN_DIM)
-        labels = torch.zeros(2, 8, dtype=torch.long)
+        labels = torch.zeros(2, 8, dtype = torch.long)
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "0"}):
             helper(
                 self_,
                 hidden,
-                labels=labels,
-                logits_to_keep=0,
-                vocab_size=VOCAB_SIZE,
-                num_items_in_batch=16,
+                labels = labels,
+                logits_to_keep = 0,
+                vocab_size = VOCAB_SIZE,
+                num_items_in_batch = 16,
             )
 
         _, kwargs = self.mock_fused_ce.call_args
@@ -218,11 +218,11 @@ class TestComputeLossOrLogits(unittest.TestCase):
         helper = self.mod._qwen3_5_compute_loss_or_logits
         self_ = _make_self()
         hidden = torch.randn(2, 8, HIDDEN_DIM)
-        labels = torch.zeros(2, 8, dtype=torch.long)
+        labels = torch.zeros(2, 8, dtype = torch.long)
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "1"}):
             loss, logits, early_return = helper(
-                self_, hidden, labels=labels, logits_to_keep=0, vocab_size=VOCAB_SIZE
+                self_, hidden, labels = labels, logits_to_keep = 0, vocab_size = VOCAB_SIZE
             )
 
         self.assertFalse(early_return)
@@ -240,7 +240,7 @@ class TestComputeLossOrLogits(unittest.TestCase):
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "0"}):
             loss, logits, early_return = helper(
-                self_, hidden, labels=None, logits_to_keep=0, vocab_size=VOCAB_SIZE
+                self_, hidden, labels = None, logits_to_keep = 0, vocab_size = VOCAB_SIZE
             )
 
         self.assertIsNone(loss)
@@ -258,19 +258,19 @@ class TestComputeLossOrLogits(unittest.TestCase):
 class TestForwardFunctionBehaviour(unittest.TestCase):
     """P1/P2 regression tests for the outer forward wrappers."""
 
-    def _make_outputs_tuple(self, bsz=2, q_len=8, hidden_dim=HIDDEN_DIM):
+    def _make_outputs_tuple(self, bsz = 2, q_len = 8, hidden_dim = HIDDEN_DIM):
         """Simulate self.model(...) with return_dict=False → returns a tuple."""
         hidden = torch.randn(bsz, q_len, hidden_dim)
-        past_kv = MagicMock(name="past_key_values")
+        past_kv = MagicMock(name = "past_key_values")
         # HF tuple convention: (last_hidden_state, past_key_values)
         return (hidden, past_kv)
 
-    def _make_outputs_dict(self, bsz=2, q_len=8, hidden_dim=HIDDEN_DIM):
+    def _make_outputs_dict(self, bsz = 2, q_len = 8, hidden_dim = HIDDEN_DIM):
         """Simulate self.model(...) with return_dict=True → returns a ModelOutput."""
         hidden = torch.randn(bsz, q_len, hidden_dim)
         outputs = MagicMock()
         outputs.__getitem__ = lambda s, idx: hidden if idx == 0 else None
-        outputs.past_key_values = MagicMock(name="past_key_values")
+        outputs.past_key_values = MagicMock(name = "past_key_values")
         outputs.hidden_states = None
         outputs.attentions = None
         outputs.rope_deltas = None
@@ -282,17 +282,17 @@ class TestForwardFunctionBehaviour(unittest.TestCase):
         """num_logits_to_keep=3 must produce logits for exactly 3 token positions."""
         from unsloth.models.qwen3_5 import Qwen3_5ForConditionalGeneration_fast_forward
 
-        self_ = _make_self(bsz=1, q_len=8)
-        outputs = self._make_outputs_dict(bsz=1, q_len=8)
-        self_.model = MagicMock(return_value=outputs)
+        self_ = _make_self(bsz = 1, q_len = 8)
+        outputs = self._make_outputs_dict(bsz = 1, q_len = 8)
+        self_.model = MagicMock(return_value = outputs)
         self_.config.use_return_dict = True
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "1"}):
             result = Qwen3_5ForConditionalGeneration_fast_forward(
                 self_,
-                input_ids=torch.zeros(1, 8, dtype=torch.long),
-                num_logits_to_keep=3,
-                logits_to_keep=0,
+                input_ids = torch.zeros(1, 8, dtype = torch.long),
+                num_logits_to_keep = 3,
+                logits_to_keep = 0,
             )
 
         # Only the last 3 token positions should appear in logits
@@ -302,17 +302,17 @@ class TestForwardFunctionBehaviour(unittest.TestCase):
         """num_logits_to_keep=2 must produce logits for exactly 2 token positions."""
         from unsloth.models.qwen3_5 import Qwen3_5ForCausalLM_fast_forward
 
-        self_ = _make_self(bsz=1, q_len=8)
-        outputs = self._make_outputs_dict(bsz=1, q_len=8)
-        self_.model = MagicMock(return_value=outputs)
+        self_ = _make_self(bsz = 1, q_len = 8)
+        outputs = self._make_outputs_dict(bsz = 1, q_len = 8)
+        self_.model = MagicMock(return_value = outputs)
         self_.config.use_return_dict = True
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "1"}):
             result = Qwen3_5ForCausalLM_fast_forward(
                 self_,
-                input_ids=torch.zeros(1, 8, dtype=torch.long),
-                num_logits_to_keep=2,
-                logits_to_keep=0,
+                input_ids = torch.zeros(1, 8, dtype = torch.long),
+                num_logits_to_keep = 2,
+                logits_to_keep = 0,
             )
 
         self.assertEqual(result.logits.shape, (1, 2, VOCAB_SIZE))
@@ -323,16 +323,16 @@ class TestForwardFunctionBehaviour(unittest.TestCase):
         """return_dict=False must return a plain tuple, not raise AttributeError."""
         from unsloth.models.qwen3_5 import Qwen3_5ForCausalLM_fast_forward
 
-        self_ = _make_self(bsz=2, q_len=8)
-        tup = self._make_outputs_tuple(bsz=2, q_len=8)
-        self_.model = MagicMock(return_value=tup)
+        self_ = _make_self(bsz = 2, q_len = 8)
+        tup = self._make_outputs_tuple(bsz = 2, q_len = 8)
+        self_.model = MagicMock(return_value = tup)
         self_.config.use_return_dict = False
 
         with patch.dict(os.environ, {"UNSLOTH_RETURN_LOGITS": "1"}):
             result = Qwen3_5ForCausalLM_fast_forward(
                 self_,
-                input_ids=torch.zeros(2, 8, dtype=torch.long),
-                return_dict=False,
+                input_ids = torch.zeros(2, 8, dtype = torch.long),
+                return_dict = False,
             )
 
         self.assertIsInstance(result, tuple, "return_dict=False must yield a tuple")
@@ -344,9 +344,9 @@ class TestForwardFunctionBehaviour(unittest.TestCase):
         """
         from unsloth.models.qwen3_5 import Qwen3_5ForConditionalGeneration_fast_forward
 
-        self_ = _make_self(bsz=2, q_len=8)
-        tup = self._make_outputs_tuple(bsz=2, q_len=8)
-        self_.model = MagicMock(return_value=tup)
+        self_ = _make_self(bsz = 2, q_len = 8)
+        tup = self._make_outputs_tuple(bsz = 2, q_len = 8)
+        self_.model = MagicMock(return_value = tup)
         self_.config.use_return_dict = False
         self_.config.text_config = MagicMock()
         self_.config.text_config.vocab_size = VOCAB_SIZE
@@ -355,8 +355,8 @@ class TestForwardFunctionBehaviour(unittest.TestCase):
             try:
                 result = Qwen3_5ForConditionalGeneration_fast_forward(
                     self_,
-                    input_ids=torch.zeros(2, 8, dtype=torch.long),
-                    return_dict=False,
+                    input_ids = torch.zeros(2, 8, dtype = torch.long),
+                    return_dict = False,
                 )
             except AttributeError as exc:
                 self.fail(f"return_dict=False raised AttributeError: {exc}")
@@ -428,11 +428,11 @@ class TestFromPretrained(unittest.TestCase):
 
         with (
             patch.object(
-                FastLlamaModel, "from_pretrained", return_value=("model", "tok")
+                FastLlamaModel, "from_pretrained", return_value = ("model", "tok")
             ) as llama_mock,
             patch.object(FastQwen3Model, "from_pretrained") as qwen3_mock,
         ):
-            FastQwen3_5Model.from_pretrained(model_name="Qwen/Qwen3.5-0.6B-Base")
+            FastQwen3_5Model.from_pretrained(model_name = "Qwen/Qwen3.5-0.6B-Base")
 
             llama_mock.assert_called_once()
             qwen3_mock.assert_not_called()

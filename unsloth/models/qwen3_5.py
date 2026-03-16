@@ -98,17 +98,17 @@ def _qwen3_5_compute_loss_or_logits(
         labels = labels.to(lm_head_weight.device)
         n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
         loss = unsloth_fused_ce_loss(
-            trainer=None,
-            hidden_states=hidden_states,
-            lm_head_weight=lm_head_weight,
-            lm_head_bias=None,
-            labels=labels,
-            mask=None,
-            n_items=n_items,
-            scaling=getattr(self, "accelerator_scaler", None),
-            target_gb=None,
-            torch_compile=True,
-            logit_softcapping=0,  # Qwen3.5 has no logit softcapping
+            trainer = None,
+            hidden_states = hidden_states,
+            lm_head_weight = lm_head_weight,
+            lm_head_bias = None,
+            labels = labels,
+            mask = None,
+            n_items = n_items,
+            scaling = getattr(self, "accelerator_scaler", None),
+            target_gb = None,
+            torch_compile = True,
+            logit_softcapping = 0,  # Qwen3.5 has no logit softcapping
         )
         return loss, EMPTY_LOGITS, True
 
@@ -118,28 +118,28 @@ def _qwen3_5_compute_loss_or_logits(
     if labels is not None:
         labels = labels.to(lm_head_weight.device)
         loss = self.loss_function(
-            logits=logits, labels=labels, vocab_size=vocab_size, **kwargs
+            logits = logits, labels = labels, vocab_size = vocab_size, **kwargs
         )
     return loss, logits, False
 
 
 def Qwen3_5ForConditionalGeneration_fast_forward(
     self,
-    input_ids=None,
-    attention_mask=None,
-    position_ids=None,
-    past_key_values=None,
-    inputs_embeds=None,
-    labels=None,
-    pixel_values=None,
-    pixel_values_videos=None,
-    image_grid_thw=None,
-    video_grid_thw=None,
-    mm_token_type_ids=None,
-    cache_position=None,
-    logits_to_keep=0,
-    num_logits_to_keep=0,
-    return_dict=None,
+    input_ids = None,
+    attention_mask = None,
+    position_ids = None,
+    past_key_values = None,
+    inputs_embeds = None,
+    labels = None,
+    pixel_values = None,
+    pixel_values_videos = None,
+    image_grid_thw = None,
+    video_grid_thw = None,
+    mm_token_type_ids = None,
+    cache_position = None,
+    logits_to_keep = 0,
+    num_logits_to_keep = 0,
+    return_dict = None,
     **kwargs,
 ):
     return_dict = (
@@ -149,18 +149,18 @@ def Qwen3_5ForConditionalGeneration_fast_forward(
     logits_to_keep = max(logits_to_keep, num_logits_to_keep)
 
     outputs = self.model(
-        input_ids=input_ids,
-        pixel_values=pixel_values,
-        pixel_values_videos=pixel_values_videos,
-        image_grid_thw=image_grid_thw,
-        video_grid_thw=video_grid_thw,
-        position_ids=position_ids,
-        attention_mask=attention_mask,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        cache_position=cache_position,
-        mm_token_type_ids=mm_token_type_ids,
-        return_dict=return_dict,
+        input_ids = input_ids,
+        pixel_values = pixel_values,
+        pixel_values_videos = pixel_values_videos,
+        image_grid_thw = image_grid_thw,
+        video_grid_thw = video_grid_thw,
+        position_ids = position_ids,
+        attention_mask = attention_mask,
+        past_key_values = past_key_values,
+        inputs_embeds = inputs_embeds,
+        cache_position = cache_position,
+        mm_token_type_ids = mm_token_type_ids,
+        return_dict = return_dict,
         **kwargs,
     )
 
@@ -169,7 +169,7 @@ def Qwen3_5ForConditionalGeneration_fast_forward(
         outputs[0],
         labels,
         logits_to_keep,
-        vocab_size=self.config.text_config.vocab_size,
+        vocab_size = self.config.text_config.vocab_size,
         **kwargs,
     )
 
@@ -179,28 +179,28 @@ def Qwen3_5ForConditionalGeneration_fast_forward(
         return ((loss,) + output) if loss is not None else output
 
     return Qwen3_5CausalLMOutputWithPast(
-        loss=loss,
-        logits=logits,
-        past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
-        rope_deltas=getattr(outputs, "rope_deltas", None),
+        loss = loss,
+        logits = logits,
+        past_key_values = outputs.past_key_values,
+        hidden_states = outputs.hidden_states,
+        attentions = outputs.attentions,
+        rope_deltas = getattr(outputs, "rope_deltas", None),
     )
 
 
 def Qwen3_5ForCausalLM_fast_forward(
     self,
-    input_ids=None,
-    attention_mask=None,
-    position_ids=None,
-    past_key_values=None,
-    inputs_embeds=None,
-    labels=None,
-    use_cache=None,
-    cache_position=None,
-    logits_to_keep=0,
-    num_logits_to_keep=0,
-    return_dict=None,
+    input_ids = None,
+    attention_mask = None,
+    position_ids = None,
+    past_key_values = None,
+    inputs_embeds = None,
+    labels = None,
+    use_cache = None,
+    cache_position = None,
+    logits_to_keep = 0,
+    num_logits_to_keep = 0,
+    return_dict = None,
     **kwargs,
 ):
     return_dict = (
@@ -210,14 +210,14 @@ def Qwen3_5ForCausalLM_fast_forward(
     logits_to_keep = max(logits_to_keep, num_logits_to_keep)
 
     outputs = self.model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        cache_position=cache_position,
-        return_dict=return_dict,
+        input_ids = input_ids,
+        attention_mask = attention_mask,
+        position_ids = position_ids,
+        past_key_values = past_key_values,
+        inputs_embeds = inputs_embeds,
+        use_cache = use_cache,
+        cache_position = cache_position,
+        return_dict = return_dict,
         **kwargs,
     )
 
@@ -226,7 +226,7 @@ def Qwen3_5ForCausalLM_fast_forward(
         outputs[0],
         labels,
         logits_to_keep,
-        vocab_size=self.config.vocab_size,
+        vocab_size = self.config.vocab_size,
         **kwargs,
     )
 
@@ -235,11 +235,11 @@ def Qwen3_5ForCausalLM_fast_forward(
         return ((loss,) + output) if loss is not None else output
 
     return CausalLMOutputWithPast(
-        loss=loss,
-        logits=logits,
-        past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
+        loss = loss,
+        logits = logits,
+        past_key_values = outputs.past_key_values,
+        hidden_states = outputs.hidden_states,
+        attentions = outputs.attentions,
     )
 
 
@@ -275,17 +275,17 @@ class FastQwen3_5Model(FastQwen3Model):
 
     @staticmethod
     def from_pretrained(
-        model_name="Qwen/Qwen3.5-8B",
-        max_seq_length=4096,
-        dtype=None,
-        load_in_4bit=True,
-        token=None,
-        device_map="sequential",
-        rope_scaling=None,
-        fix_tokenizer=True,
-        model_patcher=None,
-        tokenizer_name=None,
-        trust_remote_code=False,
+        model_name = "Qwen/Qwen3.5-8B",
+        max_seq_length = 4096,
+        dtype = None,
+        load_in_4bit = True,
+        token = None,
+        device_map = "sequential",
+        rope_scaling = None,
+        fix_tokenizer = True,
+        model_patcher = None,
+        tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         # Call FastLlamaModel.from_pretrained directly — NOT FastQwen3Model.from_pretrained,
@@ -293,16 +293,16 @@ class FastQwen3_5Model(FastQwen3Model):
         # attention patches (incompatible with Qwen3.5's GDN layers).
         # float32 is already forced by FORCE_FLOAT32 in loader.py.
         return FastLlamaModel.from_pretrained(
-            model_name=model_name,
-            max_seq_length=max_seq_length,
-            dtype=dtype,
-            load_in_4bit=load_in_4bit,
-            token=token,
-            device_map=device_map,
-            rope_scaling=rope_scaling,
-            fix_tokenizer=fix_tokenizer,
-            model_patcher=FastQwen3_5Model,
-            tokenizer_name=tokenizer_name,
-            trust_remote_code=trust_remote_code,
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            fix_tokenizer = fix_tokenizer,
+            model_patcher = FastQwen3_5Model,
+            tokenizer_name = tokenizer_name,
+            trust_remote_code = trust_remote_code,
             **kwargs,
         )
