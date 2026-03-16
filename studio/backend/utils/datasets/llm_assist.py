@@ -129,6 +129,8 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             cumulative = text  # cumulative — last value is full text
 
         result = cumulative.strip()
+        # Strip <think>...</think> reasoning blocks (emitted by some models)
+        result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
         logger.info(f"Helper model response ({len(result)} chars)")
         return result if result else None
 
@@ -399,7 +401,10 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         repetition_penalty = 1.0,
     ):
         cumulative = text
-    return cumulative.strip()
+    result = cumulative.strip()
+    # Strip <think>...</think> reasoning blocks (emitted by some models)
+    result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
+    return result
 
 
 def fetch_hf_dataset_card(
