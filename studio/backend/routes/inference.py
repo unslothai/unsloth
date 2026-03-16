@@ -157,8 +157,11 @@ async def load_model(
 
             # Detect TTS audio by probing the loaded model's vocabulary
             from utils.models import is_audio_input_type
+
             _gguf_audio = llama_backend.detect_audio_type()
-            _gguf_is_audio = _gguf_audio is not None and _gguf_audio not in ("audio_vlm",)
+            _gguf_is_audio = _gguf_audio is not None and _gguf_audio not in (
+                "audio_vlm",
+            )
             llama_backend._is_audio = _gguf_is_audio
             llama_backend._audio_type = _gguf_audio
             if _gguf_is_audio:
@@ -544,9 +547,12 @@ async def generate_audio(
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
         model_name = llama_backend.model_identifier
         gen = lambda: llama_backend.generate_audio_response(
-            text = text, audio_type = llama_backend._audio_type,
-            temperature = payload.temperature, top_p = payload.top_p,
-            top_k = payload.top_k, max_new_tokens = payload.max_tokens or 2048,
+            text = text,
+            audio_type = llama_backend._audio_type,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = payload.top_k,
+            max_new_tokens = payload.max_tokens or 2048,
             repetition_penalty = payload.repetition_penalty,
         )
     else:
@@ -555,18 +561,25 @@ async def generate_audio(
             raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
-            raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
+            raise HTTPException(
+                status_code = 400, detail = "Active model is not an audio model."
+            )
         model_name = backend.active_model_name
         gen = lambda: backend.generate_audio_response(
-            text = text, temperature = payload.temperature,
-            top_p = payload.top_p, top_k = payload.top_k,
-            min_p = payload.min_p, max_new_tokens = payload.max_tokens or 2048,
+            text = text,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = payload.top_k,
+            min_p = payload.min_p,
+            max_new_tokens = payload.max_tokens or 2048,
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
         )
 
     try:
-        wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(None, gen)
+        wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(
+            None, gen
+        )
     except Exception as e:
         logger.error(f"Audio generation error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = str(e))
@@ -578,11 +591,16 @@ async def generate_audio(
             "object": "chat.completion.audio",
             "model": model_name,
             "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": f'[Generated audio from: "{text[:100]}"]'},
-                "finish_reason": "stop",
-            }],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f'[Generated audio from: "{text[:100]}"]',
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
         }
     )
 

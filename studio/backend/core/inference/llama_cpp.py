@@ -990,22 +990,33 @@ class LlamaCppBackend:
             return None
         try:
             with httpx.Client(timeout = 10) as client:
+
                 def _detok(tid: int) -> str:
-                    r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
+                    r = client.post(
+                        f"{self.base_url}/detokenize", json = {"tokens": [tid]}
+                    )
                     return r.json().get("content", "") if r.status_code == 200 else ""
 
                 def _tok(text: str) -> list[int]:
-                    r = client.post(f"{self.base_url}/tokenize", json = {"content": text, "add_special": False})
+                    r = client.post(
+                        f"{self.base_url}/tokenize",
+                        json = {"content": text, "add_special": False},
+                    )
                     return r.json().get("tokens", []) if r.status_code == 200 else []
 
                 # Check codec-specific tokens (not generic ones that may exist in non-audio models)
-                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(128259):
+                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
+                    128259
+                ):
                     return "snac"
                 if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
                     return "csm"
                 if len(_tok("<|startoftranscript|>")) == 1:
                     return "whisper"
-                if len(_tok("<|bicodec_semantic_0|>")) == 1 and len(_tok("<|bicodec_global_0|>")) == 1:
+                if (
+                    len(_tok("<|bicodec_semantic_0|>")) == 1
+                    and len(_tok("<|bicodec_global_0|>")) == 1
+                ):
                     return "bicodec"
                 if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
                     return "dac"
@@ -1016,9 +1027,21 @@ class LlamaCppBackend:
     # Prompt format per codec: (template, stop_tokens, needs_token_ids)
     # Matches prompts in InferenceBackend._generate_snac/bicodec/dac
     _TTS_PROMPTS = {
-        "snac":    ("<custom_token_3>{text}<|eot_id|><custom_token_4>", ["<custom_token_2>"], True),
-        "bicodec": ("<|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>", ["<|im_end|>", "</s>"], False),
-        "dac":     ("<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|><|global_features_start|>\n", ["<|im_end|>", "<|audio_end|>"], False),
+        "snac": (
+            "<custom_token_3>{text}<|eot_id|><custom_token_4>",
+            ["<custom_token_2>"],
+            True,
+        ),
+        "bicodec": (
+            "<|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>",
+            ["<|im_end|>", "</s>"],
+            False,
+        ),
+        "dac": (
+            "<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|><|global_features_start|>\n",
+            ["<|im_end|>", "<|audio_end|>"],
+            False,
+        ),
     }
 
     _codec_mgr = None  # Shared AudioCodecManager instance
@@ -1038,10 +1061,15 @@ class LlamaCppBackend:
         if audio_type == "bicodec":
             from huggingface_hub import snapshot_download
             import os
-            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B", local_dir = "Spark-TTS-0.5B")
+
+            repo_path = snapshot_download(
+                "unsloth/Spark-TTS-0.5B", local_dir = "Spark-TTS-0.5B"
+            )
             model_repo_path = os.path.abspath(repo_path)
 
-        LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
+        LlamaCppBackend._codec_mgr.load_codec(
+            audio_type, device, model_repo_path = model_repo_path
+        )
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
     def generate_audio_response(
@@ -1080,11 +1108,20 @@ class LlamaCppBackend:
         with httpx.Client(timeout = httpx.Timeout(300, connect = 10)) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
-                raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")
+                raise RuntimeError(
+                    f"llama-server returned {resp.status_code}: {resp.text}"
+                )
 
         data = resp.json()
-        token_ids = [p["id"] for p in data.get("completion_probabilities", []) if "id" in p] if need_ids else None
+        token_ids = (
+            [p["id"] for p in data.get("completion_probabilities", []) if "id" in p]
+            if need_ids
+            else None
+        )
 
         import torch
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        return LlamaCppBackend._codec_mgr.decode(audio_type, device, token_ids = token_ids, text = data.get("content", ""))
+        return LlamaCppBackend._codec_mgr.decode(
+            audio_type, device, token_ids = token_ids, text = data.get("content", "")
+        )

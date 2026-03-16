@@ -306,15 +306,19 @@ async def list_models(
 
         # Include active GGUF model (loaded via llama-server)
         from routes.inference import get_llama_cpp_backend
+
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded_models.append(ModelDetails(
-                id = llama_backend.model_identifier,
-                name = llama_backend.model_identifier.split("/")[-1],
-                is_gguf = True, is_vision = llama_backend.is_vision,
-                is_audio = getattr(llama_backend, "_is_audio", False),
-                audio_type = getattr(llama_backend, "_audio_type", None),
-            ))
+            loaded_models.append(
+                ModelDetails(
+                    id = llama_backend.model_identifier,
+                    name = llama_backend.model_identifier.split("/")[-1],
+                    is_gguf = True,
+                    is_vision = llama_backend.is_vision,
+                    is_audio = getattr(llama_backend, "_is_audio", False),
+                    audio_type = getattr(llama_backend, "_audio_type", None),
+                )
+            )
 
         # Combine default and loaded models
         all_models = []
