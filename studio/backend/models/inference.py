@@ -123,7 +123,8 @@ class LoadResponse(BaseModel):
         None, description = "Model's native context length (from GGUF metadata)"
     )
     supports_reasoning: bool = Field(
-        False, description = "Whether model supports thinking/reasoning mode (enable_thinking)"
+        False,
+        description = "Whether model supports thinking/reasoning mode (enable_thinking)",
     )
 
 

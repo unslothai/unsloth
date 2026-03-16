@@ -481,13 +481,17 @@ class LlamaCppBackend:
                 tpl = self._chat_template
                 if "enable_thinking" in tpl:
                     self._supports_reasoning = True
-                    logger.info("GGUF metadata: model supports reasoning (enable_thinking)")
+                    logger.info(
+                        "GGUF metadata: model supports reasoning (enable_thinking)"
+                    )
                 elif "thinking" in tpl:
                     # DeepSeek uses 'thinking' instead of 'enable_thinking'
                     normalized_id = (self._model_identifier or "").lower()
                     if "deepseek" in normalized_id:
                         self._supports_reasoning = True
-                        logger.info("GGUF metadata: model supports reasoning (DeepSeek thinking)")
+                        logger.info(
+                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
+                        )
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -817,10 +821,12 @@ class LlamaCppBackend:
 
             # For reasoning models, default to thinking ON (user can toggle per-request)
             if self._supports_reasoning:
-                cmd.extend([
-                    "--chat-template-kwargs",
-                    json.dumps({"enable_thinking": True}),
-                ])
+                cmd.extend(
+                    [
+                        "--chat-template-kwargs",
+                        json.dumps({"enable_thinking": True}),
+                    ]
+                )
                 logger.info("Reasoning model: enabled enable_thinking=true by default")
 
             if mmproj_path:
