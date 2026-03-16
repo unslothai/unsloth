@@ -41,7 +41,11 @@ def show_link(port: int = 8000):
     # Get real Colab proxy URL
     url = get_colab_url(port)
 
-    short_url = url[:url.index("-", url.index("8000-") + 5) + 1] + "..." if "8000-" in url else url
+    short_url = (
+        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
+        if "8000-" in url
+        else url
+    )
     html = f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
