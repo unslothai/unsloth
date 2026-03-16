@@ -10,7 +10,6 @@ type ModelLoadDescriptionProps = {
   progressPercent?: number | null;
   progressLabel?: string | null;
   onStop?: () => void;
-  stopLabel?: string;
 };
 
 function clampProgress(value: number): number {
@@ -22,7 +21,6 @@ export function ModelLoadDescription({
   progressPercent,
   progressLabel,
   onStop,
-  stopLabel = "Stop loading",
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
 
@@ -45,11 +43,11 @@ export function ModelLoadDescription({
         <Button
           type="button"
           size="xs"
-          variant="ghost"
-          className="h-5 shrink-0 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+          variant="outline"
+          className="h-5 shrink-0 px-2 text-[10px]"
           onClick={onStop}
         >
-          {stopLabel}
+          Stop
         </Button>
       ) : null}
     </div>
@@ -94,8 +92,8 @@ export function ModelLoadInlineStatus({
         <Button
           type="button"
           size="xs"
-          variant="ghost"
-          className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+          variant="outline"
+          className="shrink-0 text-[11px]"
           onClick={onStop}
         >
           Stop
