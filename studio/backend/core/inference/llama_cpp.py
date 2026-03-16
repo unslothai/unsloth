@@ -823,14 +823,19 @@ class LlamaCppBackend:
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
+
                 self._chat_template_file = tempfile.NamedTemporaryFile(
-                    mode = "w", suffix = ".jinja", delete = False,
+                    mode = "w",
+                    suffix = ".jinja",
+                    delete = False,
                     prefix = "unsloth_chat_template_",
                 )
                 self._chat_template_file.write(chat_template_override)
                 self._chat_template_file.close()
                 cmd.extend(["--chat-template-file", self._chat_template_file.name])
-                logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
+                logger.info(
+                    f"Using custom chat template file: {self._chat_template_file.name}"
+                )
 
             # For reasoning models, default to thinking ON (user can toggle per-request)
             if self._supports_reasoning:
@@ -943,6 +948,7 @@ class LlamaCppBackend:
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
                     import os
+
                     os.unlink(self._chat_template_file.name)
                 except Exception:
                     pass
