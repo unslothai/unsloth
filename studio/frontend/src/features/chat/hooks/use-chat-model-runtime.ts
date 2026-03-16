@@ -355,6 +355,13 @@ export function useChatModelRuntime() {
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResponse.is_gguf
+                ? (loadResponse.context_length ?? 131072)
+                : null,
+              supportsReasoning: loadResponse.supports_reasoning ?? false,
+              reasoningEnabled: loadResponse.supports_reasoning ?? false,
+            });
             await refresh();
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.

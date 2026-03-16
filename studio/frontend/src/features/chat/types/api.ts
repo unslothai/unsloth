@@ -83,6 +83,7 @@ export interface LoadModelResponse {
     trust_remote_code?: boolean;
   };
   context_length?: number | null;
+  supports_reasoning?: boolean;
 }
 
 export interface UnloadModelRequest {
@@ -135,6 +136,7 @@ export interface OpenAIChatCompletionsRequest {
   image_base64?: string;
   audio_base64?: string;
   use_adapter?: boolean | string | null;
+  enable_thinking?: boolean | null;
 }
 
 export interface OpenAIChatDelta {

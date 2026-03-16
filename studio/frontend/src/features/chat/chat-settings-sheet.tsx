@@ -162,6 +162,7 @@ export function ChatSettingsPanel({
   onAutoTitleChange,
 }: ChatSettingsPanelProps) {
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
@@ -340,10 +341,14 @@ export function ChatSettingsPanel({
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={isGguf ? params.maxTokens : 32768}
-                step={isGguf ? params.maxTokens : 64}
+                max={isGguf && ggufContextLength ? ggufContextLength : 32768}
+                step={64}
                 onChange={set("maxTokens")}
-                displayValue={isGguf ? "Max" : undefined}
+                displayValue={
+                  isGguf && ggufContextLength && params.maxTokens >= ggufContextLength
+                    ? "Max"
+                    : undefined
+                }
               />
             </div>
           </CollapsibleSection>

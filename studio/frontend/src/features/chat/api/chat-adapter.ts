@@ -423,6 +423,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningDuration = 0;
 
       try {
+        const { supportsReasoning, reasoningEnabled } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -437,6 +438,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
+            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
           },
           abortSignal,
         );

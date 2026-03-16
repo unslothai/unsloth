@@ -48,6 +48,7 @@ class LlamaCppBackend:
         self._healthy = False
         self._context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
+        self._supports_reasoning: bool = False
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -90,6 +91,10 @@ class LlamaCppBackend:
     @property
     def chat_template(self) -> Optional[str]:
         return self._chat_template
+
+    @property
+    def supports_reasoning(self) -> bool:
+        return self._supports_reasoning
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -472,6 +477,17 @@ class LlamaCppBackend:
                 logger.info(
                     f"GGUF metadata: chat_template={len(self._chat_template)} chars"
                 )
+                # Detect thinking/reasoning support from chat template
+                tpl = self._chat_template
+                if "enable_thinking" in tpl:
+                    self._supports_reasoning = True
+                    logger.info("GGUF metadata: model supports reasoning (enable_thinking)")
+                elif "thinking" in tpl:
+                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
+                    normalized_id = (self._model_identifier or "").lower()
+                    if "deepseek" in normalized_id:
+                        self._supports_reasoning = True
+                        logger.info("GGUF metadata: model supports reasoning (DeepSeek thinking)")
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -796,6 +812,17 @@ class LlamaCppBackend:
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
 
+            # Always enable Jinja chat template rendering for proper template support
+            cmd.extend(["--jinja"])
+
+            # For reasoning models, default to thinking ON (user can toggle per-request)
+            if self._supports_reasoning:
+                cmd.extend([
+                    "--chat-template-kwargs",
+                    json.dumps({"enable_thinking": True}),
+                ])
+                logger.info("Reasoning model: enabled enable_thinking=true by default")
+
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
                     logger.warning(f"mmproj file not found: {mmproj_path}")
@@ -892,6 +919,7 @@ class LlamaCppBackend:
             self._healthy = False
             self._context_length = None
             self._chat_template = None
+            self._supports_reasoning = False
             # Free audio codec GPU memory
             if LlamaCppBackend._codec_mgr is not None:
                 LlamaCppBackend._codec_mgr.unload()
@@ -1051,6 +1079,7 @@ class LlamaCppBackend:
         repetition_penalty: float = 1.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
+        enable_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -1074,6 +1103,9 @@ class LlamaCppBackend:
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
         }
+        # Pass enable_thinking per-request for reasoning models
+        if self._supports_reasoning and enable_thinking is not None:
+            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if stop:

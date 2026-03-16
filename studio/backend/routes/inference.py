@@ -180,6 +180,7 @@ async def load_model(
                 has_audio_input = is_audio_input_type(_gguf_audio),
                 inference = inference_config,
                 context_length = llama_backend.context_length,
+                supports_reasoning = llama_backend.supports_reasoning,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -928,6 +929,7 @@ async def openai_chat_completions(
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 cancel_event = cancel_event,
+                enable_thinking = payload.enable_thinking,
             )
 
         if payload.stream:

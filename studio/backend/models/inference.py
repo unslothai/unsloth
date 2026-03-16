@@ -122,6 +122,9 @@ class LoadResponse(BaseModel):
     context_length: Optional[int] = Field(
         None, description = "Model's native context length (from GGUF metadata)"
     )
+    supports_reasoning: bool = Field(
+        False, description = "Whether model supports thinking/reasoning mode (enable_thinking)"
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -269,6 +272,10 @@ class ChatCompletionRequest(BaseModel):
             "true = enable the current adapter, "
             "string = enable a specific adapter by name."
         ),
+    )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
 
 
