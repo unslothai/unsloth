@@ -66,7 +66,7 @@ export function Navbar() {
     <header className="relative top-0 z-40 h-16 w-full">
       <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 sm:px-6">
         {/* Left: logo */}
-        <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center justify-self-start select-none">
+        <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center gap-1.5 justify-self-start select-none">
           <img
             src="/blacklogo.png"
             alt="Unsloth"
