@@ -123,21 +123,23 @@ class LlamaCppBuilder:
 
             # Build configuration: static binary, only needed targets, max parallelism
             cmake_args = [
-                "-DBUILD_SHARED_LIBS=OFF",     # Self-contained binary, no LD_LIBRARY_PATH needed
-                "-DGGML_NATIVE=ON",            # Native CPU optimizations
-                "-DLLAMA_BUILD_TESTS=OFF",     # Skip tests
+                "-DBUILD_SHARED_LIBS=OFF",  # Self-contained binary, no LD_LIBRARY_PATH needed
+                "-DGGML_NATIVE=ON",  # Native CPU optimizations
+                "-DLLAMA_BUILD_TESTS=OFF",  # Skip tests
                 "-DLLAMA_BUILD_EXAMPLES=OFF",  # Skip examples (we build server explicitly)
-                "-DLLAMA_BUILD_SERVER=ON",     # Ensure server target is available
+                "-DLLAMA_BUILD_SERVER=ON",  # Ensure server target is available
             ]
 
             # Use ccache if available (27x faster rebuilds)
             ccache = shutil.which("ccache")
             if ccache:
-                cmake_args.extend([
-                    f"-DCMAKE_C_COMPILER_LAUNCHER={ccache}",
-                    f"-DCMAKE_CXX_COMPILER_LAUNCHER={ccache}",
-                    f"-DCMAKE_CUDA_COMPILER_LAUNCHER={ccache}",
-                ])
+                cmake_args.extend(
+                    [
+                        f"-DCMAKE_C_COMPILER_LAUNCHER={ccache}",
+                        f"-DCMAKE_CXX_COMPILER_LAUNCHER={ccache}",
+                        f"-DCMAKE_CUDA_COMPILER_LAUNCHER={ccache}",
+                    ]
+                )
                 logger.info("Using ccache for faster compilation")
 
             # Detect CUDA
