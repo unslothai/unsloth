@@ -26,8 +26,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_HELPER_MODEL_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
-DEFAULT_HELPER_MODEL_VARIANT = "Q8_0"
+DEFAULT_HELPER_MODEL_REPO = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
+DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500
 
