@@ -12,6 +12,7 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowDown01Icon,
+  CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
   PencilEdit01Icon,
@@ -152,6 +153,7 @@ interface ChatSettingsPanelProps {
   onParamsChange: (params: InferenceParams) => void;
   autoTitle: boolean;
   onAutoTitleChange: (enabled: boolean) => void;
+  onReloadModel?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -160,8 +162,10 @@ export function ChatSettingsPanel({
   onParamsChange,
   autoTitle,
   onAutoTitleChange,
+  onReloadModel,
 }: ChatSettingsPanelProps) {
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
@@ -340,15 +344,19 @@ export function ChatSettingsPanel({
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={isGguf ? 131072 : 32768}
+                max={isGguf && ggufContextLength ? ggufContextLength : 32768}
                 step={64}
                 onChange={set("maxTokens")}
-                displayValue={isGguf && params.maxTokens >= 131072 ? "Max" : undefined}
+                displayValue={
+                  isGguf && ggufContextLength && params.maxTokens >= ggufContextLength
+                    ? "Max"
+                    : undefined
+                }
               />
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection icon={Settings02Icon} label="Settings">
+          <CollapsibleSection icon={Settings02Icon} label="Settings" defaultOpen={true}>
             <div className="flex flex-col gap-3 py-1">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -376,8 +384,61 @@ export function ChatSettingsPanel({
               </div>
             </div>
           </CollapsibleSection>
+
+          <ChatTemplateSection onReloadModel={onReloadModel} />
         </div>
       </div>
     </aside>
+  );
+}
+
+function ChatTemplateSection({
+  onReloadModel,
+}: {
+  onReloadModel?: () => void;
+}) {
+  const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
+  const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
+  const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
+
+  if (!defaultTemplate) return null;
+
+  const displayValue = override ?? defaultTemplate;
+  const isModified = override !== null;
+
+  return (
+    <CollapsibleSection icon={CodeIcon} label="Chat Template">
+      <div className="flex flex-col gap-2 py-1">
+        <Textarea
+          value={displayValue}
+          onChange={(e) => setOverride(e.target.value)}
+          className="min-h-32 font-mono text-[10px] leading-relaxed corner-squircle"
+          rows={6}
+          spellCheck={false}
+        />
+        <div className="flex flex-wrap gap-1.5">
+          {isModified && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  onReloadModel?.();
+                }}
+                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                Apply & Reload
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverride(null)}
+                className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+              >
+                Revert changes
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </CollapsibleSection>
   );
 }

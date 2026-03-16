@@ -302,6 +302,28 @@ class AudioCodecManager:
         waveform = audio.squeeze().cpu().numpy()
         return _numpy_to_wav_bytes(waveform, 24000), 24000
 
+    def decode(
+        self,
+        audio_type: str,
+        device: str,
+        token_ids: Optional[list] = None,
+        text: Optional[str] = None,
+    ) -> Tuple[bytes, int]:
+        """Unified decode — dispatches to the right codec decoder."""
+        if audio_type == "snac":
+            if not token_ids:
+                raise ValueError("SNAC decoding requires token_ids")
+            return self.decode_snac(torch.tensor([token_ids], dtype = torch.long), device)
+        elif audio_type == "bicodec":
+            if not text:
+                raise ValueError("BiCodec decoding requires text")
+            return self.decode_bicodec(text, device)
+        elif audio_type == "dac":
+            if not text:
+                raise ValueError("DAC decoding requires text")
+            return self.decode_dac(text, device)
+        raise ValueError(f"Cannot decode audio_type: {audio_type}")
+
     # ── Cleanup ──────────────────────────────────────────────────
 
     def unload(self) -> None:

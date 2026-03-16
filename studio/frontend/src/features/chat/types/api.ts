@@ -39,6 +39,7 @@ export interface LoadModelRequest {
   gguf_variant?: string | null;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  chat_template_override?: string | null;
 }
 
 export interface ValidateModelResponse {
@@ -82,6 +83,9 @@ export interface LoadModelResponse {
     min_p?: number;
     trust_remote_code?: boolean;
   };
+  context_length?: number | null;
+  supports_reasoning?: boolean;
+  chat_template?: string | null;
 }
 
 export interface UnloadModelRequest {
@@ -134,6 +138,7 @@ export interface OpenAIChatCompletionsRequest {
   image_base64?: string;
   audio_base64?: string;
   use_adapter?: boolean | string | null;
+  enable_thinking?: boolean | null;
 }
 
 export interface OpenAIChatDelta {

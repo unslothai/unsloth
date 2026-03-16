@@ -650,6 +650,18 @@ export function ChatPage(): ReactElement {
           onParamsChange={setInferenceParams}
           autoTitle={autoTitle}
           onAutoTitleChange={setAutoTitle}
+          onReloadModel={() => {
+            const state = useChatRuntimeStore.getState();
+            if (state.params.checkpoint) {
+              selectModel({
+                id: state.params.checkpoint,
+                ggufVariant: state.activeGgufVariant ?? undefined,
+                forceReload: true,
+                isDownloaded: true,
+                loadingDescription: "Reloading with updated chat template.",
+              });
+            }
+          }}
         />
       </SidebarProvider>
     </div>

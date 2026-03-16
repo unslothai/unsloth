@@ -135,6 +135,7 @@ async def load_model(
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
+                    chat_template_override = request.chat_template_override,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -145,6 +146,7 @@ async def load_model(
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
+                    chat_template_override = request.chat_template_override,
                 )
 
             if not success:
@@ -155,6 +157,17 @@ async def load_model(
 
             logger.info(f"Loaded GGUF model via llama-server: {config.identifier}")
 
+            # Detect TTS audio by probing the loaded model's vocabulary
+            from utils.models import is_audio_input_type
+
+            _gguf_audio = llama_backend.detect_audio_type()
+            _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
+            llama_backend._is_audio = _gguf_is_audio
+            llama_backend._audio_type = _gguf_audio
+            if _gguf_is_audio:
+                logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
+                await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
+
             inference_config = load_inference_config(config.identifier)
 
             return LoadResponse(
@@ -164,7 +177,13 @@ async def load_model(
                 is_vision = config.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_audio = _gguf_is_audio,
+                audio_type = _gguf_audio,
+                has_audio_input = is_audio_input_type(_gguf_audio),
                 inference = inference_config,
+                context_length = llama_backend.context_length,
+                supports_reasoning = llama_backend.supports_reasoning,
+                chat_template = llama_backend.chat_template,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -273,6 +292,15 @@ async def load_model(
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
 
+        # Get chat template from tokenizer
+        _chat_template = None
+        try:
+            _model_info = backend.models.get(config.identifier, {})
+            _tpl_info = _model_info.get("chat_template_info", {})
+            _chat_template = _tpl_info.get("template")
+        except Exception:
+            pass
+
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -284,6 +312,7 @@ async def load_model(
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
             inference = inference_config,
+            chat_template = _chat_template,
         )
 
     except HTTPException:
@@ -473,6 +502,8 @@ async def get_status(
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
+                is_audio = getattr(llama_backend, "_is_audio", False),
+                audio_type = getattr(llama_backend, "_audio_type", None),
                 loading = [],
                 loaded = [llama_backend.model_identifier],
             )
@@ -521,77 +552,83 @@ async def generate_audio(
     """
     Generate audio (TTS) from the latest user message.
     Returns a JSON response with base64-encoded WAV audio.
-    Only works when an audio model is loaded.
+    Works with both GGUF (llama-server) and Unsloth/transformers backends.
     """
     import base64
-
-    backend = get_inference_backend()
-    if not backend.active_model_name:
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
-    model_info = backend.models.get(backend.active_model_name, {})
-    if not model_info.get("is_audio"):
-        raise HTTPException(
-            status_code = 400, detail = "Active model is not an audio model."
-        )
 
     # Extract text from the last user message
     _, chat_messages, _ = _extract_content_parts(payload.messages)
     if not chat_messages:
         raise HTTPException(status_code = 400, detail = "No messages provided.")
-
     last_user_msg = next(
         (m for m in reversed(chat_messages) if m["role"] == "user"), None
     )
     if not last_user_msg:
         raise HTTPException(status_code = 400, detail = "No user message found.")
-
     text = last_user_msg["content"]
+
+    # Pick backend — both return (wav_bytes, sample_rate)
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
+        model_name = llama_backend.model_identifier
+        gen = lambda: llama_backend.generate_audio_response(
+            text = text,
+            audio_type = llama_backend._audio_type,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = payload.top_k,
+            min_p = payload.min_p,
+            max_new_tokens = payload.max_tokens or 2048,
+            repetition_penalty = payload.repetition_penalty,
+        )
+    else:
+        backend = get_inference_backend()
+        if not backend.active_model_name:
+            raise HTTPException(status_code = 400, detail = "No model loaded.")
+        model_info = backend.models.get(backend.active_model_name, {})
+        if not model_info.get("is_audio"):
+            raise HTTPException(
+                status_code = 400, detail = "Active model is not an audio model."
+            )
+        model_name = backend.active_model_name
+        gen = lambda: backend.generate_audio_response(
+            text = text,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = payload.top_k,
+            min_p = payload.min_p,
+            max_new_tokens = payload.max_tokens or 2048,
+            repetition_penalty = payload.repetition_penalty,
+            use_adapter = payload.use_adapter,
+        )
 
     try:
         wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: backend.generate_audio_response(
-                text = text,
-                temperature = payload.temperature,
-                top_p = payload.top_p,
-                top_k = payload.top_k,
-                min_p = payload.min_p,
-                max_new_tokens = payload.max_tokens or 2048,
-                repetition_penalty = payload.repetition_penalty,
-                use_adapter = payload.use_adapter,
-            ),
+            None, gen
         )
-
-        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-
-        return JSONResponse(
-            content = {
-                "id": completion_id,
-                "object": "chat.completion.audio",
-                "model": backend.active_model_name,
-                "audio": {
-                    "data": audio_b64,
-                    "format": "wav",
-                    "sample_rate": sample_rate,
-                },
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": f'[Generated audio from: "{text[:100]}"]',
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-            }
-        )
-
     except Exception as e:
         logger.error(f"Audio generation error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = str(e))
+
+    audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+    return JSONResponse(
+        content = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion.audio",
+            "model": model_name,
+            "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f'[Generated audio from: "{text[:100]}"]',
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
 
 
 # =====================================================================
@@ -644,11 +681,11 @@ def _extract_content_parts(
     (``[{type: "text", ...}, {type: "image_url", ...}]``).
 
     Returns:
-        system_prompt:  The system message text (or a default).
+        system_prompt:  The system message text (empty string if none provided).
         chat_messages:  Non-system messages with content flattened to strings.
         image_base64:   Base64 data of the *first* image found, or ``None``.
     """
-    system_prompt = "You are a helpful AI assistant."
+    system_prompt = ""
     chat_messages: list[dict] = []
     first_image_b64: Optional[str] = None
 
@@ -714,6 +751,8 @@ async def openai_chat_completions(
     # ── Determine which backend is active ─────────────────────
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
+        if getattr(llama_backend, "_is_audio", False):
+            return await generate_audio(payload, request)
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
@@ -903,6 +942,7 @@ async def openai_chat_completions(
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 cancel_event = cancel_event,
+                enable_thinking = payload.enable_thinking,
             )
 
         if payload.stream:

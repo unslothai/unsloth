@@ -43,6 +43,11 @@ type ChatRuntimeStore = {
   autoTitle: boolean;
   modelsError: string | null;
   activeGgufVariant: string | null;
+  ggufContextLength: number | null;
+  supportsReasoning: boolean;
+  reasoningEnabled: boolean;
+  defaultChatTemplate: string | null;
+  chatTemplateOverride: string | null;
   activeThreadId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -57,6 +62,8 @@ type ChatRuntimeStore = {
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   clearCheckpoint: () => void;
+  setReasoningEnabled: (enabled: boolean) => void;
+  setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
 };
@@ -69,6 +76,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
   modelsError: null,
   activeGgufVariant: null,
+  ggufContextLength: null,
+  supportsReasoning: false,
+  reasoningEnabled: true,
+  defaultChatTemplate: null,
+  chatTemplateOverride: null,
   activeThreadId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -109,7 +121,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      ggufContextLength: null,
+      supportsReasoning: false,
+      reasoningEnabled: true,
+      defaultChatTemplate: null,
+      chatTemplateOverride: null,
     })),
+  setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
