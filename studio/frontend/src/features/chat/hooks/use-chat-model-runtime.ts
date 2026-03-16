@@ -361,6 +361,8 @@ export function useChatModelRuntime() {
                 : null,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningEnabled: loadResponse.supports_reasoning ?? false,
+              defaultChatTemplate: loadResponse.chat_template ?? null,
+              chatTemplateOverride: null,
             });
             await refresh();
           } catch (error) {

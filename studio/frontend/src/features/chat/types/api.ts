@@ -84,6 +84,7 @@ export interface LoadModelResponse {
   };
   context_length?: number | null;
   supports_reasoning?: boolean;
+  chat_template?: string | null;
 }
 
 export interface UnloadModelRequest {

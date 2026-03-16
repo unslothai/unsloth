@@ -12,6 +12,7 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowDown01Icon,
+  CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
   PencilEdit01Icon,
@@ -353,7 +354,7 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection icon={Settings02Icon} label="Settings">
+          <CollapsibleSection icon={Settings02Icon} label="Settings" defaultOpen={true}>
             <div className="flex flex-col gap-3 py-1">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -381,8 +382,44 @@ export function ChatSettingsPanel({
               </div>
             </div>
           </CollapsibleSection>
+
+          <ChatTemplateSection />
         </div>
       </div>
     </aside>
+  );
+}
+
+function ChatTemplateSection() {
+  const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
+  const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
+  const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
+
+  if (!defaultTemplate) return null;
+
+  const displayValue = override ?? defaultTemplate;
+  const isModified = override !== null;
+
+  return (
+    <CollapsibleSection icon={CodeIcon} label="Chat Template">
+      <div className="flex flex-col gap-2 py-1">
+        <Textarea
+          value={displayValue}
+          onChange={(e) => setOverride(e.target.value)}
+          className="min-h-32 font-mono text-[10px] leading-relaxed corner-squircle"
+          rows={6}
+          spellCheck={false}
+        />
+        {isModified && (
+          <button
+            type="button"
+            onClick={() => setOverride(null)}
+            className="self-start rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+          >
+            Restore default chat template
+          </button>
+        )}
+      </div>
+    </CollapsibleSection>
   );
 }

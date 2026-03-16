@@ -124,6 +124,10 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
     )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
+    )
 
 
 class UnloadResponse(BaseModel):

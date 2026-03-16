@@ -181,6 +181,7 @@ async def load_model(
                 inference = inference_config,
                 context_length = llama_backend.context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
+                chat_template = llama_backend.chat_template,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -289,6 +290,15 @@ async def load_model(
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
 
+        # Get chat template from tokenizer
+        _chat_template = None
+        try:
+            _model_info = backend.models.get(config.identifier, {})
+            _tpl_info = _model_info.get("chat_template_info", {})
+            _chat_template = _tpl_info.get("template")
+        except Exception:
+            pass
+
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -300,6 +310,7 @@ async def load_model(
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
             inference = inference_config,
+            chat_template = _chat_template,
         )
 
     except HTTPException:
