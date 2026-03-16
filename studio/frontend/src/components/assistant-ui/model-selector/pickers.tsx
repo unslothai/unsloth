@@ -340,6 +340,14 @@ function isGgufRepo(id: string): boolean {
   return id.toUpperCase().includes("-GGUF");
 }
 
+/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
+function extractParamLabel(id: string): string | undefined {
+  // Match patterns like "0.6B", "1B", "4B", "3.5B", "70B", "1.5B" etc.
+  const name = id.split("/").pop() ?? id;
+  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  return match ? `${match[1]}B` : undefined;
+}
+
 // Module-level caches so re-mounting the popover shows results instantly
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
@@ -558,7 +566,7 @@ export function HubModelPicker({
                         meta={
                           isGgufRepo(id)
                             ? "GGUF"
-                            : vram?.detail ?? undefined
+                            : vram?.detail ?? extractParamLabel(id)
                         }
                         selected={value === id}
                         onClick={() => handleModelClick(id)}
@@ -593,7 +601,7 @@ export function HubModelPicker({
                         meta={
                           isGgufRepo(id)
                             ? "GGUF"
-                            : metricsById.get(id)
+                            : metricsById.get(id) ?? extractParamLabel(id)
                         }
                         selected={value === id}
                         onClick={() => handleModelClick(id)}

@@ -30,6 +30,7 @@ type SelectedModelInput = {
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  forceReload?: boolean;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -132,9 +133,11 @@ function mergeRecommendedInference(
   modelId: string,
 ): InferenceParams {
   const inference = response.inference;
-  // GGUF: max tokens = 131072 (effectively unlimited, model decides)
-  // Non-GGUF: max tokens = 4096
-  const defaultMaxTokens = response.is_gguf ? 131072 : 4096;
+  // GGUF: use actual context length from GGUF metadata, fallback to 131072
+  // Non-GGUF: 4096
+  const defaultMaxTokens = response.is_gguf
+    ? (response.context_length ?? 131072)
+    : 4096;
   return {
     ...current,
     checkpoint: modelId,
@@ -259,8 +262,10 @@ export function useChatModelRuntime() {
       const modelId = typeof selection === "string" ? selection : selection.id;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
+      const forceReload =
+        typeof selection === "string" ? false : selection.forceReload ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
+      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
       // Prevent duplicate loads if already loading this model
@@ -335,6 +340,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
+            const chatTemplateOverride = useChatRuntimeStore.getState().chatTemplateOverride;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
@@ -343,6 +349,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
+              chat_template_override: chatTemplateOverride,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -353,6 +360,15 @@ export function useChatModelRuntime() {
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResponse.is_gguf
+                ? (loadResponse.context_length ?? 131072)
+                : null,
+              supportsReasoning: loadResponse.supports_reasoning ?? false,
+              reasoningEnabled: loadResponse.supports_reasoning ?? false,
+              defaultChatTemplate: loadResponse.chat_template ?? null,
+              chatTemplateOverride: null,
+            });
             await refresh();
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.

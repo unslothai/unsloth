@@ -5,7 +5,8 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, HeadphonesIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ArrowUpIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -198,6 +199,9 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -385,6 +389,26 @@ export function SharedComposer({
                 <HeadphonesIcon className="size-4 stroke-[1.5px]" />
               </TooltipIconButton>
             </>
+          )}
+          {supportsReasoning && (
+            <button
+              type="button"
+              onClick={() => setReasoningEnabled(!reasoningEnabled)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                reasoningEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+              )}
+              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+            >
+              {reasoningEnabled ? (
+                <LightbulbIcon className="size-3.5" />
+              ) : (
+                <LightbulbOffIcon className="size-3.5" />
+              )}
+              <span>Think</span>
+            </button>
           )}
         </div>
         <div className="flex items-center gap-1">

@@ -950,7 +950,7 @@ class InferenceBackend:
                     break
 
         # Use ASR-specific system prompt if user hasn't set a custom one
-        if not system_prompt or system_prompt == "You are a helpful AI assistant.":
+        if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Build messages in Gemma 3n format — audio goes INTO apply_chat_template

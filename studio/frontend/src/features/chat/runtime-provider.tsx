@@ -11,7 +11,6 @@ import {
   type PendingAttachment,
   RuntimeAdapterProvider,
   Suggestions,
-  SimpleTextAttachmentAdapter,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -119,6 +118,77 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
       name: attachment.name,
       contentType: attachment.contentType,
       content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class TextAttachmentAdapter implements AttachmentAdapter {
+  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const text = await attachment.file.text();
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `<attachment name=${attachment.name}>\n${text}\n</attachment>` },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class HtmlAttachmentAdapter implements AttachmentAdapter {
+  accept = "text/html";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const html = await attachment.file.text();
+    // Strip HTML tags to extract readable text
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    // Remove script and style elements
+    for (const el of doc.querySelectorAll("script, style")) el.remove();
+    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `[HTML: ${attachment.name}]\n${text}` },
+      ],
       status: { type: "complete" },
     };
   }
@@ -504,7 +574,8 @@ function ThreadHistoryProvider({
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
-        new SimpleTextAttachmentAdapter(),
+        new TextAttachmentAdapter(),
+        new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
       ]),

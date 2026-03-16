@@ -86,10 +86,17 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  return {
-    role: message.role,
-    content: collectTextParts(message).join("\n"),
-  };
+  let content = collectTextParts(message).join("\n");
+  // Strip inline audio base64 from prior assistant messages to avoid
+  // inflating token counts (e.g. audio-player responses with embedded WAV).
+  if (message.role === "assistant") {
+    content = content.replace(
+      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+      "[audio]",
+    );
+  }
+
+  return { role: message.role, content };
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -194,7 +201,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 async function autoLoadSmallestModel(): Promise<boolean> {
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
-    duration: Infinity,
+    duration: 5000,
+    closeButton: true,
   });
   try {
     const [ggufRepos, modelRepos] = await Promise.all([
@@ -214,7 +222,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
-            await loadModel({
+            const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: null,
               max_seq_length: 4096,
@@ -223,7 +231,16 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               gguf_variant: variant.quant,
               trust_remote_code: false,
             });
-            useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
+            const store = useChatRuntimeStore.getState();
+            store.setCheckpoint(repo.repo_id, variant.quant);
+            store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResp.context_length ?? 131072,
+              supportsReasoning: loadResp.supports_reasoning ?? false,
+              reasoningEnabled: loadResp.supports_reasoning ?? false,
+              defaultChatTemplate: loadResp.chat_template ?? null,
+              chatTemplateOverride: null,
+            });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
             return true;
           }
@@ -247,7 +264,9 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             gguf_variant: null,
             trust_remote_code: false,
           });
-          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
+          const store = useChatRuntimeStore.getState();
+          store.setCheckpoint(repo.repo_id);
+          store.setParams({ ...store.params, maxTokens: 4096 });
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
           return true;
         } catch {
@@ -411,6 +430,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningDuration = 0;
 
       try {
+        const { supportsReasoning, reasoningEnabled } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -425,6 +445,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
+            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
           },
           abortSignal,
         );
