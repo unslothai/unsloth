@@ -446,6 +446,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetManualMapping: emptyManualMapping(),
             datasetSliceStart: null,
             datasetSliceEnd: null,
+            uploadedEvalFile: null,
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,

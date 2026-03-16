@@ -137,7 +137,7 @@ async def start_training(
             request.local_datasets = _validate_local_dataset_paths(
                 request.local_datasets, "Local dataset"
             )
-        if request.local_eval_datasets:
+        if request.local_eval_datasets and request.eval_steps > 0:
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
