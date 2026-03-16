@@ -2352,11 +2352,12 @@ class UnslothTrainer:
                     logger.info("Stopped during dataset loading\n")
                     return None
 
+                n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
                 self._update_progress(
-                    status_message = f"Loaded dataset from HuggingFace: {dataset_source}"
+                    status_message = f"Loaded dataset from HuggingFace: {dataset_source} ({n_rows:,} rows)"
                 )
                 logger.info(
-                    f"Loaded dataset from Hugging Face: {dataset_source} ({len(dataset)} rows)\n"
+                    f"Loaded dataset from Hugging Face: {dataset_source} ({n_rows:,} rows)\n"
                 )
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)

@@ -9,6 +9,7 @@ import {
   getDownloadProgress,
   getGgufDownloadProgress,
   getInferenceStatus,
+  getLlamaCppStatus,
   listLoras,
   listModels,
   loadModel,
@@ -318,6 +319,25 @@ export function useChatModelRuntime() {
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+
+          // For GGUF models, check if llama.cpp is still compiling
+          if (ggufVariant) {
+            try {
+              const llamaStatus = await getLlamaCppStatus();
+              if (llamaStatus.building) {
+                toast.info("Waiting for llama.cpp to compile...", {
+                  description: "This is a one-time build. Studio is still usable for non-GGUF tasks.",
+                  duration: 8000,
+                });
+              } else if (llamaStatus.error) {
+                throw new Error(llamaStatus.error);
+              }
+            } catch (e) {
+              if (e instanceof Error && e.message.includes("not found")) throw e;
+              // Endpoint might not exist on older backends, ignore
+            }
+          }
+
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;

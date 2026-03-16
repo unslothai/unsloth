@@ -62,6 +62,15 @@ export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
+export async function getLlamaCppStatus(): Promise<{
+  ready: boolean;
+  building: boolean;
+  error: string | null;
+}> {
+  const response = await authFetch("/api/inference/llama-cpp-status");
+  return parseJsonOrThrow(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
