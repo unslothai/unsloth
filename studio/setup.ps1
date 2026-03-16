@@ -1003,6 +1003,21 @@ if (Test-Path $LlamaServerBin) {
     $BuildOk = $true
     $FailedStep = ""
 
+    # Re-sanitize CUDA_PATH_V* vars — Refresh-Environment (called during
+    # Node/Python installs above) may have repopulated conflicting versioned
+    # vars from the Machine registry.
+    $cudaPathVars2 = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
+    foreach ($v2 in $cudaPathVars2) {
+        [Environment]::SetEnvironmentVariable($v2, $null, 'Process')
+    }
+    $tkDirName2 = Split-Path $CudaToolkitRoot -Leaf
+    if ($tkDirName2 -match '^v(\d+)\.(\d+)') {
+        [Environment]::SetEnvironmentVariable("CUDA_PATH_V$($Matches[1])_$($Matches[2])", $CudaToolkitRoot, 'Process')
+    }
+    # Also re-assert CUDA_PATH and CudaToolkitDir in case they were overwritten
+    [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
+    [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
+
     # -- Step A: Clone or pull llama.cpp --
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
