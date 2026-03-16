@@ -40,6 +40,8 @@ import {
   CopyIcon,
   DownloadIcon,
   HeadphonesIcon,
+  LightbulbIcon,
+  LightbulbOffIcon,
   MicIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -139,7 +141,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               className="size-20"
             />
             <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-semibold text-2xl duration-200">
-              Run LLMs or test your fine-tune
+              Chat with your model
             </h1>
             <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-base delay-75 duration-200">
               Run GGUFs, safetensors, vision and audio models!
@@ -262,12 +264,42 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
+const ReasoningToggle: FC = () => {
+  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+
+  if (!supportsReasoning) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setReasoningEnabled(!reasoningEnabled)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        reasoningEnabled
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
+          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+    >
+      {reasoningEnabled ? (
+        <LightbulbIcon className="size-3.5" />
+      ) : (
+        <LightbulbOffIcon className="size-3.5" />
+      )}
+      <span>Think</span>
+    </button>
+  );
+};
+
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
         <ComposerAddAttachment />
         <ComposerAudioUpload />
+        <ReasoningToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

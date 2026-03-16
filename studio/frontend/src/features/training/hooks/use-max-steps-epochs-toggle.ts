@@ -97,7 +97,6 @@ export function useMaxStepsEpochsToggle({
 
     setMaxSteps(0);
     setEpochs(epochs || defaultEpochs);
-    setSaveSteps(0);
   }, [
     defaultEpochs,
     epochs,

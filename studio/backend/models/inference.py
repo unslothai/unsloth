@@ -33,6 +33,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Custom Jinja2 chat template to use instead of the model's default",
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -81,9 +85,7 @@ class GenerateRequest(BaseModel):
     """Request for text generation (legacy /generate/stream endpoint)"""
 
     messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
-    system_prompt: str = Field(
-        "You are a helpful AI assistant.", description = "System prompt"
-    )
+    system_prompt: str = Field("", description = "System prompt")
     temperature: float = Field(0.7, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.9, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(40, ge = -1, le = 100, description = "Top-k sampling")
@@ -91,7 +93,7 @@ class GenerateRequest(BaseModel):
         2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
     )
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"
@@ -118,6 +120,17 @@ class LoadResponse(BaseModel):
     )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Model's native context length (from GGUF metadata)"
+    )
+    supports_reasoning: bool = Field(
+        False,
+        description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
     )
 
 
@@ -266,6 +279,10 @@ class ChatCompletionRequest(BaseModel):
             "true = enable the current adapter, "
             "string = enable a specific adapter by name."
         ),
+    )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
 
 

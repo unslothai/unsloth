@@ -8,7 +8,6 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
   Sheet,
@@ -39,6 +38,7 @@ import {
 import { toast } from "sonner";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
@@ -109,23 +109,6 @@ function messageHasImage(message: MessageRecord): boolean {
     }
   }
   return false;
-}
-
-async function resolveActiveSingleThreadId(view: ChatView): Promise<string | undefined> {
-  if (view.mode !== "single") {
-    return undefined;
-  }
-  if (view.threadId) {
-    return view.threadId;
-  }
-
-  // New-thread flow keeps threadId undefined in local view state.
-  // Fall back to most recent regular base thread.
-  const candidates = await db.threads.where("modelType").equals("base").toArray();
-  const latest = candidates
-    .filter((thread) => !thread.archived && !thread.pairId)
-    .sort((a, b) => b.createdAt - a.createdAt)[0];
-  return latest?.id;
 }
 
 const SingleContent = memo(function SingleContent({
@@ -321,7 +304,16 @@ export function ChatPage(): ReactElement {
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
-  const { refresh, selectModel, ejectModel, cancelLoading, loadingModel } =
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const {
+    refresh,
+    selectModel,
+    ejectModel,
+    cancelLoading,
+    loadingModel,
+    loadProgress,
+    loadToastDismissed,
+  } =
     useChatModelRuntime();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
@@ -343,30 +335,27 @@ export function ChatPage(): ReactElement {
       const currentVariant = store.activeGgufVariant;
       if (!value || (value === currentCheckpoint && (meta?.ggufVariant ?? null) === (currentVariant ?? null))) return;
       void (async () => {
-        let switchNote: string | undefined;
-        const activeThreadId = await resolveActiveSingleThreadId(view);
-        if (activeThreadId) {
+        let showImageCompatibilityWarning = false;
+        if (view.mode === "single" && activeThreadId) {
           const thread = await db.threads.get(activeThreadId);
           if (thread?.modelId && thread.modelId !== value) {
             const messages = await db.messages
               .where("threadId")
               .equals(activeThreadId)
               .toArray();
-            const hasImage = messages.some(messageHasImage);
-            const targetModel = modelsFromStore.find((model) => model.id === value);
-            const nonVisionWithImages = hasImage && targetModel?.isVision === false;
-
-            switchNote = nonVisionWithImages
-              ? "Full chat history will be sent to the new model. This chat has images; text-only models may fail."
-              : hasImage
-                ? "Full chat history will be sent to the new model. This chat includes images."
-                : "Full chat history will be sent to the new model.";
+            if (messages.length > 0) {
+              const hasImage = messages.some(messageHasImage);
+              const targetModel = modelsFromStore.find((model) => model.id === value);
+              showImageCompatibilityWarning =
+                hasImage && targetModel?.isVision === false;
+            }
           }
         }
 
-        if (switchNote) {
-          toast.warning("Model changed for this chat", {
-            description: switchNote,
+        if (showImageCompatibilityWarning) {
+          toast.warning("Selected model may not handle earlier images", {
+            description:
+              "This chat already includes images. Text-only models can ignore them or fail on follow-up replies.",
             duration: 6000,
           });
         }
@@ -379,13 +368,16 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [modelsFromStore, selectModel, view],
+    [activeThreadId, modelsFromStore, selectModel, view],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
   }, [ejectModel]);
   const handleNewThread = useCallback(
-    () => setView({ mode: "single", newThreadNonce: crypto.randomUUID() }),
+    () => {
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
+    },
     [],
   );
   const handleNewCompare = useCallback(
@@ -606,25 +598,22 @@ export function ChatPage(): ReactElement {
                 contentDataTour="chat-model-selector-popover"
                 className="max-w-[62vw] sm:max-w-none"
               />
-              {loadingModel ? (
-                <div
-                  className="flex items-center gap-1.5 text-muted-foreground"
+              {loadingModel && loadToastDismissed ? (
+                <ModelLoadInlineStatus
+                  label={
+                    loadProgress?.phase === "starting"
+                      ? "Starting model…"
+                      : loadingModel.isDownloaded
+                        ? "Loading model…"
+                        : "Downloading model…"
+                  }
                   title={loadingModel.isDownloaded
                     ? `Loading ${loadingModel.displayName} from cache.`
                     : `Loading ${loadingModel.displayName}. This may include downloading.`}
-                >
-                  <Spinner className="size-3.5 shrink-0" />
-                  <span className="text-xs">
-                    {loadingModel.isDownloaded ? "Loading model…" : "Downloading model…"}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={cancelLoading}
-                    className="ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
+                  progressPercent={loadProgress?.percent}
+                  progressLabel={loadProgress?.label}
+                  onStop={cancelLoading}
+                />
               ) : null}
             </div>
             {modelsError && (
@@ -661,6 +650,18 @@ export function ChatPage(): ReactElement {
           onParamsChange={setInferenceParams}
           autoTitle={autoTitle}
           onAutoTitleChange={setAutoTitle}
+          onReloadModel={() => {
+            const state = useChatRuntimeStore.getState();
+            if (state.params.checkpoint) {
+              selectModel({
+                id: state.params.checkpoint,
+                ggufVariant: state.activeGgufVariant ?? undefined,
+                forceReload: true,
+                isDownloaded: true,
+                loadingDescription: "Reloading with updated chat template.",
+              });
+            }
+          }}
         />
       </SidebarProvider>
     </div>

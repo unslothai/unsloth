@@ -10,6 +10,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import json
+import struct
 import structlog
 from loggers import get_logger
 import shutil
@@ -45,6 +46,9 @@ class LlamaCppBackend:
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
+        self._context_length: Optional[int] = None
+        self._chat_template: Optional[str] = None
+        self._supports_reasoning: bool = False
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -79,6 +83,18 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return self._context_length
+
+    @property
+    def chat_template(self) -> Optional[str]:
+        return self._chat_template
+
+    @property
+    def supports_reasoning(self) -> bool:
+        return self._supports_reasoning
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -366,10 +382,118 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
-                    logger.info(f"[llama-server] {line}")
+                    logger.debug(f"[llama-server] {line}")
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
+
+    # GGUF KV type sizes for fast skipping
+    _GGUF_TYPE_SIZE = {
+        0: 1,
+        1: 1,
+        2: 2,
+        3: 2,
+        4: 4,
+        5: 4,
+        6: 4,
+        7: 1,
+        10: 8,
+        11: 8,
+        12: 8,
+    }
+
+    @staticmethod
+    def _gguf_skip_value(f, vtype: int) -> None:
+        """Skip a GGUF KV value without reading it."""
+        sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(vtype)
+        if sz is not None:
+            f.seek(sz, 1)
+        elif vtype == 8:  # STRING
+            slen = struct.unpack("<Q", f.read(8))[0]
+            f.seek(slen, 1)
+        elif vtype == 9:  # ARRAY
+            atype = struct.unpack("<I", f.read(4))[0]
+            alen = struct.unpack("<Q", f.read(8))[0]
+            elem_sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(atype)
+            if elem_sz is not None:
+                f.seek(elem_sz * alen, 1)
+            elif atype == 8:
+                for _ in range(alen):
+                    slen = struct.unpack("<Q", f.read(8))[0]
+                    f.seek(slen, 1)
+            else:
+                for _ in range(alen):
+                    LlamaCppBackend._gguf_skip_value(f, atype)
+
+    def _read_gguf_metadata(self, gguf_path: str) -> None:
+        """Read context_length and chat_template from a GGUF file's KV header.
+
+        Parses only the KV pairs we need (~30ms even for multi-GB files).
+        For split GGUFs, metadata is always in shard 1.
+        """
+        try:
+            WANTED = {"general.architecture", "tokenizer.chat_template"}
+            arch = None
+            ctx_key = None
+
+            with open(gguf_path, "rb") as f:
+                magic = struct.unpack("<I", f.read(4))[0]
+                if magic != 0x46554747:  # b"GGUF" as little-endian u32
+                    return
+                _version = struct.unpack("<I", f.read(4))[0]
+                _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+
+                for _ in range(kv_count):
+                    key_len = struct.unpack("<Q", f.read(8))[0]
+                    key = f.read(key_len).decode("utf-8")
+                    vtype = struct.unpack("<I", f.read(4))[0]
+
+                    if key in WANTED or (ctx_key and key == ctx_key):
+                        # Read this value
+                        if vtype == 8:  # STRING
+                            slen = struct.unpack("<Q", f.read(8))[0]
+                            val_s = f.read(slen).decode("utf-8")
+                            if key == "general.architecture":
+                                arch = val_s
+                                ctx_key = f"{arch}.context_length"
+                            elif key == "tokenizer.chat_template":
+                                self._chat_template = val_s
+                        elif vtype == 4:  # UINT32
+                            val_i = struct.unpack("<I", f.read(4))[0]
+                            if ctx_key and key == ctx_key:
+                                self._context_length = val_i
+                        elif vtype == 10:  # UINT64
+                            val_i = struct.unpack("<Q", f.read(8))[0]
+                            if ctx_key and key == ctx_key:
+                                self._context_length = val_i
+                        else:
+                            self._gguf_skip_value(f, vtype)
+                    else:
+                        self._gguf_skip_value(f, vtype)
+
+            if self._context_length:
+                logger.info(f"GGUF metadata: context_length={self._context_length}")
+            if self._chat_template:
+                logger.info(
+                    f"GGUF metadata: chat_template={len(self._chat_template)} chars"
+                )
+                # Detect thinking/reasoning support from chat template
+                tpl = self._chat_template
+                if "enable_thinking" in tpl:
+                    self._supports_reasoning = True
+                    logger.info(
+                        "GGUF metadata: model supports reasoning (enable_thinking)"
+                    )
+                elif "thinking" in tpl:
+                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
+                    normalized_id = (self._model_identifier or "").lower()
+                    if "deepseek" in normalized_id:
+                        self._supports_reasoning = True
+                        logger.info(
+                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
+                        )
+        except Exception as e:
+            logger.warning(f"Failed to read GGUF metadata: {e}")
 
     # ── HF download (no lock held) ───────────────────────────────
 
@@ -500,13 +624,14 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Could not check disk space: {e}")
 
-        logger.info(
-            f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else "")
+        gguf_label = f"{hf_repo}/{gguf_filename}" + (
+            f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""
         )
+        logger.info(f"Resolving GGUF: {gguf_label}")
         try:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
+            dl_start = time.monotonic()
             local_path = hf_hub_download(
                 repo_id = hf_repo,
                 filename = gguf_filename,
@@ -515,7 +640,7 @@ class LlamaCppBackend:
             for shard in gguf_extra_shards:
                 if self._cancel_event.is_set():
                     raise RuntimeError("Cancelled")
-                logger.info(f"Downloading GGUF shard: {shard}")
+                logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download(
                     repo_id = hf_repo,
                     filename = shard,
@@ -532,8 +657,53 @@ class LlamaCppBackend:
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
             )
 
-        logger.info(f"GGUF downloaded to: {local_path}")
+        dl_elapsed = time.monotonic() - dl_start
+        if dl_elapsed < 2.0:
+            logger.info(f"GGUF resolved from cache: {local_path}")
+        else:
+            logger.info(f"GGUF downloaded in {dl_elapsed:.1f}s: {local_path}")
         return local_path
+
+    def _download_mmproj(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download the mmproj (vision projection) file from a GGUF repo.
+
+        Prefers mmproj-F16.gguf, falls back to any mmproj*.gguf file.
+        Returns the local path, or None if no mmproj file exists.
+        """
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files
+
+            files = list_repo_files(hf_repo, token = hf_token)
+            mmproj_files = sorted(
+                f for f in files if f.endswith(".gguf") and "mmproj" in f.lower()
+            )
+            if not mmproj_files:
+                return None
+
+            # Prefer F16 variant
+            target = None
+            for f in mmproj_files:
+                if "f16" in f.lower():
+                    target = f
+                    break
+            if target is None:
+                target = mmproj_files[0]
+
+            logger.info(f"Downloading mmproj: {hf_repo}/{target}")
+            local_path = hf_hub_download(
+                repo_id = hf_repo,
+                filename = target,
+                token = hf_token,
+            )
+            return local_path
+        except Exception as e:
+            logger.warning(f"Could not download mmproj: {e}")
+            return None
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -552,6 +722,7 @@ class LlamaCppBackend:
         model_identifier: str,
         is_vision: bool = False,
         n_ctx: int = 4096,
+        chat_template_override: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -588,12 +759,24 @@ class LlamaCppBackend:
                 hf_variant = hf_variant,
                 hf_token = hf_token,
             )
+            # Auto-download mmproj for vision models
+            if is_vision and not mmproj_path:
+                mmproj_path = self._download_mmproj(
+                    hf_repo = hf_repo,
+                    hf_token = hf_token,
+                )
         elif gguf_path:
             if not Path(gguf_path).is_file():
                 raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
             model_path = gguf_path
         else:
             raise ValueError("Either gguf_path or hf_repo must be provided")
+
+        # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
+        self._model_identifier = model_identifier
+
+        # Read GGUF metadata (context_length, chat_template) -- fast, header only
+        self._read_gguf_metadata(model_path)
 
         # Check cancel after download
         if self._cancel_event.is_set():
@@ -629,7 +812,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                str(n_ctx),
+                "0",  # 0 = use model's native context size
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
@@ -641,6 +824,36 @@ class LlamaCppBackend:
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
+
+            # Always enable Jinja chat template rendering for proper template support
+            cmd.extend(["--jinja"])
+
+            # Apply custom chat template override if provided
+            if chat_template_override:
+                import tempfile
+
+                self._chat_template_file = tempfile.NamedTemporaryFile(
+                    mode = "w",
+                    suffix = ".jinja",
+                    delete = False,
+                    prefix = "unsloth_chat_template_",
+                )
+                self._chat_template_file.write(chat_template_override)
+                self._chat_template_file.close()
+                cmd.extend(["--chat-template-file", self._chat_template_file.name])
+                logger.info(
+                    f"Using custom chat template file: {self._chat_template_file.name}"
+                )
+
+            # For reasoning models, default to thinking ON (user can toggle per-request)
+            if self._supports_reasoning:
+                cmd.extend(
+                    [
+                        "--chat-template-kwargs",
+                        json.dumps({"enable_thinking": True}),
+                    ]
+                )
+                logger.info("Reasoning model: enabled enable_thinking=true by default")
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -732,8 +945,30 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._hf_variant = None
             self._is_vision = False
+            self._is_audio = False
+            self._audio_type = None
             self._port = None
             self._healthy = False
+            self._context_length = None
+            self._chat_template = None
+            self._supports_reasoning = False
+            # Clean up temp chat template file
+            if hasattr(self, "_chat_template_file") and self._chat_template_file:
+                try:
+                    import os
+
+                    os.unlink(self._chat_template_file.name)
+                except Exception:
+                    pass
+                self._chat_template_file = None
+            # Free audio codec GPU memory
+            if LlamaCppBackend._codec_mgr is not None:
+                LlamaCppBackend._codec_mgr.unload()
+                LlamaCppBackend._codec_mgr = None
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             return True
 
     def _kill_process(self):
@@ -882,9 +1117,10 @@ class LlamaCppBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_tokens: Optional[int] = None,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
+        enable_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -908,6 +1144,9 @@ class LlamaCppBackend:
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
         }
+        # Pass enable_thinking per-request for reasoning models
+        if self._supports_reasoning and enable_thinking is not None:
+            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if stop:
@@ -981,3 +1220,149 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise
+
+    # ── TTS support ────────────────────────────────────────────
+
+    def detect_audio_type(self) -> Optional[str]:
+        """Detect audio/TTS codec by probing the loaded model's vocabulary."""
+        if not self.is_loaded:
+            return None
+        try:
+            with httpx.Client(timeout = 10) as client:
+
+                def _detok(tid: int) -> str:
+                    r = client.post(
+                        f"{self.base_url}/detokenize", json = {"tokens": [tid]}
+                    )
+                    return r.json().get("content", "") if r.status_code == 200 else ""
+
+                def _tok(text: str) -> list[int]:
+                    r = client.post(
+                        f"{self.base_url}/tokenize",
+                        json = {"content": text, "add_special": False},
+                    )
+                    return r.json().get("tokens", []) if r.status_code == 200 else []
+
+                # Check codec-specific tokens (not generic ones that may exist in non-audio models)
+                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
+                    128259
+                ):
+                    return "snac"
+                if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
+                    return "csm"
+                if len(_tok("<|startoftranscript|>")) == 1:
+                    return "whisper"
+                if (
+                    len(_tok("<|bicodec_semantic_0|>")) == 1
+                    and len(_tok("<|bicodec_global_0|>")) == 1
+                ):
+                    return "bicodec"
+                if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
+                    return "dac"
+        except Exception as e:
+            logger.debug(f"Audio type detection failed: {e}")
+        return None
+
+    # Prompt format per codec: (template, stop_tokens, needs_token_ids)
+    # Matches prompts in InferenceBackend._generate_snac/bicodec/dac
+    _TTS_PROMPTS = {
+        "snac": (
+            "<custom_token_3>{text}<|eot_id|><custom_token_4>",
+            ["<custom_token_2>"],
+            True,
+        ),
+        "bicodec": (
+            "<|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>",
+            ["<|im_end|>", "</s>"],
+            False,
+        ),
+        "dac": (
+            "<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|><|global_features_start|>\n",
+            ["<|im_end|>", "<|audio_end|>"],
+            False,
+        ),
+    }
+
+    _codec_mgr = None  # Shared AudioCodecManager instance
+
+    def init_audio_codec(self, audio_type: str) -> None:
+        """Load the audio codec at model load time (mirrors non-GGUF path)."""
+        import torch
+        from core.inference.audio_codecs import AudioCodecManager
+
+        if LlamaCppBackend._codec_mgr is None:
+            LlamaCppBackend._codec_mgr = AudioCodecManager()
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_repo_path = None
+
+        # BiCodec needs a repo with BiCodec/ weights — download canonical SparkTTS
+        if audio_type == "bicodec":
+            from huggingface_hub import snapshot_download
+            import os
+
+            repo_path = snapshot_download(
+                "unsloth/Spark-TTS-0.5B", local_dir = "Spark-TTS-0.5B"
+            )
+            model_repo_path = os.path.abspath(repo_path)
+
+        LlamaCppBackend._codec_mgr.load_codec(
+            audio_type, device, model_repo_path = model_repo_path
+        )
+        logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
+
+    def generate_audio_response(
+        self,
+        text: str,
+        audio_type: str,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.1,
+    ) -> tuple:
+        """
+        Generate TTS audio via llama-server /completion + codec decoding.
+        Returns (wav_bytes, sample_rate).
+        """
+        if audio_type not in self._TTS_PROMPTS:
+            raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
+
+        tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
+
+        payload: dict = {
+            "prompt": tpl.format(text = text),
+            "stream": False,
+            "n_predict": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
+            "repeat_penalty": repetition_penalty,
+        }
+        if stop:
+            payload["stop"] = stop
+        if need_ids:
+            payload["n_probs"] = 1
+
+        with httpx.Client(timeout = httpx.Timeout(300, connect = 10)) as client:
+            resp = client.post(f"{self.base_url}/completion", json = payload)
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"llama-server returned {resp.status_code}: {resp.text}"
+                )
+
+        data = resp.json()
+        token_ids = (
+            [p["id"] for p in data.get("completion_probabilities", []) if "id" in p]
+            if need_ids
+            else None
+        )
+
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        return LlamaCppBackend._codec_mgr.decode(
+            audio_type, device, token_ids = token_ids, text = data.get("content", "")
+        )

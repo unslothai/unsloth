@@ -8,8 +8,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listCachedGguf, listGgufVariants } from "@/features/chat/api/chat-api";
-import type { CachedGgufRepo } from "@/features/chat/api/chat-api";
+import { listCachedGguf, listCachedModels, listGgufVariants } from "@/features/chat/api/chat-api";
+import type { CachedGgufRepo, CachedModelRepo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -340,6 +340,18 @@ function isGgufRepo(id: string): boolean {
   return id.toUpperCase().includes("-GGUF");
 }
 
+/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
+function extractParamLabel(id: string): string | undefined {
+  // Match patterns like "0.6B", "1B", "4B", "3.5B", "70B", "1.5B" etc.
+  const name = id.split("/").pop() ?? id;
+  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  return match ? `${match[1]}B` : undefined;
+}
+
+// Module-level caches so re-mounting the popover shows results instantly
+let _cachedGgufCache: CachedGgufRepo[] = [];
+let _cachedModelsCache: CachedModelRepo[] = [];
+
 // ── Hub Model Picker ──────────────────────────────────────────
 
 export function HubModelPicker({
@@ -361,16 +373,41 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
-  // Cached (already downloaded) GGUF repos
-  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>([]);
+  // Cached (already downloaded) repos -- use module-level cache so
+  // re-mounting the popover does not flash an empty "Downloaded" section.
+  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>(_cachedGgufCache);
+  const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>(_cachedModelsCache);
+  const alreadyCached = _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
+  const [cachedReady, setCachedReady] = useState(alreadyCached);
   useEffect(() => {
-    listCachedGguf().then(setCachedGguf).catch(() => {});
-  }, []);
+    if (alreadyCached) return;
+    let done = 0;
+    const check = () => { if (++done >= 2) setCachedReady(true); };
+    listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {}).finally(check);
+    listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {}).finally(check);
+  }, [alreadyCached]);
 
-  const recommendedIds = useMemo(
-    () => dedupe([...models.map((model) => model.id), value ?? ""]),
-    [models, value],
-  );
+  // Deduplicate: don't show downloaded models in the recommended list.
+  // Compare case-insensitively since HF cache lowercases repo IDs.
+  const downloadedSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
+    for (const c of cachedModels) s.add(c.repo_id.toLowerCase());
+    return s;
+  }, [cachedGguf, cachedModels]);
+
+  const recommendedIds = useMemo(() => {
+    const all = dedupe([...models.map((model) => model.id), value ?? ""])
+      .filter((id) => !downloadedSet.has(id.toLowerCase()));
+    // Cap at 4 GGUFs + 4 non-GGUFs so the list stays manageable
+    const gguf: string[] = [];
+    const hub: string[] = [];
+    for (const id of all) {
+      if (isGgufRepo(id) && gguf.length < 4) gguf.push(id);
+      else if (!isGgufRepo(id) && hub.length < 4) hub.push(id);
+    }
+    return [...gguf, ...hub];
+  }, [models, value, downloadedSet]);
 
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(recommendedIds);
@@ -392,8 +429,13 @@ export function HubModelPicker({
     () =>
       new Map(
         results
-          .filter((result) => result.totalParams)
-          .map((result) => [result.id, formatCompact(result.totalParams!)]),
+          .filter((result) => result.totalParams || result.estimatedSizeBytes)
+          .map((result) => [
+            result.id,
+            result.estimatedSizeBytes
+              ? `~${formatBytes(result.estimatedSizeBytes)}`
+              : formatCompact(result.totalParams!),
+          ]),
       ),
     [results],
   );
@@ -472,9 +514,14 @@ export function HubModelPicker({
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="p-1">
-          {!showHfSection && cachedGguf.length > 0 ? (
+          {!cachedReady && !showHfSection ? (
+            <div className="flex items-center gap-2 px-5 py-3">
+              <Spinner className="size-3 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Loading models…</span>
+            </div>
+          ) : !showHfSection && (cachedGguf.length > 0 || cachedModels.length > 0) ? (
             <>
-              <ListLabel>Downloaded</ListLabel>
+              <ListLabel>{"\uD83E\uDDA5"} Downloaded</ListLabel>
               {cachedGguf.map((c) => (
                 <div key={c.repo_id}>
                   <ModelRow
@@ -489,12 +536,22 @@ export function HubModelPicker({
                   )}
                 </div>
               ))}
+              {cachedModels.map((c) => (
+                <ModelRow
+                  key={c.repo_id}
+                  label={c.repo_id}
+                  meta={formatBytes(c.size_bytes)}
+                  selected={value === c.repo_id}
+                  onClick={() => onSelect(c.repo_id, { source: "hub", isLora: false, isDownloaded: true })}
+                  vramStatus={null}
+                />
+              ))}
             </>
           ) : null}
 
-          {!showHfSection ? (
+          {!showHfSection && cachedReady ? (
             <>
-              <ListLabel>Recommended</ListLabel>
+              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
               {recommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
@@ -509,7 +566,7 @@ export function HubModelPicker({
                         meta={
                           isGgufRepo(id)
                             ? "GGUF"
-                            : vram?.detail ?? undefined
+                            : vram?.detail ?? extractParamLabel(id)
                         }
                         selected={value === id}
                         onClick={() => handleModelClick(id)}
@@ -544,7 +601,7 @@ export function HubModelPicker({
                         meta={
                           isGgufRepo(id)
                             ? "GGUF"
-                            : metricsById.get(id)
+                            : metricsById.get(id) ?? extractParamLabel(id)
                         }
                         selected={value === id}
                         onClick={() => handleModelClick(id)}
