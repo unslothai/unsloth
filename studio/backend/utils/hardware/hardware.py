@@ -83,6 +83,7 @@ def detect_hardware() -> DeviceType:
       3. CPU   (fallback)
     """
     global DEVICE, CHAT_ONLY
+    CHAT_ONLY = True  # reset — only CUDA sets it to False
 
     # --- CUDA: try PyTorch ---
     if _has_torch():
