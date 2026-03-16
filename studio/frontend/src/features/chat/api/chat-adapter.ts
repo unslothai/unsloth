@@ -79,10 +79,17 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  return {
-    role: message.role,
-    content: collectTextParts(message).join("\n"),
-  };
+  let content = collectTextParts(message).join("\n");
+  // Strip inline audio base64 from prior assistant messages to avoid
+  // inflating token counts (e.g. audio-player responses with embedded WAV).
+  if (message.role === "assistant") {
+    content = content.replace(
+      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+      "[audio]",
+    );
+  }
+
+  return { role: message.role, content };
 }
 
 function extractImageBase64(input: string): string | undefined {
