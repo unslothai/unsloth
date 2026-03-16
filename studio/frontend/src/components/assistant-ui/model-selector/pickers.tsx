@@ -340,6 +340,10 @@ function isGgufRepo(id: string): boolean {
   return id.toUpperCase().includes("-GGUF");
 }
 
+// Module-level caches so re-mounting the popover shows results instantly
+let _cachedGgufCache: CachedGgufRepo[] = [];
+let _cachedModelsCache: CachedModelRepo[] = [];
+
 // ── Hub Model Picker ──────────────────────────────────────────
 
 export function HubModelPicker({
@@ -361,17 +365,27 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
-  // Cached (already downloaded) repos
-  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>([]);
-  const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>([]);
+  // Cached (already downloaded) repos -- use module-level cache so
+  // re-mounting the popover does not flash an empty "Downloaded" section.
+  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>(_cachedGgufCache);
+  const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>(_cachedModelsCache);
   useEffect(() => {
-    listCachedGguf().then(setCachedGguf).catch(() => {});
-    listCachedModels().then(setCachedModels).catch(() => {});
+    listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
+    listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
   }, []);
 
+  // Deduplicate: don't show downloaded models in the recommended list
+  const downloadedSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of cachedGguf) s.add(c.repo_id);
+    for (const c of cachedModels) s.add(c.repo_id);
+    return s;
+  }, [cachedGguf, cachedModels]);
+
   const recommendedIds = useMemo(
-    () => dedupe([...models.map((model) => model.id), value ?? ""]),
-    [models, value],
+    () => dedupe([...models.map((model) => model.id), value ?? ""])
+      .filter((id) => !downloadedSet.has(id)),
+    [models, value, downloadedSet],
   );
 
   const { paramCountById: recommendedParamCountById } =

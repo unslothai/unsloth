@@ -347,6 +347,8 @@ export function useChatModelRuntime() {
             },
           };
 
+          let hasShownProgress = false;
+
           const pollProgress = async () => {
             // Stop if cancelled or if loading already finished
             if (abortCtrl.signal.aborted || !loadingModelRef.current) {
@@ -361,7 +363,8 @@ export function useChatModelRuntime() {
               // Re-check after await -- load may have finished while polling
               if (!loadingModelRef.current) return;
 
-              if (prog.downloaded_bytes > 0 && prog.progress > 0 && prog.progress < 1) {
+              if (prog.progress > 0 && prog.progress < 1) {
+                hasShownProgress = true;
                 const dlGb = prog.downloaded_bytes / (1024 ** 3);
                 const totalGb = prog.expected_bytes / (1024 ** 3);
                 const pct = Math.round(prog.progress * 100);
@@ -376,7 +379,9 @@ export function useChatModelRuntime() {
                     action: cancelAction,
                   },
                 );
-              } else if (prog.downloaded_bytes > 0 && prog.expected_bytes === 0) {
+              } else if (prog.downloaded_bytes > 0 && prog.expected_bytes === 0 && prog.progress === 0) {
+                // Have bytes but no total size -- show bytes only
+                hasShownProgress = true;
                 const dlGb = prog.downloaded_bytes / (1024 ** 3);
                 toast.loading(
                   "Downloading model...",
@@ -387,7 +392,8 @@ export function useChatModelRuntime() {
                     action: cancelAction,
                   },
                 );
-              } else if (prog.progress >= 1) {
+              } else if (prog.progress >= 1 && hasShownProgress) {
+                // Only show "download complete" if we actually showed progress
                 toast.loading("Loading model...", {
                   id: toastId,
                   description: "Download complete. Loading into memory...",

@@ -738,9 +738,12 @@ async def get_download_progress(
                 "progress": 0,
             }
 
-        # No .incomplete files means download is done regardless of byte totals
-        # (blob deduplication can make completed_bytes differ from expected_bytes)
-        if in_progress_bytes == 0 and completed_bytes > 0:
+        # Use 95% threshold for completion (blob deduplication can make
+        # completed_bytes differ slightly from expected_bytes).
+        # Do NOT use "no .incomplete files" as a completion signal --
+        # HF downloads files sequentially, so between files there are
+        # no .incomplete files even though the download is far from done.
+        if completed_bytes >= expected_bytes * 0.95:
             progress = 1.0
         else:
             progress = min(downloaded_bytes / expected_bytes, 0.99)
