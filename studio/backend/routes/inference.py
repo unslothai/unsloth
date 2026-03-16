@@ -252,8 +252,10 @@ async def load_model(
                 except Exception as e:
                     logger.warning(f"Could not read adapter_config.json: {e}")
 
-        # Load the model
-        success = backend.load_model(
+        # Load the model in a thread so the event loop stays free
+        # for download progress polling and other requests.
+        success = await asyncio.to_thread(
+            backend.load_model,
             config = config,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
@@ -302,7 +304,17 @@ async def load_model(
         raise
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to load model: {str(e)}")
+        msg = str(e)
+        # Surface a friendlier message for models that Unsloth cannot load
+        not_supported_hints = [
+            "No config file found",
+            "not yet supported",
+            "is not supported",
+            "does not support",
+        ]
+        if any(h.lower() in msg.lower() for h in not_supported_hints):
+            msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+        raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
 @router.post("/validate", response_model = ValidateModelResponse)
@@ -873,6 +885,25 @@ async def openai_chat_completions(
                 status_code = 400,
                 detail = "Image provided but current GGUF model does not support vision.",
             )
+
+        # Convert image to PNG for llama-server (stb_image has limited format support)
+        if image_b64:
+            try:
+                import base64 as _b64
+                from io import BytesIO as _BytesIO
+                from PIL import Image as _Image
+
+                raw = _b64.b64decode(image_b64)
+                img = _Image.open(_BytesIO(raw))
+                if img.mode == "RGBA":
+                    img = img.convert("RGB")
+                buf = _BytesIO()
+                img.save(buf, format = "PNG")
+                image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                raise HTTPException(
+                    status_code = 400, detail = f"Failed to process image: {e}"
+                )
 
         # Build message list with system prompt prepended
         gguf_messages = []

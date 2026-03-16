@@ -11,6 +11,7 @@ export interface HfModelResult {
   downloads: number;
   likes: number;
   totalParams?: number;
+  estimatedSizeBytes?: number;
 }
 
 const EXCLUDED_TAGS = new Set([
@@ -54,13 +55,33 @@ function withPopularitySort(
   return fetch(url, init);
 }
 
+/** Bytes per parameter for each dtype. */
+const DTYPE_BYTES: Record<string, number> = {
+  F64: 8, F32: 4, F16: 2, BF16: 2,
+  I64: 8, I32: 4, I16: 2, I8: 1, U8: 1,
+  // Quantized types (4-bit)
+  NF4: 0.5, FP4: 0.5, INT4: 0.5, GPTQ: 0.5,
+};
+
+function estimateSizeFromDtypes(
+  params: Record<string, number> | undefined,
+): number | undefined {
+  if (!params) return undefined;
+  let total = 0;
+  for (const [dtype, count] of Object.entries(params)) {
+    const bpp = DTYPE_BYTES[dtype.toUpperCase()] ?? 2; // default BF16
+    total += count * bpp;
+  }
+  return total > 0 ? total : undefined;
+}
+
 function makeMapModel(excludeGguf: boolean) {
   return (raw: unknown): HfModelResult | null => {
     const m = raw as {
       name: string;
       downloads: number;
       likes: number;
-      safetensors?: { total: number };
+      safetensors?: { total: number; parameters?: Record<string, number> };
       tags?: string[];
     };
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
@@ -75,6 +96,7 @@ function makeMapModel(excludeGguf: boolean) {
       downloads: m.downloads,
       likes: m.likes,
       totalParams: m.safetensors?.total,
+      estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
     };
   };
 }

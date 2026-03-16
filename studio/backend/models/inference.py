@@ -91,7 +91,7 @@ class GenerateRequest(BaseModel):
         2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
     )
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"

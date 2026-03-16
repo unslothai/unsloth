@@ -4,7 +4,14 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming } from "@assistant-ui/core";
 import { toast } from "sonner";
-import { generateAudio, streamChatCompletions } from "./chat-api";
+import {
+  generateAudio,
+  listCachedGguf,
+  listCachedModels,
+  listGgufVariants,
+  loadModel,
+  streamChatCompletions,
+} from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -174,17 +181,117 @@ async function resolveUseAdapter(
   }
 }
 
+/** Wait for an in-progress model load to finish (polls store every 500ms). */
+function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (abortSignal?.aborted) { reject(new Error("Aborted")); return; }
+      if (!useChatRuntimeStore.getState().modelLoading) { resolve(); return; }
+      setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
+/**
+ * Auto-load the smallest downloaded model when the user tries to chat
+ * without selecting one. Prefers GGUF (picks smallest cached variant),
+ * falls back to smallest cached safetensors model.
+ */
+async function autoLoadSmallestModel(): Promise<boolean> {
+  const toastId = toast("Loading a model…", {
+    description: "Auto-selecting the smallest downloaded model.",
+    duration: Infinity,
+  });
+  try {
+    const [ggufRepos, modelRepos] = await Promise.all([
+      listCachedGguf().catch(() => []),
+      listCachedModels().catch(() => []),
+    ]);
+
+    // Try GGUF first: pick the repo with the smallest total size,
+    // then pick its smallest downloaded variant.
+    if (ggufRepos.length > 0) {
+      const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
+      for (const repo of sorted) {
+        try {
+          const variants = await listGgufVariants(repo.repo_id);
+          const downloaded = variants.variants
+            .filter((v) => v.downloaded)
+            .sort((a, b) => a.size_bytes - b.size_bytes);
+          if (downloaded.length > 0) {
+            const variant = downloaded[0];
+            await loadModel({
+              model_path: repo.repo_id,
+              hf_token: null,
+              max_seq_length: 4096,
+              load_in_4bit: true,
+              is_lora: false,
+              gguf_variant: variant.quant,
+              trust_remote_code: false,
+            });
+            useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
+            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
+            return true;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Fall back to safetensors models
+    if (modelRepos.length > 0) {
+      const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
+      for (const repo of sorted) {
+        try {
+          await loadModel({
+            model_path: repo.repo_id,
+            hf_token: null,
+            max_seq_length: 4096,
+            load_in_4bit: true,
+            is_lora: false,
+            gguf_variant: null,
+            trust_remote_code: false,
+          });
+          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
+          toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
+          return true;
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    toast.dismiss(toastId);
+    return false;
+  } catch {
+    toast.dismiss(toastId);
+    return false;
+  }
+}
+
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       const runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
 
-      if (!params.checkpoint) {
-        toast.error("No model loaded", {
-          description: "Pick model in top bar, then retry.",
-        });
-        throw new Error("Load a model first.");
+      // Wait for in-progress model load to finish before inferring
+      if (runtime.modelLoading) {
+        toast.info("Waiting for model to finish loading…");
+        await waitForModelReady(abortSignal);
+      }
+
+      if (!useChatRuntimeStore.getState().params.checkpoint) {
+        // Auto-load the smallest downloaded model
+        const loaded = await autoLoadSmallestModel();
+        if (!loaded) {
+          toast.error("No model loaded", {
+            description: "Pick a model in the top bar, then retry.",
+          });
+          throw new Error("Load a model first.");
+        }
       }
 
       const outboundMessages = messages

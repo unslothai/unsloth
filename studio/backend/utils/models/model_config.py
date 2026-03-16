@@ -473,10 +473,10 @@ try:
 
     model_type = getattr(config, "model_type", "unknown")
     archs = getattr(config, "architectures", [])
-    logger.info(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
 except Exception as exc:
-    logger.info(json.dumps({"error": str(exc)}))
+    print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
 
