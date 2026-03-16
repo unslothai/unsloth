@@ -454,10 +454,7 @@ def _get_fp8_mode_and_check_settings(
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
         fp8_mode = "row"  # default
-        if (
-            not fast_inference
-            and os.environ.get("UNSLOTH_HAS_FBGEMM", "0") != "1"
-        ):
+        if not fast_inference and os.environ.get("UNSLOTH_HAS_FBGEMM", "0") != "1":
             fp8_mode = "block"
     else:
         fp8_mode = load_in_fp8

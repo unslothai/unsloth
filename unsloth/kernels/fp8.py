@@ -628,9 +628,9 @@ def module_forward_patch(forward_function, scale_attr = "weight_scale"):
 
 def _compressed_linear_supports_unsloth_fp8(self):
     if (
-        CompressedLinear is None or
-        QuantizationStrategy is None or
-        QuantizationStatus is None
+        CompressedLinear is None
+        or QuantizationStrategy is None
+        or QuantizationStatus is None
     ):
         return False
 
@@ -639,10 +639,10 @@ def _compressed_linear_supports_unsloth_fp8(self):
     quantization_scheme = getattr(self, "quantization_scheme", None)
     quantization_args = getattr(quantization_scheme, "weights", None)
     if (
-        weight is None or
-        weight_scale is None or
-        quantization_args is None or
-        weight.dtype != torch.float8_e4m3fn
+        weight is None
+        or weight_scale is None
+        or quantization_args is None
+        or weight.dtype != torch.float8_e4m3fn
     ):
         return False
 
@@ -679,6 +679,7 @@ def _compressed_linear_forward_fallback(self, input):
         weight_data = self.compressor.decompress_module(self)
         param = nn.Parameter(weight_data, requires_grad = False)
         from compressed_tensors.utils import register_offload_parameter
+
         register_offload_parameter(self, "weight", param)
         self.quantization_status = QuantizationStatus.FROZEN
 
@@ -715,7 +716,11 @@ def _fp8_moe_lora_extractor(wrapper, weight_A, weight_B, scaling, num_experts):
 
     param_name = getattr(wrapper, "parameter_name", None)
 
-    if param_name == "down_proj" and intermediate_dim is not None and hidden_dim is not None:
+    if (
+        param_name == "down_proj"
+        and intermediate_dim is not None
+        and hidden_dim is not None
+    ):
         first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
         first_weight = first_weight.permute(1, 0, 2).contiguous()
         second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
@@ -764,7 +769,9 @@ def _patch_fp8_moe_experts():
     experts_interface["grouped_mm"] = forward_moe_backend
     experts_interface["batched_mm"] = forward_native_moe_loop
     if hasattr(finegrained_fp8, "FP8Experts"):
-        finegrained_fp8.FP8Experts._unsloth_lora_extractor_fn = staticmethod(_fp8_moe_lora_extractor)
+        finegrained_fp8.FP8Experts._unsloth_lora_extractor_fn = staticmethod(
+            _fp8_moe_lora_extractor
+        )
 
 
 # Patch the forward functions of the layers (for compiled models)

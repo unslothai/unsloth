@@ -94,13 +94,18 @@ import functools
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
+
 try:
     from transformers.utils import auto_docstring
 except:
+
     def auto_docstring(*args, **kwargs):
         def decorator(obj):
             return obj
+
         return decorator
+
+
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
