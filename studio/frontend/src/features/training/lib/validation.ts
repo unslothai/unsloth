@@ -27,14 +27,6 @@ export function validateTrainingConfig(
     return { ok: false, message: "Unsupported dataset source." };
   }
 
-  // Eval steps requires an eval split to be selected
-  if (config.evalSteps > 0 && !config.datasetEvalSplit) {
-    return {
-      ok: false,
-      message:
-        "Eval Steps is set but no Eval Split is selected. Choose an Eval Split or set Eval Steps to 0.",
-    };
-  }
 
   return { ok: true, message: null };
 }
