@@ -2491,7 +2491,9 @@ class UnslothTrainer:
             self._update_progress(
                 status_message = f"Dataset ready ({final_n:,} samples, {detected} format)"
             )
-            logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
+            logger.info(
+                f"Dataset formatted successfully ({final_n} samples, {detected})\n"
+            )
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:
