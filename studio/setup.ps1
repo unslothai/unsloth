@@ -126,6 +126,40 @@ function Get-CudaComputeCapability {
     return $null
 }
 
+# Check if an nvcc binary supports a given sm_ architecture.
+# Uses `nvcc --list-gpu-arch` (available since CUDA 11.6).
+# Returns $true if supported or if detection fails (safe fallback).
+function Test-NvccArchSupport {
+    param([string]$NvccExe, [string]$Arch)
+    try {
+        $listArch = & $NvccExe --list-gpu-arch 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { return $true }  # can't check, assume OK
+        return ($listArch -match "sm_$Arch")
+    } catch {
+        return $true  # can't check, assume OK
+    }
+}
+
+# Given an nvcc binary, return the highest sm_ architecture it supports.
+# Returns e.g. "90" for CUDA 12.4. Returns $null if detection fails.
+function Get-NvccMaxArch {
+    param([string]$NvccExe)
+    try {
+        $listArch = & $NvccExe --list-gpu-arch 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $arches = @()
+        foreach ($line in $listArch -split "`n") {
+            if ($line.Trim() -match '^sm_(\d+)') {
+                $arches += [int]$Matches[1]
+            }
+        }
+        if ($arches.Count -gt 0) {
+            return ($arches | Sort-Object | Select-Object -Last 1).ToString()
+        }
+    } catch { }
+    return $null
+}
+
 # Detect driver's max CUDA version from nvidia-smi and return the highest
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
@@ -368,10 +402,17 @@ try {
     }
 } catch {}
 
-# -- Find a toolkit that's compatible with the driver --
+# Detect compute capability early so we can validate toolkit support
+$CudaArch = Get-CudaComputeCapability
+if ($CudaArch) {
+    Write-Host "   GPU Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)" -ForegroundColor Gray
+}
+
+# -- Find a toolkit that's compatible with the driver AND the GPU --
 # Strategy: prefer the toolkit at CUDA_PATH (user's existing setup) if it's
-# compatible with the driver.  Only fall back to scanning side-by-side installs
-# if CUDA_PATH is missing or points to an incompatible version.  This avoids
+# compatible with the driver AND supports the GPU architecture.  Only fall back
+# to scanning side-by-side installs if CUDA_PATH is missing, points to an
+# incompatible version, or can't compile for the GPU.  This avoids
 # header/binary mismatches when multiple toolkits are installed.
 $IncompatibleToolkit = $null
 $NvccPath = $null
@@ -392,8 +433,19 @@ if ($DriverMaxCuda) {
             $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
             $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
             if ($isCompat) {
-                $NvccPath = $candidateNvcc
-                Write-Host "   [OK] Using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)" -ForegroundColor Green
+                # Also verify the toolkit supports our GPU architecture
+                $archOk = $true
+                if ($CudaArch) {
+                    $archOk = Test-NvccArchSupport -NvccExe $candidateNvcc -Arch $CudaArch
+                    if (-not $archOk) {
+                        Write-Host "   [INFO] CUDA_PATH toolkit (CUDA $tkMaj.$tkMin) does not support GPU arch sm_$CudaArch" -ForegroundColor Yellow
+                        Write-Host "          Looking for a newer toolkit..." -ForegroundColor Yellow
+                    }
+                }
+                if ($archOk) {
+                    $NvccPath = $candidateNvcc
+                    Write-Host "   [OK] Using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)" -ForegroundColor Green
+                }
             } else {
                 Write-Host "   [INFO] CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" -ForegroundColor Yellow
             }
@@ -558,11 +610,9 @@ Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
 Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
 Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 
-# Detect compute capability (used later for llama.cpp cmake)
-$CudaArch = Get-CudaComputeCapability
-if ($CudaArch) {
-    Write-Host "   Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)" -ForegroundColor Gray
-} else {
+# $CudaArch was detected earlier (before toolkit selection) so it could
+# influence which toolkit we picked.  Just log the final state here.
+if (-not $CudaArch) {
     Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
 }
 
@@ -980,7 +1030,20 @@ if (Test-Path $LlamaServerBin) {
         $CmakeArgs += '-DGGML_CUDA_FORCE_CUBLAS=OFF'
         $CmakeArgs += '-DGGML_CUDA_PEER_MAX_BATCH_SIZE=8192'
         if ($CudaArch) {
-            $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+            # Validate nvcc actually supports this architecture
+            if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+            } else {
+                # GPU arch too new for this toolkit — fall back to highest supported.
+                # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                if ($maxArch) {
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                    Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
+                    Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+                }
+                # else: omit flag entirely, let cmake pick defaults
+            }
         }
 
         cmake @CmakeArgs 2>&1 | Out-Null
