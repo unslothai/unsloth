@@ -155,7 +155,6 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             cumulative = text  # cumulative — last value is full text
 
         result = cumulative.strip()
-        logger.info(f"Raw helper model output:\n{result}")
         result = _strip_think_tags(result)
         logger.info(f"Helper model response ({len(result)} chars)")
         return result if result else None
@@ -428,9 +427,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
     ):
         cumulative = text
     result = cumulative.strip()
-    logger.info(f"Raw advisor model output:\n{result}")
     result = _strip_think_tags(result)
-    logger.info(f"After think-strip:\n{result}")
     return result
 
 
