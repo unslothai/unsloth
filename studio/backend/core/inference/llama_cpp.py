@@ -676,7 +676,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                str(n_ctx),
+                "0",  # 0 = use model's native context size
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",

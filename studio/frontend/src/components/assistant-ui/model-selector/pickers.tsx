@@ -369,24 +369,37 @@ export function HubModelPicker({
   // re-mounting the popover does not flash an empty "Downloaded" section.
   const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>(_cachedModelsCache);
+  const alreadyCached = _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
+  const [cachedReady, setCachedReady] = useState(alreadyCached);
   useEffect(() => {
-    listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
-    listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
-  }, []);
+    if (alreadyCached) return;
+    let done = 0;
+    const check = () => { if (++done >= 2) setCachedReady(true); };
+    listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {}).finally(check);
+    listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {}).finally(check);
+  }, [alreadyCached]);
 
-  // Deduplicate: don't show downloaded models in the recommended list
+  // Deduplicate: don't show downloaded models in the recommended list.
+  // Compare case-insensitively since HF cache lowercases repo IDs.
   const downloadedSet = useMemo(() => {
     const s = new Set<string>();
-    for (const c of cachedGguf) s.add(c.repo_id);
-    for (const c of cachedModels) s.add(c.repo_id);
+    for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
+    for (const c of cachedModels) s.add(c.repo_id.toLowerCase());
     return s;
   }, [cachedGguf, cachedModels]);
 
-  const recommendedIds = useMemo(
-    () => dedupe([...models.map((model) => model.id), value ?? ""])
-      .filter((id) => !downloadedSet.has(id)),
-    [models, value, downloadedSet],
-  );
+  const recommendedIds = useMemo(() => {
+    const all = dedupe([...models.map((model) => model.id), value ?? ""])
+      .filter((id) => !downloadedSet.has(id.toLowerCase()));
+    // Cap at 4 GGUFs + 4 non-GGUFs so the list stays manageable
+    const gguf: string[] = [];
+    const hub: string[] = [];
+    for (const id of all) {
+      if (isGgufRepo(id) && gguf.length < 4) gguf.push(id);
+      else if (!isGgufRepo(id) && hub.length < 4) hub.push(id);
+    }
+    return [...gguf, ...hub];
+  }, [models, value, downloadedSet]);
 
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(recommendedIds);
@@ -493,7 +506,12 @@ export function HubModelPicker({
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="p-1">
-          {!showHfSection && (cachedGguf.length > 0 || cachedModels.length > 0) ? (
+          {!cachedReady && !showHfSection ? (
+            <div className="flex items-center gap-2 px-5 py-3">
+              <Spinner className="size-3 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Loading models…</span>
+            </div>
+          ) : !showHfSection && (cachedGguf.length > 0 || cachedModels.length > 0) ? (
             <>
               <ListLabel>{"\uD83E\uDDA5"} Downloaded</ListLabel>
               {cachedGguf.map((c) => (
@@ -523,7 +541,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection ? (
+          {!showHfSection && cachedReady ? (
             <>
               <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
               {recommendedIds.length === 0 ? (

@@ -238,8 +238,10 @@ async def load_model(
                 except Exception as e:
                     logger.warning(f"Could not read adapter_config.json: {e}")
 
-        # Load the model
-        success = backend.load_model(
+        # Load the model in a thread so the event loop stays free
+        # for download progress polling and other requests.
+        success = await asyncio.to_thread(
+            backend.load_model,
             config = config,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,

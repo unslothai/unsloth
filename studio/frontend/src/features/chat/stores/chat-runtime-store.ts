@@ -46,6 +46,8 @@ type ChatRuntimeStore = {
   activeThreadId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
+  modelLoading: boolean;
+  setModelLoading: (loading: boolean) => void;
   setParams: (params: InferenceParams) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
@@ -70,6 +72,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   activeThreadId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
+  modelLoading: false,
+  setModelLoading: (loading) => set({ modelLoading: loading }),
   setParams: (params) => set({ params }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
