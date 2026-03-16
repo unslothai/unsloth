@@ -8,8 +8,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listCachedGguf, listGgufVariants } from "@/features/chat/api/chat-api";
-import type { CachedGgufRepo } from "@/features/chat/api/chat-api";
+import { listCachedGguf, listCachedModels, listGgufVariants } from "@/features/chat/api/chat-api";
+import type { CachedGgufRepo, CachedModelRepo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -361,10 +361,12 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
-  // Cached (already downloaded) GGUF repos
+  // Cached (already downloaded) repos
   const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>([]);
+  const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>([]);
   useEffect(() => {
     listCachedGguf().then(setCachedGguf).catch(() => {});
+    listCachedModels().then(setCachedModels).catch(() => {});
   }, []);
 
   const recommendedIds = useMemo(
@@ -472,7 +474,7 @@ export function HubModelPicker({
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="p-1">
-          {!showHfSection && cachedGguf.length > 0 ? (
+          {!showHfSection && (cachedGguf.length > 0 || cachedModels.length > 0) ? (
             <>
               <ListLabel>Downloaded</ListLabel>
               {cachedGguf.map((c) => (
@@ -488,6 +490,16 @@ export function HubModelPicker({
                     <GgufVariantExpander repoId={c.repo_id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
                   )}
                 </div>
+              ))}
+              {cachedModels.map((c) => (
+                <ModelRow
+                  key={c.repo_id}
+                  label={c.repo_id}
+                  meta={formatBytes(c.size_bytes)}
+                  selected={value === c.repo_id}
+                  onClick={() => onSelect(c.repo_id, { source: "hub", isLora: false, isDownloaded: true })}
+                  vramStatus={null}
+                />
               ))}
             </>
           ) : null}
