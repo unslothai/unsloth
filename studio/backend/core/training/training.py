@@ -141,6 +141,7 @@ class TrainingBackend:
             "max_seq_length": kwargs.get("max_seq_length", 2048),
             "hf_dataset": kwargs.get("hf_dataset", ""),
             "local_datasets": kwargs.get("local_datasets"),
+            "local_eval_datasets": kwargs.get("local_eval_datasets"),
             "format_type": kwargs.get("format_type", ""),
             "subset": kwargs.get("subset"),
             "train_split": kwargs.get("train_split", "train"),
