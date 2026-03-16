@@ -32,6 +32,30 @@ DEFAULT_HELPER_MODEL_VARIANT = "Q8_0"
 README_MAX_CHARS = 1500
 
 
+def _strip_think_tags(text: str) -> str:
+    """Strip <think>...</think> reasoning blocks emitted by some models.
+
+    If the model places its actual answer OUTSIDE the think block, we
+    discard the think block and keep the rest.  If the entire response
+    is INSIDE a think block (nothing useful outside), we extract and
+    return the inner content instead of discarding everything.
+    """
+    if "<think>" not in text:
+        return text
+
+    # Try stripping think blocks — keep content outside them
+    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
+    if stripped:
+        return stripped
+
+    # Everything was inside <think> tags — extract the inner content
+    match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    return text
+
+
 def precache_helper_gguf():
     """
     Pre-download the helper GGUF to HF cache.
@@ -132,8 +156,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
         result = cumulative.strip()
         logger.info(f"Raw helper model output:\n{result}")
-        # Strip <think>...</think> reasoning blocks (emitted by some models)
-        result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
+        result = _strip_think_tags(result)
         logger.info(f"Helper model response ({len(result)} chars)")
         return result if result else None
 
@@ -406,8 +429,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         cumulative = text
     result = cumulative.strip()
     logger.info(f"Raw advisor model output:\n{result}")
-    # Strip <think>...</think> reasoning blocks (emitted by some models)
-    result = re.sub(r"<think>.*?</think>\s*", "", result, flags=re.DOTALL).strip()
+    result = _strip_think_tags(result)
     logger.info(f"After think-strip:\n{result}")
     return result
 
