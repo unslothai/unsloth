@@ -26,6 +26,11 @@ try:
 except:
     # transformers_version < 4.53.0 does not have falcon_h1 so silently skip it for now
     pass
+try:
+    from .qwen3_5 import FastQwen3_5Model
+except ImportError:
+    # transformers_version < 4.53.0 does not have qwen3_5 so silently skip it for now
+    pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
