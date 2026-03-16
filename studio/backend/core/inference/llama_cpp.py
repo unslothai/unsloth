@@ -929,7 +929,7 @@ class LlamaCppBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_tokens: Optional[int] = None,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Generator[str, None, None]:
