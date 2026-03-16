@@ -1109,9 +1109,10 @@ def format_and_template_dataset(
         )
 
         # Step 2: Apply chat template
+        detected = dataset_info.get("detected_format", "unknown")
         if progress_callback and n_rows:
             progress_callback(
-                status_message = f"Applying chat template ({n_rows:,} rows)..."
+                status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
             )
         # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
         is_alpaca = format_type == "alpaca" or (
