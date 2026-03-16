@@ -770,7 +770,8 @@ def _get_repo_size_cached(repo_id: str) -> int:
         total = sum(s.size for s in info.siblings if s.size)
         _repo_size_cache[repo_id] = total
         return total
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to get repo size for {repo_id}: {e}")
         return 0
 
 

@@ -132,9 +132,13 @@ function mergeRecommendedInference(
   modelId: string,
 ): InferenceParams {
   const inference = response.inference;
+  // GGUF: max tokens = 131072 (effectively unlimited, model decides)
+  // Non-GGUF: max tokens = 4096
+  const defaultMaxTokens = response.is_gguf ? 131072 : 4096;
   return {
     ...current,
     checkpoint: modelId,
+    maxTokens: defaultMaxTokens,
     temperature:
       toFiniteNumber(inference?.temperature) ?? current.temperature,
     topP: toFiniteNumber(inference?.top_p) ?? current.topP,
