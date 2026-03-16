@@ -691,6 +691,86 @@ def compressed_linear_forward_patch(self, input):
     return _compressed_linear_forward_fallback(self, input)
 
 
+def _fp8_moe_lora_extractor(wrapper, weight_A, weight_B, scaling, num_experts):
+    total_rank = weight_A.shape[0]
+    rank_per_expert = total_rank // num_experts
+
+    dim_A = weight_A.shape[1]
+    dim_B = weight_B.shape[0]
+
+    hidden_dim = None
+    intermediate_dim = None
+    current = wrapper
+    while hasattr(current, "base_layer"):
+        current = current.base_layer
+        if hasattr(current, "hidden_dim"):
+            hidden_dim = current.hidden_dim
+        if hasattr(current, "intermediate_dim"):
+            intermediate_dim = current.intermediate_dim
+        if hasattr(current, "gate_up_proj") and hasattr(current.gate_up_proj, "shape"):
+            shape = current.gate_up_proj.shape
+            if len(shape) == 3:
+                hidden_dim = shape[2]
+                intermediate_dim = shape[1] // 2
+
+    param_name = getattr(wrapper, "parameter_name", None)
+
+    if param_name == "down_proj" and intermediate_dim is not None and hidden_dim is not None:
+        first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+        first_weight = first_weight.permute(1, 0, 2).contiguous()
+        second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+        return first_weight, second_weight, scaling, num_experts
+
+    elif param_name == "gate_up_proj" and hidden_dim is not None:
+        first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+        first_weight = first_weight.permute(1, 0, 2).contiguous()
+        second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+        return first_weight, second_weight, scaling, num_experts
+
+    if hidden_dim is not None:
+        if dim_B == hidden_dim:
+            first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+            first_weight = first_weight.permute(1, 0, 2).contiguous()
+            second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+            return first_weight, second_weight, scaling, num_experts
+        elif dim_A == hidden_dim:
+            first_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+            first_weight = first_weight.permute(0, 2, 1).contiguous()
+            second_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+            second_weight = second_weight.permute(1, 2, 0).contiguous()
+            return first_weight, second_weight, scaling, num_experts
+
+    first_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+    first_weight = first_weight.permute(0, 2, 1).contiguous()
+    second_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+    second_weight = second_weight.permute(1, 2, 0).contiguous()
+    return first_weight, second_weight, scaling, num_experts
+
+
+def _patch_fp8_moe_experts():
+    try:
+        from transformers.integrations import finegrained_fp8
+        from unsloth_zoo.temporary_patches.moe_utils import (
+            forward_moe_backend,
+            forward_native_moe_loop,
+        )
+    except Exception:
+        return
+
+    experts_interface = getattr(finegrained_fp8, "ALL_FP8_EXPERTS_FUNCTIONS", None)
+    if experts_interface is None:
+        return
+
+    # Pre-quantized FP8 MoE checkpoints replace `.experts` modules with
+    # transformers.integrations.finegrained_fp8.FP8Experts. Route those
+    # implementations to Unsloth's MoE backend so we avoid the optional
+    # Hugging Face `kernels` package at training time.
+    experts_interface["grouped_mm"] = forward_moe_backend
+    experts_interface["batched_mm"] = forward_native_moe_loop
+    if hasattr(finegrained_fp8, "FP8Experts"):
+        finegrained_fp8.FP8Experts._unsloth_lora_extractor_fn = staticmethod(_fp8_moe_lora_extractor)
+
+
 # Patch the forward functions of the layers (for compiled models)
 if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
@@ -698,3 +778,4 @@ if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
 if CompressedLinear is not None:
     CompressedLinear.forward = compressed_linear_forward_patch
+_patch_fp8_moe_experts()
