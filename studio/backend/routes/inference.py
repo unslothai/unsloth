@@ -121,7 +121,8 @@ async def load_model(
                 if not ready or builder.error:
                     raise HTTPException(
                         status_code = 503,
-                        detail = builder.error or "llama.cpp is still compiling. Please wait.",
+                        detail = builder.error
+                        or "llama.cpp is still compiling. Please wait.",
                     )
 
             llama_backend = get_llama_cpp_backend()

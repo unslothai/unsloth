@@ -1094,9 +1094,7 @@ def format_and_template_dataset(
         # Step 1: Format the dataset
         n_rows = len(dataset) if hasattr(dataset, "__len__") else None
         if progress_callback and n_rows:
-            progress_callback(
-                status_message = f"Formatting dataset ({n_rows:,} rows)..."
-            )
+            progress_callback(status_message = f"Formatting dataset ({n_rows:,} rows)...")
         dataset_info = format_dataset(
             dataset,
             format_type = format_type,

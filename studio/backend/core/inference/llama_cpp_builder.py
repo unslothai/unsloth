@@ -63,13 +63,13 @@ class LlamaCppBuilder:
         logger.info("llama-server binary not found, starting background build...")
         self._building = True
         self._thread = threading.Thread(
-            target=self._build, daemon=True, name="llama-cpp-build"
+            target = self._build, daemon = True, name = "llama-cpp-build"
         )
         self._thread.start()
 
     def wait_for_ready(self, timeout: Optional[float] = None) -> bool:
         """Block until llama.cpp is ready. Returns True if ready, False on timeout."""
-        return self._ready.wait(timeout=timeout)
+        return self._ready.wait(timeout = timeout)
 
     def _build(self) -> None:
         """Clone and build llama.cpp in the background."""
@@ -105,7 +105,7 @@ class LlamaCppBuilder:
 
             # Clone
             if llama_dir.exists():
-                shutil.rmtree(llama_dir, ignore_errors=True)
+                shutil.rmtree(llama_dir, ignore_errors = True)
 
             logger.info("Cloning llama.cpp...")
             subprocess.run(
@@ -117,8 +117,8 @@ class LlamaCppBuilder:
                     "https://github.com/ggml-org/llama.cpp.git",
                     str(llama_dir),
                 ],
-                check=True,
-                capture_output=True,
+                check = True,
+                capture_output = True,
             )
 
             # Detect CUDA
@@ -128,7 +128,7 @@ class LlamaCppBuilder:
             nvcc = shutil.which("nvcc")
             if not nvcc:
                 for cuda_dir in sorted(
-                    Path("/usr/local").glob("cuda-*/bin/nvcc"), reverse=True
+                    Path("/usr/local").glob("cuda-*/bin/nvcc"), reverse = True
                 ):
                     nvcc = str(cuda_dir)
                     break
@@ -146,9 +146,9 @@ class LlamaCppBuilder:
                             "--query-gpu=compute_cap",
                             "--format=csv,noheader",
                         ],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
+                        capture_output = True,
+                        text = True,
+                        timeout = 10,
                     )
                     if result.returncode == 0:
                         caps = set()
@@ -184,8 +184,8 @@ class LlamaCppBuilder:
                 ]
                 + generator_args
                 + cmake_args,
-                check=True,
-                capture_output=True,
+                check = True,
+                capture_output = True,
             )
 
             # Build
@@ -202,8 +202,8 @@ class LlamaCppBuilder:
                     "llama-quantize",
                     "-j",
                 ],
-                check=True,
-                capture_output=True,
+                check = True,
+                capture_output = True,
             )
 
             # Symlink llama-quantize for unsloth-zoo's check_llama_cpp()
