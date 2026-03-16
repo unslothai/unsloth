@@ -875,7 +875,9 @@ async def openai_chat_completions(
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
             except Exception as e:
-                raise HTTPException(status_code = 400, detail = f"Failed to process image: {e}")
+                raise HTTPException(
+                    status_code = 400, detail = f"Failed to process image: {e}"
+                )
 
         # Build message list with system prompt prepended
         gguf_messages = []
