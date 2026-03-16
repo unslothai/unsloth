@@ -24,6 +24,7 @@ DEFAULT_MODELS_STANDARD = [
 
 def get_default_models() -> list[str]:
     import utils.hardware.hardware as hw
+
     if hw.CHAT_ONLY:
         return list(DEFAULT_MODELS_GGUF)
     return list(DEFAULT_MODELS_STANDARD)
