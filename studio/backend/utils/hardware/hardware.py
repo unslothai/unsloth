@@ -39,6 +39,7 @@ class DeviceType(str, Enum):
 # ========== Global State (set once by detect_hardware) ==========
 
 DEVICE: Optional[DeviceType] = None
+CHAT_ONLY: bool = True  # No CUDA GPU → GGUF chat only (Mac, CPU-only, etc.)
 
 
 # ========== Detection ==========
@@ -81,7 +82,7 @@ def detect_hardware() -> DeviceType:
       2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
-    global DEVICE
+    global DEVICE, CHAT_ONLY
 
     # --- CUDA: try PyTorch ---
     if _has_torch():
@@ -89,6 +90,7 @@ def detect_hardware() -> DeviceType:
 
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
+            CHAT_ONLY = False
             device_name = torch.cuda.get_device_properties(0).name
             print(f"Hardware detected: CUDA — {device_name}")
             return DEVICE

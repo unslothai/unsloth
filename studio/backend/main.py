@@ -148,11 +148,14 @@ async def health_check():
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
 
+    chat_only = _hw_module.CHAT_ONLY
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "device_type": device_type,
+        "chat_only": chat_only,
     }
 
 
