@@ -383,7 +383,19 @@ class LlamaCppBackend:
             pass
 
     # GGUF KV type sizes for fast skipping
-    _GGUF_TYPE_SIZE = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+    _GGUF_TYPE_SIZE = {
+        0: 1,
+        1: 1,
+        2: 2,
+        3: 2,
+        4: 4,
+        5: 4,
+        6: 4,
+        7: 1,
+        10: 8,
+        11: 8,
+        12: 8,
+    }
 
     @staticmethod
     def _gguf_skip_value(f, vtype: int) -> None:
@@ -457,7 +469,9 @@ class LlamaCppBackend:
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
             if self._chat_template:
-                logger.info(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
+                logger.info(
+                    f"GGUF metadata: chat_template={len(self._chat_template)} chars"
+                )
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
