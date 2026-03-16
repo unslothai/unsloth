@@ -672,7 +672,9 @@ def _fix_chat_template(chat_template):
         inner = after_stripped
         after_endfor = (
             prefix
-            + "{%" + dash + " if add_generation_prompt %}"
+            + "{%"
+            + dash
+            + " if add_generation_prompt %}"
             + inner
             + endif
             + suffix
