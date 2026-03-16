@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -21,7 +22,28 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-security = HTTPBearer()  # Reads Authorization: Bearer <token>
+security = HTTPBearer(auto_error = False)  # Reads Authorization: Bearer <token>
+
+
+def is_auth_disabled() -> bool:
+    """
+    Return True when auth should be bypassed.
+
+    For the HF Spaces branch, auth is disabled by default so users can access
+    Studio without login/signup. You can explicitly re-enable auth with:
+      UNSLOTH_STUDIO_ENABLE_AUTH=1
+    """
+    raw_enable = os.getenv("UNSLOTH_STUDIO_ENABLE_AUTH", "").strip().lower()
+    if raw_enable in {"1", "true", "yes", "on"}:
+        return False
+
+    raw = os.getenv("UNSLOTH_STUDIO_DISABLE_AUTH", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+
+    return True
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -103,7 +125,7 @@ def reload_secret() -> None:
 
 
 async def get_current_subject(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> str:
     """Validate JWT and require the password-change flow to be completed."""
     return await _get_current_subject(
@@ -113,7 +135,7 @@ async def get_current_subject(
 
 
 async def get_current_subject_allow_password_change(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> str:
     """Validate JWT but allow access to the password-change endpoint."""
     return await _get_current_subject(
@@ -123,7 +145,7 @@ async def get_current_subject_allow_password_change(
 
 
 async def _get_current_subject(
-    credentials: HTTPAuthorizationCredentials,
+    credentials: Optional[HTTPAuthorizationCredentials],
     *,
     allow_password_change: bool,
 ) -> str:
@@ -136,6 +158,15 @@ async def _get_current_subject(
         async def secure_endpoint(current_subject: str = Depends(get_current_subject)):
             ...
     """
+    if is_auth_disabled():
+        return "hf-space-user"
+
+    if credentials is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing bearer token",
+        )
+
     token = credentials.credentials
     subject = _decode_subject_without_verification(token)
     if subject is None:

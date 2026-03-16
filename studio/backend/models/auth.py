@@ -34,6 +34,10 @@ class AuthStatusResponse(BaseModel):
         ...,
         description = "True if the seeded admin must still change the default password",
     )
+    auth_disabled: bool = Field(
+        default = False,
+        description = "True when auth is bypassed (HF Spaces mode).",
+    )
 
 
 class ChangePasswordRequest(BaseModel):
