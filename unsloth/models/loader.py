@@ -66,13 +66,18 @@ from ..device_type import (
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.tiled_mlp import patch_tiled_mlp
+
 try:
     from unsloth_zoo.temporary_patches.moe_utils_fp8 import (
         maybe_patch_stacked_moe_expert_fp8_scales,
     )
 except ImportError:
-    def maybe_patch_stacked_moe_expert_fp8_scales(model, model_name=None, token=None, revision=None):
+
+    def maybe_patch_stacked_moe_expert_fp8_scales(
+        model, model_name = None, token = None, revision = None
+    ):
         return False
+
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
