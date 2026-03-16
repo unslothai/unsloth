@@ -288,7 +288,17 @@ async def load_model(
         raise
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to load model: {str(e)}")
+        msg = str(e)
+        # Surface a friendlier message for models that Unsloth cannot load
+        not_supported_hints = [
+            "No config file found",
+            "not yet supported",
+            "is not supported",
+            "does not support",
+        ]
+        if any(h.lower() in msg.lower() for h in not_supported_hints):
+            msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+        raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
 @router.post("/validate", response_model = ValidateModelResponse)
