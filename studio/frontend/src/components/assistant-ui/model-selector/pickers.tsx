@@ -408,8 +408,13 @@ export function HubModelPicker({
     () =>
       new Map(
         results
-          .filter((result) => result.totalParams)
-          .map((result) => [result.id, formatCompact(result.totalParams!)]),
+          .filter((result) => result.totalParams || result.estimatedSizeBytes)
+          .map((result) => [
+            result.id,
+            result.estimatedSizeBytes
+              ? `~${formatBytes(result.estimatedSizeBytes)}`
+              : formatCompact(result.totalParams!),
+          ]),
       ),
     [results],
   );
