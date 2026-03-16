@@ -78,7 +78,8 @@ class InferenceOrchestrator:
 
         self._static_models = get_default_models()
         self._top_gguf_cache: Optional[list[str]] = None
-        self._top_gguf_fetched = False
+        self._top_hub_cache: Optional[list[str]] = None
+        self._top_models_ready = threading.Event()
 
         # Version tracking for subprocess reuse
         self._current_transformers_major: Optional[str] = None  # "4" or "5"
@@ -86,9 +87,9 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        # Kick off background fetch of top GGUF models
+        # Kick off background fetch of top models from HF
         threading.Thread(
-            target = self._fetch_top_gguf, daemon = True, name = "top-gguf"
+            target = self._fetch_top_models, daemon = True, name = "top-models"
         ).start()
 
     # ------------------------------------------------------------------
@@ -97,12 +98,23 @@ class InferenceOrchestrator:
 
     @property
     def default_models(self) -> list[str]:
-        top = self._top_gguf_cache or []
-        seen = set(top)
-        return top + [m for m in self._static_models if m not in seen]
+        # Wait up to 5s for background HF fetch to finish
+        self._top_models_ready.wait(timeout = 5)
+        top_gguf = self._top_gguf_cache or []
+        top_hub = self._top_hub_cache or []
+        # GGUFs first, then hub models, then static fallbacks.
+        # Send extras so the frontend still has 4 per category
+        # after removing already-downloaded models.
+        result: list[str] = []
+        seen: set[str] = set()
+        for m in top_gguf + top_hub + self._static_models:
+            if m not in seen:
+                result.append(m)
+                seen.add(m)
+        return result
 
-    def _fetch_top_gguf(self) -> None:
-        """Fetch top 4 GGUF repos from unsloth by downloads (background)."""
+    def _fetch_top_models(self) -> None:
+        """Fetch top GGUF and non-GGUF repos from unsloth by downloads."""
         try:
             import httpx
 
@@ -112,22 +124,33 @@ class InferenceOrchestrator:
                     "author": "unsloth",
                     "sort": "downloads",
                     "direction": "-1",
-                    "limit": "40",
+                    "limit": "80",
                 },
                 timeout = 15,
             )
             if resp.status_code == 200:
                 models = resp.json()
+                # Top 8 GGUFs (frontend deduplicates against downloaded,
+                # so we fetch extra to always fill 4 slots)
                 gguf_ids = [
-                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
-                ][:4]
+                    m["id"] for m in models
+                    if m.get("id", "").upper().endswith("-GGUF")
+                ][:8]
+                # Top 8 non-GGUF hub models
+                hub_ids = [
+                    m["id"] for m in models
+                    if not m.get("id", "").upper().endswith("-GGUF")
+                ][:8]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
                     logger.info("Top GGUF models: %s", gguf_ids)
+                if hub_ids:
+                    self._top_hub_cache = hub_ids
+                    logger.info("Top hub models: %s", hub_ids)
         except Exception as e:
-            logger.warning("Failed to fetch top GGUF models: %s", e)
+            logger.warning("Failed to fetch top models: %s", e)
         finally:
-            self._top_gguf_fetched = True
+            self._top_models_ready.set()
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle

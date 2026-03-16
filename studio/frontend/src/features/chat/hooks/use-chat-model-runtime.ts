@@ -38,7 +38,7 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
   title: "leading-5",
   description: "mt-0",
   closeButton:
-    "!left-auto !right-1 !top-2 !translate-x-0 !translate-y-0 !border-transparent !bg-transparent !shadow-none hover:!bg-transparent hover:opacity-70",
+    "!left-auto !right-1.5 !top-1.5 !translate-x-0 !translate-y-0 !border-transparent !bg-transparent !shadow-none hover:!bg-transparent hover:opacity-70",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -186,6 +186,7 @@ export function useChatModelRuntime() {
     loadAbortRef.current = null;
     loadToastIdRef.current = null;
     setLoadToastDismissedState(false);
+    useChatRuntimeStore.getState().setModelLoading(false);
   }, [setLoadToastDismissedState]);
 
   const renderLoadDescription = useCallback(
@@ -258,6 +259,8 @@ export function useChatModelRuntime() {
       if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
         return;
       }
+      // Prevent duplicate loads if already loading this model
+      if (loadingModelRef.current?.id === modelId) return;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -294,6 +297,7 @@ export function useChatModelRuntime() {
       setLoadToastDismissedState(false);
       const loadInfo = { id: modelId, displayName, isDownloaded };
       setLoadingModel(loadInfo);
+      useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
         isDownloaded
           ? { percent: null, label: null, phase: "starting" }
