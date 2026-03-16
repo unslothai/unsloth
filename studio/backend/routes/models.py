@@ -752,7 +752,8 @@ async def get_download_progress(
             "expected_bytes": expected_bytes,
             "progress": round(progress, 3),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Error checking download progress for {repo_id}: {e}")
         return _empty
 
 
