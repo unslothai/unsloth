@@ -872,11 +872,18 @@ if DEVICE_TYPE == "cuda":
         if _is_package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
+                # Try importing the actual functions used by Unsloth first (for flash-attn 2.7+)
+                # See https://github.com/unslothai/unsloth/issues/4270
                 try:
-                    # See https://github.com/unslothai/unsloth/issues/1437
-                    from flash_attn.flash_attn_interface import flash_attn_gpu
+                    from flash_attn import flash_attn_func
+                    _ = flash_attn_func  # Ensure import is valid
                 except:
-                    from flash_attn.flash_attn_interface import flash_attn_cuda
+                    # Fall back to legacy import check (for older flash-attn versions)
+                    # See https://github.com/unslothai/unsloth/issues/1437
+                    try:
+                        from flash_attn.flash_attn_interface import flash_attn_gpu
+                    except:
+                        from flash_attn.flash_attn_interface import flash_attn_cuda
                 HAS_FLASH_ATTENTION = True
 
                 # Also check for softcapping
@@ -921,11 +928,18 @@ elif DEVICE_TYPE == "hip":
     if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
+            # Try importing the actual functions used by Unsloth first (for flash-attn 2.7+)
+            # See https://github.com/unslothai/unsloth/issues/4270
             try:
-                # See https://github.com/unslothai/unsloth/issues/1437
-                from flash_attn.flash_attn_interface import flash_attn_gpu
+                from flash_attn import flash_attn_func
+                _ = flash_attn_func  # Ensure import is valid
             except:
-                from flash_attn.flash_attn_interface import flash_attn_cuda
+                # Fall back to legacy import check (for older flash-attn versions)
+                # See https://github.com/unslothai/unsloth/issues/1437
+                try:
+                    from flash_attn.flash_attn_interface import flash_attn_gpu
+                except:
+                    from flash_attn.flash_attn_interface import flash_attn_cuda
             HAS_FLASH_ATTENTION = True
 
             # Also check for softcapping
