@@ -159,11 +159,13 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  onDeleteVariant,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  onDeleteVariant?: (quant: string) => void;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -308,38 +310,48 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         return (
-          <button
-            key={v.filename}
-            type="button"
-            onClick={() => handleVariantClick(v.quant, v.downloaded, v.size_bytes)}
-            className={cn(
-              "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
-            )}
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              {v.quant}
-              {v.downloaded ? (
-                <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
-                  downloaded
-                </span>
-              ) : v.quant === effectiveRecommended ? (
-                <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
-                  recommended
-                </span>
-              ) : null}
-            </span>
-            <span className="flex items-center gap-1.5 shrink-0">
-              {oom && (
-                <span className="text-[9px] font-medium text-red-400">OOM</span>
+          <div key={v.filename} className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => handleVariantClick(v.quant, v.downloaded, v.size_bytes)}
+              className={cn(
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
               )}
-              {tight && (
-                <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
-              )}
-              <span className="text-[10px] text-muted-foreground">
-                {formatBytes(v.size_bytes)}
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                {v.quant}
+                {v.downloaded ? (
+                  <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                    downloaded
+                  </span>
+                ) : v.quant === effectiveRecommended ? (
+                  <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
+                    recommended
+                  </span>
+                ) : null}
               </span>
-            </span>
-          </button>
+              <span className="flex items-center gap-1.5 shrink-0">
+                {oom && (
+                  <span className="text-[9px] font-medium text-red-400">OOM</span>
+                )}
+                {tight && (
+                  <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
+                )}
+                <span className="text-[10px] text-muted-foreground">
+                  {formatBytes(v.size_bytes)}
+                </span>
+              </span>
+            </button>
+            {v.downloaded && onDeleteVariant && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDeleteVariant(v.quant); }}
+                className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2Icon className="size-3" />
+              </button>
+            )}
+          </div>
         );
       })}
     </div>
@@ -413,8 +425,12 @@ export function HubModelPicker({
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await deleteCachedModel(deleteTarget);
-      toast.success(`Deleted ${deleteTarget}`);
+      // deleteTarget is "repo_id" or "repo_id::variant"
+      const sepIdx = deleteTarget.indexOf("::");
+      const repoId = sepIdx >= 0 ? deleteTarget.slice(0, sepIdx) : deleteTarget;
+      const variant = sepIdx >= 0 ? deleteTarget.slice(sepIdx + 2) : undefined;
+      await deleteCachedModel(repoId, variant);
+      toast.success(`Deleted ${variant ? `${repoId} ${variant}` : repoId}`);
       refreshCachedLists();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete model");
@@ -562,26 +578,21 @@ export function HubModelPicker({
               <ListLabel>{"\uD83E\uDDA5"} Downloaded</ListLabel>
               {cachedGguf.map((c) => (
                 <div key={c.repo_id}>
-                  <div className="flex items-center gap-0.5">
-                    <div className="min-w-0 flex-1">
-                      <ModelRow
-                        label={c.repo_id}
-                        meta={`GGUF · ${formatBytes(c.size_bytes)}`}
-                        selected={value === c.repo_id}
-                        onClick={() => handleModelClick(c.repo_id)}
-                        vramStatus={null}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(c.repo_id); }}
-                      className="shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </button>
-                  </div>
+                  <ModelRow
+                    label={c.repo_id}
+                    meta={`GGUF · ${formatBytes(c.size_bytes)}`}
+                    selected={value === c.repo_id}
+                    onClick={() => handleModelClick(c.repo_id)}
+                    vramStatus={null}
+                  />
                   {expandedGguf === c.repo_id && (
-                    <GgufVariantExpander repoId={c.repo_id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                    <GgufVariantExpander
+                      repoId={c.repo_id}
+                      onSelect={onSelect}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                      systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                      onDeleteVariant={(quant) => setDeleteTarget(`${c.repo_id}::${quant}`)}
+                    />
                   )}
                 </div>
               ))}
@@ -691,7 +702,7 @@ export function HubModelPicker({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove <span className="font-medium text-foreground">{deleteTarget}</span> from disk. You can re-download it later.
+              This will remove <span className="font-medium text-foreground">{deleteTarget?.includes("::") ? `${deleteTarget.split("::")[0]} (${deleteTarget.split("::")[1]})` : deleteTarget}</span> from disk. You can re-download it later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
