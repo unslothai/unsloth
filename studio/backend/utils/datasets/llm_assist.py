@@ -143,6 +143,9 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             return None
 
         messages = [{"role": "user", "content": prompt}]
+        logger.info(
+            "Helper model request: enable_thinking=False (per-request override)"
+        )
         cumulative = ""
         for text in backend.generate_chat_completion(
             messages = messages,
@@ -151,6 +154,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             top_k = 20,
             max_tokens = max_tokens,
             repetition_penalty = 1.0,
+            enable_thinking = False,
         ):
             cumulative = text  # cumulative — last value is full text
 
@@ -416,6 +420,7 @@ def _parse_json_response(text: str) -> Optional[dict]:
 
 def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512) -> str:
     """Run one chat completion on an already-loaded backend. Returns raw text."""
+    logger.info("Advisor request: enable_thinking=False (per-request override)")
     cumulative = ""
     for text in backend.generate_chat_completion(
         messages = messages,
@@ -424,6 +429,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         top_k = 20,
         max_tokens = max_tokens,
         repetition_penalty = 1.0,
+        enable_thinking = False,
     ):
         cumulative = text
     result = cumulative.strip()
