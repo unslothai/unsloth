@@ -232,8 +232,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               gguf_variant: variant.quant,
               trust_remote_code: false,
             });
+            useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
             const store = useChatRuntimeStore.getState();
-            store.setCheckpoint(repo.repo_id, variant.quant);
             store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
             // Add model to store so the selector shows the name
             const autoModel: ChatModelSummary = {
@@ -282,8 +282,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             gguf_variant: null,
             trust_remote_code: false,
           });
+          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
-          store.setCheckpoint(repo.repo_id);
           store.setParams({ ...store.params, maxTokens: 4096 });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -319,8 +319,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: false,
       });
+      useChatRuntimeStore.getState().setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
-      store.setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
       store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
       const defaultModel: ChatModelSummary = {
         id: "unsloth/Qwen3.5-4B-GGUF",
