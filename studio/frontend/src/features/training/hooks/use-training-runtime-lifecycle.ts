@@ -7,43 +7,17 @@ import {
   getTrainingMetrics,
   getTrainingStatus,
   isAbortError,
-  streamTrainingProgress,
 } from "../api/train-api";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
-import type { TrainingRuntimeStore } from "../types/runtime";
 
-const STATUS_POLL_INTERVAL_MS = 3000;
-const METRICS_POLL_INTERVAL_MS = 5000;
-const STREAM_RECONNECT_DELAY_MS = 1500;
-
-function shouldUseLiveSync(state: TrainingRuntimeStore): boolean {
-  return state.isTrainingRunning || state.phase === "training";
-}
+const STATUS_POLL_INTERVAL_MS = 2000;
+const METRICS_POLL_INTERVAL_MS = 3000;
 
 export function useTrainingRuntimeLifecycle(): void {
   useEffect(() => {
     let disposed = false;
-    let openingStream = false;
-    let streamController: AbortController | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const runtimeStore = useTrainingRuntimeStore;
-
-    const clearReconnect = () => {
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    };
-
-    const stopStream = () => {
-      clearReconnect();
-      if (streamController) {
-        streamController.abort();
-        streamController = null;
-      }
-      runtimeStore.getState().setSseConnected(false);
-    };
 
     const pollMetrics = async () => {
       if (!hasAuthToken()) return;
@@ -56,7 +30,7 @@ export function useTrainingRuntimeLifecycle(): void {
         runtimeStore.getState().applyMetrics(metrics);
       } catch (error) {
         if (!isAbortError(error) && !disposed && hasAuthToken()) {
-          runtimeStore.getState().setSseConnected(false);
+          // silent — next poll will retry
         }
       }
     };
@@ -69,83 +43,10 @@ export function useTrainingRuntimeLifecycle(): void {
         if (disposed || runtimeStore.getState().resetGeneration !== gen) {
           return;
         }
-
         runtimeStore.getState().applyStatus(status);
-
-        const nextState = runtimeStore.getState();
-        if (shouldUseLiveSync(nextState)) {
-          void ensureStream();
-        } else {
-          stopStream();
-        }
       } catch (error) {
         if (!isAbortError(error) && !disposed && hasAuthToken()) {
-          runtimeStore.getState().setSseConnected(false);
-        }
-      }
-    };
-
-    const ensureStream = async () => {
-      const state = runtimeStore.getState();
-      if (
-        disposed ||
-        openingStream ||
-        streamController ||
-        !shouldUseLiveSync(state)
-      ) {
-        return;
-      }
-
-      clearReconnect();
-      openingStream = true;
-      const controller = new AbortController();
-      streamController = controller;
-
-      try {
-        await streamTrainingProgress({
-          signal: controller.signal,
-          lastEventId: state.lastEventId,
-          onOpen: () => {
-            runtimeStore.getState().setSseConnected(true);
-          },
-          onEvent: (event) => {
-            const liveStore = runtimeStore.getState();
-            if (typeof event.id === "number") {
-              liveStore.setLastEventId(event.id);
-            }
-
-            liveStore.applyProgress(event.payload, event.id ?? undefined);
-
-            if (event.event === "complete") {
-              void pollStatus();
-              void pollMetrics();
-              stopStream();
-            }
-
-            if (event.event === "error") {
-              liveStore.setRuntimeError("Training stream error");
-              stopStream();
-            }
-          },
-        });
-      } catch (error) {
-        if (!disposed && !controller.signal.aborted && !isAbortError(error)) {
-          runtimeStore.getState().setSseConnected(false);
-        }
-      } finally {
-        openingStream = false;
-        if (streamController === controller) {
-          streamController = null;
-        }
-        runtimeStore.getState().setSseConnected(false);
-
-        if (!disposed && !controller.signal.aborted) {
-          const liveState = runtimeStore.getState();
-          if (shouldUseLiveSync(liveState)) {
-            reconnectTimer = setTimeout(() => {
-              void ensureStream();
-            }, STREAM_RECONNECT_DELAY_MS);
-          }
+          // silent — next poll will retry
         }
       }
     };
@@ -170,7 +71,7 @@ export function useTrainingRuntimeLifecycle(): void {
 
     const metricsTimer = setInterval(() => {
       const state = runtimeStore.getState();
-      if (shouldUseLiveSync(state) || state.currentStep > 0) {
+      if (state.isTrainingRunning || state.phase === "training" || state.currentStep > 0) {
         void pollMetrics();
       }
     }, METRICS_POLL_INTERVAL_MS);
@@ -179,7 +80,6 @@ export function useTrainingRuntimeLifecycle(): void {
       disposed = true;
       clearInterval(statusTimer);
       clearInterval(metricsTimer);
-      stopStream();
     };
   }, []);
 }

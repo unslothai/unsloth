@@ -9,7 +9,6 @@ import type {
 } from "../types/api";
 import type {
   TrainingMetricsResponse,
-  TrainingProgressPayload,
   TrainingStatusResponse,
 } from "../types/runtime";
 
@@ -68,73 +67,6 @@ export async function getTrainingStatus(): Promise<TrainingStatusResponse> {
 export async function getTrainingMetrics(): Promise<TrainingMetricsResponse> {
   const response = await authFetch("/api/train/metrics");
   return parseJson<TrainingMetricsResponse>(response);
-}
-
-type ProgressEventName = "progress" | "heartbeat" | "complete" | "error";
-
-interface ParsedSseEvent {
-  event: ProgressEventName;
-  payload: TrainingProgressPayload;
-  id: number | null;
-}
-
-export async function streamTrainingProgress(options: {
-  signal: AbortSignal;
-  lastEventId?: number | null;
-  onOpen?: () => void;
-  onEvent: (event: ParsedSseEvent) => void;
-}): Promise<void> {
-  // Build WebSocket URL from current page location
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const params = new URLSearchParams();
-
-  // Pass auth token as query param (WebSocket can't use Authorization header)
-  const token = localStorage.getItem("unsloth_auth_token");
-  if (token) params.set("token", token);
-  if (typeof options.lastEventId === "number") {
-    params.set("last_event_id", String(options.lastEventId));
-  }
-
-  const url = `${protocol}//${window.location.host}/api/train/progress/ws?${params}`;
-
-  return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(url);
-
-    // Wire up AbortSignal to close the socket
-    const onAbort = () => ws.close();
-    options.signal.addEventListener("abort", onAbort);
-
-    ws.onopen = () => {
-      options.onOpen?.();
-    };
-
-    ws.onmessage = (messageEvent) => {
-      try {
-        const msg = JSON.parse(messageEvent.data) as {
-          event: ProgressEventName;
-          id: number | null;
-          data: TrainingProgressPayload;
-        };
-        options.onEvent({
-          event: msg.event,
-          id: msg.id,
-          payload: msg.data,
-        });
-      } catch {
-        // Ignore parse errors for malformed messages
-      }
-    };
-
-    ws.onclose = () => {
-      options.signal.removeEventListener("abort", onAbort);
-      resolve();
-    };
-
-    ws.onerror = () => {
-      options.signal.removeEventListener("abort", onAbort);
-      reject(new Error("WebSocket connection failed"));
-    };
-  });
 }
 
 export { isAbortError };
