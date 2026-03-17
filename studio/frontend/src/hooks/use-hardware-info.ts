@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 export interface HardwareInfo {
     gpuName: string | null;
     vramTotalGb: number | null;
+    vramFreeGb: number | null;
     torch: string | null;
     cuda: string | null;
     transformers: string | null;
@@ -16,6 +17,7 @@ export interface HardwareInfo {
 const DEFAULT: HardwareInfo = {
     gpuName: null,
     vramTotalGb: null,
+    vramFreeGb: null,
     torch: null,
     cuda: null,
     transformers: null,
@@ -38,6 +40,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
             const info: HardwareInfo = {
                 gpuName: data?.gpu?.gpu_name ?? null,
                 vramTotalGb: data?.gpu?.vram_total_gb ?? null,
+                vramFreeGb: data?.gpu?.vram_free_gb ?? null,
                 torch: data?.versions?.torch ?? null,
                 cuda: data?.versions?.cuda ?? null,
                 transformers: data?.versions?.transformers ?? null,

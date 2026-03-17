@@ -243,8 +243,9 @@ def get_gpu_summary() -> Dict[str, Any]:
         return {
             "gpu_name": mem.get("device_name"),
             "vram_total_gb": round(mem.get("total_gb", 0), 2),
+            "vram_free_gb": round(mem.get("free_gb", 0), 2),
         }
-    return {"gpu_name": None, "vram_total_gb": None}
+    return {"gpu_name": None, "vram_total_gb": None, "vram_free_gb": None}
 
 
 def get_package_versions() -> Dict[str, Optional[str]]:
