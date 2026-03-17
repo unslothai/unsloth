@@ -142,6 +142,17 @@ export async function listCachedModels(): Promise<CachedModelRepo[]> {
   return data.cached;
 }
 
+export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+  const payload: Record<string, string> = { repo_id: repoId };
+  if (variant) payload.variant = variant;
+  const response = await authFetch("/api/models/delete-cached", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,

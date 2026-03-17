@@ -9,6 +9,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 """
 
 import atexit
+import contextlib
 import json
 import struct
 import structlog
@@ -902,8 +903,8 @@ class LlamaCppBackend:
                 )
 
             # For reasoning models, set default thinking mode.
-            # Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
-            # per Qwen's recommendation. Larger models default to thinking ON.
+            # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Only 9B and larger enable thinking.
             if self._supports_reasoning:
                 import re
 
@@ -914,7 +915,7 @@ class LlamaCppBackend:
                     size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
                     if size_match:
                         size_val = float(size_match.group(1))
-                        if size_val <= 2:
+                        if size_val < 9:
                             thinking_default = False
                 self._reasoning_default = thinking_default
                 cmd.extend(
@@ -1292,16 +1293,44 @@ class LlamaCppBackend:
                 # and re-check cancel_event.
                 continue
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _stream_with_retry(
+        client: "httpx.Client",
+        url: str,
+        payload: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ):
+        """Open an httpx streaming POST, retrying on ReadTimeout.
+
+        The short read timeout (0.5 s) that enables cancel-checking during
+        streaming can also fire while waiting for the server to produce
+        its first response bytes (e.g. a reasoning model thinking).
+        This wrapper retries the connection until headers arrive or
+        cancel_event is set.
+        """
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GeneratorExit
+            try:
+                with client.stream("POST", url, json = payload) as response:
+                    yield response
+                    return
+            except httpx.ReadTimeout:
+                # Server still thinking -- retry
+                continue
+
     def generate_chat_completion(
         self,
         messages: list[dict],
         image_b64: Optional[str] = None,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 40,
-        min_p: float = 0.0,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 20,
+        min_p: float = 0.01,
         max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
@@ -1327,6 +1356,7 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
         # Pass enable_thinking per-request for reasoning models
         if self._supports_reasoning and enable_thinking is not None:
@@ -1345,7 +1375,9 @@ class LlamaCppBackend:
             # frequently instead of blocking indefinitely on slow models.
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
-                with client.stream("POST", url, json = payload) as response:
+                with self._stream_with_retry(
+                    client, url, payload, cancel_event
+                ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(
@@ -1426,12 +1458,13 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         tools: list[dict],
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 40,
-        min_p: float = 0.0,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 20,
+        min_p: float = 0.01,
         max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
@@ -1466,6 +1499,7 @@ class LlamaCppBackend:
                 "top_k": top_k if top_k >= 0 else 0,
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
+                "presence_penalty": presence_penalty,
                 "tools": tools,
                 "tool_choice": "auto",
             }
@@ -1540,11 +1574,32 @@ class LlamaCppBackend:
                         arguments = raw_args
 
                     # Yield status update
-                    query_text = arguments.get("query", tool_name)
-                    yield {"type": "status", "text": f"Searching: {query_text}"}
+                    if tool_name == "web_search":
+                        status_text = f"Searching: {arguments.get('query', '')}"
+                    elif tool_name == "python":
+                        preview = (
+                            (arguments.get("code") or "").strip().split("\n")[0][:60]
+                        )
+                        status_text = (
+                            f"Running Python: {preview}"
+                            if preview
+                            else "Running Python..."
+                        )
+                    elif tool_name == "terminal":
+                        cmd_preview = (arguments.get("command") or "")[:60]
+                        status_text = (
+                            f"Running: {cmd_preview}"
+                            if cmd_preview
+                            else "Running command..."
+                        )
+                    else:
+                        status_text = f"Calling: {tool_name}"
+                    yield {"type": "status", "text": status_text}
 
                     # Execute the tool
-                    result = execute_tool(tool_name, arguments)
+                    result = execute_tool(
+                        tool_name, arguments, cancel_event = cancel_event
+                    )
 
                     # Append tool result to conversation
                     tool_msg = {
@@ -1585,6 +1640,7 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
         if self._supports_reasoning and enable_thinking is not None:
             stream_payload["chat_template_kwargs"] = {
@@ -1603,7 +1659,9 @@ class LlamaCppBackend:
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
-                with client.stream("POST", url, json = stream_payload) as response:
+                with self._stream_with_retry(
+                    client, url, stream_payload, cancel_event
+                ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(

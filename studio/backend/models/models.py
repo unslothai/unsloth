@@ -85,6 +85,12 @@ class ModelDetails(BaseModel):
     base_model: Optional[str] = Field(
         None, description = "Base model if this is a LoRA adapter"
     )
+    max_position_embeddings: Optional[int] = Field(
+        None, description = "Maximum context length supported by the model"
+    )
+    model_size_bytes: Optional[int] = Field(
+        None, description = "Total size of model weight files in bytes"
+    )
 
 
 class LoRAInfo(BaseModel):

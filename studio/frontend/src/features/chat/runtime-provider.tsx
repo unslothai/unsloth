@@ -284,7 +284,7 @@ async function generateTitleWithModel(payload: {
       temperature: 0.2,
       top_p: 0.9,
       max_tokens: 24,
-      top_k: 40,
+      top_k: 20,
       repetition_penalty: 1.0,
       messages: [
         {

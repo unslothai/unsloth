@@ -95,6 +95,79 @@ async def load_model(
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
+        # ── Already-loaded check: skip reload if the exact model is active ──
+        backend = get_inference_backend()
+        llama_backend = get_llama_cpp_backend()
+
+        if request.gguf_variant:
+            if (
+                llama_backend.is_loaded
+                and llama_backend.hf_variant
+                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
+                and llama_backend.model_identifier
+                and llama_backend.model_identifier.lower() == request.model_path.lower()
+            ):
+                logger.info(
+                    f"Model already loaded (GGUF): {request.model_path} variant={request.gguf_variant}, skipping reload"
+                )
+                inference_config = load_inference_config(llama_backend.model_identifier)
+                from utils.models import is_audio_input_type
+
+                _gguf_audio = (
+                    llama_backend._audio_type
+                    if hasattr(llama_backend, "_audio_type")
+                    else None
+                )
+                _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
+                return LoadResponse(
+                    status = "already_loaded",
+                    model = llama_backend.model_identifier,
+                    display_name = llama_backend.model_identifier,
+                    is_vision = llama_backend._is_vision,
+                    is_lora = False,
+                    is_gguf = True,
+                    is_audio = _gguf_is_audio,
+                    audio_type = _gguf_audio,
+                    has_audio_input = is_audio_input_type(_gguf_audio)
+                    if _gguf_audio
+                    else False,
+                    inference = inference_config,
+                    context_length = llama_backend.context_length,
+                    supports_reasoning = llama_backend.supports_reasoning,
+                    chat_template = llama_backend.chat_template,
+                )
+        else:
+            if (
+                backend.active_model_name
+                and backend.active_model_name.lower() == request.model_path.lower()
+            ):
+                logger.info(
+                    f"Model already loaded (Unsloth): {request.model_path}, skipping reload"
+                )
+                inference_config = load_inference_config(backend.active_model_name)
+                _model_info = backend.models.get(backend.active_model_name, {})
+                _chat_template = None
+                try:
+                    _tpl_info = _model_info.get("chat_template_info", {})
+                    _chat_template = _tpl_info.get("template")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not retrieve chat template for {backend.active_model_name}: {e}"
+                    )
+                return LoadResponse(
+                    status = "already_loaded",
+                    model = backend.active_model_name,
+                    display_name = backend.active_model_name,
+                    is_vision = _model_info.get("is_vision", False),
+                    is_lora = _model_info.get("is_lora", False),
+                    is_gguf = False,
+                    is_audio = _model_info.get("is_audio", False),
+                    audio_type = _model_info.get("audio_type"),
+                    has_audio_input = _model_info.get("has_audio_input", False),
+                    inference = inference_config,
+                    chat_template = _chat_template,
+                )
+
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
@@ -501,15 +574,21 @@ async def get_status(
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
+            _model_id = llama_backend.model_identifier
+            _inference_cfg = load_inference_config(_model_id) if _model_id else None
             return InferenceStatusResponse(
-                active_model = llama_backend.model_identifier,
+                active_model = _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = getattr(llama_backend, "_audio_type", None),
                 loading = [],
-                loaded = [llama_backend.model_identifier],
+                loaded = [_model_id],
+                inference = _inference_cfg,
+                supports_reasoning = llama_backend.supports_reasoning,
+                supports_tools = llama_backend.supports_tools,
+                context_length = llama_backend.context_length,
             )
 
         # Otherwise, report Unsloth backend status
@@ -526,6 +605,11 @@ async def get_status(
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
 
+        # gpt-oss safetensors models support reasoning via harmony channels
+        supports_reasoning = False
+        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
+            supports_reasoning = backend._is_gpt_oss_model()
+
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             is_vision = is_vision,
@@ -535,6 +619,7 @@ async def get_status(
             has_audio_input = has_audio_input,
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
+            supports_reasoning = supports_reasoning,
         )
 
     except Exception as e:
@@ -943,16 +1028,26 @@ async def openai_chat_completions(
         if use_tools:
             from core.inference.tools import ALL_TOOLS
 
+            if payload.enabled_tools:
+                tools_to_use = [
+                    t
+                    for t in ALL_TOOLS
+                    if t["function"]["name"] in payload.enabled_tools
+                ]
+            else:
+                tools_to_use = ALL_TOOLS
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
-                    tools = ALL_TOOLS,
+                    tools = tools_to_use,
                     temperature = payload.temperature,
                     top_p = payload.top_p,
                     top_k = payload.top_k,
                     min_p = payload.min_p,
                     max_tokens = payload.max_tokens,
                     repetition_penalty = payload.repetition_penalty,
+                    presence_penalty = payload.presence_penalty,
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
                 )
@@ -1035,9 +1130,10 @@ async def openai_chat_completions(
                     cancel_event.set()
                     raise
                 except Exception as e:
-                    logger.error(
-                        f"Error during GGUF tool streaming: {e}", exc_info = True
-                    )
+                    import traceback
+
+                    tb = traceback.format_exc()
+                    logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     error_chunk = {
                         "error": {
                             "message": "An internal error occurred",
@@ -1068,6 +1164,7 @@ async def openai_chat_completions(
                 min_p = payload.min_p,
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
+                presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
             )

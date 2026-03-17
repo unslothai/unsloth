@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
-import type { ModelType, StepNumber } from "@/types/training";
+import { authFetch } from "@/features/auth";
+import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -13,6 +14,39 @@ import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
 const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
+
+/**
+ * Auto-select LoRA (16-bit) vs QLoRA (4-bit) based on model size and GPU memory.
+ *
+ * Rule: if model_size_gb * 1.5 * context_scale fits in free VRAM, use "lora" (16-bit).
+ * Otherwise use "qlora" (4-bit).
+ *
+ * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
+ */
+async function autoSelectTrainingMethod(
+  modelSizeBytes: number,
+  contextLength: number,
+): Promise<TrainingMethod | null> {
+  try {
+    const res = await authFetch("/api/system/hardware");
+    if (!res.ok) return null;
+    const data = await res.json();
+    const freeGb: number | null = data?.gpu?.vram_free_gb ?? null;
+    if (freeGb == null) return null;
+
+    const modelSizeGb = modelSizeBytes / (1024 ** 3);
+
+    let contextScale = 1.0;
+    if (contextLength >= 32768) contextScale = 4.0;
+    else if (contextLength >= 16384) contextScale = 2.0;
+    else if (contextLength > 8192) contextScale = 1.7;
+
+    const estimatedUsage = modelSizeGb * 1.5 * contextScale;
+    return estimatedUsage <= freeGb ? "lora" : "qlora";
+  } catch {
+    return null;
+  }
+}
 
 function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
   return {};
@@ -50,6 +84,7 @@ const initialState: TrainingConfigState = {
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,
+  maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
 };
 
@@ -75,6 +110,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetImage",
   "isDatasetAudio",
   "trainOnCompletions",
+  "maxPositionEmbeddings",
 ]);
 
 function partializePersistedState(
@@ -153,6 +189,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
+            // Auto-select training method based on model size vs GPU memory.
+            // If model_size * 1.5 * context_scale fits in free VRAM, use LoRA 16-bit.
+            // Otherwise use QLoRA 4-bit.
+            const modelSizeBytes = modelDetails.model_size_bytes;
+            if (modelSizeBytes && modelSizeBytes > 0) {
+              void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
+                .then((method) => {
+                  if (get().selectedModel !== modelName) return;
+                  if (method) set({ trainingMethod: method });
+                });
+            }
+
             set({
               ...patch,
               modelType: inferredModelType,
@@ -163,6 +211,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
+              maxPositionEmbeddings: modelDetails.max_position_embeddings ?? null,
             });
           })
           .catch((error) => {
@@ -318,7 +367,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           void loadAndApplyModelDefaults(state.selectedModel);
         },
         setTrainingMethod: (trainingMethod) => set({ trainingMethod }),
-        setHfToken: (hfToken) => set({ hfToken }),
+        setHfToken: (hfToken) =>
+          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();

@@ -49,6 +49,7 @@ import {
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
+  TerminalIcon,
   XIcon,
 } from "lucide-react";
 import { type FC, useCallback, useRef, useState } from "react";
@@ -84,10 +85,10 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
           <ThreadScrollToBottom />
+          <GeneratingSpinner />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
-          <GeneratingSpinner />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
@@ -155,8 +156,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               components={{ Suggestion: SuggestionItem }}
             />
           </div>
-          {!hideComposer && <ComposerAnimated />}
           <GeneratingSpinner />
+          {!hideComposer && <ComposerAnimated />}
         </div>
       </div>
     </div>
@@ -354,13 +355,42 @@ const WebSearchToggle: FC = () => {
   );
 };
 
+const CodeToolsToggle: FC = () => {
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore(
+    (s) => s.setCodeToolsEnabled,
+  );
+
+  if (!supportsTools) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        codeToolsEnabled
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
+          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+    >
+      <TerminalIcon className="size-3.5" />
+      <span>Code</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   if (!toolStatus) return null;
+  const isRunning = toolStatus.startsWith("Running");
+  const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
       <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
-        <GlobeIcon className="size-3.5" />
+        <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
       </div>
     </div>
@@ -375,6 +405,7 @@ const ComposerAction: FC = () => {
         <ComposerAudioUpload />
         <ReasoningToggle />
         <WebSearchToggle />
+        <CodeToolsToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

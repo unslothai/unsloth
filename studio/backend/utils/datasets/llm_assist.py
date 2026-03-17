@@ -154,7 +154,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             top_k = 20,
             max_tokens = max_tokens,
             repetition_penalty = 1.0,
-            enable_thinking = False,
+            enable_thinking = False,  # Always disable thinking for AI Assist
         ):
             cumulative = text  # cumulative — last value is full text
 
@@ -429,7 +429,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         top_k = 20,
         max_tokens = max_tokens,
         repetition_penalty = 1.0,
-        enable_thinking = False,
+        enable_thinking = False,  # Always disable thinking for AI Assist
     ):
         cumulative = text
     result = cumulative.strip()

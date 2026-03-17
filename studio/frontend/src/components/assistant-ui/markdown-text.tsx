@@ -225,6 +225,19 @@ function StreamdownBlock(props: BlockProps) {
     );
   }
 
+  if (props.isIncomplete && codeFence && isSvgFence(codeFence)) {
+    return (
+      <div className="relative isolate">
+        <div className="my-4 rounded-xl border border-border bg-muted/30 p-4">
+          <div className="mb-2 text-xs font-medium text-muted-foreground">svg</div>
+          <pre className="overflow-x-auto text-xs text-muted-foreground whitespace-pre-wrap break-all">
+            <code>{codeFence.source}</code>
+          </pre>
+        </div>
+      </div>
+    );
+  }
+
   if (mermaidSource) {
     return (
       <div className="relative isolate">

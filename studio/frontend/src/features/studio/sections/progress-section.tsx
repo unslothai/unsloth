@@ -272,7 +272,7 @@ export function ProgressSection(): ReactElement {
               {config.selectedModel ?? "--"}
             </MetricStat>
             <MetricStat label="Method">
-              {config.trainingMethod.toUpperCase()}
+              {config.trainingMethod === "qlora" ? "QLoRA" : config.trainingMethod === "lora" ? "LoRA" : "Full"}
             </MetricStat>
           </div>
 

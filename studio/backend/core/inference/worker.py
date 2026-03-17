@@ -67,7 +67,7 @@ def _activate_transformers_version(model_name: str) -> None:
                     "--target",
                     venv_t5,
                     "--no-deps",
-                    "transformers==5.2.0",
+                    "transformers==5.3.0",
                 ],
                 stdout = sp.PIPE,
                 stderr = sp.STDOUT,
@@ -555,7 +555,7 @@ def run_inference_process(
             resp_queue,
             {
                 "type": "status",
-                "message": "Importing ML libraries...",
+                "message": "Importing Unsloth...",
                 "ts": time.time(),
             },
         )

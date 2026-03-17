@@ -64,7 +64,7 @@ export const MODEL_TYPES: ReadonlyArray<{
     },
   ];
 
-export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768];
+export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
 
 export const TARGET_MODULES = [
   "q_proj",
@@ -104,7 +104,7 @@ export const DEFAULT_HYPERPARAMS = {
   gradientAccumulation: 8,
   weightDecay: 0.01,
   warmupSteps: 5,
-  maxSteps: 0,
+  maxSteps: 60,
   saveSteps: 0,
   evalSteps: 0.00,
   packing: false,
