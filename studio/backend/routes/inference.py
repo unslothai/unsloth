@@ -949,10 +949,18 @@ async def openai_chat_completions(
         if use_tools:
             from core.inference.tools import ALL_TOOLS
 
+            if payload.enabled_tools:
+                tools_to_use = [
+                    t for t in ALL_TOOLS
+                    if t["function"]["name"] in payload.enabled_tools
+                ]
+            else:
+                tools_to_use = ALL_TOOLS
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
-                    tools = ALL_TOOLS,
+                    tools = tools_to_use,
                     temperature = payload.temperature,
                     top_p = payload.top_p,
                     top_k = payload.top_k,

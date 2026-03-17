@@ -347,10 +347,37 @@ const WebSearchToggle: FC = () => {
           ? "bg-primary/10 text-primary hover:bg-primary/20"
           : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
-      aria-label={toolsEnabled ? "Disable tools" : "Enable tools"}
+      aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <GlobeIcon className="size-3.5" />
-      <span>Tools</span>
+      <span>Search</span>
+    </button>
+  );
+};
+
+const CodeToolsToggle: FC = () => {
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore(
+    (s) => s.setCodeToolsEnabled,
+  );
+
+  if (!supportsTools) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        codeToolsEnabled
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
+          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+    >
+      <TerminalIcon className="size-3.5" />
+      <span>Code</span>
     </button>
   );
 };
@@ -378,6 +405,7 @@ const ComposerAction: FC = () => {
         <ComposerAudioUpload />
         <ReasoningToggle />
         <WebSearchToggle />
+        <CodeToolsToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

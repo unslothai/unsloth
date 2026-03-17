@@ -48,6 +48,7 @@ type ChatRuntimeStore = {
   reasoningEnabled: boolean;
   supportsTools: boolean;
   toolsEnabled: boolean;
+  codeToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
   kvCacheDtype: string | null;
@@ -69,6 +70,7 @@ type ChatRuntimeStore = {
   clearCheckpoint: () => void;
   setReasoningEnabled: (enabled: boolean) => void;
   setToolsEnabled: (enabled: boolean) => void;
+  setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setKvCacheDtype: (dtype: string | null) => void;
@@ -90,6 +92,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   reasoningEnabled: true,
   supportsTools: false,
   toolsEnabled: false,
+  codeToolsEnabled: false,
   toolStatus: null,
   generatingStatus: null,
   kvCacheDtype: null,
@@ -140,6 +143,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       reasoningEnabled: true,
       supportsTools: false,
       toolsEnabled: false,
+      codeToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       defaultChatTemplate: null,
@@ -147,6 +151,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
+  setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -205,6 +205,8 @@ export function SharedComposer({
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -439,6 +441,22 @@ export function SharedComposer({
             >
               <GlobeIcon className="size-3.5" />
               <span>Search</span>
+            </button>
+          )}
+          {supportsTools && (
+            <button
+              type="button"
+              onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                codeToolsEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+              )}
+              aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+            >
+              <TerminalIcon className="size-3.5" />
+              <span>Code</span>
             </button>
           )}
         </div>

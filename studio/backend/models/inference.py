@@ -312,7 +312,11 @@ class ChatCompletionRequest(BaseModel):
     )
     enable_tools: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Enable tool calling (web search) for supported models",
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
     )
 
 
