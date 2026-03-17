@@ -49,6 +49,7 @@ type ChatRuntimeStore = {
   supportsTools: boolean;
   toolsEnabled: boolean;
   toolStatus: string | null;
+  generatingStatus: string | null;
   kvCacheDtype: string | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -69,6 +70,7 @@ type ChatRuntimeStore = {
   setReasoningEnabled: (enabled: boolean) => void;
   setToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
+  setGeneratingStatus: (status: string | null) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -89,6 +91,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   supportsTools: false,
   toolsEnabled: false,
   toolStatus: null,
+  generatingStatus: null,
   kvCacheDtype: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -145,6 +148,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>

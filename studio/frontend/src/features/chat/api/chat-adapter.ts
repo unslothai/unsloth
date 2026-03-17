@@ -490,14 +490,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!waitingFirstChunk) return;
         if (abortSignal.aborted) return;
         warmupToastShown = true;
-        toast.promise(firstTokenPromise, {
-          loading: "Generating",
-          success: "Generating",
-          error: (err) =>
-            err instanceof Error && err.message ? err.message : "Generation failed",
-          description: "Waiting for first token.",
-          duration: 900,
-        });
+        runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
       runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
@@ -543,6 +536,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             waitingFirstChunk = false;
             firstTokenTime = Date.now() - streamStartTime;
             settleFirstTokenOk();
+            runtime.setGeneratingStatus(null);
           }
 
           cumulativeText += delta;
@@ -584,18 +578,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         };
       } catch (err) {
         settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
-        const isEarly = waitingFirstChunk;
-        if (!abortSignal.aborted && !(warmupToastShown && isEarly)) {
+        if (!abortSignal.aborted) {
           toast.error("Generation failed", {
             description: err instanceof Error ? err.message : "Unknown error",
           });
         }
         throw err;
       } finally {
+        runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
-          if (warmupToastShown && !firstTokenSettled) {
+          if (!firstTokenSettled) {
             if (abortSignal.aborted) {
               settleFirstTokenErr(new Error("Cancelled"));
             } else {

@@ -45,6 +45,7 @@ import {
   LightbulbOffIcon,
   MicIcon,
   MoreHorizontalIcon,
+  LoaderIcon,
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -86,6 +87,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
+          <GeneratingSpinner />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
@@ -154,7 +156,21 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
             />
           </div>
           {!hideComposer && <ComposerAnimated />}
+          <GeneratingSpinner />
         </div>
+      </div>
+    </div>
+  );
+};
+
+const GeneratingSpinner: FC = () => {
+  const status = useChatRuntimeStore((s) => s.generatingStatus);
+  if (!status) return null;
+  return (
+    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <LoaderIcon className="size-3.5 animate-spin" />
+        <span>Generating</span>
       </div>
     </div>
   );
