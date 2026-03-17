@@ -857,9 +857,21 @@ class LlamaCppBackend:
             cmd.extend(["--jinja"])
 
             # KV cache data type
-            _valid_cache_types = {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
+            _valid_cache_types = {
+                "f16",
+                "bf16",
+                "q8_0",
+                "q4_0",
+                "q4_1",
+                "q5_0",
+                "q5_1",
+                "iq4_nl",
+                "f32",
+            }
             if cache_type_kv and cache_type_kv in _valid_cache_types:
-                cmd.extend(["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv])
+                cmd.extend(
+                    ["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv]
+                )
                 self._cache_type_kv = cache_type_kv
                 logger.info(f"KV cache type: {cache_type_kv}")
             else:
