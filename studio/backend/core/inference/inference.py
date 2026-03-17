@@ -38,10 +38,16 @@ class HarmonyTextStreamer:
     garbled output such as ``analysisWe need to respond...assistantfinalHello!``.
 
     This streamer decodes with ``skip_special_tokens=False`` so the full
-    harmony markup is visible, then parses it with a regex to extract channels.
-    The ``analysis`` channel is wrapped in ``<think>...</think>`` tags (reusing
-    the frontend reasoning UI) and the ``final`` channel is emitted as plain
-    text.
+    harmony markup is visible, then uses **stateful incremental** parsing
+    to emit properly-formatted text:
+
+    - ``<think>`` emitted once when the ``analysis`` channel is first seen
+    - Analysis content streamed incrementally
+    - ``</think>`` emitted once when the ``final`` channel is first seen
+    - Final content streamed incrementally
+
+    This avoids the delta-on-transformed bug where wrapping tags shift
+    position as content grows.
 
     Implements the same ``put`` / ``end`` / iterator interface as
     ``TextIteratorStreamer`` so ``generate_stream`` can use it as a drop-in
@@ -54,8 +60,6 @@ class HarmonyTextStreamer:
         r"<\|channel\|>(\w+)<\|message\|>(.*?)(?=<\|end\|>|<\|channel\|>|\Z)",
         _re.DOTALL,
     )
-    # Tokens that should never appear in user-facing text
-    _STRIP_TOKENS_RE = _re.compile(r"<\|(?:channel|message|start|end)\|>")
 
     def __init__(self, tokenizer, *, skip_prompt: bool = True, timeout: float = 0.2):
         import queue
@@ -68,8 +72,13 @@ class HarmonyTextStreamer:
         self._token_ids: list = []
         self._prompt_len: int = 0
         self._is_first_put: bool = True
-        self._prev_emitted_len: int = 0
         self._stop: bool = False
+
+        # Stateful channel tracking — avoids delta-on-transformed bugs
+        self._emitted_think_open: bool = False
+        self._emitted_think_close: bool = False
+        self._analysis_emitted: int = 0  # chars of analysis content emitted
+        self._final_emitted: int = 0     # chars of final content emitted
 
     # ------------------------------------------------------------------
     # put / end — called from the generation thread
@@ -99,13 +108,7 @@ class HarmonyTextStreamer:
         # Decode only the generated part (after the prompt)
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-        transformed = self._transform(raw)
-
-        # Emit only the incremental delta
-        delta = transformed[self._prev_emitted_len :]
-        if delta:
-            self._prev_emitted_len = len(transformed)
-            self._queue.put(delta)
+        self._process_incremental(raw)
 
     def end(self):
         """Signal generation is complete."""
@@ -113,11 +116,13 @@ class HarmonyTextStreamer:
         gen_ids = self._token_ids[self._prompt_len :]
         if gen_ids:
             raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-            transformed = self._transform(raw)
-            delta = transformed[self._prev_emitted_len :]
-            if delta:
-                self._prev_emitted_len = len(transformed)
-                self._queue.put(delta)
+            self._process_incremental(raw)
+
+        # Close any open think tags
+        if self._emitted_think_open and not self._emitted_think_close:
+            self._queue.put("</think>")
+            self._emitted_think_close = True
+
         self._stop = True
         self._queue.put(None)  # sentinel
 
@@ -143,30 +148,58 @@ class HarmonyTextStreamer:
             return val
 
     # ------------------------------------------------------------------
-    # Harmony protocol parsing
+    # Stateful incremental harmony protocol parsing
     # ------------------------------------------------------------------
 
-    def _transform(self, raw: str) -> str:
-        """Parse harmony channel markup and return formatted text.
+    def _process_incremental(self, raw: str) -> None:
+        """Parse harmony channels and emit deltas per-channel.
 
-        Maps ``analysis`` channel to ``<think>...</think>`` and ``final``
-        channel to plain text.  Any other channels are silently dropped.
+        Instead of transforming the entire raw text and computing a string
+        delta (which breaks when wrapping ``<think>`` tags shift position),
+        this tracks per-channel content lengths and emits:
+
+        - ``<think>`` once when analysis channel first appears
+        - analysis content deltas (computed on channel content directly)
+        - ``</think>`` once when final channel first appears
+        - final content deltas
         """
+        # If raw contains <|channel|> but no complete channel+message pair yet,
+        # buffer silently — don't emit partial channel names as text.
+        has_channel_token = "<|channel|>" in raw
         matches = list(self._HARMONY_RE.finditer(raw))
-        if not matches:
-            # No harmony markup found — strip stray tokens and return as-is
-            return self._STRIP_TOKENS_RE.sub("", raw).strip()
 
-        parts: list = []
+        if has_channel_token and not matches:
+            # Partial harmony markup still building — wait for more tokens
+            return
+
+        if not has_channel_token and not matches:
+            # No harmony protocol at all — should not happen for gpt-oss
+            # but handle gracefully by not emitting anything
+            return
+
         for m in matches:
             channel = m.group(1).lower()
             content = m.group(2)
+
             if channel == "analysis":
-                parts.append(f"<think>{content}</think>")
+                if not self._emitted_think_open:
+                    self._queue.put("<think>")
+                    self._emitted_think_open = True
+
+                new_content = content[self._analysis_emitted:]
+                if new_content:
+                    self._analysis_emitted = len(content)
+                    self._queue.put(new_content)
+
             elif channel in ("final", "assistant"):
-                parts.append(content)
-            # Other channels (if any) are intentionally omitted
-        return "".join(parts)
+                if self._emitted_think_open and not self._emitted_think_close:
+                    self._queue.put("</think>")
+                    self._emitted_think_close = True
+
+                new_content = content[self._final_emitted:]
+                if new_content:
+                    self._final_emitted = len(content)
+                    self._queue.put(new_content)
 
 
 class InferenceBackend:
@@ -1886,18 +1919,27 @@ class InferenceBackend:
         return img
 
     def _clean_generated_text(self, text: str) -> str:
-        """Strip leaked special tokens using the tokenizer's own token list."""
+        """Strip leaked special tokens using the tokenizer's own token list.
+
+        For gpt-oss models using HarmonyTextStreamer, the streamer already
+        produces clean output with ``<think>``/``</think>`` tags.  The generic
+        ``all_special_tokens`` stripping must be skipped because gpt-oss
+        tokenizers include tokens (e.g. ``<|start|>``, ``<|end|>``) whose
+        sub-characters overlap with ``<think>`` tags and mangle them.
+        """
+        if self._is_gpt_oss_model():
+            # HarmonyTextStreamer already handles all token cleanup.
+            # Only strip harmony protocol tokens that might leak through
+            # as a safety fallback (should not happen normally).
+            import re
+            text = re.sub(r"<\|(?:channel|message|start|end)\|>", "", text)
+            return text.strip()
+
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
         if tokenizer:
             for token in getattr(tokenizer, "all_special_tokens", []):
                 if token in text:
                     text = text.replace(token, "")
-        # Safety fallback: strip stray harmony protocol tokens for gpt-oss
-        # in case they leak through (e.g. when HarmonyTextStreamer is not used)
-        if self._is_gpt_oss_model():
-            import re
-
-            text = re.sub(r"<\|(?:channel|message|start|end)\|>", "", text)
         return text.strip()
 
     def _load_chat_template_info(self, model_name: str):
