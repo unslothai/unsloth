@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PipelineType } from "@huggingface/hub";
-import { listModels } from "@huggingface/hub";
+import { listModels, modelInfo } from "@huggingface/hub";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
@@ -148,17 +148,73 @@ async function* mergedModelIterator(
   }
 }
 
+/**
+ * Creates an async generator that yields priority models (fetched individually
+ * via modelInfo for full metadata), then the general unsloth listing.
+ */
+async function* priorityThenListingIterator(
+  priorityIds: readonly string[],
+  task?: PipelineType,
+  accessToken?: string,
+): AsyncGenerator<unknown> {
+  const common = {
+    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    fetch: withPopularitySort,
+    ...(accessToken ? { credentials: { accessToken } } : {}),
+  };
+
+  // Phase 1: fetch priority models in parallel via modelInfo
+  const seen = new Set<string>();
+  const settled = await Promise.allSettled(
+    priorityIds.map((id) =>
+      modelInfo({
+        name: id,
+        additionalFields: ["safetensors", "tags"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      }),
+    ),
+  );
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      const m = result.value as { name?: string; pipeline_tag?: string };
+      // Skip models that don't match the selected task filter
+      if (task && m.pipeline_tag && m.pipeline_tag !== task) continue;
+      if (m.name) seen.add(m.name);
+      yield result.value;
+    }
+  }
+
+  // Phase 2: yield general unsloth listing, skipping already-seen
+  const generalIter = listModels({
+    search: { owner: "unsloth", ...(task ? { task } : {}) },
+    ...common,
+  });
+  for await (const model of generalIter) {
+    const m = model as { name?: string };
+    if (m.name && seen.has(m.name)) continue;
+    yield model;
+  }
+}
+
 export function useHfModelSearch(
   query: string,
-  options?: { task?: PipelineType; accessToken?: string; excludeGguf?: boolean },
+  options?: {
+    task?: PipelineType;
+    accessToken?: string;
+    excludeGguf?: boolean;
+    priorityIds?: readonly string[];
+  },
 ) {
-  const { task, accessToken, excludeGguf = false } = options ?? {};
+  const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
 
   const createIter = useCallback(
     () => {
       const trimmed = query.trim();
       if (!trimmed) {
-        // No query → show default unsloth models
+        // No query → show priority models first (with full metadata), then general unsloth listing
+        if (priorityIds && priorityIds.length > 0) {
+          return priorityThenListingIterator(priorityIds, task, accessToken) as AsyncGenerator<unknown>;
+        }
         return listModels({
           search: { owner: "unsloth", ...(task ? { task } : {}) },
           additionalFields: ["safetensors", "tags"],
@@ -169,7 +225,7 @@ export function useHfModelSearch(
       // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
       return mergedModelIterator(trimmed, undefined, accessToken) as AsyncGenerator<unknown>;
     },
-    [query, task, accessToken],
+    [query, task, accessToken, priorityIds],
   );
 
   const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);

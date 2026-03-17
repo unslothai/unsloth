@@ -28,7 +28,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -162,6 +162,7 @@ export function ModelSection() {
     task,
     accessToken: hfToken || undefined,
     excludeGguf: true,
+    priorityIds: PRIORITY_TRAINING_MODELS,
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -172,7 +173,8 @@ export function ModelSection() {
     if (selectedModel && !ids.includes(selectedModel)) {
       ids.push(selectedModel);
     }
-    return ids;
+
+    return applyPriorityOrdering(ids);
   }, [hfResults, selectedModel]);
 
   // Filter out GGUF models — they can't be used for training
