@@ -559,14 +559,14 @@ class FastLanguageModel(FastLlamaModel):
         if not was_disabled:
             enable_progress_bars()
 
-        # Qwen3.5 only exists in transformers 5.x. Give a clear error on older
-        # versions; on 5.x let it fall through to the generic FastModel path
-        # where the compiler applies fused CE automatically.
-        if model_type == "qwen3_5" and transformers_version < Version("5.0.0"):
+        # Qwen3.5 only exists in transformers >= 5.2.0. Give a clear error on
+        # older versions; on 5.2+ let it fall through to the generic FastModel
+        # path where the compiler applies fused CE automatically.
+        if model_type == "qwen3_5" and transformers_version < Version("5.2.0"):
             raise ImportError(
                 f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
-                f"The minimum required version is 5.0.0.\n"
-                f'Try `pip install --upgrade "transformers>=5.0.0"`\n'
+                f"The minimum required version is 5.2.0.\n"
+                f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
                 f"to obtain the latest transformers build, then restart this session."
             )
 
