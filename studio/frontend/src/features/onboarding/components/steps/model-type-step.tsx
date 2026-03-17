@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/tooltip";
 import { MODEL_TYPES } from "@/config/training";
 import { cn } from "@/lib/utils";
-import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
 import {
@@ -23,8 +22,7 @@ import {
   VoiceIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
-import type { ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const TYPE_ICONS: Record<ModelType, typeof ImageIcon> = {
@@ -50,7 +48,7 @@ export function ModelTypeStep(): ReactElement {
       setModelType: s.setModelType,
     })),
   );
-  const navigate = useNavigate();
+  const [chatOnlySelected, setChatOnlySelected] = useState(false);
 
   return (
     <div className="flex flex-col gap-6">
@@ -72,6 +70,8 @@ export function ModelTypeStep(): ReactElement {
         value={modelType ?? ""}
         onValueChange={(v) => {
           if (!COMING_SOON.includes(v as ModelType)) {
+            setChatOnlySelected(false);
+            sessionStorage.removeItem("unsloth_chat_only");
             setModelType(v as ModelType);
           }
         }}
@@ -175,53 +175,70 @@ export function ModelTypeStep(): ReactElement {
             </label>
           );
         })}
-      </RadioGroup>
-      <Card
-        size="sm"
-        className={cn(
-          "cursor-pointer shadow-primary/30 transition-all duration-150 ease-out",
-          "hover:ring-primary/40 hover:-translate-y-0.5 hover:shadow-sm",
-        )}
-        onClick={() => {
-          markOnboardingDone();
-          navigate({ to: "/chat" });
-        }}
-      >
-        <CardContent className="flex items-center gap-4 py-4">
-          <div
+        <div
+          className="cursor-pointer"
+          onClick={() => {
+            setChatOnlySelected(true);
+            setModelType("text" as ModelType);
+            sessionStorage.setItem("unsloth_chat_only", "1");
+          }}
+        >
+          <Card
+            size="sm"
             className={cn(
-              "size-10 rounded-xl corner-squircle flex items-center justify-center shrink-0",
-              "bg-muted text-muted-foreground",
+              "relative shadow-primary/30 transition-all duration-150 ease-out",
+              "hover:ring-primary/40 hover:-translate-y-0.5 hover:shadow-sm",
+              chatOnlySelected && "ring-2 ring-primary -translate-y-0.5 shadow-sm",
             )}
           >
-            <HugeiconsIcon icon={BubbleChatIcon} className="size-5" />
-          </div>
-          <div className="flex flex-col gap-0.5 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="font-medium">Chat Only</span>
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-muted-foreground/50 hover:text-muted-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3.5"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Chat with any model. Has tool calling, web search and more.
-                </TooltipContent>
-              </Tooltip>
-            </div>
-            <span className="text-xs text-muted-foreground">
-              Chat with LLMs &amp; vision models + audio generation.
-            </span>
-          </div>
-        </CardContent>
-      </Card>
+            <CardContent className="flex items-center gap-4 py-4">
+              <div
+                className={cn(
+                  "size-10 rounded-xl corner-squircle flex items-center justify-center shrink-0",
+                  "transition-all duration-100 ease-out",
+                  chatOnlySelected
+                    ? "bg-primary/10 text-primary scale-105"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={BubbleChatIcon}
+                  className={cn(
+                    "size-5 transition-transform duration-100 ease-out",
+                    chatOnlySelected && "scale-110",
+                  )}
+                  strokeWidth={chatOnlySelected ? 2.5 : 2}
+                />
+              </div>
+              <div className="flex flex-col gap-0.5 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">Chat</span>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-muted-foreground/50 hover:text-muted-foreground"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3.5"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Chat with any model. Has tool calling, web search and more.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Chat with LLMs &amp; vision models + audio generation.
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </RadioGroup>
     </div>
   );
 }

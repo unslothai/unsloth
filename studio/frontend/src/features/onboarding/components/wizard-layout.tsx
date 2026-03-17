@@ -63,7 +63,7 @@ export function WizardLayout() {
           onStartOnboarding={() => setShowSplash(false)}
           onGoToStudio={() => {
             markOnboardingDone();
-            navigate({ to: "/studio" });
+            navigate({ to: "/chat" });
           }}
         />
       )}

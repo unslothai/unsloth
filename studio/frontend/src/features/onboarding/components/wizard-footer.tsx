@@ -32,7 +32,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
           onClick={isFirst ? onBackToSplash : prevStep}
         >
           <HugeiconsIcon icon={ArrowLeft02Icon} data-icon="inline-start" />
-          {isFirst ? "Skip" : "Back"}
+          Back
         </Button>
         {isLast ? (
           <Button
@@ -48,7 +48,15 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
           </Button>
         ) : (
           <Button
-            onClick={nextStep}
+            onClick={() => {
+              if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
+                sessionStorage.removeItem("unsloth_chat_only");
+                markOnboardingDone();
+                navigate({ to: "/chat" });
+              } else {
+                nextStep();
+              }
+            }}
             className="px-4 !pl-4"
             disabled={!canProceed}
           >
