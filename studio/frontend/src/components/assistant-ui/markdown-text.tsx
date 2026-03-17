@@ -64,6 +64,7 @@ function getCodeFilename(language: string | null) {
     ts: "ts",
     tsx: "tsx",
     typescript: "ts",
+    svg: "svg",
     yaml: "yml",
     yml: "yml",
   };
@@ -74,6 +75,33 @@ function getCodeFilename(language: string | null) {
     ? extByLanguage[normalized] || fallbackExt || "txt"
     : "txt";
   return `snippet.${ext}`;
+}
+
+function isSvgFence(codeFence: CodeFence): boolean {
+  const lang = codeFence.language?.toLowerCase() ?? "";
+  if (lang === "svg") return true;
+  if ((lang === "xml" || lang === "html") && codeFence.source.trimStart().startsWith("<svg")) return true;
+  return false;
+}
+
+const UNSAFE_SVG_RE = /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
+
+function sanitizeSvg(source: string): string | null {
+  if (UNSAFE_SVG_RE.test(source)) return null;
+  return source;
+}
+
+function SvgPreview({ source }: { source: string }) {
+  const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+  return (
+    <div className="mt-2 flex justify-center rounded-lg border border-border bg-white p-4 dark:bg-neutral-100">
+      <img
+        src={dataUri}
+        alt="SVG preview"
+        style={{ maxWidth: "100%", maxHeight: 512 }}
+      />
+    </div>
+  );
 }
 
 function downloadTextFile(filename: string, text: string): void {
@@ -207,15 +235,19 @@ function StreamdownBlock(props: BlockProps) {
   }
 
   if (codeFence) {
+    const svgSource = !props.isIncomplete && isSvgFence(codeFence) ? sanitizeSvg(codeFence.source) : null;
     return (
-      <div className="relative isolate">
-        <Block {...props} />
-        <CodeBlockActions
-          disabled={props.isIncomplete}
-          language={codeFence.language}
-          source={codeFence.source}
-        />
-      </div>
+      <>
+        <div className="relative isolate">
+          <Block {...props} />
+          <CodeBlockActions
+            disabled={props.isIncomplete}
+            language={codeFence.language}
+            source={codeFence.source}
+          />
+        </div>
+        {svgSource && <SvgPreview source={svgSource} />}
+      </>
     );
   }
 

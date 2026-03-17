@@ -1277,12 +1277,13 @@ class LlamaCppBackend:
         the next token.  Without this, iter_text() blocks until the next
         chunk arrives and cancellation can take many seconds on large models.
         """
+        text_iter = response.iter_text()
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
                 return
             try:
-                chunk = next(response.iter_text())
+                chunk = next(text_iter)
                 yield chunk
             except StopIteration:
                 return

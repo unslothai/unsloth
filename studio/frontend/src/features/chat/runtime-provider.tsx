@@ -31,7 +31,7 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
 
 const DEFAULT_SUGGESTIONS = [
-  "Draw an ASCII art of a cute sloth",
+  "Draw an SVG of a cute sloth",
   "Solve the integral of x²·sin(x) step by step",
   "Write a Python function that finds the longest palindrome in a string",
   "Format a comparison of 3 databases as a markdown table with pros and cons",
