@@ -78,110 +78,63 @@ interface ParsedSseEvent {
   id: number | null;
 }
 
-function parseSseEvent(rawEvent: string): ParsedSseEvent | null {
-  const lines = rawEvent.split(/\r?\n/);
-  let eventName: ProgressEventName = "progress";
-  let id: number | null = null;
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (!line) {
-      continue;
-    }
-    if (line.startsWith("event:")) {
-      const value = line.slice(6).trim();
-      if (
-        value === "progress" ||
-        value === "heartbeat" ||
-        value === "complete" ||
-        value === "error"
-      ) {
-        eventName = value;
-      }
-      continue;
-    }
-    if (line.startsWith("id:")) {
-      const value = Number(line.slice(3).trim());
-      id = Number.isFinite(value) ? value : null;
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-
-  if (dataLines.length === 0) {
-    return null;
-  }
-
-  const parsed = JSON.parse(dataLines.join("\n")) as TrainingProgressPayload;
-  return { event: eventName, payload: parsed, id };
-}
-
 export async function streamTrainingProgress(options: {
   signal: AbortSignal;
   lastEventId?: number | null;
   onOpen?: () => void;
   onEvent: (event: ParsedSseEvent) => void;
 }): Promise<void> {
-  const headers = new Headers();
+  // Build WebSocket URL from current page location
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams();
+
+  // Pass auth token as query param (WebSocket can't use Authorization header)
+  const token = localStorage.getItem("unsloth_auth_token");
+  if (token) params.set("token", token);
   if (typeof options.lastEventId === "number") {
-    headers.set("Last-Event-ID", String(options.lastEventId));
+    params.set("last_event_id", String(options.lastEventId));
   }
 
-  const response = await authFetch("/api/train/progress", {
-    method: "GET",
-    headers,
-    signal: options.signal,
-  });
+  const url = `${protocol}//${window.location.host}/api/train/progress/ws?${params}`;
 
-  if (!response.ok) {
-    throw new Error(await readError(response));
-  }
+  return new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(url);
 
-  if (!response.body) {
-    throw new Error("Progress stream unavailable");
-  }
+    // Wire up AbortSignal to close the socket
+    const onAbort = () => ws.close();
+    options.signal.addEventListener("abort", onAbort);
 
-  options.onOpen?.();
+    ws.onopen = () => {
+      options.onOpen?.();
+    };
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
-
-      if (rawEvent.startsWith("retry:")) {
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-
+    ws.onmessage = (messageEvent) => {
       try {
-        const event = parseSseEvent(rawEvent);
-        if (event) {
-          options.onEvent(event);
-        }
-      } catch (error) {
-        if (!isAbortError(error)) {
-          throw error;
-        }
+        const msg = JSON.parse(messageEvent.data) as {
+          event: ProgressEventName;
+          id: number | null;
+          data: TrainingProgressPayload;
+        };
+        options.onEvent({
+          event: msg.event,
+          id: msg.id,
+          payload: msg.data,
+        });
+      } catch {
+        // Ignore parse errors for malformed messages
       }
+    };
 
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
-    }
-  }
+    ws.onclose = () => {
+      options.signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+
+    ws.onerror = () => {
+      options.signal.removeEventListener("abort", onAbort);
+      reject(new Error("WebSocket connection failed"));
+    };
+  });
 }
 
 export { isAbortError };
