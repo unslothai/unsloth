@@ -686,7 +686,7 @@ export function HubModelPicker({
         </div>
       </div>
 
-      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null); }}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
@@ -696,7 +696,11 @@ export function HubModelPicker({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleting}>No</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" disabled={deleting} onClick={handleDeleteConfirm}>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleting}
+              onClick={(e) => { e.preventDefault(); handleDeleteConfirm(); }}
+            >
               {deleting ? "Deleting..." : "Yes"}
             </AlertDialogAction>
           </AlertDialogFooter>
