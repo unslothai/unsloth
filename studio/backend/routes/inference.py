@@ -1092,17 +1092,12 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Iterate the synchronous generator in a thread so
-                    # the event loop stays free for disconnect detection.
-                    gen = gguf_generate()
+                    # Content chunks — llama backend yields cumulative text
                     prev_text = ""
-                    while True:
+                    for cumulative in gguf_generate():
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
-                        cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
-                        if cumulative is _gguf_sentinel:
-                            break
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
