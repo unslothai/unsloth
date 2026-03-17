@@ -275,8 +275,38 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       }
     }
 
-    toast.dismiss(toastId);
-    return false;
+    // No cached models found — try downloading a small default GGUF
+    toast("Downloading a small model…", {
+      id: toastId,
+      description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
+      duration: 30000,
+    });
+    try {
+      const loadResp = await loadModel({
+        model_path: "unsloth/Qwen3.5-4B-GGUF",
+        hf_token: null,
+        max_seq_length: 4096,
+        load_in_4bit: true,
+        is_lora: false,
+        gguf_variant: "UD-Q4_K_XL",
+        trust_remote_code: false,
+      });
+      const store = useChatRuntimeStore.getState();
+      store.setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
+      store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+      useChatRuntimeStore.setState({
+        ggufContextLength: loadResp.context_length ?? 131072,
+        supportsReasoning: loadResp.supports_reasoning ?? false,
+        reasoningEnabled: loadResp.supports_reasoning ?? false,
+        defaultChatTemplate: loadResp.chat_template ?? null,
+        chatTemplateOverride: null,
+      });
+      toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
+      return true;
+    } catch {
+      toast.dismiss(toastId);
+      return false;
+    }
   } catch {
     toast.dismiss(toastId);
     return false;
