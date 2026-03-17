@@ -151,7 +151,9 @@ async def load_model(
                     _tpl_info = _model_info.get("chat_template_info", {})
                     _chat_template = _tpl_info.get("template")
                 except Exception as e:
-                    logger.warning(f"Could not retrieve chat template for {backend.active_model_name}: {e}")
+                    logger.warning(
+                        f"Could not retrieve chat template for {backend.active_model_name}: {e}"
+                    )
                 return LoadResponse(
                     status = "already_loaded",
                     model = backend.active_model_name,
