@@ -403,7 +403,7 @@ if [ "$IS_COLAB" = true ]; then
     echo "╔══════════════════════════════════════╗"
     echo "║           Setup Complete!            ║"
     echo "╠══════════════════════════════════════╣"
-    echo "║ Unsloth Studio is ready to start    ║"
+    echo "║ Unsloth Studio is ready to start     ║"
     echo "║ in your Colab notebook!              ║"
     echo "╚══════════════════════════════════════╝"
 else
@@ -412,6 +412,6 @@ else
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
-    echo "║ unsloth studio -H 0.0.0.0 -p 8000   ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8000    ║"
     echo "╚══════════════════════════════════════╝"
 fi
