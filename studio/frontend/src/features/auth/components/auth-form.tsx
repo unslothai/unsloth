@@ -172,7 +172,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const title = isLoginMode ? "Welcome back" : "Setup your account";
   const subtitle = isLoginMode  
     ? "Sign in with your password."
-    : "Choose your new password.";
+    : "Choose a new password";
   const submitLabel = isLoginMode ? "Login" : "Change password";
   const showSwitchLink = !isLoginMode;
   const switchText = "Password already setup? ";

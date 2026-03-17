@@ -446,6 +446,13 @@ class LlamaCppBackend:
         Parses only the KV pairs we need (~30ms even for multi-GB files).
         For split GGUFs, metadata is always in shard 1.
         """
+        # Reset metadata from any previously loaded model so stale flags
+        # (eg _supports_reasoning) do not carry over when switching models.
+        self._context_length = None
+        self._chat_template = None
+        self._supports_reasoning = False
+        self._supports_tools = False
+
         try:
             WANTED = {"general.architecture", "tokenizer.chat_template"}
             arch = None
