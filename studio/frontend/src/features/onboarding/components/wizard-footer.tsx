@@ -65,7 +65,7 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
                 if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
                   sessionStorage.removeItem("unsloth_chat_only");
                   markOnboardingDone();
-                  navigate({ to: "/chat" });
+                  window.location.href = "/chat";
                 } else {
                   nextStep();
                 }

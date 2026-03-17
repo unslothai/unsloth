@@ -192,6 +192,8 @@ export function ModelTypeStep(): ReactElement {
             )}
           >
             <CardContent className="flex items-center gap-4 py-4">
+              {/* Hidden spacer matching RadioGroupItem sr-only in other cards */}
+              <span className="sr-only" />
               <div
                 className={cn(
                   "size-10 rounded-xl corner-squircle flex items-center justify-center shrink-0",
@@ -232,7 +234,7 @@ export function ModelTypeStep(): ReactElement {
                   </Tooltip>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  Chat with LLMs &amp; vision models + audio generation.
+                  Chat with LLMs & vision models + audio generation.
                 </span>
               </div>
             </CardContent>

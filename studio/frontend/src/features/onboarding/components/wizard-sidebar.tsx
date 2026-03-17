@@ -8,13 +8,11 @@ import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
 import { WizardStepItem } from "./wizard-step-item";
 
 export function WizardSidebar() {
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
-  const navigate = useNavigate();
 
   return (
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
@@ -40,7 +38,7 @@ export function WizardSidebar() {
         className="mt-2 w-full md:hidden"
         onClick={() => {
           markOnboardingDone();
-          navigate({ to: "/chat" });
+          window.location.href = "/chat";
         }}
       >
         Skip to Chat
@@ -56,7 +54,7 @@ export function WizardSidebar() {
         className="mt-3 hidden w-full md:flex"
         onClick={() => {
           markOnboardingDone();
-          navigate({ to: "/chat" });
+          window.location.href = "/chat";
         }}
       >
         Skip to Chat
