@@ -176,7 +176,9 @@ async function* priorityThenListingIterator(
   );
   for (const result of settled) {
     if (result.status === "fulfilled") {
-      const m = result.value as { name?: string };
+      const m = result.value as { name?: string; pipeline_tag?: string };
+      // Skip models that don't match the selected task filter
+      if (task && m.pipeline_tag && m.pipeline_tag !== task) continue;
       if (m.name) seen.add(m.name);
       yield result.value;
     }
