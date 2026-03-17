@@ -183,6 +183,7 @@ async def load_model(
                 inference = inference_config,
                 context_length = llama_backend.context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
+                supports_tools = llama_backend.supports_tools,
                 chat_template = llama_backend.chat_template,
             )
 
@@ -931,6 +932,127 @@ async def openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        # ── Tool-calling path (agentic loop) ──────────────────
+        use_tools = (
+            payload.enable_tools
+            and llama_backend.supports_tools
+            and not image_b64
+        )
+
+        if use_tools:
+            from core.inference.tools import ALL_TOOLS
+
+            def gguf_generate_with_tools():
+                return llama_backend.generate_chat_completion_with_tools(
+                    messages = gguf_messages,
+                    tools = ALL_TOOLS,
+                    temperature = payload.temperature,
+                    top_p = payload.top_p,
+                    top_k = payload.top_k,
+                    min_p = payload.min_p,
+                    max_tokens = payload.max_tokens,
+                    repetition_penalty = payload.repetition_penalty,
+                    cancel_event = cancel_event,
+                    enable_thinking = payload.enable_thinking,
+                )
+
+            _tool_sentinel = object()
+
+            async def gguf_tool_stream():
+                try:
+                    first_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(role = "assistant"),
+                                finish_reason = None,
+                            )
+                        ],
+                    )
+                    yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                    # Iterate the synchronous generator in a thread so
+                    # the event loop stays free for disconnect detection.
+                    gen = gguf_generate_with_tools()
+                    prev_text = ""
+                    while True:
+                        if await request.is_disconnected():
+                            cancel_event.set()
+                            return
+
+                        event = await asyncio.to_thread(next, gen, _tool_sentinel)
+                        if event is _tool_sentinel:
+                            break
+
+                        if event["type"] == "status":
+                            # Emit tool status as a custom SSE event
+                            status_data = json.dumps({
+                                "type": "tool_status",
+                                "content": event["text"],
+                            })
+                            yield f"data: {status_data}\n\n"
+                            continue
+
+                        # "content" type -- cumulative text
+                        cumulative = event.get("text", "")
+                        new_text = cumulative[len(prev_text):]
+                        prev_text = cumulative
+                        if not new_text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [
+                                ChunkChoice(
+                                    delta = ChoiceDelta(content = new_text),
+                                    finish_reason = None,
+                                )
+                            ],
+                        )
+                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(),
+                                finish_reason = "stop",
+                            )
+                        ],
+                    )
+                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    raise
+                except Exception as e:
+                    logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
+                    error_chunk = {
+                        "error": {
+                            "message": "An internal error occurred",
+                            "type": "server_error",
+                        },
+                    }
+                    yield f"data: {json.dumps(error_chunk)}\n\n"
+
+            return StreamingResponse(
+                gguf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        # ── Standard GGUF path (no tools) ─────────────────────
+
         def gguf_generate():
             return llama_backend.generate_chat_completion(
                 messages = gguf_messages,
@@ -944,6 +1066,8 @@ async def openai_chat_completions(
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
             )
+
+        _gguf_sentinel = object()
 
         if payload.stream:
 
@@ -963,12 +1087,17 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Content chunks — llama backend yields cumulative text
+                    # Iterate the synchronous generator in a thread so
+                    # the event loop stays free for disconnect detection.
+                    gen = gguf_generate()
                     prev_text = ""
-                    for cumulative in gguf_generate():
+                    while True:
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
+                        cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
+                        if cumulative is _gguf_sentinel:
+                            break
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:

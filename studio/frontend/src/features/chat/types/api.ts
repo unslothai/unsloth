@@ -85,6 +85,7 @@ export interface LoadModelResponse {
   };
   context_length?: number | null;
   supports_reasoning?: boolean;
+  supports_tools?: boolean;
   chat_template?: string | null;
 }
 
@@ -139,6 +140,7 @@ export interface OpenAIChatCompletionsRequest {
   audio_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
+  enable_tools?: boolean | null;
 }
 
 export interface OpenAIChatDelta {

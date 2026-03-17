@@ -46,6 +46,9 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   supportsReasoning: boolean;
   reasoningEnabled: boolean;
+  supportsTools: boolean;
+  toolsEnabled: boolean;
+  toolStatus: string | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   activeThreadId: string | null;
@@ -63,6 +66,8 @@ type ChatRuntimeStore = {
   setActiveThreadId: (threadId: string | null) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (enabled: boolean) => void;
+  setToolsEnabled: (enabled: boolean) => void;
+  setToolStatus: (status: string | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -79,6 +84,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   ggufContextLength: null,
   supportsReasoning: false,
   reasoningEnabled: true,
+  supportsTools: false,
+  toolsEnabled: false,
+  toolStatus: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   activeThreadId: null,
@@ -124,10 +132,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       ggufContextLength: null,
       supportsReasoning: false,
       reasoningEnabled: true,
+      supportsTools: false,
+      toolsEnabled: false,
+      toolStatus: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
+  setToolStatus: (toolStatus) => set({ toolStatus }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),

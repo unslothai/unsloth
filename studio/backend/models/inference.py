@@ -128,6 +128,10 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
     )
+    supports_tools: bool = Field(
+        False,
+        description = "Whether model supports tool calling (web search, etc.)",
+    )
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
@@ -283,6 +287,10 @@ class ChatCompletionRequest(BaseModel):
     enable_thinking: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+    )
+    enable_tools: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable tool calling (web search) for supported models",
     )
 
 

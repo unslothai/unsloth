@@ -377,6 +377,8 @@ export function useChatModelRuntime() {
                 : null,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningEnabled: reasoningDefault,
+              supportsTools: loadResponse.supports_tools ?? false,
+              toolsEnabled: false,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });

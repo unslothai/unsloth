@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
-import { ArrowUpIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -202,6 +202,9 @@ export function SharedComposer({
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -408,6 +411,22 @@ export function SharedComposer({
                 <LightbulbOffIcon className="size-3.5" />
               )}
               <span>Think</span>
+            </button>
+          )}
+          {supportsTools && (
+            <button
+              type="button"
+              onClick={() => setToolsEnabled(!toolsEnabled)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                toolsEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+              )}
+              aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+            >
+              <GlobeIcon className="size-3.5" />
+              <span>Search</span>
             </button>
           )}
         </div>
