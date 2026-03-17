@@ -337,6 +337,15 @@ export function ChatSettingsPanel({
                 onChange={set("repetitionPenalty")}
                 displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
               />
+              <ParamSlider
+                label="Presence Penalty"
+                value={params.presencePenalty}
+                min={0}
+                max={2}
+                step={0.1}
+                onChange={set("presencePenalty")}
+                displayValue={params.presencePenalty === 0 ? "Off" : undefined}
+              />
               {!isGguf && (
                 <ParamSlider
                   label="Max Seq Length"

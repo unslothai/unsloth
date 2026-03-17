@@ -1302,6 +1302,7 @@ class LlamaCppBackend:
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
@@ -1327,6 +1328,7 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
         # Pass enable_thinking per-request for reasoning models
         if self._supports_reasoning and enable_thinking is not None:
@@ -1432,6 +1434,7 @@ class LlamaCppBackend:
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
@@ -1466,6 +1469,7 @@ class LlamaCppBackend:
                 "top_k": top_k if top_k >= 0 else 0,
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
+                "presence_penalty": presence_penalty,
                 "tools": tools,
                 "tool_choice": "auto",
             }
@@ -1585,6 +1589,7 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
         if self._supports_reasoning and enable_thinking is not None:
             stream_payload["chat_template_kwargs"] = {

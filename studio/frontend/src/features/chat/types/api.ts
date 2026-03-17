@@ -82,6 +82,7 @@ export interface LoadModelResponse {
     top_p?: number;
     top_k?: number;
     min_p?: number;
+    presence_penalty?: number;
     trust_remote_code?: boolean;
   };
   context_length?: number | null;
@@ -138,6 +139,7 @@ export interface OpenAIChatCompletionsRequest {
   top_k: number;
   min_p: number;
   repetition_penalty: number;
+  presence_penalty: number;
   image_base64?: string;
   audio_base64?: string;
   use_adapter?: boolean | string | null;

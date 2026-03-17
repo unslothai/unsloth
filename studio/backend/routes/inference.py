@@ -953,6 +953,7 @@ async def openai_chat_completions(
                     min_p = payload.min_p,
                     max_tokens = payload.max_tokens,
                     repetition_penalty = payload.repetition_penalty,
+                    presence_penalty = payload.presence_penalty,
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
                 )
@@ -1068,6 +1069,7 @@ async def openai_chat_completions(
                 min_p = payload.min_p,
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
+                presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
             )
