@@ -1019,21 +1019,41 @@ if (Test-Path $LlamaServerBin) {
     [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
     [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
 
-    # -- Step A: Clone or pull llama.cpp --
+    # -- Step A: Clone or pull llama.cpp (or use a local directory) --
 
-    if (Test-Path (Join-Path $LlamaCppDir ".git")) {
-        Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
-        git -C $LlamaCppDir pull 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "   [WARN] git pull failed -- using existing source" -ForegroundColor Yellow
+    $LocalLlamaCppPath = [Environment]::GetEnvironmentVariable('UNSLOTH_LLAMA_CPP_PATH', 'Process')
+    if ($LocalLlamaCppPath -and (Test-Path $LocalLlamaCppPath -PathType Container)) {
+        # Use the user-supplied directory; create a junction so downstream code
+        # finds everything at the canonical $LlamaCppDir path.
+        $resolvedLocal = (Resolve-Path $LocalLlamaCppPath).Path
+        if ($resolvedLocal -eq $LlamaCppDir) {
+            Write-Host "   [WARN] --with-llama-cpp-dir points to the canonical build location; ignoring (will clone fresh)" -ForegroundColor Yellow
+            $LocalLlamaCppPath = $null
+        } else {
+            Write-Host "   Using local llama.cpp directory: $resolvedLocal" -ForegroundColor Gray
+            if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+            cmd /c "mklink /J `"$LlamaCppDir`" `"$resolvedLocal`"" 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "   [WARN] Could not create junction; copying instead..." -ForegroundColor Yellow
+                Copy-Item -Recurse -Path $resolvedLocal -Destination $LlamaCppDir
+            }
         }
-    } else {
-        Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
-        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
-        git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            $BuildOk = $false
-            $FailedStep = "git clone"
+    }
+    if (-not $LocalLlamaCppPath) {
+        if (Test-Path (Join-Path $LlamaCppDir ".git")) {
+            Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
+            git -C $LlamaCppDir pull 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "   [WARN] git pull failed -- using existing source" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
+            if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+            git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git clone"
+            }
         }
     }
 

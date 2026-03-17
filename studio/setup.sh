@@ -279,18 +279,22 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
-# Allow using a custom local llama.cpp directory via UNSLOTH_LLAMA_CPP_DIR
+# Allow using a custom local llama.cpp directory via UNSLOTH_LLAMA_CPP_PATH
 # (set by `unsloth studio setup --with-llama-cpp-dir /path/to/llama.cpp`)
 USE_LOCAL_LLAMA_CPP=false
-if [ -n "${UNSLOTH_LLAMA_CPP_DIR:-}" ] && [ -d "$UNSLOTH_LLAMA_CPP_DIR" ]; then
-    USE_LOCAL_LLAMA_CPP=true
-    # Symlink (or copy) the user-provided directory so the rest of the build
-    # and runtime code finds it at the canonical location.
-    rm -rf "$LLAMA_CPP_DIR"
-    ln -sfn "$UNSLOTH_LLAMA_CPP_DIR" "$LLAMA_CPP_DIR"
-    echo "   Using local llama.cpp directory: $UNSLOTH_LLAMA_CPP_DIR"
-else
-    rm -rf "$LLAMA_CPP_DIR"
+rm -rf "$LLAMA_CPP_DIR"
+if [ -n "${UNSLOTH_LLAMA_CPP_PATH:-}" ] && [ -d "$UNSLOTH_LLAMA_CPP_PATH" ]; then
+    # Resolve to an absolute path so the symlink target is stable
+    _LOCAL_PATH="$(cd "$UNSLOTH_LLAMA_CPP_PATH" && pwd)"
+    if [ "$_LOCAL_PATH" = "$LLAMA_CPP_DIR" ]; then
+        echo "⚠️  --with-llama-cpp-dir points to the canonical build location; ignoring (will clone fresh)"
+    else
+        USE_LOCAL_LLAMA_CPP=true
+        # Symlink the user-provided directory so the rest of the build
+        # and runtime code finds it at the canonical location.
+        ln -sfn "$_LOCAL_PATH" "$LLAMA_CPP_DIR"
+        echo "   Using local llama.cpp directory: $_LOCAL_PATH"
+    fi
 fi
 {
     # Check prerequisites
