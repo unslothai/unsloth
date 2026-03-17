@@ -80,9 +80,6 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     multimodal_info = detect_multimodal_dataset(dataset)
     is_audio = multimodal_info.get("is_audio", False)
 
-    if multimodal_info["is_image"]:
-        is_vlm = True  # Route to VLM detection for image datasets
-
     # Common audio fields for all return paths
     audio_fields = {
         "is_audio": is_audio,
@@ -153,8 +150,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "suggested_mapping": heuristic_mapping,
                 "detected_image_column": None,
                 "detected_text_column": None,
-                "is_image": False,
-                "multimodal_columns": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
                 **audio_fields,
             }
         else:
@@ -166,8 +163,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 "suggested_mapping": None,
                 "detected_image_column": None,
                 "detected_text_column": None,
-                "is_image": False,
-                "multimodal_columns": None,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_columns": multimodal_info.get("multimodal_columns"),
                 "warning": (
                     f"Could not auto-detect column roles for columns: {columns}. "
                     "Please assign roles manually, or use AI Assist."
@@ -183,8 +180,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "suggested_mapping": None,
         "detected_image_column": None,
         "detected_text_column": None,
-        "is_image": False,
-        "multimodal_columns": None,
+        "is_image": multimodal_info["is_image"],
+        "multimodal_columns": multimodal_info.get("multimodal_columns"),
         **audio_fields,
     }
 
