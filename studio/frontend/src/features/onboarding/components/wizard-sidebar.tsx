@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { STEPS } from "@/config/training";
+import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
+import { useNavigate } from "@tanstack/react-router";
 import { WizardStepItem } from "./wizard-step-item";
 
 export function WizardSidebar() {
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
+  const navigate = useNavigate();
 
   return (
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
@@ -29,11 +33,33 @@ export function WizardSidebar() {
       <p className="mt-2 text-xs text-muted-foreground md:hidden">
         Step {currentStep} of {STEPS.length}
       </p>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="mt-1 text-xs text-muted-foreground md:hidden"
+        onClick={() => {
+          markOnboardingDone();
+          navigate({ to: "/studio" });
+        }}
+      >
+        {currentStep === 1 ? "Skip to Chat" : "Skip"}
+      </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
         {STEPS.map((step) => (
           <WizardStepItem key={step.number} step={step} />
         ))}
       </nav>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="mt-3 hidden text-xs text-muted-foreground md:flex"
+        onClick={() => {
+          markOnboardingDone();
+          navigate({ to: "/studio" });
+        }}
+      >
+        {currentStep === 1 ? "Skip to Chat" : "Skip"}
+      </Button>
     </aside>
   );
 }

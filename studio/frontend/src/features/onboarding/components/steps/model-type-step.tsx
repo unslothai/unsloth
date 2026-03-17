@@ -11,9 +11,11 @@ import {
 } from "@/components/ui/tooltip";
 import { MODEL_TYPES } from "@/config/training";
 import { cn } from "@/lib/utils";
+import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
 import {
+  BubbleChatIcon,
   Database02Icon,
   ImageIcon,
   InformationCircleIcon,
@@ -21,6 +23,7 @@ import {
   VoiceIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -47,21 +50,21 @@ export function ModelTypeStep(): ReactElement {
       setModelType: s.setModelType,
     })),
   );
+  const navigate = useNavigate();
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h2 className="text-lg font-semibold">Welcome to Unsloth Studio</h2>
         <p className="text-sm text-muted-foreground">
-          Fine-tune LLMs 2x faster with 70% less VRAM. Pick a model type to get
-          started.{" "}
+          Choose a path - fine-tune LLMs, vision, embedding, audio models or just chat.{" "}
           <a
-            href="https://unsloth.ai/docs"
+            href="https://unsloth.ai/docs/new/studio/start"
             target="_blank"
             rel="noreferrer"
             className="text-primary underline"
           >
-            Watch video guide
+            Get started with our guide
           </a>
         </p>
       </div>
@@ -173,6 +176,52 @@ export function ModelTypeStep(): ReactElement {
           );
         })}
       </RadioGroup>
+      <Card
+        size="sm"
+        className={cn(
+          "cursor-pointer shadow-primary/30 transition-all duration-150 ease-out",
+          "hover:ring-primary/40 hover:-translate-y-0.5 hover:shadow-sm",
+        )}
+        onClick={() => {
+          markOnboardingDone();
+          navigate({ to: "/chat" });
+        }}
+      >
+        <CardContent className="flex items-center gap-4 py-4">
+          <div
+            className={cn(
+              "size-10 rounded-xl corner-squircle flex items-center justify-center shrink-0",
+              "bg-muted text-muted-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={BubbleChatIcon} className="size-5" />
+          </div>
+          <div className="flex flex-col gap-0.5 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="font-medium">Chat Only</span>
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-muted-foreground/50 hover:text-muted-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3.5"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Chat with any model. Has tool calling, web search and more.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              Chat with LLMs &amp; vision models + audio generation.
+            </span>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

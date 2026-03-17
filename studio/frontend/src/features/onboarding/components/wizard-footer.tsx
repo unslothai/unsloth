@@ -10,7 +10,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 
-export function WizardFooter() {
+export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void }) {
   const { currentStep, prevStep, nextStep, canProceed } = useTrainingConfigStore(
     useShallow((s) => ({
       currentStep: s.currentStep,
@@ -29,11 +29,10 @@ export function WizardFooter() {
         <Button
           variant="outline"
           className="px-4 !pl-4"
-          onClick={prevStep}
-          disabled={isFirst}
+          onClick={isFirst ? onBackToSplash : prevStep}
         >
           <HugeiconsIcon icon={ArrowLeft02Icon} data-icon="inline-start" />
-          Back
+          {isFirst ? "Skip" : "Back"}
         </Button>
         {isLast ? (
           <Button

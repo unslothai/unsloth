@@ -379,15 +379,33 @@ async def get_model_config(
         # Check if it's a LoRA adapter
         is_lora = False
         base_model = None
+        max_position_embeddings = None
         try:
             model_config = ModelConfig.from_identifier(model_name)
             is_lora = model_config.is_lora
             base_model = model_config.base_model if is_lora else None
+            # Extract max_position_embeddings from model config
+            if hasattr(model_config, "max_position_embeddings"):
+                max_position_embeddings = model_config.max_position_embeddings
+            elif hasattr(model_config, "text_config") and hasattr(model_config.text_config, "max_position_embeddings"):
+                max_position_embeddings = model_config.text_config.max_position_embeddings
         except Exception:
             pass
 
+        # Fallback: try AutoConfig directly if not found yet
+        if max_position_embeddings is None:
+            try:
+                from transformers import AutoConfig as _AutoConfig
+                _ac = _AutoConfig.from_pretrained(model_name, trust_remote_code = True, token = hf_token)
+                if hasattr(_ac, "max_position_embeddings"):
+                    max_position_embeddings = _ac.max_position_embeddings
+                elif hasattr(_ac, "text_config") and hasattr(_ac.text_config, "max_position_embeddings"):
+                    max_position_embeddings = _ac.text_config.max_position_embeddings
+            except Exception:
+                pass
+
         logger.info(
-            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}"
+            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
         )
         return ModelDetails(
             id = model_name,
@@ -401,6 +419,7 @@ async def get_model_config(
             has_audio_input = is_audio_input_type(audio_type),
             model_type = derive_model_type(is_vision, audio_type, is_embedding),
             base_model = base_model,
+            max_position_embeddings = max_position_embeddings,
         )
 
     except Exception as e:

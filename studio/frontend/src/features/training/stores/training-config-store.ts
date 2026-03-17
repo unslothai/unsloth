@@ -50,6 +50,7 @@ const initialState: TrainingConfigState = {
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,
+  maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
 };
 
@@ -75,6 +76,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetImage",
   "isDatasetAudio",
   "trainOnCompletions",
+  "maxPositionEmbeddings",
 ]);
 
 function partializePersistedState(
@@ -163,6 +165,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
+              maxPositionEmbeddings: modelDetails.max_position_embeddings ?? null,
             });
           })
           .catch((error) => {
@@ -318,7 +321,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           void loadAndApplyModelDefaults(state.selectedModel);
         },
         setTrainingMethod: (trainingMethod) => set({ trainingMethod }),
-        setHfToken: (hfToken) => set({ hfToken }),
+        setHfToken: (hfToken) =>
+          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();

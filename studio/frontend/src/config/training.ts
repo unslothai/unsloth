@@ -104,7 +104,7 @@ export const DEFAULT_HYPERPARAMS = {
   gradientAccumulation: 8,
   weightDecay: 0.01,
   warmupSteps: 5,
-  maxSteps: 0,
+  maxSteps: 60,
   saveSteps: 0,
   evalSteps: 0.00,
   packing: false,

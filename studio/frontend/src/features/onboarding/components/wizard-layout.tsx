@@ -88,7 +88,7 @@ export function WizardLayout() {
             <WizardSidebar />
             <div className="flex-1 flex flex-col">
               <WizardContent />
-              <WizardFooter />
+              <WizardFooter onBackToSplash={() => setShowSplash(true)} />
             </div>
           </Card>
         </motion.div>
