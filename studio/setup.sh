@@ -325,19 +325,34 @@ rm -rf "$LLAMA_CPP_DIR"
 
                 # Detect GPU compute capability and limit CUDA architectures
                 # Without this, cmake builds for ALL default archs (very slow)
-                CUDA_ARCHS="86"
+                # CUDA_ARCHS can be pre-set via env var (e.g. Docker ARG) to
+                # include targets not detectable at build time (no GPU access).
+                # We always include 86 (A10) and merge with detected GPUs.
+                _add_arch() {
+                    local _a="$1"
+                    case ";$CUDA_ARCHS;" in
+                        *";$_a;"*) ;;
+                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_a" ;;
+                    esac
+                }
+                CUDA_ARCHS=""
+                # Merge any pre-set CUDA_ARCHS from environment
+                if [ -n "${CUDA_ARCHS_EXTRA:-}" ]; then
+                    IFS=';' read -ra _env_archs <<< "$CUDA_ARCHS_EXTRA"
+                    for _ea in "${_env_archs[@]}"; do
+                        _ea=$(echo "$_ea" | tr -d '[:space:]')
+                        [ -n "$_ea" ] && _add_arch "$_ea"
+                    done
+                fi
+                # Always include sm_86 (A10)
+                _add_arch "86"
                 if command -v nvidia-smi &>/dev/null; then
                     # Read all GPUs, deduplicate (handles mixed-GPU hosts)
                     _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                     while IFS= read -r _cap; do
                         _cap=$(echo "$_cap" | tr -d '[:space:]')
                         if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                            # Append if not already present
-                            case ";$CUDA_ARCHS;" in
-                                *";$_arch;"*) ;;
-                                *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                            esac
+                            _add_arch "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
                         fi
                     done <<< "$_raw_caps"
                 fi
