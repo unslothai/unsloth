@@ -28,7 +28,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS } from "@/config/training";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -172,7 +172,10 @@ export function ModelSection() {
     if (selectedModel && !ids.includes(selectedModel)) {
       ids.push(selectedModel);
     }
-    return ids;
+
+    const prioritySet = new Set(PRIORITY_TRAINING_MODELS);
+    const rest = ids.filter((id) => !prioritySet.has(id));
+    return [...PRIORITY_TRAINING_MODELS, ...rest];
   }, [hfResults, selectedModel]);
 
   // Filter out GGUF models — they can't be used for training
