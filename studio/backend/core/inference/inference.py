@@ -1919,21 +1919,14 @@ class InferenceBackend:
         return img
 
     def _clean_generated_text(self, text: str) -> str:
-        """Strip leaked special tokens using the tokenizer's own token list.
-
-        For gpt-oss models using HarmonyTextStreamer, the streamer already
-        produces clean output with ``<think>``/``</think>`` tags.  The generic
-        ``all_special_tokens`` stripping must be skipped because gpt-oss
-        tokenizers include tokens (e.g. ``<|start|>``, ``<|end|>``) whose
-        sub-characters overlap with ``<think>`` tags and mangle them.
-        """
+        """Strip leaked special tokens using the tokenizer's own token list."""
         if self._is_gpt_oss_model():
-            # HarmonyTextStreamer already handles all token cleanup.
-            # Only strip harmony protocol tokens that might leak through
-            # as a safety fallback (should not happen normally).
+            # HarmonyTextStreamer produces clean <think>...</think> output.
+            # Strip harmony protocol tokens and other gpt-oss added tokens
+            # (e.g. <|return|>) that may leak past the streamer.
             import re
 
-            text = re.sub(r"<\|(?:channel|message|start|end)\|>", "", text)
+            text = re.sub(r"<\|[a-z_]+\|>", "", text)
             return text.strip()
 
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
