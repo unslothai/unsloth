@@ -143,7 +143,9 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             return None
 
         messages = [{"role": "user", "content": prompt}]
-        logger.info("Helper model request: enable_thinking=False (per-request override)")
+        logger.info(
+            "Helper model request: enable_thinking=False (per-request override)"
+        )
         cumulative = ""
         for text in backend.generate_chat_completion(
             messages = messages,
