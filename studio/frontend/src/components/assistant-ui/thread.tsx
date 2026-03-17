@@ -49,6 +49,7 @@ import {
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
+  TerminalIcon,
   XIcon,
 } from "lucide-react";
 import { type FC, useCallback, useRef, useState } from "react";
@@ -346,10 +347,10 @@ const WebSearchToggle: FC = () => {
           ? "bg-primary/10 text-primary hover:bg-primary/20"
           : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
-      aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+      aria-label={toolsEnabled ? "Disable tools" : "Enable tools"}
     >
       <GlobeIcon className="size-3.5" />
-      <span>Search</span>
+      <span>Tools</span>
     </button>
   );
 };
@@ -357,10 +358,12 @@ const WebSearchToggle: FC = () => {
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   if (!toolStatus) return null;
+  const isRunning = toolStatus.startsWith("Running");
+  const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
       <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
-        <GlobeIcon className="size-3.5" />
+        <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
       </div>
     </div>
