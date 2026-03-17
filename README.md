@@ -49,9 +49,11 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 
 #### Windows, MacOS Linux or WSL:
 ```
-pip install unsloth
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+pip install -e .
 unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8000
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
 #### Git from source
