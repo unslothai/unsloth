@@ -78,7 +78,7 @@ class HarmonyTextStreamer:
         self._emitted_think_open: bool = False
         self._emitted_think_close: bool = False
         self._analysis_emitted: int = 0  # chars of analysis content emitted
-        self._final_emitted: int = 0     # chars of final content emitted
+        self._final_emitted: int = 0  # chars of final content emitted
 
     # ------------------------------------------------------------------
     # put / end — called from the generation thread
@@ -186,7 +186,7 @@ class HarmonyTextStreamer:
                     self._queue.put("<think>")
                     self._emitted_think_open = True
 
-                new_content = content[self._analysis_emitted:]
+                new_content = content[self._analysis_emitted :]
                 if new_content:
                     self._analysis_emitted = len(content)
                     self._queue.put(new_content)
@@ -196,7 +196,7 @@ class HarmonyTextStreamer:
                     self._queue.put("</think>")
                     self._emitted_think_close = True
 
-                new_content = content[self._final_emitted:]
+                new_content = content[self._final_emitted :]
                 if new_content:
                     self._final_emitted = len(content)
                     self._queue.put(new_content)
@@ -1932,6 +1932,7 @@ class InferenceBackend:
             # Only strip harmony protocol tokens that might leak through
             # as a safety fallback (should not happen normally).
             import re
+
             text = re.sub(r"<\|(?:channel|message|start|end)\|>", "", text)
             return text.strip()
 
