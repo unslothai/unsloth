@@ -902,8 +902,8 @@ class LlamaCppBackend:
                 )
 
             # For reasoning models, set default thinking mode.
-            # Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
-            # per Qwen's recommendation. Larger models default to thinking ON.
+            # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Only 9B and larger enable thinking.
             if self._supports_reasoning:
                 import re
 
@@ -914,7 +914,7 @@ class LlamaCppBackend:
                     size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
                     if size_match:
                         size_val = float(size_match.group(1))
-                        if size_val <= 2:
+                        if size_val < 9:
                             thinking_default = False
                 self._reasoning_default = thinking_default
                 cmd.extend(
