@@ -22,6 +22,19 @@ from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 
+# ── Verbosity control ──────────────────────────────────────────────────────────
+# By default the installer shows a minimal progress bar (one line, in-place).
+# Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
+#   Linux/Mac:  UNSLOTH_VERBOSE=1 ./studio/setup.sh
+#   Windows:    $env:UNSLOTH_VERBOSE="1" ; .\studio\setup.ps1
+VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
+
+# Progress bar state — updated by _progress() as each install step runs.
+# _TOTAL counts: pip-upgrade + 7 shared steps + triton (non-Windows) + local-plugin + finalize
+# Update _TOTAL here if you add or remove install steps in install_python_stack().
+_STEP: int = 0
+_TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
+
 # ── Paths ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 REQ_ROOT = SCRIPT_DIR / "backend" / "requirements"
