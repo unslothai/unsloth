@@ -888,9 +888,18 @@ class LlamaCppBackend:
                 env["PATH"] = ";".join(path_dirs) + ";" + existing_path
             else:
                 # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                # and CUDA runtime libs (libcudart, libcublas, etc.)
+                lib_dirs = [binary_dir]
+                for cuda_lib in [
+                    "/usr/local/cuda/lib64",
+                    "/usr/local/cuda/targets/x86_64-linux/lib",
+                ]:
+                    if os.path.isdir(cuda_lib):
+                        lib_dirs.append(cuda_lib)
                 existing_ld = env.get("LD_LIBRARY_PATH", "")
+                new_ld = ":".join(lib_dirs)
                 env["LD_LIBRARY_PATH"] = (
-                    f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+                    f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
             # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
