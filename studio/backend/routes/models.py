@@ -8,7 +8,7 @@ Model Management API routes
 import os
 import sys
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
 import structlog
 from loggers import get_logger
@@ -926,6 +926,88 @@ async def list_cached_models(
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
+
+
+@router.delete("/delete-cached")
+async def delete_cached_model(
+    repo_id: str = Body(..., embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Delete a cached model repo from the local HF cache.
+
+    Refuses if the model is currently loaded for inference.
+    """
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+
+    # Check if model is currently loaded
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            loaded_id = llama_backend.model_identifier.lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        inference_backend = get_inference_backend()
+        if inference_backend.active_model_name:
+            active = inference_backend.active_model_name.lower()
+            if active == repo_id.lower() or active.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        hf_cache = scan_cache_dir()
+        target_repo = None
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            if repo_info.repo_id.lower() == repo_id.lower():
+                target_repo = repo_info
+                break
+
+        if target_repo is None:
+            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+
+        # Collect all revision commit hashes for this repo
+        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        if not revision_hashes:
+            raise HTTPException(status_code = 404, detail = "No revisions found for model")
+
+        delete_strategy = hf_cache.delete_revisions(*revision_hashes)
+        logger.info(
+            f"Deleting cached model {repo_id}: "
+            f"{delete_strategy.expected_freed_size_str} will be freed"
+        )
+        delete_strategy.execute()
+
+        return {"status": "deleted", "repo_id": repo_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting cached model {repo_id}: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to delete cached model: {str(e)}",
+        )
 
 
 @router.get("/checkpoints", response_model = CheckpointListResponse)
