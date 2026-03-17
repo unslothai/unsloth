@@ -934,9 +934,7 @@ async def openai_chat_completions(
 
         # ── Tool-calling path (agentic loop) ──────────────────
         use_tools = (
-            payload.enable_tools
-            and llama_backend.supports_tools
-            and not image_b64
+            payload.enable_tools and llama_backend.supports_tools and not image_b64
         )
 
         if use_tools:
@@ -988,16 +986,18 @@ async def openai_chat_completions(
 
                         if event["type"] == "status":
                             # Emit tool status as a custom SSE event
-                            status_data = json.dumps({
-                                "type": "tool_status",
-                                "content": event["text"],
-                            })
+                            status_data = json.dumps(
+                                {
+                                    "type": "tool_status",
+                                    "content": event["text"],
+                                }
+                            )
                             yield f"data: {status_data}\n\n"
                             continue
 
                         # "content" type -- cumulative text
                         cumulative = event.get("text", "")
-                        new_text = cumulative[len(prev_text):]
+                        new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
                             continue
@@ -1032,7 +1032,9 @@ async def openai_chat_completions(
                     cancel_event.set()
                     raise
                 except Exception as e:
-                    logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
+                    logger.error(
+                        f"Error during GGUF tool streaming: {e}", exc_info = True
+                    )
                     error_chunk = {
                         "error": {
                             "message": "An internal error occurred",

@@ -42,7 +42,7 @@ def _web_search(query: str, max_results: int = 5) -> str:
     try:
         from ddgs import DDGS
 
-        results = DDGS().text(query, max_results=max_results)
+        results = DDGS().text(query, max_results = max_results)
         if not results:
             return "No results found."
         parts = []

@@ -513,9 +513,7 @@ class LlamaCppBackend:
                 ]
                 if any(marker in tpl for marker in tool_markers):
                     self._supports_tools = True
-                    logger.info(
-                        "GGUF metadata: model supports tool calling"
-                    )
+                    logger.info("GGUF metadata: model supports tool calling")
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -1414,8 +1412,8 @@ class LlamaCppBackend:
                 payload["stop"] = stop
 
             try:
-                with httpx.Client(timeout=None) as client:
-                    resp = client.post(url, json=payload)
+                with httpx.Client(timeout = None) as client:
+                    resp = client.post(url, json = payload)
                     if resp.status_code != 200:
                         raise RuntimeError(
                             f"llama-server returned {resp.status_code}: {resp.text}"
@@ -1443,9 +1441,12 @@ class LlamaCppBackend:
                 if tool_calls:
                     # Strip the tool call markup from content
                     import re
+
                     content_text = re.sub(
                         r"<tool_call>.*?</tool_call>",
-                        "", content_text, flags=re.DOTALL,
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
                     ).strip()
                     logger.info(
                         f"Parsed {len(tool_calls)} tool call(s) from content text"
@@ -1459,7 +1460,7 @@ class LlamaCppBackend:
                 conversation.append(assistant_msg)
 
                 # Execute each tool call
-                for tc in (tool_calls or []):
+                for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
                     raw_args = func.get("arguments", {})
@@ -1513,7 +1514,9 @@ class LlamaCppBackend:
             "tool_choice": "none",
         }
         if self._supports_reasoning and enable_thinking is not None:
-            stream_payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+            stream_payload["chat_template_kwargs"] = {
+                "enable_thinking": enable_thinking
+            }
         if max_tokens is not None:
             stream_payload["max_tokens"] = max_tokens
         if stop:
@@ -1525,8 +1528,8 @@ class LlamaCppBackend:
         reasoning_text = ""
 
         try:
-            with httpx.Client(timeout=None) as client:
-                with client.stream("POST", url, json=stream_payload) as response:
+            with httpx.Client(timeout = None) as client:
+                with client.stream("POST", url, json = stream_payload) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(
