@@ -302,7 +302,25 @@ def _has_prequantized_fp8_config(
         return False
 
     quant_method = quantization_config.get("quant_method", None)
-    return quant_method in ("compressed-tensors", "fbgemm_fp8", "fp8")
+    if quant_method in ("fbgemm_fp8", "fp8"):
+        return True
+    if quant_method == "compressed-tensors":
+        # Check for FP8-specific config within compressed-tensors
+        config_groups = quantization_config.get("config_groups", {})
+        for group in config_groups.values():
+            if isinstance(group, dict):
+                weights = group.get("weights", {})
+                if isinstance(weights, dict):
+                    wtype = weights.get("type", "")
+                    num_bits = weights.get("num_bits", 0)
+                    if wtype == "float" and num_bits == 8:
+                        return True
+        # Also check top-level quantization type
+        quant_type = quantization_config.get("quantization_type", "")
+        if "fp8" in str(quant_type).lower() or "float8" in str(quant_type).lower():
+            return True
+        return False
+    return False
 
 
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:

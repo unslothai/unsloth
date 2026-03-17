@@ -819,12 +819,13 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        maybe_patch_stacked_moe_expert_fp8_scales(
-            model,
-            model_name = model_name,
-            token = token,
-            revision = revision if not is_peft else None,
-        )
+        if load_in_fp8 != False or _has_prequantized_fp8_config(model_name, token=token, trust_remote_code=trust_remote_code):
+            maybe_patch_stacked_moe_expert_fp8_scales(
+                model,
+                model_name = model_name,
+                token = token,
+                revision = revision if not is_peft else None,
+            )
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
@@ -1359,7 +1360,14 @@ class FastModel(FastBaseModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                model_name = get_model_name(model_name, load_in_4bit)
+                model_name = get_model_name(
+                    model_name,
+                    load_in_4bit,
+                    load_in_fp8=load_in_fp8,
+                    fast_inference=fast_inference,
+                    token=token,
+                    trust_remote_code=trust_remote_code,
+                )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -1568,12 +1576,13 @@ class FastModel(FastBaseModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        maybe_patch_stacked_moe_expert_fp8_scales(
-            model,
-            model_name = model_name,
-            token = token,
-            revision = revision if not is_peft else None,
-        )
+        if load_in_fp8 != False or _has_prequantized_fp8_config(model_name, token=token, trust_remote_code=trust_remote_code):
+            maybe_patch_stacked_moe_expert_fp8_scales(
+                model,
+                model_name = model_name,
+                token = token,
+                revision = revision if not is_peft else None,
+            )
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184

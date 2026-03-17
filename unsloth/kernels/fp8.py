@@ -441,7 +441,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             weight.shape[0] != weight_scale.shape[0]
             and weight.shape[1] == weight_scale.shape[0]
-        ) or (weight.shape[0] // 8 != 0 or weight.shape[1] // 8 != 0):
+        ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
             # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
             # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
             # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
@@ -605,6 +605,12 @@ except:
     pass
 
 
+HAS_FBGEMM_FP8_OPS = (
+    hasattr(torch.ops, "fbgemm")
+    and hasattr(torch.ops.fbgemm, "quantize_fp8_per_row")
+)
+
+
 @torch_compile
 def fp8_linear(X, weight, weight_scale, bias = None):
     # Per-tensor quantization: single scalar scale for entire weight
@@ -613,9 +619,18 @@ def fp8_linear(X, weight, weight_scale, bias = None):
         weight_scale.ndim == 2 and weight_scale.shape[1] > 1
     ):
         out = fp8_block_quant_linear(X, weight, weight_scale)
+        if bias is not None:
+            out = out + bias
     # Row/channel quantized FP8: 2D scale with shape (n, 1)
-    else:
+    elif HAS_FBGEMM_FP8_OPS:
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
+    else:
+        # Fallback: dequantize FP8 weight and use standard matmul
+        W_deq = weight_dequant(weight, weight_scale).T
+        out = torch_matmul(X, W_deq)
+        if bias is not None:
+            out = out + bias
+        del W_deq
     return out
 
 
@@ -694,6 +709,10 @@ def compressed_linear_forward_patch(self, input):
 
 def _fp8_moe_lora_extractor(wrapper, weight_A, weight_B, scaling, num_experts):
     total_rank = weight_A.shape[0]
+    if num_experts == 0 or total_rank % num_experts != 0:
+        raise ValueError(
+            f"LoRA total_rank ({total_rank}) must be divisible by num_experts ({num_experts})"
+        )
     rank_per_expert = total_rank // num_experts
 
     dim_A = weight_A.shape[1]
@@ -755,19 +774,17 @@ def _fp8_moe_lora_extractor(wrapper, weight_A, weight_B, scaling, num_experts):
 def _patch_fp8_moe_experts():
     try:
         from transformers.integrations import finegrained_fp8
-        from unsloth_zoo.temporary_patches.moe_utils import (
-            forward_moe_backend,
-            forward_native_moe_loop,
+        from unsloth_zoo.temporary_patches.moe_utils_fp8 import (
+            forward_moe_backend_fp8,
         )
     except Exception:
         return
 
     experts_interface = getattr(finegrained_fp8, "ALL_FP8_EXPERTS_FUNCTIONS", None)
-    if experts_interface is None:
-        return
+    if experts_interface is not None:
+        experts_interface["grouped_mm"] = forward_moe_backend_fp8
+        experts_interface["batched_mm"] = forward_moe_backend_fp8
 
-    experts_interface["grouped_mm"] = forward_moe_backend
-    experts_interface["batched_mm"] = forward_native_moe_loop
     if hasattr(finegrained_fp8, "FP8Experts"):
         finegrained_fp8.FP8Experts._unsloth_lora_extractor_fn = staticmethod(
             _fp8_moe_lora_extractor
