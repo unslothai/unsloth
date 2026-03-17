@@ -1265,6 +1265,32 @@ class LlamaCppBackend:
 
     # ── Generation (proxy to llama-server) ────────────────────────
 
+    @staticmethod
+    def _iter_text_cancellable(
+        response: "httpx.Response",
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Generator[str, None, None]:
+        """Iterate over an httpx streaming response with cancel support.
+
+        Uses a short read timeout on the stream so that cancel_event is
+        checked at least every 0.5s, even if the model is slow to produce
+        the next token.  Without this, iter_text() blocks until the next
+        chunk arrives and cancellation can take many seconds on large models.
+        """
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                response.close()
+                return
+            try:
+                chunk = next(response.iter_text())
+                yield chunk
+            except StopIteration:
+                return
+            except httpx.ReadTimeout:
+                # No data within the timeout window -- just loop back
+                # and re-check cancel_event.
+                continue
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -1314,7 +1340,10 @@ class LlamaCppBackend:
         in_thinking = False
 
         try:
-            with httpx.Client(timeout = None) as client:
+            # Use a short read timeout so we can check cancel_event
+            # frequently instead of blocking indefinitely on slow models.
+            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            with httpx.Client(timeout = stream_timeout) as client:
                 with client.stream("POST", url, json = payload) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -1325,10 +1354,9 @@ class LlamaCppBackend:
                     buffer = ""
                     has_content_tokens = False
                     reasoning_text = ""
-                    for raw_chunk in response.iter_text():
-                        if cancel_event is not None and cancel_event.is_set():
-                            break
-
+                    for raw_chunk in self._iter_text_cancellable(
+                        response, cancel_event
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
@@ -1572,7 +1600,8 @@ class LlamaCppBackend:
         reasoning_text = ""
 
         try:
-            with httpx.Client(timeout = None) as client:
+            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            with httpx.Client(timeout = stream_timeout) as client:
                 with client.stream("POST", url, json = stream_payload) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -1581,10 +1610,9 @@ class LlamaCppBackend:
                         )
 
                     buffer = ""
-                    for raw_chunk in response.iter_text():
-                        if cancel_event is not None and cancel_event.is_set():
-                            break
-
+                    for raw_chunk in self._iter_text_cancellable(
+                        response, cancel_event
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
