@@ -4,7 +4,6 @@
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
-import { XIcon } from "lucide-react";
 
 type ModelLoadDescriptionProps = {
   title?: string | null;
@@ -28,11 +27,11 @@ export function ModelLoadDescription({
   const hasProgress = typeof progressPercent === "number";
 
   return (
-    <div className="flex min-h-12 w-full items-stretch gap-2">
+    <div className="relative flex min-h-12 w-full items-stretch gap-2">
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-4 text-foreground" />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 pr-5">
         {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
@@ -49,13 +48,13 @@ export function ModelLoadDescription({
       {onStop ? (
         <Button
           type="button"
-          size="icon-sm"
+          size="xs"
           variant="ghost"
           aria-label="Stop model loading"
-          className="h-auto w-10 self-stretch shrink-0 rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:text-destructive"
+          className="h-auto self-stretch shrink-0 !rounded-none !border-0 bg-transparent px-1 text-[10px] text-muted-foreground hover:bg-transparent hover:text-destructive focus-visible:text-destructive"
           onClick={onStop}
         >
-          <XIcon className="size-3.5" />
+          Cancel
         </Button>
       ) : null}
     </div>
