@@ -452,10 +452,12 @@ def run_training_process(
 
         # Monitor tqdm progress bars (captures Unsloth's "Tokenizing" step)
         import threading as _th
+
         _tqdm_stop = _th.Event()
 
         def _monitor_tqdm():
             from tqdm.auto import tqdm as _tqdm_cls
+
             while not _tqdm_stop.is_set():
                 for bar in list(getattr(_tqdm_cls, "_instances", set())):
                     try:
@@ -464,8 +466,7 @@ def run_training_process(
                         if total > 0 and n > 0 and desc:
                             pct = min(int(n * 100 / total), 100)
                             _send_status(
-                                event_queue,
-                                f"{desc.strip()} {pct}% ({n:,}/{total:,})"
+                                event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})"
                             )
                     except (AttributeError, ReferenceError):
                         pass
