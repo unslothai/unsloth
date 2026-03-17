@@ -633,6 +633,17 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = (
                 FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
             )
+        elif model_type == "qwen3_5":
+            # Qwen3.5 shares the same architecture as Qwen3
+            # but requires transformers >= 5.2.0
+            if not SUPPORTS_QWEN3:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                    f"The minimum required version is 5.2.0.\n"
+                    f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            dispatch_model = FastQwen3Model
         # elif model_type == "falcon_h1":
         #     dispatch_model = FastFalconH1Model
         #     if not SUPPORTS_FALCON_H1:

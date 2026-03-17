@@ -3263,6 +3263,9 @@ class FastLlamaModel:
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3":
             apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen3_5":
+            # Qwen3.5 uses the same MLP architecture as Qwen3
+            apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "falcon_h1":
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3moe":
