@@ -410,7 +410,7 @@ export function SharedComposer({
                 }
               }}
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
                 reasoningEnabled
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
@@ -418,9 +418,9 @@ export function SharedComposer({
               aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
             >
               {reasoningEnabled ? (
-                <LightbulbIcon className="size-3.5" />
+                <LightbulbIcon className="size-3" />
               ) : (
-                <LightbulbOffIcon className="size-3.5" />
+                <LightbulbOffIcon className="size-3" />
               )}
               <span>Think</span>
             </button>
