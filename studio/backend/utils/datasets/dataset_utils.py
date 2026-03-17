@@ -1132,6 +1132,7 @@ def format_and_template_dataset(
             auto_detect_mapping = auto_detect_mapping,
             batch_size = batch_size,
             num_proc = num_proc,
+            progress_callback = progress_callback,
         )
 
         # Step 3: Generate summary
