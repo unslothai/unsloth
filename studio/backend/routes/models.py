@@ -359,7 +359,9 @@ def _get_max_position_embeddings(config) -> Optional[int]:
     return None
 
 
-def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
+def _get_model_size_bytes(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[int]:
     """Get total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
@@ -372,7 +374,9 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
         weight_exts = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
         total = 0
         for sibling in info.siblings:
-            if sibling.rfilename and any(sibling.rfilename.endswith(ext) for ext in weight_exts):
+            if sibling.rfilename and any(
+                sibling.rfilename.endswith(ext) for ext in weight_exts
+            ):
                 if sibling.size is not None:
                     total += sibling.size
 
