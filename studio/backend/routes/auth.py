@@ -54,14 +54,14 @@ async def login(payload: AuthLoginRequest) -> Token:
     if record is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Incorrect username or password",
+            detail = "Incorrect password",
         )
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Incorrect username or password",
+            detail = "Incorrect password",
         )
 
     access_token = create_access_token(subject = payload.username)
