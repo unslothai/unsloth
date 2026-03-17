@@ -84,10 +84,10 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
           <ThreadScrollToBottom />
+          <GeneratingSpinner />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
-          <GeneratingSpinner />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
@@ -155,8 +155,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               components={{ Suggestion: SuggestionItem }}
             />
           </div>
-          {!hideComposer && <ComposerAnimated />}
           <GeneratingSpinner />
+          {!hideComposer && <ComposerAnimated />}
         </div>
       </div>
     </div>
