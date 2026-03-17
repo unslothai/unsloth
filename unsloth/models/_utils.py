@@ -876,6 +876,7 @@ if DEVICE_TYPE == "cuda":
                 # See https://github.com/unslothai/unsloth/issues/4270
                 try:
                     from flash_attn import flash_attn_func
+
                     _ = flash_attn_func  # Ensure import is valid
                 except:
                     # Fall back to legacy import check (for older flash-attn versions)
@@ -932,6 +933,7 @@ elif DEVICE_TYPE == "hip":
             # See https://github.com/unslothai/unsloth/issues/4270
             try:
                 from flash_attn import flash_attn_func
+
                 _ = flash_attn_func  # Ensure import is valid
             except:
                 # Fall back to legacy import check (for older flash-attn versions)
