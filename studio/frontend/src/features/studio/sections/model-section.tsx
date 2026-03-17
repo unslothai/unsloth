@@ -28,7 +28,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK, applyPriorityOrdering } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -162,6 +162,7 @@ export function ModelSection() {
     task,
     accessToken: hfToken || undefined,
     excludeGguf: true,
+    priorityIds: PRIORITY_TRAINING_MODELS,
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =

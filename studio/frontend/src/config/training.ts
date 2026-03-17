@@ -148,7 +148,9 @@ export const PRIORITY_TRAINING_MODELS: readonly string[] = [
 
 /** Pin priority models to the top of a list of model IDs, preserving their defined order. */
 export function applyPriorityOrdering(ids: string[]): string[] {
-  const prioritySet = new Set<string>(PRIORITY_TRAINING_MODELS);
-  const rest = ids.filter((id) => !prioritySet.has(id));
-  return [...PRIORITY_TRAINING_MODELS, ...rest];
+  const idSet = new Set(ids);
+  const pinned = PRIORITY_TRAINING_MODELS.filter((id) => idSet.has(id));
+  const pinnedSet = new Set(pinned);
+  const rest = ids.filter((id) => !pinnedSet.has(id));
+  return [...pinned, ...rest];
 }
