@@ -1022,7 +1022,11 @@ if (Test-Path $LlamaServerBin) {
     # -- Step A: Clone or pull llama.cpp (or use a local directory) --
 
     $LocalLlamaCppPath = [Environment]::GetEnvironmentVariable('UNSLOTH_LLAMA_CPP_PATH', 'Process')
-    if ($LocalLlamaCppPath -and (Test-Path $LocalLlamaCppPath -PathType Container)) {
+    if ($LocalLlamaCppPath -and -not (Test-Path $LocalLlamaCppPath -PathType Container)) {
+        Write-Host "   [WARN] UNSLOTH_LLAMA_CPP_PATH='$LocalLlamaCppPath' does not exist; falling back to cloning" -ForegroundColor Yellow
+        $LocalLlamaCppPath = $null
+    }
+    if ($LocalLlamaCppPath) {
         # Use the user-supplied directory; create a junction so downstream code
         # finds everything at the canonical $LlamaCppDir path.
         $resolvedLocal = (Resolve-Path $LocalLlamaCppPath).Path
