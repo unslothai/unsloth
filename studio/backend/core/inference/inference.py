@@ -49,17 +49,17 @@ class HarmonyTextStreamer:
     """
 
     import re as _re
+
     _HARMONY_RE = _re.compile(
         r"<\|channel\|>(\w+)<\|message\|>(.*?)(?=<\|end\|>|<\|channel\|>|\Z)",
         _re.DOTALL,
     )
     # Tokens that should never appear in user-facing text
-    _STRIP_TOKENS_RE = _re.compile(
-        r"<\|(?:channel|message|start|end)\|>"
-    )
+    _STRIP_TOKENS_RE = _re.compile(r"<\|(?:channel|message|start|end)\|>")
 
     def __init__(self, tokenizer, *, skip_prompt: bool = True, timeout: float = 0.2):
         import queue
+
         self.tokenizer = tokenizer
         self.skip_prompt = skip_prompt
         self.timeout = timeout
@@ -78,6 +78,7 @@ class HarmonyTextStreamer:
     def put(self, value):
         """Receive new token IDs from model.generate()."""
         import torch
+
         if isinstance(value, torch.Tensor):
             # value shape: (batch, seq) — take first batch element
             ids = value[0].tolist() if value.dim() > 1 else value.tolist()
@@ -96,12 +97,12 @@ class HarmonyTextStreamer:
         self._token_ids.extend(ids)
 
         # Decode only the generated part (after the prompt)
-        gen_ids = self._token_ids[self._prompt_len:]
-        raw = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
+        gen_ids = self._token_ids[self._prompt_len :]
+        raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
         transformed = self._transform(raw)
 
         # Emit only the incremental delta
-        delta = transformed[self._prev_emitted_len:]
+        delta = transformed[self._prev_emitted_len :]
         if delta:
             self._prev_emitted_len = len(transformed)
             self._queue.put(delta)
@@ -109,11 +110,11 @@ class HarmonyTextStreamer:
     def end(self):
         """Signal generation is complete."""
         # Final decode to capture any remaining content
-        gen_ids = self._token_ids[self._prompt_len:]
+        gen_ids = self._token_ids[self._prompt_len :]
         if gen_ids:
-            raw = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
+            raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
             transformed = self._transform(raw)
-            delta = transformed[self._prev_emitted_len:]
+            delta = transformed[self._prev_emitted_len :]
             if delta:
                 self._prev_emitted_len = len(transformed)
                 self._queue.put(delta)
@@ -129,9 +130,10 @@ class HarmonyTextStreamer:
 
     def __next__(self):
         from queue import Empty
+
         while True:
             try:
-                val = self._queue.get(timeout=self.timeout)
+                val = self._queue.get(timeout = self.timeout)
             except Empty:
                 if self._stop:
                     raise StopIteration
@@ -1213,6 +1215,7 @@ class InferenceBackend:
         name = (model_name or self.active_model_name or "").lower()
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
+
             # Exact match
             if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
                 return True
@@ -1269,7 +1272,9 @@ class InferenceBackend:
                         timeout = 0.2,
                     )
                 except Exception as e:
-                    logger.warning(f"HarmonyTextStreamer init failed, falling back: {e}")
+                    logger.warning(
+                        f"HarmonyTextStreamer init failed, falling back: {e}"
+                    )
                     streamer = TextIteratorStreamer(
                         tokenizer,
                         skip_prompt = True,
@@ -1891,6 +1896,7 @@ class InferenceBackend:
         # in case they leak through (e.g. when HarmonyTextStreamer is not used)
         if self._is_gpt_oss_model():
             import re
+
             text = re.sub(r"<\|(?:channel|message|start|end)\|>", "", text)
         return text.strip()
 
