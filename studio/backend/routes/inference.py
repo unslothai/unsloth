@@ -1052,10 +1052,9 @@ async def openai_chat_completions(
                     raise
                 except Exception as e:
                     import traceback
+
                     tb = traceback.format_exc()
-                    logger.error(
-                        f"Error during GGUF tool streaming: {e}\n{tb}"
-                    )
+                    logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     error_chunk = {
                         "error": {
                             "message": "An internal error occurred",
