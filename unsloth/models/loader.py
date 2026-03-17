@@ -190,13 +190,21 @@ def _patch_granitemoehybrid_return_hidden_states():
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
 
+            # Align device with lm_head for model-parallel/offload setups
+            lm_head_device = self.lm_head.weight.device
+            if hidden_states.device != lm_head_device:
+                hidden_states = hidden_states.to(lm_head_device)
+
+            if not return_dict:
+                return (hidden_states,) + outputs[1:]
+
             return MoeCausalLMOutputWithPast(
                 loss=None,
                 logits=hidden_states,
-                past_key_values=outputs.past_key_values if return_dict else None,
-                hidden_states=outputs.hidden_states if return_dict else None,
-                attentions=outputs.attentions if return_dict else None,
-                router_logits=getattr(outputs, "router_logits", None) if return_dict else None,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+                router_logits=getattr(outputs, "router_logits", None),
             )
 
         return _original_forward(
