@@ -396,7 +396,19 @@ export function SharedComposer({
           {supportsReasoning && (
             <button
               type="button"
-              onClick={() => setReasoningEnabled(!reasoningEnabled)}
+              onClick={() => {
+                const next = !reasoningEnabled;
+                setReasoningEnabled(next);
+                // Qwen3.5: adjust params for thinking on/off
+                const store = useChatRuntimeStore.getState();
+                const cp = store.params.checkpoint?.toLowerCase() ?? "";
+                if (cp.includes("qwen3.5")) {
+                  const p = next
+                    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+                    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                  store.setParams({ ...store.params, ...p });
+                }
+              }}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
                 reasoningEnabled

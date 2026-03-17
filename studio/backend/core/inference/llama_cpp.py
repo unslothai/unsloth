@@ -1524,7 +1524,17 @@ class LlamaCppBackend:
                 # Continue the loop to let model respond with context
                 continue
 
-            # No tool calls -- do a final streaming pass for the answer
+            # No tool calls -- model answered directly.
+            # If no tools were executed at all, just yield the content
+            # from this response instead of making a redundant second request.
+            if iteration == 0 and content_text:
+                yield {"type": "status", "text": ""}
+                yield {"type": "content", "text": content_text}
+                return
+
+            # Tools were called in previous iterations; do a final
+            # streaming pass so the model can synthesize a response
+            # incorporating the tool results.
             break
 
         # Clear status
@@ -1539,8 +1549,6 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
-            "tools": tools,
-            "tool_choice": "none",
         }
         if self._supports_reasoning and enable_thinking is not None:
             stream_payload["chat_template_kwargs"] = {
