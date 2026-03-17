@@ -49,6 +49,7 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
+        self._reasoning_default: bool = True
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -95,6 +96,10 @@ class LlamaCppBackend:
     @property
     def supports_reasoning(self) -> bool:
         return self._supports_reasoning
+
+    @property
+    def reasoning_default(self) -> bool:
+        return self._reasoning_default
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -845,15 +850,31 @@ class LlamaCppBackend:
                     f"Using custom chat template file: {self._chat_template_file.name}"
                 )
 
-            # For reasoning models, default to thinking ON (user can toggle per-request)
+            # For reasoning models, set default thinking mode.
+            # Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            # per Qwen's recommendation. Larger models default to thinking ON.
             if self._supports_reasoning:
+                import re
+
+                thinking_default = True
+                mid = (model_identifier or "").lower()
+                if "qwen3.5" in mid:
+                    # Extract size like "0.8b", "4b", "35b" etc.
+                    size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
+                    if size_match:
+                        size_val = float(size_match.group(1))
+                        if size_val <= 9:
+                            thinking_default = False
+                self._reasoning_default = thinking_default
                 cmd.extend(
                     [
                         "--chat-template-kwargs",
-                        json.dumps({"enable_thinking": True}),
+                        json.dumps({"enable_thinking": thinking_default}),
                     ]
                 )
-                logger.info("Reasoning model: enabled enable_thinking=true by default")
+                logger.info(
+                    f"Reasoning model: enable_thinking={thinking_default} by default"
+                )
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
