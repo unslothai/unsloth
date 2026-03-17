@@ -1,0 +1,247 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import type { PipelineType } from "@huggingface/hub";
+import { listModels, modelInfo } from "@huggingface/hub";
+import { useCallback, useMemo } from "react";
+import { useHfPaginatedSearch } from "./use-hf-paginated-search";
+
+export interface HfModelResult {
+  id: string;
+  downloads: number;
+  likes: number;
+  totalParams?: number;
+  estimatedSizeBytes?: number;
+}
+
+const EXCLUDED_TAGS = new Set([
+  "gptq",
+  "awq",
+  "exl2",
+  "mlx",
+  "onnx",
+  "openvino",
+  "coreml",
+  "tflite",
+  "ctranslate2",
+]);
+
+// Embedding / sentence-transformer models ship with onnx/openvino as additional
+// export formats — they should not be excluded by the tag check above.
+const EMBEDDING_TAGS = new Set([
+  "sentence-transformers",
+  "feature-extraction",
+]);
+
+function withPopularitySort(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> {
+  const rawUrl =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  const url = new URL(rawUrl);
+
+  if (!url.searchParams.has("sort")) {
+    url.searchParams.set("sort", "downloads");
+  }
+  if (!url.searchParams.has("direction")) {
+    url.searchParams.set("direction", "-1");
+  }
+
+  return fetch(url, init);
+}
+
+/** Bytes per parameter for each dtype. */
+const DTYPE_BYTES: Record<string, number> = {
+  F64: 8, F32: 4, F16: 2, BF16: 2,
+  I64: 8, I32: 4, I16: 2, I8: 1, U8: 1,
+  // Quantized types (4-bit)
+  NF4: 0.5, FP4: 0.5, INT4: 0.5, GPTQ: 0.5,
+};
+
+function estimateSizeFromDtypes(
+  params: Record<string, number> | undefined,
+): number | undefined {
+  if (!params) return undefined;
+  let total = 0;
+  for (const [dtype, count] of Object.entries(params)) {
+    const bpp = DTYPE_BYTES[dtype.toUpperCase()] ?? 2; // default BF16
+    total += count * bpp;
+  }
+  return total > 0 ? total : undefined;
+}
+
+function makeMapModel(excludeGguf: boolean) {
+  return (raw: unknown): HfModelResult | null => {
+    const m = raw as {
+      name: string;
+      downloads: number;
+      likes: number;
+      safetensors?: { total: number; parameters?: Record<string, number> };
+      tags?: string[];
+    };
+    const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
+    if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
+      return null;
+    }
+    if (excludeGguf && m.tags?.includes("gguf")) {
+      return null;
+    }
+    return {
+      id: m.name,
+      downloads: m.downloads,
+      likes: m.likes,
+      totalParams: m.safetensors?.total,
+      estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
+    };
+  };
+}
+
+/** Number of unsloth results to pull up-front before yielding general results. */
+const UNSLOTH_PREFETCH = 20;
+
+/**
+ * Creates a merged async generator that yields unsloth-owned models first,
+ * then general results (with deduplication).
+ */
+async function* mergedModelIterator(
+  query: string,
+  task?: PipelineType,
+  accessToken?: string,
+): AsyncGenerator<unknown> {
+  const common = {
+    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    fetch: withPopularitySort,
+    ...(accessToken ? { credentials: { accessToken } } : {}),
+  };
+
+  // Fire both iterators immediately (parallel network requests on first pull)
+  const unslothIter = listModels({
+    search: { query, owner: "unsloth", ...(task ? { task } : {}) },
+    ...common,
+  });
+  const generalIter = listModels({
+    search: { query, ...(task ? { task } : {}) },
+    ...common,
+  });
+
+  // Phase 1: pull & yield unsloth models first
+  const seen = new Set<string>();
+  let count = 0;
+  for await (const model of unslothIter) {
+    const m = model as { name?: string };
+    if (m.name) seen.add(m.name);
+    yield model;
+    count++;
+    if (count >= UNSLOTH_PREFETCH) break;
+  }
+
+  // Phase 2: yield general results, skipping already-seen unsloth models
+  for await (const model of generalIter) {
+    const m = model as { name?: string };
+    if (m.name && seen.has(m.name)) continue;
+    yield model;
+  }
+}
+
+/**
+ * Creates an async generator that yields priority models (fetched individually
+ * via modelInfo for full metadata), then the general unsloth listing.
+ */
+async function* priorityThenListingIterator(
+  priorityIds: readonly string[],
+  task?: PipelineType,
+  accessToken?: string,
+): AsyncGenerator<unknown> {
+  const common = {
+    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    fetch: withPopularitySort,
+    ...(accessToken ? { credentials: { accessToken } } : {}),
+  };
+
+  // Phase 1: fetch priority models in parallel via modelInfo
+  const seen = new Set<string>();
+  const settled = await Promise.allSettled(
+    priorityIds.map((id) =>
+      modelInfo({
+        name: id,
+        additionalFields: ["safetensors", "tags"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      }),
+    ),
+  );
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      const m = result.value as { name?: string; pipeline_tag?: string };
+      // Skip models that don't match the selected task filter
+      if (task && m.pipeline_tag && m.pipeline_tag !== task) continue;
+      if (m.name) seen.add(m.name);
+      yield result.value;
+    }
+  }
+
+  // Phase 2: yield general unsloth listing, skipping already-seen
+  const generalIter = listModels({
+    search: { owner: "unsloth", ...(task ? { task } : {}) },
+    ...common,
+  });
+  for await (const model of generalIter) {
+    const m = model as { name?: string };
+    if (m.name && seen.has(m.name)) continue;
+    yield model;
+  }
+}
+
+export function useHfModelSearch(
+  query: string,
+  options?: {
+    task?: PipelineType;
+    accessToken?: string;
+    excludeGguf?: boolean;
+    priorityIds?: readonly string[];
+  },
+) {
+  const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
+
+  const createIter = useCallback(
+    () => {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        // No query → show priority models first (with full metadata), then general unsloth listing
+        if (priorityIds && priorityIds.length > 0) {
+          return priorityThenListingIterator(priorityIds, task, accessToken) as AsyncGenerator<unknown>;
+        }
+        return listModels({
+          search: { owner: "unsloth", ...(task ? { task } : {}) },
+          additionalFields: ["safetensors", "tags"],
+          fetch: withPopularitySort,
+          ...(accessToken ? { credentials: { accessToken } } : {}),
+        }) as AsyncGenerator<unknown>;
+      }
+      // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
+      return mergedModelIterator(trimmed, undefined, accessToken) as AsyncGenerator<unknown>;
+    },
+    [query, task, accessToken, priorityIds],
+  );
+
+  const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
+  const search = useHfPaginatedSearch(createIter, mapModel);
+
+  // Secondary sort guarantee: unsloth models always float to the top
+  const results = useMemo(
+    () =>
+      [...search.results].sort((a, b) => {
+        const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
+        const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
+        return aFirst - bFirst;
+      }),
+    [search.results],
+  );
+
+  return { ...search, results };
+}
+

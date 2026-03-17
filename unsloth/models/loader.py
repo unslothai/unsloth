@@ -106,7 +106,7 @@ FORCE_FLOAT32 = [
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
     "gpt_oss",
-    "qwen3_5",  # Qwen3.5 RMSNorm uses (1+w) pattern like Gemma3, overflows float16
+    "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
 ]
 
 global DISABLE_COMPILE_MODEL_NAMES
@@ -442,6 +442,13 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
+                if "qwen3_5" in autoconfig_error:
+                    raise ImportError(
+                        f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                        f"The minimum required version is 5.2.0.\n"
+                        f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
+                        f"to obtain the latest transformers build, then restart this session."
+                    )
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
                     f"Please update transformers via `pip install --upgrade transformers` and try again."
@@ -1051,6 +1058,13 @@ class FastModel(FastBaseModel):
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
+                if "qwen3_5" in autoconfig_error:
+                    raise ImportError(
+                        f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                        f"The minimum required version is 5.2.0.\n"
+                        f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
+                        f"to obtain the latest transformers build, then restart this session."
+                    )
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
                     f"Please update transformers via `pip install --upgrade transformers` and try again."

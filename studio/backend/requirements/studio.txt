@@ -1,0 +1,17 @@
+# Studio UI backend dependencies
+typer
+fastapi
+uvicorn
+pydantic
+matplotlib
+pandas
+nest_asyncio
+datasets==4.3.0
+pyjwt
+easydict
+addict
+gradio>=4.0.0
+huggingface-hub==0.36.2
+structlog>=24.1.0
+diceware
+ddgs

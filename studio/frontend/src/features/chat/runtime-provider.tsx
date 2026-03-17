@@ -1,0 +1,684 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import {
+  AssistantRuntimeProvider,
+  type AttachmentAdapter,
+  type CompleteAttachment,
+  CompositeAttachmentAdapter,
+  ExportedMessageRepository,
+  type ExportedMessageRepositoryItem,
+  type PendingAttachment,
+  RuntimeAdapterProvider,
+  Suggestions,
+  type ThreadHistoryAdapter,
+  type ThreadMessage,
+  WebSpeechDictationAdapter,
+  type unstable_RemoteThreadListAdapter,
+  useAui,
+  useAuiState,
+  useLocalRuntime,
+  unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
+} from "@assistant-ui/react";
+import { createAssistantStream } from "assistant-stream";
+import mammoth from "mammoth";
+import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
+import { extractText, getDocumentProxy } from "unpdf";
+import { authFetch } from "@/features/auth";
+import { createOpenAIStreamAdapter } from "./api/chat-adapter";
+import { db } from "./db";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import type { MessageRecord, ModelType } from "./types";
+
+const DEFAULT_SUGGESTIONS = [
+  "Draw an SVG of a cute sloth",
+  "Solve the integral of x²·sin(x) step by step",
+  "Write a Python function that finds the longest palindrome in a string",
+  "Format a comparison of 3 databases as a markdown table with pros and cons",
+];
+
+type TitleResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+};
+
+class VisionImageAdapter implements AttachmentAdapter {
+  accept = "image/jpeg,image/png,image/webp,image/gif";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const maxSize = 20 * 1024 * 1024;
+    if (file.size > maxSize) {
+      throw new Error("Image size exceeds 20MB limit");
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      type: "image",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return {
+      id: attachment.id,
+      type: "image",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "image",
+          image: await this.fileToBase64DataURL(attachment.file),
+        },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  async remove(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  private async fileToBase64DataURL(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read image file"));
+      reader.readAsDataURL(file);
+    });
+  }
+}
+
+class PDFAttachmentAdapter implements AttachmentAdapter {
+  accept = "application/pdf";
+
+  add({ file }: { file: File }): Promise<PendingAttachment> {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    });
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const pdf = await getDocumentProxy(buffer);
+    const { text } = await extractText(pdf, { mergePages: true });
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class TextAttachmentAdapter implements AttachmentAdapter {
+  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const text = await attachment.file.text();
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `<attachment name=${attachment.name}>\n${text}\n</attachment>` },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class HtmlAttachmentAdapter implements AttachmentAdapter {
+  accept = "text/html";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const html = await attachment.file.text();
+    // Strip HTML tags to extract readable text
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    // Remove script and style elements
+    for (const el of doc.querySelectorAll("script, style")) el.remove();
+    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `[HTML: ${attachment.name}]\n${text}` },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class DocxAttachmentAdapter implements AttachmentAdapter {
+  accept =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+  add({ file }: { file: File }): Promise<PendingAttachment> {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    });
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const arrayBuffer = await attachment.file.arrayBuffer();
+    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+function clip(input: string, maxLen: number): string {
+  const text = input.replace(/\s+/g, " ").trim();
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen).trimEnd();
+}
+
+function extractTextParts(m: ThreadMessage | undefined): string {
+  if (!m) return "";
+  const content = Array.isArray(m.content) ? m.content : [];
+  return content
+    .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("")
+    .trim();
+}
+
+async function generateTitleWithModel(payload: {
+  userText: string;
+}): Promise<string | null> {
+  const params = useChatRuntimeStore.getState().params;
+  if (!params.checkpoint) return null;
+
+  const user = clip(payload.userText, 256);
+  const parts: string[] = [user];
+
+  function normalizeTitle(raw: string): string | null {
+    let title = raw.split(/\r?\n/, 1)[0] ?? "";
+    title = title.replace(/^\s*title\s*:\s*/i, "");
+    title = title.replace(/[^\x20-\x7E]+/g, " ");
+    title = title.replace(/["'`]+/g, "");
+    title = title.replace(/[.!?:;,]+/g, " ");
+    title = title.replace(/\s+/g, " ").trim();
+
+    // Model echo fail-safe.
+    if (/\b(user|base|lora|assistant)\s*:/i.test(title)) {
+      return null;
+    }
+
+    const words = title.split(" ").filter(Boolean).slice(0, 6);
+    const joined = words.join(" ").trim();
+    if (!joined) return null;
+    return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  }
+
+  const response = await authFetch("/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: params.checkpoint,
+      stream: false,
+      temperature: 0.2,
+      top_p: 0.9,
+      max_tokens: 24,
+      top_k: 40,
+      repetition_penalty: 1.0,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write 1 concise chat title for the user's message. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
+        },
+        { role: "user", content: parts.join("\n") },
+      ],
+    }),
+  });
+
+  const body = (await response.json().catch(() => null)) as TitleResponse | null;
+  if (!response.ok) return null;
+  const raw: string | undefined = body?.choices?.[0]?.message?.content;
+  if (!raw) return null;
+  return normalizeTitle(raw);
+}
+
+const inflightTitleByKey = new Set<string>();
+
+function fallbackTitleFromUserText(userText: string): string {
+  const firstLine = (userText || "").split(/\r?\n/, 1)[0] ?? "";
+  const cleaned = firstLine.replace(/\s+/g, " ").trim();
+  const max = 48;
+  if (!cleaned) return "New Chat";
+  return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
+}
+
+function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+  return Array.isArray(content)
+    ? JSON.parse(JSON.stringify(content))
+    : [];
+}
+
+function cloneAttachments(
+  attachments: readonly CompleteAttachment[] | undefined,
+): readonly CompleteAttachment[] {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+  return JSON.parse(JSON.stringify(attachments));
+}
+
+function toThreadMessage(m: MessageRecord): ThreadMessage {
+  const content =
+    Array.isArray(m.content) && m.content.length > 0
+      ? cloneContent(m.content)
+      : [{ type: "text" as const, text: "" }];
+
+  if (m.role === "user") {
+    return {
+      id: m.id,
+      createdAt: new Date(m.createdAt),
+      role: "user" as const,
+      content: content as Extract<ThreadMessage, { role: "user" }>["content"],
+      attachments: cloneAttachments(m.attachments),
+      metadata: { custom: {} },
+    };
+  }
+  return {
+    id: m.id,
+    createdAt: new Date(m.createdAt),
+    role: "assistant" as const,
+    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    status: { type: "complete" as const, reason: "unknown" as const },
+    metadata: {
+      custom: (m.metadata as Record<string, unknown>) ?? {},
+      steps: [],
+      unstable_annotations: [],
+      unstable_data: [],
+      unstable_state: null,
+    },
+  };
+}
+
+function createDexieAdapter(
+  modelType: ModelType,
+  pairId?: string,
+): unstable_RemoteThreadListAdapter {
+  return {
+    async fetch(remoteId: string) {
+      const thread = await db.threads.get(remoteId);
+      if (!thread) {
+        throw new Error(`Thread ${remoteId} not found`);
+      }
+      return {
+        remoteId: thread.id,
+        status: thread.archived ? "archived" : "regular",
+        title: thread.title,
+      };
+    },
+
+    async list() {
+      const threads = await db.threads
+        .where("modelType")
+        .equals(modelType)
+        .reverse()
+        .sortBy("createdAt");
+      return {
+        threads: threads.map((t) => ({
+          status: (t.archived ? "archived" : "regular") as
+            | "archived"
+            | "regular",
+          remoteId: t.id,
+          title: t.title,
+        })),
+      };
+    },
+
+    async initialize(threadId: string) {
+      const currentModelId =
+        useChatRuntimeStore.getState().params.checkpoint ?? "";
+      await db.threads.add({
+        id: threadId,
+        title: "New Chat",
+        modelType,
+        modelId: currentModelId,
+        pairId,
+        archived: false,
+        createdAt: Date.now(),
+      });
+      return { remoteId: threadId, externalId: undefined };
+    },
+
+    async rename(remoteId: string, newTitle: string) {
+      await db.threads.update(remoteId, { title: newTitle });
+    },
+
+    async archive(remoteId: string) {
+      await db.threads.update(remoteId, { archived: true });
+    },
+
+    async unarchive(remoteId: string) {
+      await db.threads.update(remoteId, { archived: false });
+    },
+
+    async delete(remoteId: string) {
+      await db.messages.where("threadId").equals(remoteId).delete();
+      await db.threads.delete(remoteId);
+    },
+
+    async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
+      const autoTitle = useChatRuntimeStore.getState().autoTitle;
+      const thread = await db.threads.get(remoteId);
+      const defaultTitle = "New Chat";
+
+      function streamTitle(title: string) {
+        return createAssistantStream((c) => {
+          c.appendText(title);
+          c.close();
+        });
+      }
+
+      async function persistTitle(title: string): Promise<void> {
+        await db.threads.update(remoteId, { title });
+        if (!pairId) return;
+        const paired = await db.threads
+          .where("pairId")
+          .equals(pairId)
+          .filter((t) => t.id !== remoteId)
+          .first();
+        if (paired) await db.threads.update(paired.id, { title });
+      }
+
+      if (!thread) {
+        return streamTitle(defaultTitle);
+      }
+
+      // Only generate once per thread/pair.
+      if (thread.title && thread.title !== "New Chat") {
+        return streamTitle(thread.title);
+      }
+
+      const firstUser = messages.find((m) => m.role === "user");
+      const userText = extractTextParts(firstUser) || defaultTitle;
+
+      if (!autoTitle) {
+        const title = fallbackTitleFromUserText(userText);
+        await persistTitle(title);
+        return streamTitle(title);
+      }
+
+      const key = pairId ? `pair:${pairId}` : `thread:${remoteId}`;
+      if (inflightTitleByKey.has(key)) {
+        return streamTitle(thread.title || defaultTitle);
+      }
+
+      // Compare: wait until both threads done.
+      if (pairId) {
+        const paired = await db.threads
+          .where("pairId")
+          .equals(pairId)
+          .filter((t) => t.id !== remoteId)
+          .first();
+
+        if (paired) {
+          const running = useChatRuntimeStore.getState().runningByThreadId;
+          if (running[paired.id]) {
+            setTimeout(() => {
+              void createDexieAdapter(modelType, pairId).generateTitle(remoteId, messages);
+            }, 600);
+            return streamTitle(thread.title || defaultTitle);
+          }
+        }
+      }
+
+      inflightTitleByKey.add(key);
+      try {
+        const title =
+          (await generateTitleWithModel({
+            userText,
+          })) ||
+          fallbackTitleFromUserText(userText);
+
+        await persistTitle(title);
+        return streamTitle(title);
+      } finally {
+        inflightTitleByKey.delete(key);
+      }
+    },
+  };
+}
+
+function ThreadHistoryProvider({
+  children,
+}: { children?: ReactNode }): ReactElement {
+  const aui = useAui();
+
+  const history = useMemo<ThreadHistoryAdapter>(
+    () => ({
+      async load() {
+        const { remoteId } = aui.threadListItem().getState();
+        if (!remoteId) {
+          return { messages: [] };
+        }
+        const roleOrder: Record<string, number> = {
+          system: 0,
+          user: 1,
+          assistant: 2,
+        };
+        const msgs = await db.messages.where("threadId").equals(remoteId).toArray();
+        msgs.sort((a, b) => {
+          if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+          const aOrder = roleOrder[a.role] ?? 99;
+          const bOrder = roleOrder[b.role] ?? 99;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+
+        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
+      },
+
+      async append({ message }: ExportedMessageRepositoryItem) {
+        const { remoteId } = await aui.threadListItem().initialize();
+        const content = cloneContent(message.content);
+        const attachments =
+          message.role === "user" ? cloneAttachments(message.attachments) : [];
+        const custom = message.metadata?.custom;
+        const existing = await db.messages.get(message.id);
+        const createdAt =
+          existing?.createdAt ??
+          message.createdAt?.getTime?.() ??
+          Date.now();
+        await db.messages.put({
+          id: message.id,
+          threadId: remoteId,
+          role: message.role,
+          content,
+          ...(attachments.length > 0 && { attachments }),
+          ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
+          createdAt,
+        });
+      },
+    }),
+    [aui],
+  );
+
+  const dictation = useMemo(
+    () =>
+      WebSpeechDictationAdapter.isSupported()
+        ? new WebSpeechDictationAdapter()
+        : undefined,
+    [],
+  );
+  const attachments = useMemo(
+    () =>
+      new CompositeAttachmentAdapter([
+        new VisionImageAdapter(),
+        new TextAttachmentAdapter(),
+        new HtmlAttachmentAdapter(),
+        new PDFAttachmentAdapter(),
+        new DocxAttachmentAdapter(),
+      ]),
+    [],
+  );
+  const adapters = useMemo(
+    () => ({ history, dictation, attachments }),
+    [history, dictation, attachments],
+  );
+
+  return (
+    <RuntimeAdapterProvider adapters={adapters}>
+      {children}
+    </RuntimeAdapterProvider>
+  );
+}
+
+const chatAdapter = createOpenAIStreamAdapter();
+
+function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+  return useLocalRuntime(chatAdapter);
+}
+
+function ThreadAutoSwitch({
+  threadId,
+}: { threadId: string }): ReactElement | null {
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+
+  useEffect(() => {
+    if (!isLoading && mainThreadId !== threadId) {
+      aui.threads().switchToThread(threadId);
+    }
+  }, [aui, isLoading, mainThreadId, threadId]);
+
+  return null;
+}
+
+function ThreadNewChatSwitch({
+  nonce,
+}: { nonce: string }): ReactElement | null {
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
+
+  useEffect(() => {
+    if (!isLoading) {
+      aui.threads().switchToNewThread();
+    }
+  }, [aui, isLoading, nonce]);
+
+  return null;
+}
+
+function ActiveThreadSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const setActiveThreadId = useChatRuntimeStore((state) => state.setActiveThreadId);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveThreadId(mainThreadId ?? null);
+  }, [enabled, mainThreadId, setActiveThreadId]);
+
+  return null;
+}
+
+export function ChatRuntimeProvider({
+  children,
+  modelType = "base",
+  pairId,
+  initialThreadId,
+  newThreadNonce,
+}: {
+  children: ReactNode;
+  modelType?: ModelType;
+  pairId?: string;
+  initialThreadId?: string;
+  newThreadNonce?: string;
+}): ReactElement {
+  const runtime = useRemoteThreadListRuntime({
+    runtimeHook: useRuntimeHook,
+    adapter: {
+      ...createDexieAdapter(modelType, pairId),
+      unstable_Provider: ThreadHistoryProvider,
+    },
+  });
+
+  const aui = useAui({
+    suggestions: Suggestions(DEFAULT_SUGGESTIONS),
+  });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime} aui={aui}>
+      <ActiveThreadSync enabled={modelType === "base" && !pairId} />
+      {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
+      {!initialThreadId && newThreadNonce && (
+        <ThreadNewChatSwitch nonce={newThreadNonce} />
+      )}
+      {children}
+    </AssistantRuntimeProvider>
+  );
+}

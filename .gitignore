@@ -3,6 +3,15 @@ __pycache__/
 *.py[cod]
 *.class
 unsloth_compiled_cache/
+# ML artifacts (large files)
+feature/
+outputs/
+exports/
+/datasets/
+studio/backend/assets/datasets/
+unsloth_training_checkpoints/
+*.gguf
+*.safetensors
 
 # C extensions
 *.so
@@ -136,6 +145,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.venv_overlay/
+.venv_t5/
+environment.yaml
 
 # Spyder project settings
 .spyderproject
@@ -172,6 +184,35 @@ cython_debug/
 .ruff_cache/
 .pre-commit-cache/
 
-# PyPI configuration file
+# PyPI configuration file and IDE/Editors
 .pypirc
 .vscode
+.idea/
+.claude/
+*.swp
+*.swo
+
+# oh-my-codex
+.omx/
+
+# Firebase
+firebase-debug.log
+
+# Other
+resources/
+tmp/
+**/node_modules/
+auth.db
+
+# Local working docs
+**/CLAUDE.md
+**/claude.md
+**/AGENT.md
+**/agent.md
+docs/canvas-lab-architecture.md
+log_rtx.txt
+log.txt
+setup_leo.sh
+server.pid
+*.log
+package-lock.json

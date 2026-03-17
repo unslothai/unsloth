@@ -1,0 +1,2644 @@
+openapi: 3.1.0
+info:
+  title: NeMo Data Designer Microservice
+  description: Service for generating synthetic data.
+  version: 1.5.0
+paths:
+  /v1/data-designer/jobs:
+    post:
+      tags:
+      - Data Designer
+      summary: Create Job
+      operationId: create_job_v1_data_designer_jobs_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataDesignerJobRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataDesignerJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Data Designer
+      summary: List Jobs
+      operationId: list_jobs_v1_data_designer_jobs_get
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          exclusiveMinimum: 0
+          description: Page number.
+          default: 1
+          title: Page
+        description: Page number.
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          exclusiveMinimum: 0
+          description: Page size.
+          default: 10
+          title: Page Size
+        description: Page size.
+      - name: sort
+        in: query
+        required: false
+        schema:
+          allOf:
+          - $ref: '#/components/schemas/DataDesignerJobsSortField'
+          description: The field to sort by. To sort in decreasing order, use `-`
+            in front of the field name.
+          default: -created_at
+        description: The field to sort by. To sort in decreasing order, use `-` in
+          front of the field name.
+      - in: query
+        name: filter
+        style: deepObject
+        required: false
+        explode: true
+        schema:
+          $ref: '#/components/schemas/DataDesignerJobsListFilter'
+        description: Filter jobs on various criteria.
+      - in: query
+        name: search
+        style: deepObject
+        required: false
+        explode: true
+        schema:
+          $ref: '#/components/schemas/DataDesignerJobsSearch'
+        description: "\nSearch jobs using substring matching.\nYou can combine multiple\
+          \ search fields and filters.\n\nFor example:\n- `?search[name]=training`:\
+          \ searches all jobs with 'training' in the name.\n- `?search[project]=my-project`:\
+          \ searches all jobs with 'my-project'\n  in the project field.\n- `?search[name]=training&search[name]=eval`:\
+          \ searches all jobs with\n  'training' OR 'eval' in the name.\n- `?search[name]=training&search[project]=my-project`:\
+          \ searches all\n  jobs with 'training' in the name AND 'my-project' in the\
+          \ project.\n"
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataDesignerJobsPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}:
+    get:
+      tags:
+      - Data Designer
+      summary: Get Job
+      operationId: get_job_v1_data_designer_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataDesignerJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Data Designer
+      summary: Delete Job
+      operationId: delete_job_v1_data_designer_jobs__job_id__delete
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/cancel:
+    post:
+      tags:
+      - Data Designer
+      summary: Cancel Job
+      operationId: cancel_job_v1_data_designer_jobs__job_id__cancel_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataDesignerJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/logs:
+    get:
+      tags:
+      - Data Designer
+      summary: Get Job Logs
+      operationId: get_job_logs_v1_data_designer_jobs__job_id__logs_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Limit
+      - name: page_cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Page Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformJobLogPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/results:
+    get:
+      tags:
+      - Data Designer
+      summary: List Job Results
+      operationId: list_job_results_v1_data_designer_jobs__job_id__results_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformJobListResultResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/results/analysis/download:
+    get:
+      tags:
+      - Data Designer
+      summary: Download Job Result Analysis
+      operationId: download_job_result_analysis_v1_data_designer_jobs__job_id__results_analysis_download_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '404':
+          description: Not Found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/results/dataset/download:
+    get:
+      tags:
+      - Data Designer
+      summary: Download Job Result Dataset
+      operationId: download_job_result_dataset_v1_data_designer_jobs__job_id__results_dataset_download_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Not Found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/results/{result_name}:
+    get:
+      tags:
+      - Data Designer
+      summary: Get Job Result
+      operationId: get_job_result_v1_data_designer_jobs__job_id__results__result_name__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: result_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Result Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformJobResultResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/results/{result_name}/download:
+    get:
+      tags:
+      - Data Designer
+      summary: Download Job Result
+      operationId: download_job_result_v1_data_designer_jobs__job_id__results__result_name__download_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: result_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Result Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Not Found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/jobs/{job_id}/status:
+    get:
+      tags:
+      - Data Designer
+      summary: Get Job Status
+      operationId: get_job_status_v1_data_designer_jobs__job_id__status_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformJobStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/preview:
+    post:
+      tags:
+      - Data Designer
+      summary: Generate preview Data Designer
+      operationId: preview_v1_data_designer_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/jsonl:
+              schema:
+                $ref: '#/components/schemas/PreviewMessage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/data-designer/settings:
+    get:
+      tags:
+      - Data Designer
+      summary: Get Data Designer settings
+      description: Returns the settings available for Data Designer.
+      operationId: get_settings_v1_data_designer_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+components:
+  schemas:
+    BernoulliMixtureSamplerParams:
+      properties:
+        p:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: P
+          description: Bernoulli distribution probability of success.
+        dist_name:
+          type: string
+          title: Dist Name
+          description: Mixture distribution name. Samples will be equal to the distribution
+            sample with probability `p`, otherwise equal to 0. Must be a valid scipy.stats
+            distribution name.
+        dist_params:
+          additionalProperties: true
+          type: object
+          title: Dist Params
+          description: Parameters of the scipy.stats distribution given in `dist_name`.
+        sampler_type:
+          type: string
+          const: bernoulli_mixture
+          title: Sampler Type
+          default: bernoulli_mixture
+      additionalProperties: false
+      type: object
+      required:
+      - p
+      - dist_name
+      - dist_params
+      title: BernoulliMixtureSamplerParams
+      description: "Parameters for sampling from a Bernoulli mixture distribution.\n\
+        \nCombines a Bernoulli distribution with another continuous distribution,\
+        \ creating a mixture\nwhere values are either 0 (with probability 1-p) or\
+        \ sampled from the specified distribution\n(with probability p). This is useful\
+        \ for modeling scenarios with many zero values mixed with\na continuous distribution\
+        \ of non-zero values.\n\nCommon use cases include modeling sparse events,\
+        \ zero-inflated data, or situations where\nan outcome either doesn't occur\
+        \ (0) or follows a specific distribution when it does occur.\n\nAttributes:\n\
+        \    p: Probability of sampling from the mixture distribution (non-zero outcome).\n\
+        \        Must be between 0.0 and 1.0 (inclusive). With probability 1-p, the\
+        \ sample is 0.\n    dist_name: Name of the scipy.stats distribution to sample\
+        \ from when outcome is non-zero.\n        Must be a valid scipy.stats distribution\
+        \ name (e.g., \"norm\", \"gamma\", \"expon\").\n    dist_params: Parameters\
+        \ for the specified scipy.stats distribution."
+    BernoulliSamplerParams:
+      properties:
+        p:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: P
+          description: Probability of success.
+        sampler_type:
+          type: string
+          const: bernoulli
+          title: Sampler Type
+          default: bernoulli
+      additionalProperties: false
+      type: object
+      required:
+      - p
+      title: BernoulliSamplerParams
+      description: "Parameters for sampling from a Bernoulli distribution.\n\nSamples\
+        \ binary values (0 or 1) representing the outcome of a single trial with a\
+        \ fixed\nprobability of success. This is the simplest discrete probability\
+        \ distribution, useful for\nmodeling binary outcomes like success/failure,\
+        \ yes/no, or true/false.\n\nAttributes:\n    p: Probability of success (sampling\
+        \ 1). Must be between 0.0 and 1.0 (inclusive).\n        The probability of\
+        \ failure (sampling 0) is automatically 1 - p."
+    BinomialSamplerParams:
+      properties:
+        n:
+          type: integer
+          title: N
+          description: Number of trials.
+        p:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: P
+          description: Probability of success on each trial.
+        sampler_type:
+          type: string
+          const: binomial
+          title: Sampler Type
+          default: binomial
+      additionalProperties: false
+      type: object
+      required:
+      - n
+      - p
+      title: BinomialSamplerParams
+      description: "Parameters for sampling from a Binomial distribution.\n\nSamples\
+        \ integer values representing the number of successes in a fixed number of\
+        \ independent\nBernoulli trials, each with the same probability of success.\
+        \ Commonly used to model the number\nof successful outcomes in repeated experiments.\n\
+        \nAttributes:\n    n: Number of independent trials. Must be a positive integer.\n\
+        \    p: Probability of success on each trial. Must be between 0.0 and 1.0\
+        \ (inclusive)."
+    BuildStage:
+      type: string
+      enum:
+      - pre_batch
+      - post_batch
+      - pre_generation
+      - post_generation
+      title: BuildStage
+    CategorySamplerParams:
+      properties:
+        values:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+            - type: number
+          type: array
+          minItems: 1
+          title: Values
+          description: List of possible categorical values that can be sampled from.
+        weights:
+          type: array
+          items:
+            type: number
+          title: Weights
+          description: List of unnormalized probability weights to assigned to each
+            value, in order. Larger values will be sampled with higher probability.
+        sampler_type:
+          type: string
+          const: category
+          title: Sampler Type
+          default: category
+      additionalProperties: false
+      type: object
+      required:
+      - values
+      title: CategorySamplerParams
+      description: "Parameters for categorical sampling with optional probability\
+        \ weighting.\n\nSamples values from a discrete set of categories. When weights\
+        \ are provided, values are\nsampled according to their assigned probabilities.\
+        \ Without weights, uniform sampling is used.\n\nAttributes:\n    values: List\
+        \ of possible categorical values to sample from. Can contain strings, integers,\n\
+        \        or floats. Must contain at least one value.\n    weights: Optional\
+        \ unnormalized probability weights for each value. If provided, must be\n\
+        \        the same length as `values`. Weights are automatically normalized\
+        \ to sum to 1.0.\n        Larger weights result in higher sampling probability\
+        \ for the corresponding value."
+    CodeLang:
+      type: string
+      enum:
+      - go
+      - javascript
+      - java
+      - kotlin
+      - python
+      - ruby
+      - rust
+      - scala
+      - swift
+      - typescript
+      - sql:sqlite
+      - sql:tsql
+      - sql:bigquery
+      - sql:mysql
+      - sql:postgres
+      - sql:ansi
+      title: CodeLang
+    CodeValidatorParams:
+      properties:
+        code_lang:
+          allOf:
+          - $ref: '#/components/schemas/CodeLang'
+          description: The language of the code to validate
+      additionalProperties: false
+      type: object
+      required:
+      - code_lang
+      title: CodeValidatorParams
+      description: "Configuration for code validation. Supports Python and SQL code\
+        \ validation.\n\nAttributes:\n    code_lang: The language of the code to validate.\
+        \ Supported values include: `python`,\n        `sql:sqlite`, `sql:postgres`,\
+        \ `sql:mysql`, `sql:tsql`, `sql:bigquery`, `sql:ansi`."
+    ColumnInequalityConstraint:
+      properties:
+        target_column:
+          type: string
+          title: Target Column
+        rhs:
+          type: string
+          title: Rhs
+        operator:
+          $ref: '#/components/schemas/InequalityOperator'
+      additionalProperties: false
+      type: object
+      required:
+      - target_column
+      - rhs
+      - operator
+      title: ColumnInequalityConstraint
+    DataDesignerConfig:
+      properties:
+        columns:
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/ExpressionColumnConfig'
+            - $ref: '#/components/schemas/LLMCodeColumnConfig'
+            - $ref: '#/components/schemas/LLMJudgeColumnConfig'
+            - $ref: '#/components/schemas/LLMStructuredColumnConfig'
+            - $ref: '#/components/schemas/LLMTextColumnConfig'
+            - $ref: '#/components/schemas/SamplerColumnConfig'
+            - $ref: '#/components/schemas/SeedDatasetColumnConfig'
+            - $ref: '#/components/schemas/ValidationColumnConfig'
+            discriminator:
+              propertyName: column_type
+              mapping:
+                expression: '#/components/schemas/ExpressionColumnConfig'
+                llm-code: '#/components/schemas/LLMCodeColumnConfig-Input'
+                llm-judge: '#/components/schemas/LLMJudgeColumnConfig-Input'
+                llm-structured: '#/components/schemas/LLMStructuredColumnConfig-Input'
+                llm-text: '#/components/schemas/LLMTextColumnConfig-Input'
+                sampler: '#/components/schemas/SamplerColumnConfig'
+                seed-dataset: '#/components/schemas/SeedDatasetColumnConfig'
+                validation: '#/components/schemas/ValidationColumnConfig-Input'
+          type: array
+          minItems: 1
+          title: Columns
+        model_configs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelConfigInput'
+          title: Model Configs
+        seed_config:
+          $ref: '#/components/schemas/SeedConfig'
+        constraints:
+          type: array
+          items:
+            anyOf:
+            - $ref: '#/components/schemas/ScalarInequalityConstraint'
+            - $ref: '#/components/schemas/ColumnInequalityConstraint'
+          title: Constraints
+        profilers:
+          type: array
+          items:
+            $ref: '#/components/schemas/JudgeScoreProfilerConfig'
+          title: Profilers
+        processors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessorConfig'
+          title: Processors
+      additionalProperties: false
+      type: object
+      required:
+      - columns
+      title: DataDesignerConfig
+      description: "Configuration for NeMo Data Designer.\n\nThis class defines the\
+        \ main configuration structure for NeMo Data Designer,\nwhich orchestrates\
+        \ the generation of synthetic data.\n\nAttributes:\n    columns: Required\
+        \ list of column configurations defining how each column\n        should be\
+        \ generated. Must contain at least one column.\n    model_configs: Optional\
+        \ list of model configurations for LLM-based generation.\n        Each model\
+        \ config defines the model, provider, and inference parameters.\n    seed_config:\
+        \ Optional seed dataset settings to use for generation.\n    constraints:\
+        \ Optional list of column constraints.\n    profilers: Optional list of column\
+        \ profilers for analyzing generated data characteristics."
+    DataDesignerJob:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        project:
+          type: string
+          title: Project
+        namespace:
+          type: string
+          title: Namespace
+        created_at:
+          type: string
+          title: Created At
+        updated_at:
+          type: string
+          title: Updated At
+        spec:
+          $ref: '#/components/schemas/DataDesignerJobConfig'
+        status:
+          $ref: '#/components/schemas/PlatformJobStatus'
+        status_details:
+          type: object
+          additionalProperties: true
+          title: Status Details
+        error_details:
+          type: object
+          additionalProperties: true
+          title: Error Details
+        ownership:
+          type: object
+          additionalProperties: true
+          title: Ownership
+        custom_fields:
+          type: object
+          additionalProperties: true
+          title: Custom Fields
+      type: object
+      required:
+      - name
+      - spec
+      title: DataDesignerJob
+    DataDesignerJobConfig:
+      properties:
+        num_records:
+          type: integer
+          title: Num Records
+        config:
+          $ref: '#/components/schemas/DataDesignerConfig'
+      type: object
+      required:
+      - num_records
+      - config
+      title: DataDesignerJobConfig
+    DataDesignerJobRequest:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        namespace:
+          type: string
+          title: Namespace
+        project:
+          type: string
+          title: Project
+        spec:
+          $ref: '#/components/schemas/DataDesignerJobConfig'
+        ownership:
+          type: object
+          additionalProperties: true
+          title: Ownership
+        custom_fields:
+          type: object
+          additionalProperties: true
+          title: Custom Fields
+      type: object
+      required:
+      - spec
+      title: DataDesignerJobRequest
+    DataDesignerJobsListFilter:
+      properties:
+        created_at:
+          allOf:
+          - $ref: '#/components/schemas/DatetimeFilter'
+          description: Jobs created at 'gte' datetime or 'lte' datetime.
+        name:
+          type: string
+          title: Name
+          description: Name of the job.
+        namespace:
+          type: string
+          title: Namespace
+          description: Namespace of the job.
+        project:
+          type: string
+          title: Project
+          description: Project containing the job.
+        status:
+          allOf:
+          - $ref: '#/components/schemas/PlatformJobStatus'
+          description: The current status.
+        updated_at:
+          allOf:
+          - $ref: '#/components/schemas/DatetimeFilter'
+          description: Jobs updated at 'gte' datetime or 'lte' datetime.
+      additionalProperties: false
+      type: object
+      title: DataDesignerJobsListFilter
+    DataDesignerJobsPage:
+      properties:
+        object:
+          type: string
+          title: Object
+          description: The type of object being returned.
+          default: list
+        data:
+          items:
+            $ref: '#/components/schemas/DataDesignerJob'
+          type: array
+          title: Data
+        pagination:
+          allOf:
+          - $ref: '#/components/schemas/PaginationData'
+          description: Pagination information.
+        sort:
+          type: string
+          title: Sort
+          description: The field on which the results are sorted.
+        filter:
+          allOf:
+          - $ref: '#/components/schemas/DataDesignerJobsListFilter'
+          description: Filtering information.
+        search:
+          allOf:
+          - $ref: '#/components/schemas/DataDesignerJobsSearch'
+          description: Search information.
+      type: object
+      required:
+      - data
+      title: DataDesignerJobsPage
+    DataDesignerJobsSearch:
+      properties:
+        name:
+          type: array
+          items:
+            type: string
+          title: Name
+          description: Search jobs where name contains any of these strings.
+        project:
+          type: array
+          items:
+            type: string
+          title: Project
+          description: Search jobs where project contains any of these strings.
+      type: object
+      title: DataDesignerJobsSearch
+    DataDesignerJobsSortField:
+      type: string
+      enum:
+      - created_at
+      - -created_at
+      - updated_at
+      - -updated_at
+      title: DataDesignerJobsSortField
+    DatetimeFilter:
+      properties:
+        gte:
+          type: string
+          title: Gte
+          description: Filter for results greater than or equal to this datetime.
+        lte:
+          type: string
+          title: Lte
+          description: Filter for results less than or equal to this datetime.
+      additionalProperties: false
+      type: object
+      title: DatetimeFilter
+    DatetimeSamplerParams:
+      properties:
+        start:
+          type: string
+          title: Start
+          description: Earliest possible datetime for sampling range, inclusive.
+        end:
+          type: string
+          title: End
+          description: Latest possible datetime for sampling range, inclusive.
+        unit:
+          type: string
+          enum:
+          - Y
+          - M
+          - D
+          - h
+          - m
+          - s
+          title: Unit
+          description: Sampling units, e.g. the smallest possible time interval between
+            samples.
+          default: D
+        sampler_type:
+          type: string
+          const: datetime
+          title: Sampler Type
+          default: datetime
+      additionalProperties: false
+      type: object
+      required:
+      - start
+      - end
+      title: DatetimeSamplerParams
+      description: "Parameters for uniform datetime sampling within a specified range.\n\
+        \nSamples datetime values uniformly between a start and end date with a specified\
+        \ granularity.\nThe sampling unit determines the smallest possible time interval\
+        \ between consecutive samples.\n\nAttributes:\n    start: Earliest possible\
+        \ datetime for the sampling range (inclusive). Must be a valid\n        datetime\
+        \ string parseable by pandas.to_datetime().\n    end: Latest possible datetime\
+        \ for the sampling range (inclusive). Must be a valid\n        datetime string\
+        \ parseable by pandas.to_datetime().\n    unit: Time unit for sampling granularity.\
+        \ Options:\n        - \"Y\": Years\n        - \"M\": Months\n        - \"\
+        D\": Days (default)\n        - \"h\": Hours\n        - \"m\": Minutes\n  \
+        \      - \"s\": Seconds"
+    DisplayModelProvider:
+      properties:
+        name:
+          type: string
+          title: Name
+        provider_type:
+          type: string
+          title: Provider Type
+          default: openai
+        extra_body:
+          type: object
+          additionalProperties: true
+          title: Extra Body
+        allowed_models:
+          type: array
+          items:
+            type: string
+          title: Allowed Models
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      title: DisplayModelProvider
+    DistributionType:
+      type: string
+      enum:
+      - uniform
+      - manual
+      title: DistributionType
+    ExpressionColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: expression
+          title: Column Type
+          default: expression
+        expr:
+          type: string
+          title: Expr
+        dtype:
+          type: string
+          enum:
+          - int
+          - float
+          - str
+          - bool
+          title: Dtype
+          default: str
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - expr
+      title: ExpressionColumnConfig
+      description: "Configuration for derived columns using Jinja2 expressions.\n\n\
+        Expression columns compute values by evaluating Jinja2 templates that reference\
+        \ other\ncolumns. Useful for transformations, concatenations, conditional\
+        \ logic, and derived\nfeatures without requiring LLM generation. The expression\
+        \ is evaluated row-by-row.\n\nAttributes:\n    expr: Jinja2 expression to\
+        \ evaluate. Can reference other column values using\n        {{ column_name\
+        \ }} syntax. Supports filters, conditionals, and arithmetic.\n        Must\
+        \ be a valid, non-empty Jinja2 template.\n    dtype: Data type to cast the\
+        \ result to. Must be one of \"int\", \"float\", \"str\", or \"bool\".\n  \
+        \      Defaults to \"str\". Type conversion is applied after expression evaluation.\n\
+        \    column_type: Discriminator field, always \"expression\" for this configuration\
+        \ type."
+    FileStorageType:
+      type: string
+      enum:
+      - nds
+      title: FileStorageType
+    GaussianSamplerParams:
+      properties:
+        mean:
+          type: number
+          title: Mean
+          description: Mean of the Gaussian distribution
+        stddev:
+          type: number
+          title: Stddev
+          description: Standard deviation of the Gaussian distribution
+        decimal_places:
+          type: integer
+          title: Decimal Places
+          description: Number of decimal places to round the sampled values to.
+        sampler_type:
+          type: string
+          const: gaussian
+          title: Sampler Type
+          default: gaussian
+      additionalProperties: false
+      type: object
+      required:
+      - mean
+      - stddev
+      title: GaussianSamplerParams
+      description: "Parameters for sampling from a Gaussian (Normal) distribution.\n\
+        \nSamples continuous values from a normal distribution characterized by its\
+        \ mean and standard\ndeviation. The Gaussian distribution is one of the most\
+        \ commonly used probability distributions,\nappearing naturally in many real-world\
+        \ phenomena due to the Central Limit Theorem.\n\nAttributes:\n    mean: Mean\
+        \ (center) of the Gaussian distribution. This is the expected value and the\n\
+        \        location of the distribution's peak.\n    stddev: Standard deviation\
+        \ of the Gaussian distribution. Controls the spread or width\n        of the\
+        \ distribution. Must be positive.\n    decimal_places: Optional number of\
+        \ decimal places to round sampled values to. If None,\n        values are\
+        \ not rounded."
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ImageContext:
+      properties:
+        modality:
+          allOf:
+          - $ref: '#/components/schemas/Modality'
+          default: image
+        column_name:
+          type: string
+          title: Column Name
+        data_type:
+          $ref: '#/components/schemas/ModalityDataType'
+        image_format:
+          $ref: '#/components/schemas/ImageFormat'
+      type: object
+      required:
+      - column_name
+      - data_type
+      title: ImageContext
+    ImageFormat:
+      type: string
+      enum:
+      - png
+      - jpg
+      - jpeg
+      - gif
+      - webp
+      title: ImageFormat
+    IndexRange:
+      properties:
+        start:
+          type: integer
+          minimum: 0.0
+          title: Start
+          description: The start index of the index range (inclusive)
+        end:
+          type: integer
+          minimum: 0.0
+          title: End
+          description: The end index of the index range (inclusive)
+      additionalProperties: false
+      type: object
+      required:
+      - start
+      - end
+      title: IndexRange
+    InequalityOperator:
+      type: string
+      enum:
+      - lt
+      - le
+      - gt
+      - ge
+      title: InequalityOperator
+    InferenceParametersInput:
+      properties:
+        temperature:
+          anyOf:
+          - type: number
+          - $ref: '#/components/schemas/UniformDistribution'
+          - $ref: '#/components/schemas/ManualDistribution'
+          - type: 'null'
+          title: Temperature
+        top_p:
+          anyOf:
+          - type: number
+          - $ref: '#/components/schemas/UniformDistribution'
+          - $ref: '#/components/schemas/ManualDistribution'
+          - type: 'null'
+          title: Top P
+        max_tokens:
+          type: integer
+          title: Max Tokens
+        max_parallel_requests:
+          type: integer
+          minimum: 1.0
+          title: Max Parallel Requests
+          default: 4
+        timeout:
+          type: integer
+          title: Timeout
+        extra_body:
+          type: object
+          additionalProperties: true
+          title: Extra Body
+      additionalProperties: false
+      type: object
+      title: InferenceParametersInput
+    InferenceParametersOutput:
+      properties:
+        temperature:
+          anyOf:
+          - type: number
+          - $ref: '#/components/schemas/UniformDistribution'
+          - $ref: '#/components/schemas/ManualDistribution'
+          - type: 'null'
+          title: Temperature
+        top_p:
+          anyOf:
+          - type: number
+          - $ref: '#/components/schemas/UniformDistribution'
+          - $ref: '#/components/schemas/ManualDistribution'
+          - type: 'null'
+          title: Top P
+        max_tokens:
+          type: integer
+          title: Max Tokens
+        max_parallel_requests:
+          type: integer
+          minimum: 1.0
+          title: Max Parallel Requests
+          default: 4
+        timeout:
+          type: integer
+          title: Timeout
+        extra_body:
+          type: object
+          additionalProperties: true
+          title: Extra Body
+      additionalProperties: false
+      type: object
+      title: InferenceParametersOutput
+    JudgeScoreProfilerConfig:
+      properties:
+        model_alias:
+          type: string
+          title: Model Alias
+        summary_score_sample_size:
+          type: integer
+          title: Summary Score Sample Size
+          default: 20
+      additionalProperties: false
+      type: object
+      required:
+      - model_alias
+      title: JudgeScoreProfilerConfig
+    LLMCodeColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: llm-code
+          title: Column Type
+          default: llm-code
+        prompt:
+          type: string
+          title: Prompt
+        model_alias:
+          type: string
+          title: Model Alias
+        system_prompt:
+          type: string
+          title: System Prompt
+        multi_modal_context:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageContext'
+          title: Multi Modal Context
+        code_lang:
+          $ref: '#/components/schemas/CodeLang'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - prompt
+      - model_alias
+      - code_lang
+      title: LLMCodeColumnConfig
+      description: "Configuration for code generation columns using Large Language\
+        \ Models.\n\nExtends LLMTextColumnConfig to generate code snippets in specific\
+        \ programming languages\nor SQL dialects. The generated code is automatically\
+        \ extracted from markdown code blocks\nfor the specified language. Inherits\
+        \ all prompt templating capabilities.\n\nAttributes:\n    code_lang: Programming\
+        \ language or SQL dialect for code generation. Supported\n        values include:\
+        \ \"python\", \"javascript\", \"typescript\", \"java\", \"kotlin\", \"go\"\
+        ,\n        \"rust\", \"ruby\", \"scala\", \"swift\", \"sql:sqlite\", \"sql:postgres\"\
+        , \"sql:mysql\",\n        \"sql:tsql\", \"sql:bigquery\", \"sql:ansi\". See\
+        \ CodeLang enum for complete list.\n    column_type: Discriminator field,\
+        \ always \"llm-code\" for this configuration type."
+    LLMJudgeColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: llm-judge
+          title: Column Type
+          default: llm-judge
+        prompt:
+          type: string
+          title: Prompt
+        model_alias:
+          type: string
+          title: Model Alias
+        system_prompt:
+          type: string
+          title: System Prompt
+        multi_modal_context:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageContext'
+          title: Multi Modal Context
+        scores:
+          items:
+            $ref: '#/components/schemas/Score'
+          type: array
+          minItems: 1
+          title: Scores
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - prompt
+      - model_alias
+      - scores
+      title: LLMJudgeColumnConfig
+      description: "Configuration for LLM-as-a-judge quality assessment and scoring\
+        \ columns.\n\nExtends LLMTextColumnConfig to create judge columns that evaluate\
+        \ and score other\ngenerated content based on the defined criteria. Useful\
+        \ for quality assessment, preference\nranking, and multi-dimensional evaluation\
+        \ of generated data.\n\nAttributes:\n    scores: List of Score objects defining\
+        \ the evaluation dimensions. Each score\n        represents a different aspect\
+        \ to evaluate (e.g., accuracy, relevance, fluency).\n        Must contain\
+        \ at least one score.\n    column_type: Discriminator field, always \"llm-judge\"\
+        \ for this configuration type."
+    LLMStructuredColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: llm-structured
+          title: Column Type
+          default: llm-structured
+        prompt:
+          type: string
+          title: Prompt
+        model_alias:
+          type: string
+          title: Model Alias
+        system_prompt:
+          type: string
+          title: System Prompt
+        multi_modal_context:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageContext'
+          title: Multi Modal Context
+        output_format:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - {}
+          title: Output Format
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - prompt
+      - model_alias
+      - output_format
+      title: LLMStructuredColumnConfig
+      description: "Configuration for structured JSON generation columns using Large\
+        \ Language Models.\n\nExtends LLMTextColumnConfig to generate structured data\
+        \ conforming to a specified schema.\nUses JSON schema or Pydantic models to\
+        \ define the expected output structure, enabling\ntype-safe and validated\
+        \ structured output generation. Inherits prompt templating capabilities.\n\
+        \nAttributes:\n    output_format: The schema defining the expected output\
+        \ structure. Can be either:\n        - A Pydantic BaseModel class (recommended)\n\
+        \        - A JSON schema dictionary\n    column_type: Discriminator field,\
+        \ always \"llm-structured\" for this configuration type."
+    LLMTextColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: llm-text
+          title: Column Type
+          default: llm-text
+        prompt:
+          type: string
+          title: Prompt
+        model_alias:
+          type: string
+          title: Model Alias
+        system_prompt:
+          type: string
+          title: System Prompt
+        multi_modal_context:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageContext'
+          title: Multi Modal Context
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - prompt
+      - model_alias
+      title: LLMTextColumnConfig
+      description: "Configuration for text generation columns using Large Language\
+        \ Models.\n\nLLM text columns generate free-form text content using language\
+        \ models via LiteLLM.\nPrompts support Jinja2 templating to reference values\
+        \ from other columns, enabling\ncontext-aware generation. The generated text\
+        \ can optionally include reasoning traces\nwhen models support extended thinking.\n\
+        \nAttributes:\n    prompt: Prompt template for text generation. Supports Jinja2\
+        \ syntax to\n        reference other columns (e.g., \"Write a story about\
+        \ {{ character_name }}\").\n        Must be a valid Jinja2 template.\n   \
+        \ model_alias: Alias of the model configuration to use for generation.\n \
+        \       Must match a model alias defined when initializing the DataDesignerConfigBuilder.\n\
+        \    system_prompt: Optional system prompt to set model behavior and constraints.\n\
+        \        Also supports Jinja2 templating. If provided, must be a valid Jinja2\
+        \ template.\n        Do not put any output parsing instructions in the system\
+        \ prompt. Instead,\n        use the appropriate column type for the output\
+        \ you want to generate - e.g.,\n        `LLMStructuredColumnConfig` for structured\
+        \ output, `LLMCodeColumnConfig` for code.\n    multi_modal_context: Optional\
+        \ list of image contexts for multi-modal generation.\n        Enables vision-capable\
+        \ models to generate text based on image inputs.\n    column_type: Discriminator\
+        \ field, always \"llm-text\" for this configuration type."
+    LocalCallableValidatorParams:
+      properties:
+        validation_function:
+          title: Validation Function
+          description: Function (Callable[[pd.DataFrame], pd.DataFrame]) to validate
+            the data
+        output_schema:
+          type: object
+          additionalProperties: true
+          title: Output Schema
+          description: Expected schema for local callable validator's output
+      additionalProperties: false
+      type: object
+      required:
+      - validation_function
+      title: LocalCallableValidatorParams
+      description: "Configuration for local callable validation. Expects a function\
+        \ to be passed that validates the data.\n\nAttributes:\n    validation_function:\
+        \ Function (`Callable[[pd.DataFrame], pd.DataFrame]`) to validate the\n  \
+        \      data. Output must contain a column `is_valid` of type `bool`.\n   \
+        \ output_schema: The JSON schema for the local callable validator's output.\
+        \ If not provided,\n        the output will not be validated."
+    ManualDistribution:
+      properties:
+        distribution_type:
+          allOf:
+          - $ref: '#/components/schemas/DistributionType'
+          default: manual
+        params:
+          $ref: '#/components/schemas/ManualDistributionParams'
+      additionalProperties: false
+      type: object
+      required:
+      - params
+      title: ManualDistribution
+    ManualDistributionParams:
+      properties:
+        values:
+          items:
+            type: number
+          type: array
+          minItems: 1
+          title: Values
+        weights:
+          type: array
+          items:
+            type: number
+          title: Weights
+      additionalProperties: false
+      type: object
+      required:
+      - values
+      title: ManualDistributionParams
+    MessageType:
+      type: string
+      enum:
+      - analysis
+      - dataset
+      - heartbeat
+      - log
+      title: MessageType
+    Modality:
+      type: string
+      enum:
+      - image
+      title: Modality
+    ModalityDataType:
+      type: string
+      enum:
+      - url
+      - base64
+      title: ModalityDataType
+    ModelConfigInput:
+      properties:
+        alias:
+          type: string
+          title: Alias
+        model:
+          type: string
+          title: Model
+        inference_parameters:
+          $ref: '#/components/schemas/InferenceParametersInput'
+        provider:
+          type: string
+          title: Provider
+      additionalProperties: false
+      type: object
+      required:
+      - alias
+      - model
+      title: ModelConfigInput
+    ModelConfigOutput:
+      properties:
+        alias:
+          type: string
+          title: Alias
+        model:
+          type: string
+          title: Model
+        inference_parameters:
+          $ref: '#/components/schemas/InferenceParametersOutput'
+        provider:
+          type: string
+          title: Provider
+      additionalProperties: false
+      type: object
+      required:
+      - alias
+      - model
+      title: ModelConfigOutput
+    PaginationData:
+      properties:
+        page:
+          type: integer
+          title: Page
+          description: The current page number.
+        page_size:
+          type: integer
+          title: Page Size
+          description: The page size used for the query.
+        current_page_size:
+          type: integer
+          title: Current Page Size
+          description: The size for the current page.
+        total_pages:
+          type: integer
+          title: Total Pages
+          description: The total number of pages.
+        total_results:
+          type: integer
+          title: Total Results
+          description: The total number of results.
+      type: object
+      required:
+      - page
+      - page_size
+      - current_page_size
+      - total_pages
+      - total_results
+      title: PaginationData
+    PartitionBlock:
+      properties:
+        index:
+          type: integer
+          minimum: 0.0
+          title: Index
+          description: The index of the partition to sample from
+          default: 0
+        num_partitions:
+          type: integer
+          minimum: 1.0
+          title: Num Partitions
+          description: The total number of partitions in the dataset
+          default: 1
+      additionalProperties: false
+      type: object
+      title: PartitionBlock
+    PersonFromFakerSamplerParams:
+      properties:
+        locale:
+          type: string
+          title: Locale
+          description: Locale string, determines the language and geographic locale
+            that a synthetic person will be sampled from. E.g, en_US, en_GB, fr_FR,
+            ...
+          default: en_US
+        sex:
+          type: string
+          title: Sex
+          description: If specified, then only synthetic people of the specified sex
+            will be sampled.
+        city:
+          anyOf:
+          - type: string
+          - items:
+              type: string
+            type: array
+          title: City
+          description: If specified, then only synthetic people from these cities
+            will be sampled.
+        age_range:
+          items:
+            type: integer
+          type: array
+          maxItems: 2
+          minItems: 2
+          title: Age Range
+          description: If specified, then only synthetic people within this age range
+            will be sampled.
+          default:
+          - 18
+          - 114
+        sampler_type:
+          type: string
+          const: person_from_faker
+          title: Sampler Type
+          default: person_from_faker
+      additionalProperties: false
+      type: object
+      title: PersonFromFakerSamplerParams
+    PersonSamplerParams:
+      properties:
+        locale:
+          type: string
+          title: Locale
+          description: 'Locale that determines the language and geographic location
+            that a synthetic person will be sampled from. Must be a locale supported
+            by a managed Nemotron Personas dataset. Managed datasets exist for the
+            following locales: en_US, ja_JP, en_IN, hi_IN.'
+          default: en_US
+        sex:
+          type: string
+          title: Sex
+          description: If specified, then only synthetic people of the specified sex
+            will be sampled.
+        city:
+          anyOf:
+          - type: string
+          - items:
+              type: string
+            type: array
+          title: City
+          description: If specified, then only synthetic people from these cities
+            will be sampled.
+        age_range:
+          items:
+            type: integer
+          type: array
+          maxItems: 2
+          minItems: 2
+          title: Age Range
+          description: If specified, then only synthetic people within this age range
+            will be sampled.
+          default:
+          - 18
+          - 114
+        select_field_values:
+          type: object
+          additionalProperties:
+            items:
+              type: string
+            type: array
+          title: Select Field Values
+          description: Sample synthetic people with the specified field values. This
+            is meant to be a flexible argument for selecting a subset of the population
+            from the managed dataset. Note that this sampler does not support rare
+            combinations of field values and will likely fail if your desired subset
+            is not well-represented in the managed Nemotron Personas dataset. We generally
+            recommend using the `sex`, `city`, and `age_range` arguments to filter
+            the population when possible.
+          examples:
+          - education_level:
+            - high_school
+            - some_college
+            - bachelors
+            state:
+            - NY
+            - CA
+            - OH
+            - TX
+            - NV
+        with_synthetic_personas:
+          type: boolean
+          title: With Synthetic Personas
+          description: If True, then append synthetic persona columns to each generated
+            person.
+          default: false
+        sampler_type:
+          type: string
+          const: person
+          title: Sampler Type
+          default: person
+      additionalProperties: false
+      type: object
+      title: PersonSamplerParams
+      description: "Parameters for sampling synthetic person data with demographic\
+        \ attributes.\n\nGenerates realistic synthetic person data including names,\
+        \ addresses, phone numbers, and other\ndemographic information. Data can be\
+        \ sampled from managed datasets (when available) or generated\nusing Faker.\
+        \ The sampler supports filtering by locale, sex, age, geographic location,\
+        \ and can\noptionally include synthetic persona descriptions.\n\nAttributes:\n\
+        \    locale: Locale string determining the language and geographic region\
+        \ for synthetic people.\n        Format: language_COUNTRY (e.g., \"en_US\"\
+        , \"en_GB\", \"fr_FR\", \"de_DE\", \"es_ES\", \"ja_JP\").\n        Defaults\
+        \ to \"en_US\".\n    sex: If specified, filters to only sample people of the\
+        \ specified sex. Options: \"Male\" or\n        \"Female\". If None, samples\
+        \ both sexes.\n    city: If specified, filters to only sample people from\
+        \ the specified city or cities. Can be\n        a single city name (string)\
+        \ or a list of city names.\n    age_range: Two-element list [min_age, max_age]\
+        \ specifying the age range to sample from\n        (inclusive). Defaults to\
+        \ a standard age range. Both values must be between minimum and\n        maximum\
+        \ allowed ages.\n    with_synthetic_personas: If True, appends additional\
+        \ synthetic persona columns including\n        personality traits, interests,\
+        \ and background descriptions. Only supported for certain\n        locales\
+        \ with managed datasets.\n    sample_dataset_when_available: If True, samples\
+        \ from curated managed datasets when available\n        for the specified\
+        \ locale. If False or unavailable, falls back to Faker-generated data.\n \
+        \       Managed datasets typically provide more realistic and diverse synthetic\
+        \ people."
+    PlatformJobListResultResponse:
+      properties:
+        object:
+          type: string
+          title: Object
+          description: The type of object being returned.
+          default: list
+        data:
+          items:
+            $ref: '#/components/schemas/PlatformJobResultResponse'
+          type: array
+          title: Data
+      type: object
+      required:
+      - data
+      title: PlatformJobListResultResponse
+    PlatformJobLog:
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        job_id:
+          type: string
+          title: Job Id
+        job_step:
+          type: string
+          title: Job Step
+        job_task:
+          type: string
+          title: Job Task
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - timestamp
+      - job_id
+      - job_step
+      - job_task
+      - message
+      title: PlatformJobLog
+    PlatformJobLogPage:
+      properties:
+        object:
+          type: string
+          title: Object
+          description: The type of object being returned.
+          default: list
+        data:
+          items:
+            $ref: '#/components/schemas/PlatformJobLog'
+          type: array
+          title: Data
+        total:
+          type: integer
+          title: Total
+        next_page:
+          type: string
+          title: Next Page
+        prev_page:
+          type: string
+          title: Prev Page
+      type: object
+      required:
+      - data
+      - total
+      - next_page
+      - prev_page
+      title: PlatformJobLogPage
+    PlatformJobResultResponse:
+      properties:
+        result_name:
+          type: string
+          title: Result Name
+        job_id:
+          type: string
+          title: Job Id
+        namespace:
+          type: string
+          title: Namespace
+        project:
+          type: string
+          title: Project
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        artifact_url:
+          type: string
+          title: Artifact Url
+        artifact_storage_type:
+          $ref: '#/components/schemas/FileStorageType'
+      type: object
+      required:
+      - result_name
+      - job_id
+      - namespace
+      - artifact_url
+      - artifact_storage_type
+      title: PlatformJobResultResponse
+    PlatformJobStatus:
+      type: string
+      enum:
+      - created
+      - pending
+      - active
+      - cancelled
+      - cancelling
+      - error
+      - completed
+      - paused
+      - pausing
+      - resuming
+      title: PlatformJobStatus
+      description: 'Enumeration of possible job statuses.
+
+
+        This enum represents the various states a job can be in during its lifecycle,
+
+        from creation to a terminal state.'
+    PlatformJobStatusResponse:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        status:
+          $ref: '#/components/schemas/PlatformJobStatus'
+        status_details:
+          additionalProperties: true
+          type: object
+          title: Status Details
+        error_details:
+          type: object
+          additionalProperties: true
+          title: Error Details
+        steps:
+          items:
+            $ref: '#/components/schemas/PlatformJobStepStatusResponse'
+          type: array
+          title: Steps
+      type: object
+      required:
+      - job_id
+      - status
+      - status_details
+      - error_details
+      - steps
+      title: PlatformJobStatusResponse
+    PlatformJobStepStatusResponse:
+      properties:
+        name:
+          type: string
+          title: Name
+        status:
+          $ref: '#/components/schemas/PlatformJobStatus'
+        status_details:
+          additionalProperties: true
+          type: object
+          title: Status Details
+        error_details:
+          type: object
+          additionalProperties: true
+          title: Error Details
+        tasks:
+          items:
+            $ref: '#/components/schemas/PlatformJobTaskStatusResponse'
+          type: array
+          title: Tasks
+      type: object
+      required:
+      - name
+      - status
+      - status_details
+      - error_details
+      - tasks
+      title: PlatformJobStepStatusResponse
+    PlatformJobTaskStatusResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        status:
+          $ref: '#/components/schemas/PlatformJobStatus'
+        status_details:
+          additionalProperties: true
+          type: object
+          title: Status Details
+        error_details:
+          type: object
+          additionalProperties: true
+          title: Error Details
+        error_stack:
+          type: string
+          title: Error Stack
+      type: object
+      required:
+      - id
+      - status
+      - status_details
+      - error_details
+      - error_stack
+      title: PlatformJobTaskStatusResponse
+    PoissonSamplerParams:
+      properties:
+        mean:
+          type: number
+          title: Mean
+          description: Mean number of events in a fixed interval.
+        sampler_type:
+          type: string
+          const: poisson
+          title: Sampler Type
+          default: poisson
+      additionalProperties: false
+      type: object
+      required:
+      - mean
+      title: PoissonSamplerParams
+      description: "Parameters for sampling from a Poisson distribution.\n\nSamples\
+        \ non-negative integer values representing the number of events occurring\
+        \ in a fixed\ninterval of time or space. The Poisson distribution is commonly\
+        \ used to model count data\nlike the number of arrivals, occurrences, or events\
+        \ per time period.\n\nThe distribution is characterized by a single parameter\
+        \ (mean/rate), and both the mean and\nvariance equal this parameter value.\n\
+        \nAttributes:\n    mean: Mean number of events in the fixed interval (also\
+        \ called rate parameter \u03BB).\n        Must be positive. This represents\
+        \ both the expected value and the variance of the\n        distribution."
+    PreviewMessage:
+      properties:
+        message:
+          type: string
+          title: Message
+        message_type:
+          $ref: '#/components/schemas/MessageType'
+        extra:
+          type: object
+          additionalProperties:
+            type: string
+          title: Extra
+      additionalProperties: false
+      type: object
+      required:
+      - message
+      - message_type
+      title: PreviewMessage
+    PreviewRequest:
+      properties:
+        config:
+          $ref: '#/components/schemas/DataDesignerConfig'
+        num_records:
+          type: integer
+          title: Num Records
+      type: object
+      required:
+      - config
+      title: PreviewRequest
+    ProcessorConfig:
+      properties:
+        build_stage:
+          allOf:
+          - $ref: '#/components/schemas/BuildStage'
+          description: 'The stage at which the processor will run. Supported stages:
+            post_batch'
+      additionalProperties: false
+      type: object
+      required:
+      - build_stage
+      title: ProcessorConfig
+    RemoteValidatorParams:
+      properties:
+        endpoint_url:
+          type: string
+          title: Endpoint Url
+          description: URL of the remote endpoint
+        output_schema:
+          type: object
+          additionalProperties: true
+          title: Output Schema
+          description: Expected schema for remote validator's output
+        timeout:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Timeout
+          description: The timeout for the HTTP request
+          default: 30.0
+        max_retries:
+          type: integer
+          minimum: 0.0
+          title: Max Retries
+          description: The maximum number of retry attempts
+          default: 3
+        retry_backoff:
+          type: number
+          exclusiveMinimum: 1.0
+          title: Retry Backoff
+          description: The backoff factor for the retry delay
+          default: 2.0
+        max_parallel_requests:
+          type: integer
+          minimum: 1.0
+          title: Max Parallel Requests
+          description: The maximum number of parallel requests to make
+          default: 4
+      additionalProperties: false
+      type: object
+      required:
+      - endpoint_url
+      title: RemoteValidatorParams
+      description: "Configuration for remote validation. Sends data to a remote endpoint\
+        \ for validation.\n\nAttributes:\n    endpoint_url: The URL of the remote\
+        \ endpoint.\n    output_schema: The JSON schema for the remote validator's\
+        \ output. If not provided,\n        the output will not be validated.\n  \
+        \  timeout: The timeout for the HTTP request in seconds. Defaults to 30.0.\n\
+        \    max_retries: The maximum number of retry attempts. Defaults to 3.\n \
+        \   retry_backoff: The backoff factor for the retry delay in seconds. Defaults\
+        \ to 2.0.\n    max_parallel_requests: The maximum number of parallel requests\
+        \ to make. Defaults to 4."
+    SamplerColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: sampler
+          title: Column Type
+          default: sampler
+        sampler_type:
+          $ref: '#/components/schemas/SamplerType'
+        params:
+          oneOf:
+          - $ref: '#/components/schemas/SubcategorySamplerParams'
+          - $ref: '#/components/schemas/CategorySamplerParams'
+          - $ref: '#/components/schemas/DatetimeSamplerParams'
+          - $ref: '#/components/schemas/PersonSamplerParams'
+          - $ref: '#/components/schemas/PersonFromFakerSamplerParams'
+          - $ref: '#/components/schemas/TimeDeltaSamplerParams'
+          - $ref: '#/components/schemas/UUIDSamplerParams'
+          - $ref: '#/components/schemas/BernoulliSamplerParams'
+          - $ref: '#/components/schemas/BernoulliMixtureSamplerParams'
+          - $ref: '#/components/schemas/BinomialSamplerParams'
+          - $ref: '#/components/schemas/GaussianSamplerParams'
+          - $ref: '#/components/schemas/PoissonSamplerParams'
+          - $ref: '#/components/schemas/UniformSamplerParams'
+          - $ref: '#/components/schemas/ScipySamplerParams'
+          title: Params
+          discriminator:
+            propertyName: sampler_type
+            mapping:
+              bernoulli: '#/components/schemas/BernoulliSamplerParams'
+              bernoulli_mixture: '#/components/schemas/BernoulliMixtureSamplerParams'
+              binomial: '#/components/schemas/BinomialSamplerParams'
+              category: '#/components/schemas/CategorySamplerParams'
+              datetime: '#/components/schemas/DatetimeSamplerParams'
+              gaussian: '#/components/schemas/GaussianSamplerParams'
+              person: '#/components/schemas/PersonSamplerParams'
+              person_from_faker: '#/components/schemas/PersonFromFakerSamplerParams'
+              poisson: '#/components/schemas/PoissonSamplerParams'
+              scipy: '#/components/schemas/ScipySamplerParams'
+              subcategory: '#/components/schemas/SubcategorySamplerParams'
+              timedelta: '#/components/schemas/TimeDeltaSamplerParams'
+              uniform: '#/components/schemas/UniformSamplerParams'
+              uuid: '#/components/schemas/UUIDSamplerParams'
+        conditional_params:
+          additionalProperties:
+            oneOf:
+            - $ref: '#/components/schemas/SubcategorySamplerParams'
+            - $ref: '#/components/schemas/CategorySamplerParams'
+            - $ref: '#/components/schemas/DatetimeSamplerParams'
+            - $ref: '#/components/schemas/PersonSamplerParams'
+            - $ref: '#/components/schemas/PersonFromFakerSamplerParams'
+            - $ref: '#/components/schemas/TimeDeltaSamplerParams'
+            - $ref: '#/components/schemas/UUIDSamplerParams'
+            - $ref: '#/components/schemas/BernoulliSamplerParams'
+            - $ref: '#/components/schemas/BernoulliMixtureSamplerParams'
+            - $ref: '#/components/schemas/BinomialSamplerParams'
+            - $ref: '#/components/schemas/GaussianSamplerParams'
+            - $ref: '#/components/schemas/PoissonSamplerParams'
+            - $ref: '#/components/schemas/UniformSamplerParams'
+            - $ref: '#/components/schemas/ScipySamplerParams'
+            discriminator:
+              propertyName: sampler_type
+              mapping:
+                bernoulli: '#/components/schemas/BernoulliSamplerParams'
+                bernoulli_mixture: '#/components/schemas/BernoulliMixtureSamplerParams'
+                binomial: '#/components/schemas/BinomialSamplerParams'
+                category: '#/components/schemas/CategorySamplerParams'
+                datetime: '#/components/schemas/DatetimeSamplerParams'
+                gaussian: '#/components/schemas/GaussianSamplerParams'
+                person: '#/components/schemas/PersonSamplerParams'
+                person_from_faker: '#/components/schemas/PersonFromFakerSamplerParams'
+                poisson: '#/components/schemas/PoissonSamplerParams'
+                scipy: '#/components/schemas/ScipySamplerParams'
+                subcategory: '#/components/schemas/SubcategorySamplerParams'
+                timedelta: '#/components/schemas/TimeDeltaSamplerParams'
+                uniform: '#/components/schemas/UniformSamplerParams'
+                uuid: '#/components/schemas/UUIDSamplerParams'
+          type: object
+          title: Conditional Params
+          default: {}
+        convert_to:
+          type: string
+          title: Convert To
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - sampler_type
+      - params
+      title: SamplerColumnConfig
+      description: "Configuration for columns generated using numerical samplers.\n\
+        \nSampler columns provide efficient data generation using numerical samplers\
+        \ for\ncommon data types and distributions. Supported samplers include UUID\
+        \ generation,\ndatetime/timedelta sampling, person generation, category /\
+        \ subcategory sampling,\nand various statistical distributions (uniform, gaussian,\
+        \ binomial, poisson, scipy).\n\nAttributes:\n    sampler_type: Type of sampler\
+        \ to use. Available types include:\n        \"uuid\", \"category\", \"subcategory\"\
+        , \"uniform\", \"gaussian\", \"bernoulli\",\n        \"bernoulli_mixture\"\
+        , \"binomial\", \"poisson\", \"scipy\", \"person\", \"datetime\", \"timedelta\"\
+        .\n    params: Parameters specific to the chosen sampler type. Type varies\
+        \ based on the `sampler_type`\n        (e.g., `CategorySamplerParams`, `UniformSamplerParams`,\
+        \ `PersonSamplerParams`).\n    conditional_params: Optional dictionary for\
+        \ conditional parameters. The dict keys\n        are the conditions that must\
+        \ be met (e.g., \"age > 21\") for the conditional parameters\n        to be\
+        \ used. The values of dict are the parameters to use when the condition is\
+        \ met.\n    convert_to: Optional type conversion to apply after sampling.\
+        \ Must be one of \"float\", \"int\", or \"str\".\n        Useful for converting\
+        \ numerical samples to strings or other types.\n    column_type: Discriminator\
+        \ field, always \"sampler\" for this configuration type.\n\n!!! tip \"Displaying\
+        \ available samplers and their parameters\"\n    The config builder has an\
+        \ `info` attribute that can be used to display the\n    available samplers\
+        \ and their parameters:\n    ```python\n    config_builder.info.display(\"\
+        samplers\")\n    ```"
+    SamplerType:
+      type: string
+      enum:
+      - bernoulli
+      - bernoulli_mixture
+      - binomial
+      - category
+      - datetime
+      - gaussian
+      - person
+      - person_from_faker
+      - poisson
+      - scipy
+      - subcategory
+      - timedelta
+      - uniform
+      - uuid
+      title: SamplerType
+    SamplingStrategy:
+      type: string
+      enum:
+      - ordered
+      - shuffle
+      title: SamplingStrategy
+    ScalarInequalityConstraint:
+      properties:
+        target_column:
+          type: string
+          title: Target Column
+        rhs:
+          type: number
+          title: Rhs
+        operator:
+          $ref: '#/components/schemas/InequalityOperator'
+      additionalProperties: false
+      type: object
+      required:
+      - target_column
+      - rhs
+      - operator
+      title: ScalarInequalityConstraint
+    ScipySamplerParams:
+      properties:
+        dist_name:
+          type: string
+          title: Dist Name
+          description: Name of a scipy.stats distribution.
+        dist_params:
+          additionalProperties: true
+          type: object
+          title: Dist Params
+          description: Parameters of the scipy.stats distribution given in `dist_name`.
+        decimal_places:
+          type: integer
+          title: Decimal Places
+          description: Number of decimal places to round the sampled values to.
+        sampler_type:
+          type: string
+          const: scipy
+          title: Sampler Type
+          default: scipy
+      additionalProperties: false
+      type: object
+      required:
+      - dist_name
+      - dist_params
+      title: ScipySamplerParams
+      description: "Parameters for sampling from any scipy.stats continuous or discrete\
+        \ distribution.\n\nProvides a flexible interface to sample from the wide range\
+        \ of probability distributions\navailable in scipy.stats. This enables advanced\
+        \ statistical sampling beyond the built-in\ndistribution types (Gaussian,\
+        \ Uniform, etc.).\n\nSee: [scipy.stats documentation](https://docs.scipy.org/doc/scipy/reference/stats.html)\n\
+        \nAttributes:\n    dist_name: Name of the scipy.stats distribution to sample\
+        \ from (e.g., \"beta\", \"gamma\",\n        \"lognorm\", \"expon\"). Must\
+        \ be a valid distribution name from scipy.stats.\n    dist_params: Dictionary\
+        \ of parameters for the specified distribution. Parameter names\n        and\
+        \ values must match the scipy.stats distribution specification (e.g., {\"\
+        a\": 2, \"b\": 5}\n        for beta distribution, {\"scale\": 1.5} for exponential).\n\
+        \    decimal_places: Optional number of decimal places to round sampled values\
+        \ to. If None,\n        values are not rounded."
+    Score:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: A clear name for this score.
+        description:
+          type: string
+          title: Description
+          description: An informative and detailed assessment guide for using this
+            score.
+        options:
+          additionalProperties:
+            type: string
+          type: object
+          title: Options
+          description: 'Score options in the format of {score: description}.'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - description
+      - options
+      title: Score
+      description: "Configuration for a \"score\" in an LLM judge evaluation.\n\n\
+        Defines a single scoring criterion with its possible values and descriptions.\
+        \ Multiple\nScore objects can be combined in an LLMJudgeColumnConfig to create\
+        \ multi-dimensional\nquality assessments.\n\nAttributes:\n    name: A clear,\
+        \ concise name for this scoring dimension (e.g., \"Relevance\", \"Fluency\"\
+        ).\n    description: An informative and detailed assessment guide explaining\
+        \ how to evaluate\n        this dimension. Should provide clear criteria for\
+        \ scoring.\n    options: Dictionary mapping score values to their descriptions.\
+        \ Keys can be integers\n        (e.g., 1-5 scale) or strings (e.g., \"Poor\"\
+        , \"Good\", \"Excellent\"). Values are\n        descriptions explaining what\
+        \ each score level means."
+    SeedConfig:
+      properties:
+        dataset:
+          type: string
+          title: Dataset
+        sampling_strategy:
+          allOf:
+          - $ref: '#/components/schemas/SamplingStrategy'
+          default: ordered
+        selection_strategy:
+          anyOf:
+          - $ref: '#/components/schemas/IndexRange'
+          - $ref: '#/components/schemas/PartitionBlock'
+          title: Selection Strategy
+      additionalProperties: false
+      type: object
+      required:
+      - dataset
+      title: SeedConfig
+      description: "Configuration for sampling data from a seed dataset.\n\nArgs:\n\
+        \    dataset: Path or identifier for the seed dataset.\n    sampling_strategy:\
+        \ Strategy for how to sample rows from the dataset.\n        - ORDERED: Read\
+        \ rows sequentially in their original order.\n        - SHUFFLE: Randomly\
+        \ shuffle rows before sampling. When used with\n          selection_strategy,\
+        \ shuffling occurs within the selected range/partition.\n    selection_strategy:\
+        \ Optional strategy to select a subset of the dataset.\n        - IndexRange:\
+        \ Select a specific range of indices (e.g., rows 100-200).\n        - PartitionBlock:\
+        \ Select a partition by splitting the dataset into N equal parts.\n      \
+        \    Partition indices are zero-based (index=0 is the first partition, index=1\
+        \ is\n          the second, etc.).\n\nExamples:\n    Read rows sequentially\
+        \ from start to end:\n        SeedConfig(dataset=\"my_data.parquet\", sampling_strategy=SamplingStrategy.ORDERED)\n\
+        \n    Read rows in random order:\n        SeedConfig(dataset=\"my_data.parquet\"\
+        , sampling_strategy=SamplingStrategy.SHUFFLE)\n\n    Read specific index range\
+        \ (rows 100-199):\n        SeedConfig(\n            dataset=\"my_data.parquet\"\
+        ,\n            sampling_strategy=SamplingStrategy.ORDERED,\n            selection_strategy=IndexRange(start=100,\
+        \ end=199)\n        )\n\n    Read random rows from a specific index range\
+        \ (shuffles within rows 100-199):\n        SeedConfig(\n            dataset=\"\
+        my_data.parquet\",\n            sampling_strategy=SamplingStrategy.SHUFFLE,\n\
+        \            selection_strategy=IndexRange(start=100, end=199)\n        )\n\
+        \n    Read from partition 2 (3rd partition, zero-based) of 5 partitions (20%\
+        \ of dataset):\n        SeedConfig(\n            dataset=\"my_data.parquet\"\
+        ,\n            sampling_strategy=SamplingStrategy.ORDERED,\n            selection_strategy=PartitionBlock(index=2,\
+        \ num_partitions=5)\n        )\n\n    Read shuffled rows from partition 0\
+        \ of 10 partitions (shuffles within the partition):\n        SeedConfig(\n\
+        \            dataset=\"my_data.parquet\",\n            sampling_strategy=SamplingStrategy.SHUFFLE,\n\
+        \            selection_strategy=PartitionBlock(index=0, num_partitions=10)\n\
+        \        )"
+    SeedDatasetColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: seed-dataset
+          title: Column Type
+          default: seed-dataset
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      title: SeedDatasetColumnConfig
+      description: "Configuration for columns sourced from seed datasets.\n\nThis\
+        \ config marks columns that come from seed data. It is typically created\n\
+        automatically when calling `with_seed_dataset()` on the builder, rather than\n\
+        being instantiated directly by users.\n\nAttributes:\n    column_type: Discriminator\
+        \ field, always \"seed-dataset\" for this configuration type."
+    SettingsDefaults:
+      properties:
+        model_configs:
+          items:
+            $ref: '#/components/schemas/ModelConfigOutput'
+          type: array
+          title: Model Configs
+        model_provider:
+          type: string
+          title: Model Provider
+      type: object
+      required:
+      - model_configs
+      - model_provider
+      title: SettingsDefaults
+    SettingsResponse:
+      properties:
+        defaults:
+          $ref: '#/components/schemas/SettingsDefaults'
+        model_providers:
+          items:
+            $ref: '#/components/schemas/DisplayModelProvider'
+          type: array
+          title: Model Providers
+      type: object
+      required:
+      - defaults
+      - model_providers
+      title: SettingsResponse
+    SubcategorySamplerParams:
+      properties:
+        category:
+          type: string
+          title: Category
+          description: Name of parent category to this subcategory.
+        values:
+          additionalProperties:
+            items:
+              anyOf:
+              - type: string
+              - type: integer
+              - type: number
+            type: array
+          type: object
+          title: Values
+          description: Mapping from each value of parent category to a list of subcategory
+            values.
+        sampler_type:
+          type: string
+          const: subcategory
+          title: Sampler Type
+          default: subcategory
+      additionalProperties: false
+      type: object
+      required:
+      - category
+      - values
+      title: SubcategorySamplerParams
+      description: "Parameters for subcategory sampling conditioned on a parent category\
+        \ column.\n\nSamples subcategory values based on the value of a parent category\
+        \ column. Each parent\ncategory value maps to its own list of possible subcategory\
+        \ values, enabling hierarchical\nor conditional sampling patterns.\n\nAttributes:\n\
+        \    category: Name of the parent category column that this subcategory depends\
+        \ on.\n        The parent column must be generated before this subcategory\
+        \ column.\n    values: Mapping from each parent category value to a list of\
+        \ possible subcategory values.\n        Each key must correspond to a value\
+        \ that appears in the parent category column."
+    TimeDeltaSamplerParams:
+      properties:
+        dt_min:
+          type: integer
+          minimum: 0.0
+          title: Dt Min
+          description: Minimum possible time-delta for sampling range, inclusive.
+            Must be less than `dt_max`.
+        dt_max:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Dt Max
+          description: Maximum possible time-delta for sampling range, exclusive.
+            Must be greater than `dt_min`.
+        reference_column_name:
+          type: string
+          title: Reference Column Name
+          description: Name of an existing datetime column to condition time-delta
+            sampling on.
+        unit:
+          type: string
+          enum:
+          - D
+          - h
+          - m
+          - s
+          title: Unit
+          description: Sampling units, e.g. the smallest possible time interval between
+            samples.
+          default: D
+        sampler_type:
+          type: string
+          const: timedelta
+          title: Sampler Type
+          default: timedelta
+      additionalProperties: false
+      type: object
+      required:
+      - dt_min
+      - dt_max
+      - reference_column_name
+      title: TimeDeltaSamplerParams
+      description: "Parameters for sampling time deltas relative to a reference datetime\
+        \ column.\n\nSamples time offsets within a specified range and adds them to\
+        \ values from a reference\ndatetime column. This is useful for generating\
+        \ related datetime columns like order dates\nand delivery dates, or event\
+        \ start times and end times.\n\nNote:\n    Years and months are not supported\
+        \ as timedelta units because they have variable lengths.\n    See: [pandas\
+        \ timedelta documentation](https://pandas.pydata.org/docs/user_guide/timedeltas.html)\n\
+        \nAttributes:\n    dt_min: Minimum time-delta value (inclusive). Must be non-negative\
+        \ and less than `dt_max`.\n        Specified in units defined by the `unit`\
+        \ parameter.\n    dt_max: Maximum time-delta value (exclusive). Must be positive\
+        \ and greater than `dt_min`.\n        Specified in units defined by the `unit`\
+        \ parameter.\n    reference_column_name: Name of an existing datetime column\
+        \ to add the time-delta to.\n        This column must be generated before\
+        \ the timedelta column.\n    unit: Time unit for the delta values. Options:\n\
+        \        - \"D\": Days (default)\n        - \"h\": Hours\n        - \"m\"\
+        : Minutes\n        - \"s\": Seconds"
+    UUIDSamplerParams:
+      properties:
+        prefix:
+          type: string
+          title: Prefix
+          description: String prepended to the front of the UUID.
+        short_form:
+          type: boolean
+          title: Short Form
+          description: If true, all UUIDs sampled will be truncated at 8 characters.
+          default: false
+        uppercase:
+          type: boolean
+          title: Uppercase
+          description: If true, all letters in the UUID will be capitalized.
+          default: false
+        sampler_type:
+          type: string
+          const: uuid
+          title: Sampler Type
+          default: uuid
+      additionalProperties: false
+      type: object
+      title: UUIDSamplerParams
+      description: "Parameters for generating UUID (Universally Unique Identifier)\
+        \ values.\n\nGenerates UUID4 (random) identifiers with optional formatting\
+        \ options. UUIDs are useful\nfor creating unique identifiers for records,\
+        \ entities, or transactions.\n\nAttributes:\n    prefix: Optional string to\
+        \ prepend to each UUID. Useful for creating namespaced or\n        typed identifiers\
+        \ (e.g., \"user-\", \"order-\", \"txn-\").\n    short_form: If True, truncates\
+        \ UUIDs to 8 characters (first segment only). Default is False\n        for\
+        \ full 32-character UUIDs (excluding hyphens).\n    uppercase: If True, converts\
+        \ all hexadecimal letters to uppercase. Default is False for\n        lowercase\
+        \ UUIDs."
+    UniformDistribution:
+      properties:
+        distribution_type:
+          allOf:
+          - $ref: '#/components/schemas/DistributionType'
+          default: uniform
+        params:
+          $ref: '#/components/schemas/UniformDistributionParams'
+      additionalProperties: false
+      type: object
+      required:
+      - params
+      title: UniformDistribution
+    UniformDistributionParams:
+      properties:
+        low:
+          type: number
+          title: Low
+        high:
+          type: number
+          title: High
+      additionalProperties: false
+      type: object
+      required:
+      - low
+      - high
+      title: UniformDistributionParams
+    UniformSamplerParams:
+      properties:
+        low:
+          type: number
+          title: Low
+          description: Lower bound of the uniform distribution, inclusive.
+        high:
+          type: number
+          title: High
+          description: Upper bound of the uniform distribution, inclusive.
+        decimal_places:
+          type: integer
+          title: Decimal Places
+          description: Number of decimal places to round the sampled values to.
+        sampler_type:
+          type: string
+          const: uniform
+          title: Sampler Type
+          default: uniform
+      additionalProperties: false
+      type: object
+      required:
+      - low
+      - high
+      title: UniformSamplerParams
+      description: "Parameters for sampling from a continuous Uniform distribution.\n\
+        \nSamples continuous values uniformly from a specified range, where every\
+        \ value in the range\nhas equal probability of being sampled. This is useful\
+        \ when all values within a range are\nequally likely, such as random percentages,\
+        \ proportions, or unbiased measurements.\n\nAttributes:\n    low: Lower bound\
+        \ of the uniform distribution (inclusive). Can be any real number.\n    high:\
+        \ Upper bound of the uniform distribution (inclusive). Must be greater than\
+        \ `low`.\n    decimal_places: Optional number of decimal places to round sampled\
+        \ values to. If None,\n        values are not rounded and may have many decimal\
+        \ places."
+    ValidationColumnConfig:
+      properties:
+        name:
+          type: string
+          title: Name
+        drop:
+          type: boolean
+          title: Drop
+          default: false
+        column_type:
+          type: string
+          const: validation
+          title: Column Type
+          default: validation
+        target_columns:
+          items:
+            type: string
+          type: array
+          title: Target Columns
+        validator_type:
+          $ref: '#/components/schemas/ValidatorType'
+        validator_params:
+          anyOf:
+          - $ref: '#/components/schemas/CodeValidatorParams'
+          - $ref: '#/components/schemas/LocalCallableValidatorParams'
+          - $ref: '#/components/schemas/RemoteValidatorParams'
+          title: Validator Params
+        batch_size:
+          type: integer
+          minimum: 1.0
+          title: Batch Size
+          description: Number of records to process in each batch
+          default: 10
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - target_columns
+      - validator_type
+      - validator_params
+      title: ValidationColumnConfig
+      description: "Configuration for validation columns that validate existing columns.\n\
+        \nValidation columns execute validation logic against specified target columns\
+        \ and return\nstructured results indicating pass/fail status with validation\
+        \ details. Supports multiple\nvalidation strategies: code execution (Python/SQL),\
+        \ local callable functions (library only),\nand remote HTTP endpoints.\n\n\
+        Attributes:\n    target_columns: List of column names to validate. These columns\
+        \ are passed to the\n        validator for validation. All target columns\
+        \ must exist in the dataset\n        before validation runs.\n    validator_type:\
+        \ The type of validator to use. Options:\n        - \"code\": Execute code\
+        \ (Python or SQL) for validation. The code receives a\n          DataFrame\
+        \ with target columns and must return a DataFrame with validation results.\n\
+        \        - \"local_callable\": Call a local Python function with the data.\
+        \ Only supported\n          when running DataDesigner locally.\n        -\
+        \ \"remote\": Send data to a remote HTTP endpoint for validation. Useful for\n\
+        \    validator_params: Parameters specific to the validator type. Type varies\
+        \ by validator:\n        - CodeValidatorParams: Specifies code language (python\
+        \ or SQL dialect like\n          \"sql:postgres\", \"sql:mysql\").\n     \
+        \   - LocalCallableValidatorParams: Provides validation function (Callable[[pd.DataFrame],\n\
+        \          pd.DataFrame]) and optional output schema for validation results.\n\
+        \        - RemoteValidatorParams: Configures endpoint URL, HTTP timeout, retry\
+        \ behavior\n          (max_retries, retry_backoff), and parallel request limits\
+        \ (max_parallel_requests).\n    batch_size: Number of records to process in\
+        \ each validation batch. Defaults to 10.\n        Larger batches are more\
+        \ efficient but use more memory. Adjust based on validator\n        complexity\
+        \ and available resources.\n    column_type: Discriminator field, always \"\
+        validation\" for this configuration type."
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    ValidatorType:
+      type: string
+      enum:
+      - code
+      - local_callable
+      - remote
+      title: ValidatorType
+tags:
+- name: Data Designer
+  description: Operations related to synthetic data generation.
+- name: Health Checks
+  description: Operations related to NeMo Microservices platform health.

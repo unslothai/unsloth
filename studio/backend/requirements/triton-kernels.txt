@@ -1,0 +1,2 @@
+# Triton kernels (installed with --no-deps, from source)
+triton_kernels @ git+https://github.com/triton-lang/triton.git@release/3.6.x#subdirectory=python/triton_kernels

@@ -44,3 +44,12 @@
 /unsloth/utils/attention_dispatch.py @mmathew23
 /unsloth/utils/hf_hub.py @mmathew23
 /unsloth/utils/packing.py @mmathew23
+
+/cli/ @rolandtannous @Manan17
+/studio/frontend/ @Shine1i @rolandtannous @Manan17
+/studio/frontend/public/ @Shine1i
+/studio/backend/ @rolandtannous
+/studio/backend/core/data_recipe/ @rolandtannous
+/studio/backend/tests/ @rolandtannous @danielhanchen
+/tests/ @rolandtannous @danielhanchen
+/scripts/ @rolandtannous @danielhanchen
