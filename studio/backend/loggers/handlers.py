@@ -27,6 +27,11 @@ logger = structlog.get_logger(__name__)
 
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Bypass middleware for SSE streaming — BaseHTTPMiddleware
+        # can buffer StreamingResponse bodies, breaking real-time delivery
+        if request.url.path == "/api/train/progress":
+            return await call_next(request)
+
         start_time = time.time()
 
         try:
