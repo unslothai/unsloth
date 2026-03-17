@@ -266,11 +266,14 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-/** Qwen3.5 recommended params differ between thinking on/off. */
-function applyQwen35ThinkingParams(thinkingOn: boolean): void {
+/** Qwen3/3.5 recommended params differ between thinking on/off. */
+function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
-  if (!checkpoint.includes("qwen3.5")) return;
+  if (!checkpoint.includes("qwen3")) return;
+  // Qwen3 & Qwen3.5 share the same recommended settings:
+  // Thinking ON (general): temp=1.0, top_p=0.95, top_k=20
+  // Thinking OFF (general): temp=0.7, top_p=0.8, top_k=20
   const params = thinkingOn
     ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
     : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
@@ -290,7 +293,7 @@ const ReasoningToggle: FC = () => {
       onClick={() => {
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
-        applyQwen35ThinkingParams(next);
+        applyQwenThinkingParams(next);
       }}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",

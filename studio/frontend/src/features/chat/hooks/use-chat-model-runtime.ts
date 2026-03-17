@@ -384,6 +384,14 @@ export function useChatModelRuntime() {
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });
+            // Qwen3/3.5: apply thinking-mode-specific params after load
+            if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
+              const store = useChatRuntimeStore.getState();
+              const p = reasoningDefault
+                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+              store.setParams({ ...store.params, ...p });
+            }
             await refresh();
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.

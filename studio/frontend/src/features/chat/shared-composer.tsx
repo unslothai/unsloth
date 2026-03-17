@@ -399,10 +399,10 @@ export function SharedComposer({
               onClick={() => {
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
-                // Qwen3.5: adjust params for thinking on/off
+                // Qwen3/3.5: adjust params for thinking on/off
                 const store = useChatRuntimeStore.getState();
                 const cp = store.params.checkpoint?.toLowerCase() ?? "";
-                if (cp.includes("qwen3.5")) {
+                if (cp.includes("qwen3")) {
                   const p = next
                     ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
                     : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
