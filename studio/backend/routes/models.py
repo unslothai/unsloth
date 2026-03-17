@@ -352,7 +352,9 @@ def _get_max_position_embeddings(config) -> Optional[int]:
     """Extract max_position_embeddings from a model config, checking text_config fallback."""
     if hasattr(config, "max_position_embeddings"):
         return config.max_position_embeddings
-    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
+    if hasattr(config, "text_config") and hasattr(
+        config.text_config, "max_position_embeddings"
+    ):
         return config.text_config.max_position_embeddings
     return None
 
