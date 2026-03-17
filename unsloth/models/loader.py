@@ -559,6 +559,17 @@ class FastLanguageModel(FastLlamaModel):
         if not was_disabled:
             enable_progress_bars()
 
+        # Qwen3.5 only exists in transformers 5.x. Give a clear error on older
+        # versions; on 5.x let it fall through to the generic FastModel path
+        # where the compiler applies fused CE automatically.
+        if model_type == "qwen3_5" and transformers_version < Version("5.0.0"):
+            raise ImportError(
+                f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                f"The minimum required version is 5.0.0.\n"
+                f'Try `pip install --upgrade "transformers>=5.0.0"`\n'
+                f"to obtain the latest transformers build, then restart this session."
+            )
+
         if model_type == "llama":
             scaling_type = None
             if getattr(model_config, "rope_scaling", None) is not None:
@@ -615,17 +626,6 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
-        elif model_type == "qwen3_5":
-            # Qwen3.5 only exists in transformers 5.x; the compiler handles
-            # fused CE automatically via the generic FastModel fallback path,
-            # so no dedicated FastQwen3_5Model is needed.
-            if transformers_version < Version("5.0.0"):
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
-                    f"The minimum required version is 5.0.0.\n"
-                    f'Try `pip install --upgrade "transformers>=5.0.0"`\n'
-                    f"to obtain the latest transformers build, then restart this session."
-                )
         elif model_type == "qwen3":  # or model_type == "qwen3_moe":
             if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
                 raise ImportError(
