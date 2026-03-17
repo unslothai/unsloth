@@ -387,8 +387,12 @@ async def get_model_config(
             # Extract max_position_embeddings from model config
             if hasattr(model_config, "max_position_embeddings"):
                 max_position_embeddings = model_config.max_position_embeddings
-            elif hasattr(model_config, "text_config") and hasattr(model_config.text_config, "max_position_embeddings"):
-                max_position_embeddings = model_config.text_config.max_position_embeddings
+            elif hasattr(model_config, "text_config") and hasattr(
+                model_config.text_config, "max_position_embeddings"
+            ):
+                max_position_embeddings = (
+                    model_config.text_config.max_position_embeddings
+                )
         except Exception:
             pass
 
@@ -396,10 +400,15 @@ async def get_model_config(
         if max_position_embeddings is None:
             try:
                 from transformers import AutoConfig as _AutoConfig
-                _ac = _AutoConfig.from_pretrained(model_name, trust_remote_code = True, token = hf_token)
+
+                _ac = _AutoConfig.from_pretrained(
+                    model_name, trust_remote_code = True, token = hf_token
+                )
                 if hasattr(_ac, "max_position_embeddings"):
                     max_position_embeddings = _ac.max_position_embeddings
-                elif hasattr(_ac, "text_config") and hasattr(_ac.text_config, "max_position_embeddings"):
+                elif hasattr(_ac, "text_config") and hasattr(
+                    _ac.text_config, "max_position_embeddings"
+                ):
                     max_position_embeddings = _ac.text_config.max_position_embeddings
             except Exception:
                 pass
