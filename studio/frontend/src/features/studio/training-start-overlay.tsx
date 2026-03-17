@@ -101,11 +101,7 @@ export function TrainingStartOverlay({
             {"> unsloth training starts..."}
           </TypingAnimation>
           <AnimatedSpan className="my-2">
-            <pre className="whitespace-pre text-left text-muted-foreground">{`==((====))==
-\\\\   /|
-O^O/ \\_/ \\
-\\        /
- "-____-"`}</pre>
+            <pre className="whitespace-pre text-muted-foreground inline-block">{` ==((====))==\n  \\\\   /|\n O^O/ \\_/ \\\n \\        /\n  "-____-"`}</pre>
           </AnimatedSpan>
           <TypingAnimation duration={44}>
             {"> Preparing model and dataset..."}
