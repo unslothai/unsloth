@@ -968,6 +968,10 @@ Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundC
 
 # ── Studio home (configurable via UNSLOTH_STUDIO_HOME) ──
 $StudioHome = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { Join-Path $env:USERPROFILE ".unsloth\studio" }
+# Persist for future `unsloth studio` runs (survives shell restarts)
+$UnslothDir = Join-Path $env:USERPROFILE ".unsloth"
+if (-not (Test-Path $UnslothDir)) { New-Item -ItemType Directory -Path $UnslothDir -Force | Out-Null }
+Set-Content -Path (Join-Path $UnslothDir "studio_home") -Value $StudioHome -NoNewline
 
 $VenvDir = Join-Path $StudioHome ".venv"
 if (-not (Test-Path $VenvDir)) {

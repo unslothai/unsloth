@@ -14,10 +14,15 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
 def _studio_home() -> Path:
-    """Studio root, overridable via UNSLOTH_STUDIO_HOME."""
+    """Studio root: env var > config file > default."""
     custom = os.environ.get("UNSLOTH_STUDIO_HOME")
     if custom:
         return Path(custom).expanduser().resolve()
+    conf = Path.home() / ".unsloth" / "studio_home"
+    if conf.is_file():
+        saved = conf.read_text().strip()
+        if saved:
+            return Path(saved).expanduser().resolve()
     return Path.home() / ".unsloth" / "studio"
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
