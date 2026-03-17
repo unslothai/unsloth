@@ -168,7 +168,8 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
     # Get version string, e.g. "Python 3.12.5"
-    ver_str=$("$candidate" --version 2>&1 | awk '{print $2}')
+    ver_str=$("$candidate" --version 2>&1) || continue
+    ver_str=$(echo "$ver_str" | awk '{print $2}')
     py_major=$(echo "$ver_str" | cut -d. -f1)
     py_minor=$(echo "$ver_str" | cut -d. -f2)
 
@@ -194,7 +195,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         BEST_MINOR="$py_minor"
     fi
 done
-
+echo "finished finding best python"
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
@@ -296,7 +297,15 @@ rm -rf "$LLAMA_CPP_DIR"
         run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
-            CMAKE_ARGS=""
+            # Skip tests/examples we don't need (faster build)
+            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+
+            # Use ccache if available (dramatically faster rebuilds)
+            if command -v ccache &>/dev/null; then
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
+                echo "   Using ccache for faster compilation"
+            fi
+
             # Detect CUDA: check nvcc on PATH, then common install locations
             NVCC_PATH=""
             if command -v nvcc &>/dev/null; then
@@ -312,7 +321,7 @@ rm -rf "$LLAMA_CPP_DIR"
 
             if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
-                CMAKE_ARGS="-DGGML_CUDA=ON"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                 # Detect GPU compute capability and limit CUDA architectures
                 # Without this, cmake builds for ALL default archs (very slow)

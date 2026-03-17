@@ -340,7 +340,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const chatTemplateOverride = useChatRuntimeStore.getState().chatTemplateOverride;
+            const { chatTemplateOverride, kvCacheDtype } = useChatRuntimeStore.getState();
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
@@ -350,6 +350,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
               chat_template_override: chatTemplateOverride,
+              cache_type_kv: kvCacheDtype,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -360,15 +361,37 @@ export function useChatModelRuntime() {
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
+            // Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            let reasoningDefault = loadResponse.supports_reasoning ?? false;
+            if (reasoningDefault) {
+              const mid = modelId.toLowerCase();
+              if (mid.includes("qwen3.5")) {
+                const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
+                if (sizeMatch && parseFloat(sizeMatch[1]) <= 2) {
+                  reasoningDefault = false;
+                }
+              }
+            }
             useChatRuntimeStore.setState({
               ggufContextLength: loadResponse.is_gguf
                 ? (loadResponse.context_length ?? 131072)
                 : null,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
-              reasoningEnabled: loadResponse.supports_reasoning ?? false,
+              reasoningEnabled: reasoningDefault,
+              supportsTools: loadResponse.supports_tools ?? false,
+              toolsEnabled: false,
+              kvCacheDtype: loadResponse.cache_type_kv ?? null,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });
+            // Qwen3/3.5: apply thinking-mode-specific params after load
+            if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
+              const store = useChatRuntimeStore.getState();
+              const p = reasoningDefault
+                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+              store.setParams({ ...store.params, ...p });
+            }
             await refresh();
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.

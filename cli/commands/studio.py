@@ -178,3 +178,28 @@ def setup():
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
+
+
+# ── unsloth studio reset-password ────────────────────────────────────
+
+
+@studio_app.command("reset-password")
+def reset_password():
+    """Reset the Studio admin password.
+
+    Deletes the auth database so that a fresh admin account with a new
+    random password is created on the next server start.  The Studio
+    server must be restarted after running this command.
+    """
+    auth_dir = STUDIO_HOME / "auth"
+    db_file = auth_dir / "auth.db"
+    pw_file = auth_dir / ".bootstrap_password"
+
+    if not db_file.exists():
+        typer.echo("No auth database found -- nothing to reset.")
+        raise typer.Exit(0)
+
+    db_file.unlink(missing_ok = True)
+    pw_file.unlink(missing_ok = True)
+
+    typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")

@@ -44,9 +44,10 @@ const BUILTIN_PRESETS: Preset[] = [
     name: "Creative",
     params: {
       ...defaultInferenceParams,
-      temperature: 1.2,
-      topP: 0.95,
-      topK: 80,
+      temperature: 1.5,
+      topP: 1.0,
+      topK: 0,
+      minP: 0.1,
       repetitionPenalty: 1.0,
     },
   },
@@ -54,9 +55,10 @@ const BUILTIN_PRESETS: Preset[] = [
     name: "Precise",
     params: {
       ...defaultInferenceParams,
-      temperature: 0.2,
-      topP: 0.7,
-      topK: 20,
+      temperature: 0.1,
+      topP: 0.95,
+      topK: 80,
+      minP: 0.01,
       repetitionPenalty: 1.0,
     },
   },
@@ -166,6 +168,8 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
+  const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
@@ -305,14 +309,16 @@ export function ChatSettingsPanel({
                 max={1}
                 step={0.05}
                 onChange={set("topP")}
+                displayValue={params.topP === 1 ? "Off" : undefined}
               />
               <ParamSlider
                 label="Top K"
                 value={params.topK}
-                min={-1}
+                min={0}
                 max={100}
                 step={1}
                 onChange={set("topK")}
+                displayValue={params.topK === 0 ? "Off" : undefined}
               />
               <ParamSlider
                 label="Min P"
@@ -329,6 +335,7 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.05}
                 onChange={set("repetitionPenalty")}
+                displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
               />
               {!isGguf && (
                 <ParamSlider
@@ -382,6 +389,34 @@ export function ChatSettingsPanel({
                   onCheckedChange={set("trustRemoteCode")}
                 />
               </div>
+              {isGguf && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">KV Cache Dtype</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Quantize KV cache to reduce VRAM. Reload to apply.
+                    </div>
+                  </div>
+                  <Select
+                    value={kvCacheDtype ?? "f16"}
+                    onValueChange={(v) => {
+                      setKvCacheDtype(v === "f16" ? null : v);
+                      onReloadModel?.();
+                    }}
+                  >
+                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="f16">f16</SelectItem>
+                      <SelectItem value="bf16">bf16</SelectItem>
+                      <SelectItem value="q8_0">q8_0</SelectItem>
+                      <SelectItem value="q5_1">q5_1</SelectItem>
+                      <SelectItem value="q4_1">q4_1</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           </CollapsibleSection>
 

@@ -14,6 +14,7 @@ import {
 } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import type { ChatModelSummary } from "../types/runtime";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -234,10 +235,27 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             const store = useChatRuntimeStore.getState();
             store.setCheckpoint(repo.repo_id, variant.quant);
             store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+            // Add model to store so the selector shows the name
+            const autoModel: ChatModelSummary = {
+              id: repo.repo_id,
+              name: loadResp.display_name ?? repo.repo_id,
+              isVision: loadResp.is_vision ?? false,
+              isLora: loadResp.is_lora ?? false,
+              isGguf: loadResp.is_gguf ?? false,
+              isAudio: loadResp.is_audio ?? false,
+              audioType: loadResp.audio_type ?? null,
+              hasAudioInput: loadResp.has_audio_input ?? false,
+            };
+            const existingModels = store.models;
+            if (!existingModels.some((m) => m.id === repo.repo_id)) {
+              store.setModels([...existingModels, autoModel]);
+            }
             useChatRuntimeStore.setState({
               ggufContextLength: loadResp.context_length ?? 131072,
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
+              supportsTools: loadResp.supports_tools ?? false,
+              toolsEnabled: false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
             });
@@ -255,7 +273,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
         try {
-          await loadModel({
+          const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
             hf_token: null,
             max_seq_length: 4096,
@@ -267,6 +285,16 @@ async function autoLoadSmallestModel(): Promise<boolean> {
           const store = useChatRuntimeStore.getState();
           store.setCheckpoint(repo.repo_id);
           store.setParams({ ...store.params, maxTokens: 4096 });
+          const sfModel: ChatModelSummary = {
+            id: repo.repo_id,
+            name: sfLoadResp.display_name ?? repo.repo_id,
+            isVision: sfLoadResp.is_vision ?? false,
+            isLora: sfLoadResp.is_lora ?? false,
+            isGguf: sfLoadResp.is_gguf ?? false,
+          };
+          if (!store.models.some((m) => m.id === repo.repo_id)) {
+            store.setModels([...store.models, sfModel]);
+          }
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
           return true;
         } catch {
@@ -275,8 +303,50 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       }
     }
 
-    toast.dismiss(toastId);
-    return false;
+    // No cached models found — try downloading a small default GGUF
+    toast("Downloading a small model…", {
+      id: toastId,
+      description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
+      duration: 30000,
+    });
+    try {
+      const loadResp = await loadModel({
+        model_path: "unsloth/Qwen3.5-4B-GGUF",
+        hf_token: null,
+        max_seq_length: 4096,
+        load_in_4bit: true,
+        is_lora: false,
+        gguf_variant: "UD-Q4_K_XL",
+        trust_remote_code: false,
+      });
+      const store = useChatRuntimeStore.getState();
+      store.setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
+      store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+      const defaultModel: ChatModelSummary = {
+        id: "unsloth/Qwen3.5-4B-GGUF",
+        name: loadResp.display_name ?? "Qwen3.5-4B-GGUF",
+        isVision: loadResp.is_vision ?? false,
+        isLora: false,
+        isGguf: true,
+      };
+      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-GGUF")) {
+        store.setModels([...store.models, defaultModel]);
+      }
+      useChatRuntimeStore.setState({
+        ggufContextLength: loadResp.context_length ?? 131072,
+        supportsReasoning: loadResp.supports_reasoning ?? false,
+        reasoningEnabled: loadResp.supports_reasoning ?? false,
+        supportsTools: loadResp.supports_tools ?? false,
+        toolsEnabled: false,
+        defaultChatTemplate: loadResp.chat_template ?? null,
+        chatTemplateOverride: null,
+      });
+      toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
+      return true;
+    } catch {
+      toast.dismiss(toastId);
+      return false;
+    }
   } catch {
     toast.dismiss(toastId);
     return false;
@@ -305,6 +375,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           throw new Error("Load a model first.");
         }
       }
+
+      const {
+        supportsTools,
+        toolsEnabled,
+      } = runtime;
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
@@ -415,14 +490,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!waitingFirstChunk) return;
         if (abortSignal.aborted) return;
         warmupToastShown = true;
-        toast.promise(firstTokenPromise, {
-          loading: "Generating",
-          success: "Generating",
-          error: (err) =>
-            err instanceof Error && err.message ? err.message : "Generation failed",
-          description: "Waiting for first token.",
-          duration: 900,
-        });
+        runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
       runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
@@ -446,11 +514,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
+            ...(supportsTools && toolsEnabled ? { enable_tools: true } : {}),
           },
           abortSignal,
         );
 
         for await (const chunk of stream) {
+          // Handle tool status events
+          const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
+          if (toolStatusText !== undefined) {
+            runtime.setToolStatus(toolStatusText || null);
+            continue;
+          }
+
           totalChunks += 1;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (!delta) {
@@ -460,6 +536,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             waitingFirstChunk = false;
             firstTokenTime = Date.now() - streamStartTime;
             settleFirstTokenOk();
+            runtime.setGeneratingStatus(null);
           }
 
           cumulativeText += delta;
@@ -501,17 +578,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         };
       } catch (err) {
         settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
-        const isEarly = waitingFirstChunk;
-        if (!abortSignal.aborted && !(warmupToastShown && isEarly)) {
+        if (!abortSignal.aborted) {
           toast.error("Generation failed", {
             description: err instanceof Error ? err.message : "Unknown error",
           });
         }
         throw err;
       } finally {
+        runtime.setGeneratingStatus(null);
+        runtime.setToolStatus(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
-          if (warmupToastShown && !firstTokenSettled) {
+          if (!firstTokenSettled) {
             if (abortSignal.aborted) {
               settleFirstTokenErr(new Error("Cancelled"));
             } else {

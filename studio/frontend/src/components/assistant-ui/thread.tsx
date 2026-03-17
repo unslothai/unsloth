@@ -39,11 +39,13 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  GlobeIcon,
   HeadphonesIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
   MoreHorizontalIcon,
+  LoaderIcon,
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -85,6 +87,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
+          <GeneratingSpinner />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
@@ -153,7 +156,21 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
             />
           </div>
           {!hideComposer && <ComposerAnimated />}
+          <GeneratingSpinner />
         </div>
+      </div>
+    </div>
+  );
+};
+
+const GeneratingSpinner: FC = () => {
+  const status = useChatRuntimeStore((s) => s.generatingStatus);
+  if (!status) return null;
+  return (
+    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <LoaderIcon className="size-3.5 animate-spin" />
+        <span>Generating</span>
       </div>
     </div>
   );
@@ -200,6 +217,7 @@ const Composer: FC = () => {
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone shadow-border ring-1 ring-border flex w-full flex-col rounded-2xl bg-background px-1 pt-2 outline-none transition-shadow data-[dragging=true]:ring-ring data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
         <PendingAudioChip />
+        <ToolStatusDisplay />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
           className="aui-composer-input mb-1 max-h-32 min-h-12 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
@@ -264,6 +282,20 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
+/** Qwen3/3.5 recommended params differ between thinking on/off. */
+function applyQwenThinkingParams(thinkingOn: boolean): void {
+  const store = useChatRuntimeStore.getState();
+  const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
+  if (!checkpoint.includes("qwen3")) return;
+  // Qwen3 & Qwen3.5 share the same recommended settings:
+  // Thinking ON (general): temp=1.0, top_p=0.95, top_k=20
+  // Thinking OFF (general): temp=0.7, top_p=0.8, top_k=20
+  const params = thinkingOn
+    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+  store.setParams({ ...store.params, ...params });
+}
+
 const ReasoningToggle: FC = () => {
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -274,7 +306,11 @@ const ReasoningToggle: FC = () => {
   return (
     <button
       type="button"
-      onClick={() => setReasoningEnabled(!reasoningEnabled)}
+      onClick={() => {
+        const next = !reasoningEnabled;
+        setReasoningEnabled(next);
+        applyQwenThinkingParams(next);
+      }}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
         reasoningEnabled
@@ -293,6 +329,44 @@ const ReasoningToggle: FC = () => {
   );
 };
 
+const WebSearchToggle: FC = () => {
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+
+  if (!supportsTools) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setToolsEnabled(!toolsEnabled)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        toolsEnabled
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
+          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+    >
+      <GlobeIcon className="size-3.5" />
+      <span>Search</span>
+    </button>
+  );
+};
+
+const ToolStatusDisplay: FC = () => {
+  const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  if (!toolStatus) return null;
+  return (
+    <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
+      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
+        <GlobeIcon className="size-3.5" />
+        <span>{toolStatus}</span>
+      </div>
+    </div>
+  );
+};
+
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
@@ -300,6 +374,7 @@ const ComposerAction: FC = () => {
         <ComposerAddAttachment />
         <ComposerAudioUpload />
         <ReasoningToggle />
+        <WebSearchToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

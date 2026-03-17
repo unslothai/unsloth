@@ -77,7 +77,7 @@ export function Navbar() {
             alt="Unsloth"
             className="hidden h-9 w-auto dark:block"
           />
-          <span className="mt-px text-[10px] leading-none font-extrabold tracking-[0.12em] text-primary">
+          <span className="relative -top-[1px] inline-flex items-center text-[10px] font-extrabold leading-none tracking-[0.12em] text-primary">
             BETA
           </span>
         </Link>

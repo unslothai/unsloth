@@ -1054,6 +1054,10 @@ if (Test-Path $LlamaServerBin) {
         }
         # Common flags
         $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
+        $CmakeArgs += '-DLLAMA_BUILD_TESTS=OFF'
+        $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
+        $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
+        $CmakeArgs += '-DGGML_NATIVE=ON'
         # HTTPS support via OpenSSL
         if ($OpenSslAvailable -and $OpenSslRoot) {
             $CmakeArgs += "-DOPENSSL_ROOT_DIR=$OpenSslRoot"
