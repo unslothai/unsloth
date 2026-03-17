@@ -16,10 +16,7 @@ import sys
 import tempfile
 import threading
 
-from unsloth_zoo.rl_environments import (
-    check_python_modules,
-    check_signal_escape_patterns,
-)
+from unsloth_zoo.rl_environments import check_signal_escape_patterns
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
@@ -48,7 +45,7 @@ PYTHON_TOOL = {
     "type": "function",
     "function": {
         "name": "python",
-        "description": "Execute Python code in a sandbox and return stdout/stderr. Only standard library modules are allowed. Network access is disabled.",
+        "description": "Execute Python code in a sandbox and return stdout/stderr.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -117,20 +114,10 @@ def _web_search(query: str, max_results: int = 5) -> str:
 
 
 def _check_code_safety(code: str) -> str | None:
-    """Validate code imports and signal safety using unsloth_zoo.
+    """Validate code safety using unsloth_zoo.
 
     Returns an error message string if the code is unsafe, or None if OK.
     """
-    # Check for non-stdlib imports
-    ok, details = check_python_modules(code)
-    if not ok:
-        non_stdlib = details.get("non_stdlib", [])
-        return (
-            f"Error: only standard library modules are allowed. "
-            f"Blocked modules: {', '.join(non_stdlib)}. "
-            f"Please rewrite the code using only the standard library."
-        )
-
     # Check for signal/timeout escape patterns
     safe, info = check_signal_escape_patterns(code)
     if not safe:
