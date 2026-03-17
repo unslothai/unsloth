@@ -128,7 +128,38 @@ const SingleContent = memo(function SingleContent({
   );
 });
 
+type CompareModelSelection = {
+  id: string;
+  isLora: boolean;
+  ggufVariant?: string;
+};
+
+/**
+ * Detect if this is a LoRA base-vs-fine-tuned compare.
+ * Returns true when the loaded checkpoint is a LoRA — in that case
+ * we use the fast simultaneous base/lora adapter-toggle path.
+ */
+function useIsLoraCompare(): boolean {
+  return useChatRuntimeStore((s) => {
+    const cp = s.params.checkpoint;
+    return cp ? s.loras.some((l) => l.id === cp) : false;
+  });
+}
+
 const CompareContent = memo(function CompareContent({
+  pairId,
+  models,
+  loraModels,
+}: { pairId: string; models: ModelOption[]; loraModels: LoraModelOption[] }): ReactElement {
+  const isLoraCompare = useIsLoraCompare();
+
+  return isLoraCompare
+    ? <LoraCompareContent pairId={pairId} />
+    : <GeneralCompareContent pairId={pairId} models={models} loraModels={loraModels} />;
+});
+
+/** Fast path: same model, adapter on/off, simultaneous generation. */
+const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
 }: { pairId: string }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
@@ -142,15 +173,11 @@ const CompareContent = memo(function CompareContent({
       .equals(pairId)
       .toArray()
       .then((threads) => {
-        if (!isActive) {
-          return;
-        }
+        if (!isActive) return;
         setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
         setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
       });
-    return () => {
-      isActive = false;
-    };
+    return () => { isActive = false; };
   }, [pairId]);
 
   return (
@@ -167,11 +194,7 @@ const CompareContent = memo(function CompareContent({
               </span>
             </div>
             <div className="min-h-0 flex-1">
-              <ChatRuntimeProvider
-                modelType="base"
-                pairId={pairId}
-                initialThreadId={baseThreadId}
-              >
+              <ChatRuntimeProvider modelType="base" pairId={pairId} initialThreadId={baseThreadId}>
                 <RegisterCompareHandle name="base" />
                 <Thread hideComposer={true} hideWelcome={true} />
               </ChatRuntimeProvider>
@@ -184,11 +207,7 @@ const CompareContent = memo(function CompareContent({
               </span>
             </div>
             <div className="min-h-0 flex-1">
-              <ChatRuntimeProvider
-                modelType="lora"
-                pairId={pairId}
-                initialThreadId={loraThreadId}
-              >
+              <ChatRuntimeProvider modelType="lora" pairId={pairId} initialThreadId={loraThreadId}>
                 <RegisterCompareHandle name="lora" />
                 <Thread hideComposer={true} hideWelcome={true} />
               </ChatRuntimeProvider>
@@ -197,6 +216,111 @@ const CompareContent = memo(function CompareContent({
         </div>
         <div className="mx-auto w-full max-w-4xl px-4 py-4">
           <SharedComposer handlesRef={handlesRef} />
+        </div>
+      </div>
+    </CompareHandlesProvider>
+  );
+});
+
+/** General path: any two models, sequential load → generate. */
+const GeneralCompareContent = memo(function GeneralCompareContent({
+  pairId,
+  models,
+  loraModels,
+}: { pairId: string; models: ModelOption[]; loraModels: LoraModelOption[] }): ReactElement {
+  const handlesRef = useRef<Record<string, CompareHandle>>({});
+  const [model1ThreadId, setModel1ThreadId] = useState<string>();
+  const [model2ThreadId, setModel2ThreadId] = useState<string>();
+
+  const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const [model1, setModel1] = useState<CompareModelSelection>({
+    id: globalCheckpoint || "",
+    isLora: false,
+    ggufVariant: globalGgufVariant ?? undefined,
+  });
+  const [model2, setModel2] = useState<CompareModelSelection>({ id: "", isLora: false });
+
+  useEffect(() => {
+    let isActive = true;
+    db.threads
+      .where("pairId")
+      .equals(pairId)
+      .toArray()
+      .then((threads) => {
+        if (!isActive) return;
+        setModel1ThreadId(
+          threads.find((t) => t.modelType === "model1" || t.modelType === "base")?.id,
+        );
+        setModel2ThreadId(
+          threads.find((t) => t.modelType === "model2" || t.modelType === "lora")?.id,
+        );
+      });
+    return () => { isActive = false; };
+  }, [pairId]);
+
+  return (
+    <CompareHandlesProvider handlesRef={handlesRef}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div
+          data-tour="chat-compare-view"
+          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
+        >
+          <div className="flex min-h-0 flex-col">
+            <div className="flex items-center gap-2 px-3 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Model 1
+              </span>
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                value={model1.id}
+                onValueChange={(id, meta) => setModel1({ id, isLora: meta.isLora, ggufVariant: meta.ggufVariant })}
+                variant="ghost"
+                size="sm"
+                className="max-w-[50%]"
+              />
+            </div>
+            <div className="min-h-0 flex-1">
+              <ChatRuntimeProvider
+                modelType="model1"
+                pairId={pairId}
+                initialThreadId={model1ThreadId}
+              >
+                <RegisterCompareHandle name="model1" />
+                <Thread hideComposer={true} hideWelcome={true} />
+              </ChatRuntimeProvider>
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
+            <div className="flex items-center gap-2 px-3 py-1.5 md:justify-end">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+                Model 2
+              </span>
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                value={model2.id}
+                onValueChange={(id, meta) => setModel2({ id, isLora: meta.isLora, ggufVariant: meta.ggufVariant })}
+                variant="ghost"
+                size="sm"
+                className="max-w-[50%]"
+              />
+            </div>
+            <div className="min-h-0 flex-1">
+              <ChatRuntimeProvider
+                modelType="model2"
+                pairId={pairId}
+                initialThreadId={model2ThreadId}
+              >
+                <RegisterCompareHandle name="model2" />
+                <Thread hideComposer={true} hideWelcome={true} />
+              </ChatRuntimeProvider>
+            </div>
+          </div>
+        </div>
+        <div className="mx-auto w-full max-w-4xl px-4 py-4">
+          <SharedComposer handlesRef={handlesRef} model1={model1} model2={model2} />
         </div>
       </div>
     </CompareHandlesProvider>
@@ -323,10 +447,8 @@ export function ChatPage(): ReactElement {
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
   const canCompare = useMemo(() => {
-    const selected = inferenceParams.checkpoint;
-    if (!selected) return false;
-    return lorasFromStore.some((lora) => lora.id === selected);
-  }, [inferenceParams.checkpoint, lorasFromStore]);
+    return Boolean(inferenceParams.checkpoint);
+  }, [inferenceParams.checkpoint]);
 
   const handleCheckpointChange = useCallback(
     (value: string, meta?: { isLora: boolean; ggufVariant?: string; isDownloaded?: boolean; expectedBytes?: number }) => {
@@ -640,7 +762,7 @@ export function ChatPage(): ReactElement {
               newThreadNonce={view.newThreadNonce}
             />
           ) : (
-            <CompareContent key={view.pairId} pairId={view.pairId} />
+            <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
           )}
         </div>
 
