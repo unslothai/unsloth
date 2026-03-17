@@ -44,9 +44,10 @@ const BUILTIN_PRESETS: Preset[] = [
     name: "Creative",
     params: {
       ...defaultInferenceParams,
-      temperature: 1.2,
-      topP: 0.95,
-      topK: 80,
+      temperature: 1.5,
+      topP: 1.0,
+      topK: 0,
+      minP: 0.1,
       repetitionPenalty: 1.0,
     },
   },
@@ -54,9 +55,10 @@ const BUILTIN_PRESETS: Preset[] = [
     name: "Precise",
     params: {
       ...defaultInferenceParams,
-      temperature: 0.2,
-      topP: 0.7,
-      topK: 20,
+      temperature: 0.1,
+      topP: 0.95,
+      topK: 80,
+      minP: 0.01,
       repetitionPenalty: 1.0,
     },
   },
@@ -307,14 +309,16 @@ export function ChatSettingsPanel({
                 max={1}
                 step={0.05}
                 onChange={set("topP")}
+                displayValue={params.topP === 1 ? "Off" : undefined}
               />
               <ParamSlider
                 label="Top K"
                 value={params.topK}
-                min={-1}
+                min={0}
                 max={100}
                 step={1}
                 onChange={set("topK")}
+                displayValue={params.topK === 0 ? "Off" : undefined}
               />
               <ParamSlider
                 label="Min P"
