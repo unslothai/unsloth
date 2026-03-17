@@ -169,6 +169,7 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
         "top_p": _get_param("top_p", 0.95),
         "top_k": _get_param("top_k", -1),
         "min_p": _get_param("min_p", 0.01),
+        "presence_penalty": _get_param("presence_penalty", 0.0),
         "trust_remote_code": model_inference.get(
             "trust_remote_code", default_inference.get("trust_remote_code", False)
         ),
