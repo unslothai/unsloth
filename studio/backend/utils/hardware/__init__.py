@@ -8,6 +8,7 @@ Hardware detection and GPU utilities
 from .hardware import (
     DeviceType,
     DEVICE,
+    CHAT_ONLY,
     detect_hardware,
     get_device,
     is_apple_silicon,
@@ -24,6 +25,7 @@ from .hardware import (
 __all__ = [
     "DeviceType",
     "DEVICE",
+    "CHAT_ONLY",
     "detect_hardware",
     "get_device",
     "is_apple_silicon",

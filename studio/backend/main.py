@@ -153,6 +153,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "device_type": device_type,
+        "chat_only": _hw_module.CHAT_ONLY,
     }
 
 
