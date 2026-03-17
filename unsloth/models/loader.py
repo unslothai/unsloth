@@ -442,6 +442,13 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
+                if "qwen3_5" in autoconfig_error:
+                    raise ImportError(
+                        f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                        f"The minimum required version is 5.2.0.\n"
+                        f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
+                        f"to obtain the latest transformers build, then restart this session."
+                    )
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
                     f"Please update transformers via `pip install --upgrade transformers` and try again."
@@ -558,17 +565,6 @@ class FastLanguageModel(FastLlamaModel):
 
         if not was_disabled:
             enable_progress_bars()
-
-        # Qwen3.5 only exists in transformers >= 5.2.0. Give a clear error on
-        # older versions; on 5.2+ let it fall through to the generic FastModel
-        # path where the compiler applies fused CE automatically.
-        if model_type == "qwen3_5" and transformers_version < Version("5.2.0"):
-            raise ImportError(
-                f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
-                f"The minimum required version is 5.2.0.\n"
-                f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
-                f"to obtain the latest transformers build, then restart this session."
-            )
 
         if model_type == "llama":
             scaling_type = None
@@ -1062,6 +1058,13 @@ class FastModel(FastBaseModel):
         except Exception as error:
             autoconfig_error = str(error)
             if "architecture" in autoconfig_error:
+                if "qwen3_5" in autoconfig_error:
+                    raise ImportError(
+                        f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.5.\n"
+                        f"The minimum required version is 5.2.0.\n"
+                        f'Try `pip install --upgrade "transformers>=5.2.0"`\n'
+                        f"to obtain the latest transformers build, then restart this session."
+                    )
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
                     f"Please update transformers via `pip install --upgrade transformers` and try again."
