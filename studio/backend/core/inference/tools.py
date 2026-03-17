@@ -108,19 +108,40 @@ def _web_search(query: str, max_results: int = 5) -> str:
         return f"Search failed: {e}"
 
 
-def _load_rl_environments():
-    """Load rl_environments module directly from installed unsloth_zoo package.
+def _check_imports(code: str) -> tuple[bool, list[str]]:
+    """Validate that code only imports standard library modules.
 
-    We bypass unsloth_zoo.__init__ which blocks direct import.
+    Returns (ok, non_stdlib_list). Uses ast to parse import statements
+    and checks against sys.stdlib_module_names (Python 3.10+).
     """
-    import importlib.util
-    import unsloth_zoo as _pkg
+    import ast
 
-    path = os.path.join(os.path.dirname(_pkg.__file__), "rl_environments.py")
-    spec = importlib.util.spec_from_file_location("rl_environments", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return True, []  # Let syntax errors surface at execution time
+
+    stdlib = getattr(sys, "stdlib_module_names", None)
+    if stdlib is None:
+        # Python < 3.10 fallback -- skip validation
+        return True, []
+
+    non_stdlib = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top not in stdlib:
+                    non_stdlib.append(top)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                top = node.module.split(".")[0]
+                if top not in stdlib:
+                    non_stdlib.append(top)
+
+    if non_stdlib:
+        return False, sorted(set(non_stdlib))
+    return True, []
 
 
 def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
@@ -144,24 +165,13 @@ def _python_exec(code: str, cancel_event = None) -> str:
         return "No code provided."
 
     # Validate imports -- only stdlib modules allowed
-    try:
-        rl_env = _load_rl_environments()
-        ok, details = rl_env.check_python_modules(code)
-        if not ok:
-            non_stdlib = details.get("non_stdlib", [])
-            return (
-                f"Import error: only standard library modules are allowed. "
-                f"Blocked modules: {', '.join(non_stdlib)}"
-            )
-    except Exception:
-        pass  # If validation unavailable, proceed anyway
-
-    # Check for signal escape patterns
-    try:
-        rl_env = _load_rl_environments()
-        rl_env.check_signal_escape_patterns(code)
-    except Exception:
-        pass
+    ok, non_stdlib = _check_imports(code)
+    if not ok:
+        return (
+            f"Error: only standard library modules are allowed. "
+            f"Blocked modules: {', '.join(non_stdlib)}. "
+            f"Please rewrite the code using only the standard library."
+        )
 
     tmp_path = None
     try:

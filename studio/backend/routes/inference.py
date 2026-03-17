@@ -1051,8 +1051,10 @@ async def openai_chat_completions(
                     cancel_event.set()
                     raise
                 except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
                     logger.error(
-                        f"Error during GGUF tool streaming: {e}", exc_info = True
+                        f"Error during GGUF tool streaming: {e}\n{tb}"
                     )
                     error_chunk = {
                         "error": {
