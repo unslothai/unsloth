@@ -48,14 +48,7 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 * **macOS:** Currently supports chat only; **MLX training** is coming very soon
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### Windows, MacOS Linux or WSL:
-```
-pip install unsloth
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
-#### Git from source
+#### Windows, MacOS, Linux or WSL:
 ```
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
@@ -63,6 +56,7 @@ pip install -e .
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
 
 ### Unsloth Core (code-based)
 #### Windows, Linux, WSL
