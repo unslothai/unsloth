@@ -888,6 +888,8 @@ intelgputorch260 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
+    "triton @ https://download.pytorch.org/whl/triton-3.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; 'linux' in sys_platform and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.2.0-cp39-cp39-linux_x86_64.whl#sha256=147607f190a7d7aa24ba454def5977fbbfec792fdae18e4ed278cfec29b69271 ; ('linux' in sys_platform) and python_version == '3.9' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.2.0-cp310-cp310-linux_x86_64.whl#sha256=23aa423fa1542afc34f67eb3ba8ef20060f6d1b3a4697eaeab22b11c92b30f2b ; ('linux' in sys_platform) and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.2.0-cp311-cp311-linux_x86_64.whl#sha256=bcfa995229bbfd9ffd8d6c8d9f6428d393e876fa6e23ee3c20e3c0d73ca75ca5 ; ('linux' in sys_platform) and python_version == '3.11' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
@@ -909,6 +911,8 @@ intel-gpu-torch260 = [
 intelgputorch270 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
+
+    "triton @ https://download.pytorch.org/whl/triton-3.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; 'linux' in sys_platform and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.3.0-cp39-cp39-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=749a7098492c6a27b356c97149a4a62973b953eae60bc1b6259260974f344913 ; ('linux' in sys_platform) and python_version == '3.9' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.3.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=44362e80abd752471a08341093321955b066daa2cfb4810e73b8e3b240850f93 ; ('linux' in sys_platform) and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
@@ -941,6 +945,8 @@ intel-gpu-torch270 = [
 intelgputorch280 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
+
+    "triton @ https://download.pytorch.org/whl/triton-3.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; 'linux' in sys_platform and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.4.0-cp39-cp39-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=ac4d8e33986b1c3c5e48151640539272b2187e83016985853111b46fb82c3c94 ; 'linux' in sys_platform and python_version == '3.9' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.4.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=999fef4c1f711092b9d3086525920545df490de476ecebe899ffc777019ae17f ; 'linux' in sys_platform and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
@@ -985,6 +991,8 @@ intelgputorch290 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
+    "triton @ https://download.pytorch.org/whl/triton-3.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; 'linux' in sys_platform and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=c169a1de14c19673b17c751290d467fa282fc90fa5da4314b2e5cdab1f553146 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=013d9dd5d6479bd22983161f462e61c8dbe1d82e6730624a7a8d5945507eaa61 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=afc8cabfbf7ed51fd278d1e0f88d6afc157b0201bad4b99d681e4d542f9e66d4 ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
@@ -1021,6 +1029,8 @@ intel-gpu-torch290 = [
 intelgputorch210 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
+
+    "triton @ https://download.pytorch.org/whl/triton-3.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; 'linux' in sys_platform and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=c169a1de14c19673b17c751290d467fa282fc90fa5da4314b2e5cdab1f553146 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=013d9dd5d6479bd22983161f462e61c8dbe1d82e6730624a7a8d5945507eaa61 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
