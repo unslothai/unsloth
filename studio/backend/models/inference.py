@@ -184,6 +184,18 @@ class InferenceStatusResponse(BaseModel):
     loaded: List[str] = Field(
         default_factory = list, description = "Models currently loaded"
     )
+    inference: Optional[Dict[str, Any]] = Field(
+        None, description = "Recommended inference parameters for the active model"
+    )
+    supports_reasoning: bool = Field(
+        False, description = "Whether the active model supports reasoning/thinking mode"
+    )
+    supports_tools: bool = Field(
+        False, description = "Whether the active model supports tool calling"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Context length of the active model"
+    )
 
 
 # =====================================================================

@@ -228,6 +228,32 @@ export function useChatModelRuntime() {
 
       if (statusRes.active_model) {
         setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
+
+        // Apply inference defaults on reconnect (page refresh with model already loaded)
+        if (statusRes.inference) {
+          const currentParams = useChatRuntimeStore.getState().params;
+          setParams(
+            mergeRecommendedInference(currentParams, statusRes as any, statusRes.active_model),
+          );
+        }
+
+        // Restore reasoning/tools support flags
+        const supportsReasoning = statusRes.supports_reasoning ?? false;
+        const supportsTools = statusRes.supports_tools ?? false;
+        useChatRuntimeStore.setState({ supportsReasoning, supportsTools });
+
+        // Set reasoning default for Qwen3.5 small models
+        if (supportsReasoning) {
+          let reasoningDefault = true;
+          const mid = statusRes.active_model.toLowerCase();
+          if (mid.includes("qwen3.5")) {
+            const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
+            if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
+              reasoningDefault = false;
+            }
+          }
+          useChatRuntimeStore.getState().setReasoningEnabled(reasoningDefault);
+        }
       }
     } catch (error) {
       const message =
@@ -237,7 +263,7 @@ export function useChatModelRuntime() {
         description: message,
       });
     }
-  }, [setCheckpoint, setLoras, setModels, setModelsError]);
+  }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
 
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;

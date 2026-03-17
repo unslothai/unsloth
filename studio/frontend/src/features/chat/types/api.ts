@@ -106,6 +106,17 @@ export interface InferenceStatusResponse {
   has_audio_input?: boolean;
   loading: string[];
   loaded: string[];
+  inference?: {
+    temperature?: number;
+    top_p?: number;
+    top_k?: number;
+    min_p?: number;
+    presence_penalty?: number;
+    trust_remote_code?: boolean;
+  };
+  supports_reasoning?: boolean;
+  supports_tools?: boolean;
+  context_length?: number | null;
 }
 
 export interface AudioGenerationResponse {

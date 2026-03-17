@@ -501,15 +501,21 @@ async def get_status(
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
+            _model_id = llama_backend.model_identifier
+            _inference_cfg = load_inference_config(_model_id) if _model_id else None
             return InferenceStatusResponse(
-                active_model = llama_backend.model_identifier,
+                active_model = _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = getattr(llama_backend, "_audio_type", None),
                 loading = [],
-                loaded = [llama_backend.model_identifier],
+                loaded = [_model_id],
+                inference = _inference_cfg,
+                supports_reasoning = llama_backend.supports_reasoning,
+                supports_tools = llama_backend.supports_tools,
+                context_length = llama_backend.context_length,
             )
 
         # Otherwise, report Unsloth backend status
