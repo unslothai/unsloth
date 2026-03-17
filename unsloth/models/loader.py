@@ -152,41 +152,45 @@ def _patch_granitemoehybrid_return_hidden_states():
     @wraps(_original_forward)
     def _patched_forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        output_router_logits=None,
-        return_dict=None,
-        cache_position=None,
-        logits_to_keep=0,
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        past_key_values = None,
+        inputs_embeds = None,
+        labels = None,
+        use_cache = None,
+        output_attentions = None,
+        output_hidden_states = None,
+        output_router_logits = None,
+        return_dict = None,
+        cache_position = None,
+        logits_to_keep = 0,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict = (
+                return_dict if return_dict is not None else self.config.use_return_dict
+            )
 
             outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                output_router_logits=output_router_logits,
-                return_dict=return_dict,
-                cache_position=cache_position,
+                input_ids = input_ids,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
+                past_key_values = past_key_values,
+                inputs_embeds = inputs_embeds,
+                use_cache = use_cache,
+                output_attentions = output_attentions,
+                output_hidden_states = output_hidden_states,
+                output_router_logits = output_router_logits,
+                return_dict = return_dict,
+                cache_position = cache_position,
                 **kwargs,
             )
 
             hidden_states = outputs[0]
-            num_logits_to_keep = logits_to_keep if isinstance(logits_to_keep, int) else 0
+            num_logits_to_keep = (
+                logits_to_keep if isinstance(logits_to_keep, int) else 0
+            )
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
 
@@ -199,29 +203,29 @@ def _patch_granitemoehybrid_return_hidden_states():
                 return (hidden_states,) + outputs[1:]
 
             return MoeCausalLMOutputWithPast(
-                loss=None,
-                logits=hidden_states,
-                past_key_values=outputs.past_key_values,
-                hidden_states=outputs.hidden_states,
-                attentions=outputs.attentions,
-                router_logits=getattr(outputs, "router_logits", None),
+                loss = None,
+                logits = hidden_states,
+                past_key_values = outputs.past_key_values,
+                hidden_states = outputs.hidden_states,
+                attentions = outputs.attentions,
+                router_logits = getattr(outputs, "router_logits", None),
             )
 
         return _original_forward(
             self,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            labels=labels,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            output_router_logits=output_router_logits,
-            return_dict=return_dict,
-            cache_position=cache_position,
-            logits_to_keep=logits_to_keep,
+            input_ids = input_ids,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            inputs_embeds = inputs_embeds,
+            labels = labels,
+            use_cache = use_cache,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            output_router_logits = output_router_logits,
+            return_dict = return_dict,
+            cache_position = cache_position,
+            logits_to_keep = logits_to_keep,
             **kwargs,
         )
 
