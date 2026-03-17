@@ -951,7 +951,8 @@ async def openai_chat_completions(
 
             if payload.enabled_tools:
                 tools_to_use = [
-                    t for t in ALL_TOOLS
+                    t
+                    for t in ALL_TOOLS
                     if t["function"]["name"] in payload.enabled_tools
                 ]
             else:
