@@ -8,10 +8,15 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 """
 
 import os
+
+os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
 import subprocess
 import sys
 import tempfile
 import threading
+
+from unsloth_zoo.rl_environments import check_python_modules, check_signal_escape_patterns
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
@@ -108,40 +113,31 @@ def _web_search(query: str, max_results: int = 5) -> str:
         return f"Search failed: {e}"
 
 
-def _check_imports(code: str) -> tuple[bool, list[str]]:
-    """Validate that code only imports standard library modules.
+def _check_code_safety(code: str) -> str | None:
+    """Validate code imports and signal safety using unsloth_zoo.
 
-    Returns (ok, non_stdlib_list). Uses ast to parse import statements
-    and checks against sys.stdlib_module_names (Python 3.10+).
+    Returns an error message string if the code is unsafe, or None if OK.
     """
-    import ast
+    # Check for non-stdlib imports
+    ok, details = check_python_modules(code)
+    if not ok:
+        non_stdlib = details.get("non_stdlib", [])
+        return (
+            f"Error: only standard library modules are allowed. "
+            f"Blocked modules: {', '.join(non_stdlib)}. "
+            f"Please rewrite the code using only the standard library."
+        )
 
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return True, []  # Let syntax errors surface at execution time
+    # Check for signal/timeout escape patterns
+    safe, info = check_signal_escape_patterns(code)
+    if not safe:
+        reasons = [item.get("description", "") for item in info.get("signal_tampering", [])]
+        return (
+            f"Error: unsafe code detected ({'; '.join(reasons)}). "
+            f"Please remove signal manipulation from your code."
+        )
 
-    stdlib = getattr(sys, "stdlib_module_names", None)
-    if stdlib is None:
-        # Python < 3.10 fallback -- skip validation
-        return True, []
-
-    non_stdlib = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                top = alias.name.split(".")[0]
-                if top not in stdlib:
-                    non_stdlib.append(top)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                top = node.module.split(".")[0]
-                if top not in stdlib:
-                    non_stdlib.append(top)
-
-    if non_stdlib:
-        return False, sorted(set(non_stdlib))
-    return True, []
+    return None
 
 
 def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
@@ -164,14 +160,10 @@ def _python_exec(code: str, cancel_event = None) -> str:
     if not code or not code.strip():
         return "No code provided."
 
-    # Validate imports -- only stdlib modules allowed
-    ok, non_stdlib = _check_imports(code)
-    if not ok:
-        return (
-            f"Error: only standard library modules are allowed. "
-            f"Blocked modules: {', '.join(non_stdlib)}. "
-            f"Please rewrite the code using only the standard library."
-        )
+    # Validate imports and code safety
+    error = _check_code_safety(code)
+    if error:
+        return error
 
     tmp_path = None
     try:
