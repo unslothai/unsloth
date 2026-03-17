@@ -32,6 +32,13 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
+# Dispatcher timeout constants (seconds)
+_DISPATCH_READ_TIMEOUT = 30.0
+_DISPATCH_POLL_INTERVAL = 0.5
+_DISPATCH_STOP_TIMEOUT = 5.0
+_DISPATCH_IDLE_TIMEOUT = 30.0
+_DISPATCH_DRAIN_TIMEOUT = 5.0
+
 
 class InferenceOrchestrator:
     """
@@ -53,25 +60,97 @@ class InferenceOrchestrator:
             threading.Lock()
         )  # Serializes generation — one request at a time
 
+        # Dispatcher state — for compare mode (adapter-controlled requests).
+        # Instead of serializing via _gen_lock, adapter-controlled requests
+        # send commands directly to the subprocess and read from per-request
+        # mailboxes. A dispatcher thread routes resp_queue events by request_id.
+        self._mailboxes: dict[str, queue.Queue] = {}
+        self._mailbox_lock = threading.Lock()  # Protects _mailboxes dict
+        self._dispatcher_thread: Optional[threading.Thread] = None
+        self._dispatcher_stop = threading.Event()
+
         # Local state mirrors (updated from subprocess responses)
         self.active_model_name: Optional[str] = None
         self.models: dict = {}
         self.loading_models: set = set()
         self.loaded_local_models: list = []
-        self.default_models = [
-            "unsloth/Qwen3-4B-Instruct-2507",
-            "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-            "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-            "unsloth/Phi-3.5-mini-instruct",
-            "unsloth/Gemma-3-4B-it",
-            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
-        ]
+        from core.inference.defaults import get_default_models
+
+        self._static_models = get_default_models()
+        self._top_gguf_cache: Optional[list[str]] = None
+        self._top_hub_cache: Optional[list[str]] = None
+        self._top_models_ready = threading.Event()
 
         # Version tracking for subprocess reuse
         self._current_transformers_major: Optional[str] = None  # "4" or "5"
 
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
+
+        # Kick off background fetch of top models from HF
+        threading.Thread(
+            target = self._fetch_top_models, daemon = True, name = "top-models"
+        ).start()
+
+    # ------------------------------------------------------------------
+    # Default models (top GGUFs fetched dynamically from HF)
+    # ------------------------------------------------------------------
+
+    @property
+    def default_models(self) -> list[str]:
+        # Wait up to 5s for background HF fetch to finish
+        self._top_models_ready.wait(timeout = 5)
+        top_gguf = self._top_gguf_cache or []
+        top_hub = self._top_hub_cache or []
+        # GGUFs first, then hub models, then static fallbacks.
+        # Send extras so the frontend still has 4 per category
+        # after removing already-downloaded models.
+        result: list[str] = []
+        seen: set[str] = set()
+        for m in top_gguf + top_hub + self._static_models:
+            if m not in seen:
+                result.append(m)
+                seen.add(m)
+        return result
+
+    def _fetch_top_models(self) -> None:
+        """Fetch top GGUF and non-GGUF repos from unsloth by downloads."""
+        try:
+            import httpx
+
+            resp = httpx.get(
+                "https://huggingface.co/api/models",
+                params = {
+                    "author": "unsloth",
+                    "sort": "downloads",
+                    "direction": "-1",
+                    "limit": "80",
+                },
+                timeout = 15,
+            )
+            if resp.status_code == 200:
+                models = resp.json()
+                # Top 8 GGUFs (frontend deduplicates against downloaded,
+                # so we fetch extra to always fill 4 slots)
+                gguf_ids = [
+                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
+                ][:8]
+                # Top 8 non-GGUF hub models
+                hub_ids = [
+                    m["id"]
+                    for m in models
+                    if not m.get("id", "").upper().endswith("-GGUF")
+                ][:8]
+                if gguf_ids:
+                    self._top_gguf_cache = gguf_ids
+                    logger.info("Top GGUF models: %s", gguf_ids)
+                if hub_ids:
+                    self._top_hub_cache = hub_ids
+                    logger.info("Top hub models: %s", hub_ids)
+        except Exception as e:
+            logger.warning("Failed to fetch top models: %s", e)
+        finally:
+            self._top_models_ready.set()
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
@@ -105,6 +184,7 @@ class InferenceOrchestrator:
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
         """Gracefully shut down the inference subprocess."""
+        self._stop_dispatcher()  # Stop dispatcher before killing subprocess
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
             return
@@ -257,6 +337,229 @@ class InferenceOrchestrator:
         logger.warning("Timed out waiting for gen_done after cancel")
 
     # ------------------------------------------------------------------
+    # Dispatcher — per-request mailbox routing for compare mode
+    # ------------------------------------------------------------------
+
+    def _start_dispatcher(self) -> None:
+        """Start the dispatcher thread if not already running.
+
+        The dispatcher reads from the shared resp_queue and routes
+        responses to per-request mailbox queues. This allows multiple
+        adapter-controlled (compare) requests to be in-flight without
+        holding _gen_lock.
+        """
+        if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
+            return
+
+        self._dispatcher_stop.clear()
+        self._dispatcher_thread = threading.Thread(
+            target = self._dispatcher_loop,
+            daemon = True,
+            name = "inference-dispatcher",
+        )
+        self._dispatcher_thread.start()
+        logger.debug("Dispatcher thread started")
+
+    def _stop_dispatcher(self) -> None:
+        """Signal the dispatcher to stop and wait for it."""
+        if self._dispatcher_thread is None:
+            return
+        self._dispatcher_stop.set()
+        self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
+        self._dispatcher_thread = None
+        logger.debug("Dispatcher thread stopped")
+
+    def _dispatcher_loop(self) -> None:
+        """Background loop: read resp_queue → route to mailboxes by request_id."""
+        while not self._dispatcher_stop.is_set():
+            if self._resp_queue is None:
+                break
+
+            try:
+                resp = self._resp_queue.get(timeout = _DISPATCH_POLL_INTERVAL)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError, ValueError):
+                break
+
+            rid = resp.get("request_id")
+            rtype = resp.get("type", "")
+
+            # Status messages — log and skip
+            if rtype == "status":
+                logger.info("Subprocess status: %s", resp.get("message", ""))
+                continue
+
+            # Route to mailbox if a matching request_id exists
+            if rid:
+                with self._mailbox_lock:
+                    mbox = self._mailboxes.get(rid)
+                if mbox is not None:
+                    mbox.put(resp)
+                    continue
+
+            # No matching mailbox — might be for a _gen_lock reader or orphaned
+            # Push it back so _read_resp can pick it up. But we can't un-get
+            # from mp.Queue, so log a warning.
+            if rtype not in ("status",):
+                logger.debug(
+                    "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
+                    rid,
+                    rtype,
+                )
+
+    def _generate_dispatched(
+        self,
+        messages: list = None,
+        system_prompt: str = "",
+        image = None,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 256,
+        repetition_penalty: float = 1.0,
+        cancel_event = None,
+        use_adapter = None,
+    ) -> Generator[str, None, None]:
+        """Dispatched generation — sends command without holding _gen_lock.
+
+        Uses a per-request mailbox to receive tokens. This allows two
+        compare-mode requests to be queued in the subprocess simultaneously,
+        eliminating the inter-generation round-trip overhead.
+
+        The subprocess processes commands sequentially from its cmd_queue,
+        so generation is still serialized at the GPU level — we just avoid
+        the orchestrator-level lock contention.
+        """
+        if not self._ensure_subprocess_alive():
+            yield "Error: Inference subprocess is not running"
+            return
+
+        if not self.active_model_name:
+            yield "Error: No active model"
+            return
+
+        # Ensure dispatcher is running
+        self._start_dispatcher()
+
+        request_id = str(uuid.uuid4())
+
+        # Convert PIL Image to base64 if needed
+        image_b64 = None
+        if image is not None:
+            image_b64 = self._pil_to_base64(image)
+
+        cmd = {
+            "type": "generate",
+            "request_id": request_id,
+            "messages": messages or [],
+            "system_prompt": system_prompt,
+            "image_base64": image_b64,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "max_new_tokens": max_new_tokens,
+            "repetition_penalty": repetition_penalty,
+        }
+
+        if use_adapter is not None:
+            cmd["use_adapter"] = use_adapter
+
+        # Create mailbox BEFORE sending command
+        mailbox: queue.Queue = queue.Queue()
+        with self._mailbox_lock:
+            self._mailboxes[request_id] = mailbox
+
+        try:
+            self._send_cmd(cmd)
+        except RuntimeError as exc:
+            with self._mailbox_lock:
+                self._mailboxes.pop(request_id, None)
+            yield f"Error: {exc}"
+            return
+
+        # Read tokens from our private mailbox
+        try:
+            while True:
+                try:
+                    resp = mailbox.get(timeout = _DISPATCH_READ_TIMEOUT)
+                except queue.Empty:
+                    # Timeout — check subprocess health
+                    if not self._ensure_subprocess_alive():
+                        yield "Error: Inference subprocess crashed during generation"
+                        return
+                    continue
+
+                rtype = resp.get("type", "")
+
+                if rtype == "token":
+                    # Check cancel from route (e.g. SSE connection closed)
+                    if cancel_event is not None and cancel_event.is_set():
+                        self._cancel_generation()
+                        # Drain remaining events for this request
+                        self._drain_mailbox(mailbox, timeout = 5.0)
+                        return
+                    yield resp.get("text", "")
+
+                elif rtype == "gen_done":
+                    return
+
+                elif rtype == "gen_error":
+                    yield f"Error: {resp.get('error', 'Unknown error')}"
+                    return
+        finally:
+            with self._mailbox_lock:
+                self._mailboxes.pop(request_id, None)
+
+    def _drain_mailbox(self, mailbox: queue.Queue, timeout: float = 5.0) -> None:
+        """Drain a mailbox until gen_done/gen_error, discarding tokens."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                resp = mailbox.get(
+                    timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
+                )
+            except queue.Empty:
+                continue
+            rtype = resp.get("type", "")
+            if rtype in ("gen_done", "gen_error"):
+                return
+        logger.warning("Timed out draining mailbox after cancel")
+
+    def _wait_dispatcher_idle(self) -> None:
+        """Wait for all dispatched requests to complete, then stop dispatcher.
+
+        Called by _generate_inner before using the _gen_lock path, to ensure
+        the dispatcher thread isn't competing for resp_queue reads.
+        """
+        if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
+            return
+
+        # Wait for all mailboxes to be emptied (dispatched requests complete)
+        deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
+        while time.monotonic() < deadline:
+            with self._mailbox_lock:
+                if not self._mailboxes:
+                    break
+            time.sleep(0.1)
+
+        # Only stop dispatcher if all mailboxes drained.  If compare
+        # requests are still active, leave the dispatcher running so
+        # their token routing isn't killed mid-stream.
+        with self._mailbox_lock:
+            still_active = bool(self._mailboxes)
+        if still_active:
+            logger.warning(
+                "Dispatcher still has %d active mailbox(es); "
+                "leaving dispatcher running for compare requests",
+                len(self._mailboxes),
+            )
+        else:
+            self._stop_dispatcher()
+
+    # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
 
@@ -386,7 +689,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess."""
@@ -410,8 +713,13 @@ class InferenceOrchestrator:
         cancel_event = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
-        """Generate with adapter control, streaming tokens from subprocess."""
-        yield from self._generate_inner(
+        """Generate with adapter control, streaming tokens from subprocess.
+
+        Uses the dispatcher path (no _gen_lock) so that compare-mode
+        requests don't block each other. The subprocess naturally
+        serializes them via its sequential command loop.
+        """
+        yield from self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             **gen_kwargs,
@@ -427,7 +735,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
@@ -444,6 +752,11 @@ class InferenceOrchestrator:
         if not self.active_model_name:
             yield "Error: No active model"
             return
+
+        # If the dispatcher is running (from a previous compare-mode request),
+        # wait for all dispatched requests to finish, then stop the dispatcher
+        # so we can safely read from resp_queue directly.
+        self._wait_dispatcher_idle()
 
         # Serialize generation — single GPU, one generation at a time.
         # Without this lock, two concurrent readers on the same resp_queue
@@ -473,7 +786,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
@@ -572,7 +885,7 @@ class InferenceOrchestrator:
         top_k: int = 50,
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
@@ -659,7 +972,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 512,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
@@ -688,7 +1001,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 512,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""

@@ -36,6 +36,7 @@ type UseRecipePersistenceParams = {
 };
 
 type UseRecipePersistenceResult = {
+  initialRecipeReady: boolean;
   workflowName: string;
   setWorkflowName: (value: string) => void;
   saveLoading: boolean;
@@ -174,6 +175,7 @@ export function useRecipePersistence({
   loadRecipe,
   getCurrentPayloadFromStore,
 }: UseRecipePersistenceParams): UseRecipePersistenceResult {
+  const [initialRecipeReady, setInitialRecipeReady] = useState(false);
   const [workflowName, setWorkflowName] = useState("Unnamed");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [savedSignature, setSavedSignature] = useState("");
@@ -195,6 +197,7 @@ export function useRecipePersistence({
   const savedAtLabel = formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
+    setInitialRecipeReady(false);
     const nextName = normalizeNonEmptyName(initialRecipeName, "Unnamed");
     resetRecipe();
     setWorkflowName(nextName);
@@ -210,6 +213,7 @@ export function useRecipePersistence({
 
     const payload = getCurrentPayloadFromStore();
     setSavedSignature(buildSignature(nextName, payload));
+    setInitialRecipeReady(true);
   }, [
     getCurrentPayloadFromStore,
     initialPayload,
@@ -287,6 +291,7 @@ export function useRecipePersistence({
   );
 
   return {
+    initialRecipeReady,
     workflowName,
     setWorkflowName,
     saveLoading,

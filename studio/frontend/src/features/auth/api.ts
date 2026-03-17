@@ -5,15 +5,28 @@ import {
   clearAuthTokens,
   getAuthToken,
   getRefreshToken,
+  mustChangePassword,
   storeAuthTokens,
 } from "./session";
 
 type RefreshResponse = {
   access_token: string;
   refresh_token: string;
+  must_change_password: boolean;
 };
 
 let isRedirecting = false;
+
+async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false;
+
+  try {
+    const payload = (await response.clone().json()) as { detail?: string };
+    return payload.detail === "Password change required";
+  } catch {
+    return false;
+  }
+}
 
 async function redirectToAuth(): Promise<void> {
   if (isRedirecting) return;
@@ -23,8 +36,8 @@ async function redirectToAuth(): Promise<void> {
   try {
     const res = await fetch("/api/auth/status");
     if (res.ok) {
-      const data = (await res.json()) as { initialized: boolean };
-      if (!data.initialized) target = "/signup";
+      const data = (await res.json()) as { requires_password_change: boolean };
+      if (data.requires_password_change || mustChangePassword()) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -50,7 +63,11 @@ export async function refreshSession(): Promise<boolean> {
     }
 
     const payload = (await response.json()) as RefreshResponse;
-    storeAuthTokens(payload.access_token, payload.refresh_token);
+    storeAuthTokens(
+      payload.access_token,
+      payload.refresh_token,
+      payload.must_change_password,
+    );
     return true;
   } catch {
     return false;
@@ -67,12 +84,29 @@ export async function authFetch(
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
 
-  const response = await fetch(input, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(input, { ...init, headers });
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error("Studio isn't running -- please relaunch it.");
+    }
+    throw err;
+  }
+  if (await isPasswordChangeRequiredResponse(response)) {
+    void redirectToAuth();
+    return response;
+  }
   if (response.status !== 401) return response;
 
   const refreshed = await refreshSession();
   if (!refreshed) {
     clearAuthTokens();
+    void redirectToAuth();
+    return response;
+  }
+
+  if (mustChangePassword()) {
     void redirectToAuth();
     return response;
   }

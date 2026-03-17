@@ -2,20 +2,30 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Navbar } from "@/components/navbar";
+import { usePlatformStore } from "@/config/env";
 import {
   Outlet,
   createRootRoute,
+  redirect,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
+const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
+
 export const Route = createRootRoute({
+  beforeLoad: ({ location }) => {
+    const chatOnly = usePlatformStore.getState().isChatOnly();
+    if (chatOnly && !CHAT_ONLY_ALLOWED.has(location.pathname)) {
+      throw redirect({ to: "/chat" });
+    }
+  },
   component: RootLayout,
 });
 
-const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/signup"];
+const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });

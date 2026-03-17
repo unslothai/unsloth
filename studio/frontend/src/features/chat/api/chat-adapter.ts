@@ -2,8 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import type { MessageTiming } from "@assistant-ui/core";
 import { toast } from "sonner";
-import { generateAudio, streamChatCompletions } from "./chat-api";
+import {
+  generateAudio,
+  listCachedGguf,
+  listCachedModels,
+  listGgufVariants,
+  loadModel,
+  streamChatCompletions,
+} from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -16,6 +24,37 @@ type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+function estimateTokenCount(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return Math.max(1, Math.round(trimmed.length / 4));
+}
+
+function buildTiming(
+  streamStartTime: number,
+  totalChunks: number,
+  firstTokenTime?: number,
+  totalStreamTime?: number,
+  tokenCount?: number,
+): MessageTiming {
+  return {
+    streamStartTime,
+    firstTokenTime,
+    totalStreamTime,
+    tokenCount,
+    tokensPerSecond:
+      typeof totalStreamTime === "number" &&
+      totalStreamTime > 0 &&
+      typeof tokenCount === "number"
+        ? tokenCount / (totalStreamTime / 1000)
+        : undefined,
+    totalChunks,
+    toolCallCount: 0,
+  };
+}
 
 function collectTextParts(message: RunMessage): string[] {
   const textParts = message.content
@@ -47,10 +86,17 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  return {
-    role: message.role,
-    content: collectTextParts(message).join("\n"),
-  };
+  let content = collectTextParts(message).join("\n");
+  // Strip inline audio base64 from prior assistant messages to avoid
+  // inflating token counts (e.g. audio-player responses with embedded WAV).
+  if (message.role === "assistant") {
+    content = content.replace(
+      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+      "[audio]",
+    );
+  }
+
+  return { role: message.role, content };
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -135,17 +181,129 @@ async function resolveUseAdapter(
   }
 }
 
+/** Wait for an in-progress model load to finish (polls store every 500ms). */
+function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (abortSignal?.aborted) { reject(new Error("Aborted")); return; }
+      if (!useChatRuntimeStore.getState().modelLoading) { resolve(); return; }
+      setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
+/**
+ * Auto-load the smallest downloaded model when the user tries to chat
+ * without selecting one. Prefers GGUF (picks smallest cached variant),
+ * falls back to smallest cached safetensors model.
+ */
+async function autoLoadSmallestModel(): Promise<boolean> {
+  const toastId = toast("Loading a model…", {
+    description: "Auto-selecting the smallest downloaded model.",
+    duration: 5000,
+    closeButton: true,
+  });
+  try {
+    const [ggufRepos, modelRepos] = await Promise.all([
+      listCachedGguf().catch(() => []),
+      listCachedModels().catch(() => []),
+    ]);
+
+    // Try GGUF first: pick the repo with the smallest total size,
+    // then pick its smallest downloaded variant.
+    if (ggufRepos.length > 0) {
+      const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
+      for (const repo of sorted) {
+        try {
+          const variants = await listGgufVariants(repo.repo_id);
+          const downloaded = variants.variants
+            .filter((v) => v.downloaded)
+            .sort((a, b) => a.size_bytes - b.size_bytes);
+          if (downloaded.length > 0) {
+            const variant = downloaded[0];
+            const loadResp = await loadModel({
+              model_path: repo.repo_id,
+              hf_token: null,
+              max_seq_length: 4096,
+              load_in_4bit: true,
+              is_lora: false,
+              gguf_variant: variant.quant,
+              trust_remote_code: false,
+            });
+            const store = useChatRuntimeStore.getState();
+            store.setCheckpoint(repo.repo_id, variant.quant);
+            store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResp.context_length ?? 131072,
+              supportsReasoning: loadResp.supports_reasoning ?? false,
+              reasoningEnabled: loadResp.supports_reasoning ?? false,
+              defaultChatTemplate: loadResp.chat_template ?? null,
+              chatTemplateOverride: null,
+            });
+            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
+            return true;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Fall back to safetensors models
+    if (modelRepos.length > 0) {
+      const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
+      for (const repo of sorted) {
+        try {
+          await loadModel({
+            model_path: repo.repo_id,
+            hf_token: null,
+            max_seq_length: 4096,
+            load_in_4bit: true,
+            is_lora: false,
+            gguf_variant: null,
+            trust_remote_code: false,
+          });
+          const store = useChatRuntimeStore.getState();
+          store.setCheckpoint(repo.repo_id);
+          store.setParams({ ...store.params, maxTokens: 4096 });
+          toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
+          return true;
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    toast.dismiss(toastId);
+    return false;
+  } catch {
+    toast.dismiss(toastId);
+    return false;
+  }
+}
+
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       const runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
 
-      if (!params.checkpoint) {
-        toast.error("No model loaded", {
-          description: "Pick model in top bar, then retry.",
-        });
-        throw new Error("Load a model first.");
+      // Wait for in-progress model load to finish before inferring
+      if (runtime.modelLoading) {
+        toast.info("Waiting for model to finish loading…");
+        await waitForModelReady(abortSignal);
+      }
+
+      if (!useChatRuntimeStore.getState().params.checkpoint) {
+        // Auto-load the smallest downloaded model
+        const loaded = await autoLoadSmallestModel();
+        if (!loaded) {
+          toast.error("No model loaded", {
+            description: "Pick a model in the top bar, then retry.",
+          });
+          throw new Error("Load a model first.");
+        }
       }
 
       const outboundMessages = messages
@@ -227,6 +385,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
+      const streamStartTime = Date.now();
+      let firstTokenTime: number | undefined;
+      let totalChunks = 0;
       let resolveFirstToken: (() => void) | null = null;
       let rejectFirstToken: ((err: unknown) => void) | null = null;
       const firstTokenPromise = new Promise<void>((resolve, reject) => {
@@ -269,6 +430,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningDuration = 0;
 
       try {
+        const { supportsReasoning, reasoningEnabled } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -283,17 +445,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
+            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
           },
           abortSignal,
         );
 
         for await (const chunk of stream) {
+          totalChunks += 1;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (!delta) {
             continue;
           }
           if (waitingFirstChunk) {
             waitingFirstChunk = false;
+            firstTokenTime = Date.now() - streamStartTime;
             settleFirstTokenOk();
           }
 
@@ -310,11 +475,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           if (parts.length > 0) {
             yield {
               content: parts,
-              metadata: { custom: { reasoningDuration } },
+              metadata: {
+                timing: buildTiming(
+                  streamStartTime,
+                  totalChunks,
+                  firstTokenTime,
+                ),
+                custom: { reasoningDuration },
+              },
             };
           }
         }
         settleFirstTokenOk();
+        yield {
+          metadata: {
+            timing: buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(cumulativeText),
+            ),
+            custom: { reasoningDuration },
+          },
+        };
       } catch (err) {
         settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
         const isEarly = waitingFirstChunk;

@@ -10,8 +10,8 @@ import os
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-import secrets
 import shutil
+import sys
 import warnings
 from contextlib import asynccontextmanager
 
@@ -48,7 +48,7 @@ from utils.cache_cleanup import clear_unsloth_compiled_cache
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: detect hardware, print setup token if needed. Shutdown: clean up compiled cache."""
+    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
     # Clean up any stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
 
@@ -60,21 +60,6 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
-
-    # Disable flex attention on Blackwell+ GPUs (sm_120 and above)
-    if get_device() == DeviceType.CUDA:
-        import torch
-
-        props = torch.cuda.get_device_properties(0)
-        sm_version = props.major * 10 + props.minor
-        if sm_version >= 120:
-            os.environ["UNSLOTH_ENABLE_FLEX_ATTENTION"] = "0"
-            import structlog
-            from loggers import get_logger
-
-            get_logger(__name__).info(
-                f"GPU sm_{sm_version} detected — setting UNSLOTH_FLEX_ATTENTION=0"
-            )
 
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
     # Runs in a background thread so it doesn't block server startup.
@@ -90,15 +75,19 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
-    if not storage.is_initialized():
-        setup_token = secrets.token_urlsafe(32)
-        storage.save_setup_token(setup_token)
+    if storage.ensure_default_admin():
+        bootstrap_pw = storage.get_bootstrap_password()
+        app.state.bootstrap_password = bootstrap_pw
         print("\n" + "=" * 60)
-        print("FIRST-TIME SETUP REQUIRED")
-        print("Use this one-time setup token to create your admin account:\n")
-        print(f"    {setup_token}\n")
-        print("This token can only be used once.")
+        print("DEFAULT ADMIN ACCOUNT CREATED")
+        print(
+            "Sign in with the seeded credentials and change the password immediately:\n"
+        )
+        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
+        print(f"    password: {bootstrap_pw}\n")
         print("=" * 60 + "\n")
+    else:
+        app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
     _hw_module.DEVICE = None
@@ -156,10 +145,14 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
+    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
+    device_type = platform_map.get(sys.platform, sys.platform)
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
+        "device_type": device_type,
     }
 
 
@@ -167,21 +160,69 @@ async def health_check():
 async def get_system_info():
     """Get system information"""
     import platform
+    import subprocess
     import psutil
     from utils.hardware import get_device, get_gpu_memory_info, DeviceType
 
-    # GPU Info — uses the hardware module (works on CUDA, MPS, CPU)
-    mem_info = get_gpu_memory_info()
-    gpu_info = {"available": mem_info.get("available", False), "devices": []}
+    # GPU Info — query nvidia-smi for physical GPUs, filtered by
+    # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF
+    # fit estimation and llama-server respects CVD too).
+    import os
 
-    if mem_info.get("available"):
-        gpu_info["devices"].append(
-            {
-                "index": mem_info.get("device", 0),
-                "name": mem_info.get("device_name", "Unknown"),
-                "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-            }
-        )
+    gpu_info: dict = {"available": False, "devices": []}
+
+    device = get_device()
+    if device == DeviceType.CUDA:
+        # Parse CUDA_VISIBLE_DEVICES allowlist
+        allowed_indices = None
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and cvd.strip():
+            try:
+                allowed_indices = set(int(x.strip()) for x in cvd.split(","))
+            except ValueError:
+                pass  # Non-numeric (e.g. GPU-uuid), show all
+
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,name,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) == 3:
+                        idx = int(parts[0])
+                        if allowed_indices is not None and idx not in allowed_indices:
+                            continue
+                        gpu_info["devices"].append(
+                            {
+                                "index": idx,
+                                "name": parts[1],
+                                "memory_total_gb": round(int(parts[2]) / 1024, 2),
+                            }
+                        )
+                gpu_info["available"] = len(gpu_info["devices"]) > 0
+        except Exception:
+            pass
+
+    # Fallback to torch-based single-GPU detection
+    if not gpu_info["available"]:
+        mem_info = get_gpu_memory_info()
+        if mem_info.get("available"):
+            gpu_info["available"] = True
+            gpu_info["devices"].append(
+                {
+                    "index": mem_info.get("device", 0),
+                    "name": mem_info.get("device_name", "Unknown"),
+                    "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
+                }
+            )
 
     # CPU & Memory
     memory = psutil.virtual_memory()
@@ -214,6 +255,50 @@ async def get_hardware_info():
 # ============ Serve Frontend (Optional) ============
 
 
+def _strip_crossorigin(html_bytes: bytes) -> bytes:
+    """Remove ``crossorigin`` attributes from script/link tags.
+
+    Vite adds ``crossorigin`` by default which forces CORS mode on font
+    subresource loads.  When Studio is served over plain HTTP, Firefox
+    HTTPS-Only Mode does not exempt CORS font requests -- causing all
+    @font-face downloads to fail silently.  Stripping the attribute
+    makes them regular same-origin fetches that work on any protocol.
+    """
+    import re as _re
+
+    html = html_bytes.decode("utf-8")
+    html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
+    return html.encode("utf-8")
+
+
+def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
+    """Inject bootstrap credentials into HTML when password change is required.
+
+    The script tag is only injected while the default admin account still
+    has ``must_change_password=True``.  Once the user changes the password
+    the HTML is served clean — no credentials leak.
+    """
+    import json as _json
+
+    if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
+        return html_bytes
+
+    bootstrap_pw = getattr(app.state, "bootstrap_password", None)
+    if not bootstrap_pw:
+        return html_bytes
+
+    payload = _json.dumps(
+        {
+            "username": storage.DEFAULT_ADMIN_USERNAME,
+            "password": bootstrap_pw,
+        }
+    )
+    tag = f"<script>window.__UNSLOTH_BOOTSTRAP__={payload}</script>"
+    html = html_bytes.decode("utf-8")
+    html = html.replace("</head>", f"{tag}</head>", 1)
+    return html.encode("utf-8")
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -227,6 +312,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
     @app.get("/")
     async def serve_root():
         content = (build_path / "index.html").read_bytes()
+        content = _strip_crossorigin(content)
+        content = _inject_bootstrap(content, app)
         return Response(
             content = content,
             media_type = "text/html",
@@ -249,6 +336,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         # Serve index.html as bytes — avoids Content-Length mismatch
         content = (build_path / "index.html").read_bytes()
+        content = _strip_crossorigin(content)
+        content = _inject_bootstrap(content, app)
         return Response(
             content = content,
             media_type = "text/html",

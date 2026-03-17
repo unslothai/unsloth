@@ -118,6 +118,7 @@ def _build_stream_load_kwargs(
         "path": dataset_name,
         "split": split,
         "streaming": True,
+        "trust_remote_code": False,
     }
     if data_file:
         kwargs["data_files"] = [data_file]

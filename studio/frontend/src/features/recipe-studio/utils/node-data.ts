@@ -14,7 +14,7 @@ export function nodeDataFromConfig(
 ): RecipeNodeData {
   if (config.kind === "sampler") {
     return {
-      title: "Sampler",
+      title: "Generated field",
       kind: "sampler",
       subtype: labelForSampler(config.sampler_type),
       blockType: config.sampler_type,
@@ -24,7 +24,7 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "expression") {
     return {
-      title: "Expression",
+      title: "Formula",
       kind: "expression",
       subtype: labelForExpression(config.dtype),
       blockType: "expression",
@@ -45,7 +45,7 @@ export function nodeDataFromConfig(
       blockType = "validator_sql";
     }
     return {
-      title: "Validator",
+      title: "Check",
       kind: "validator",
       subtype,
       blockType,
@@ -69,10 +69,10 @@ export function nodeDataFromConfig(
       seedSourceType === "hf"
         ? "Hugging Face dataset"
         : seedSourceType === "local"
-          ? "Structured file"
-          : "Unstructured document";
+          ? "CSV or JSON file"
+          : "Document file";
     return {
-      title: "Seed",
+      title: "Source data",
       kind: "seed",
       subtype: sourceLabel,
       blockType: "seed",
@@ -82,9 +82,9 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "model_provider") {
     return {
-      title: "Model Provider",
+      title: "Provider connection",
       kind: "model_provider",
-      subtype: config.provider_type || "Provider",
+      subtype: config.provider_type || "Connection",
       blockType: "model_provider",
       name: config.name,
       layoutDirection,
@@ -92,7 +92,7 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "model_config") {
     return {
-      title: "Model Config",
+      title: "Model preset",
       kind: "model_config",
       subtype: config.model || "Model",
       blockType: "model_config",
@@ -103,16 +103,16 @@ export function nodeDataFromConfig(
   if (config.kind === "tool_config") {
     const providerCount = config.mcp_providers.length;
     return {
-      title: "Tool Profile",
+      title: "Tool access",
       kind: "tool_config",
-      subtype: providerCount === 1 ? "1 MCP server" : `${providerCount} MCP servers`,
+      subtype: providerCount === 1 ? "1 server" : `${providerCount} servers`,
       blockType: "tool_config",
       name: config.name,
       layoutDirection,
     };
   }
   return {
-    title: "LLM",
+    title: "AI step",
     kind: "llm",
     subtype: labelForLlm(config.llm_type),
     blockType: config.llm_type,

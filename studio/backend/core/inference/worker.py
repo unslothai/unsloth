@@ -276,7 +276,7 @@ def _handle_generate(
             "top_k": cmd.get("top_k", 40),
             "min_p": cmd.get("min_p", 0.0),
             "max_new_tokens": cmd.get("max_new_tokens", 256),
-            "repetition_penalty": cmd.get("repetition_penalty", 1.1),
+            "repetition_penalty": cmd.get("repetition_penalty", 1.0),
             "cancel_event": cancel_event,
         }
 
@@ -348,7 +348,7 @@ def _handle_generate_audio(
             top_k = cmd.get("top_k", 50),
             min_p = cmd.get("min_p", 0.0),
             max_new_tokens = cmd.get("max_new_tokens", 2048),
-            repetition_penalty = cmd.get("repetition_penalty", 1.1),
+            repetition_penalty = cmd.get("repetition_penalty", 1.0),
             use_adapter = cmd.get("use_adapter"),
         )
 
@@ -411,7 +411,7 @@ def _handle_generate_audio_input(
                 top_k = cmd.get("top_k", 40),
                 min_p = cmd.get("min_p", 0.0),
                 max_new_tokens = cmd.get("max_new_tokens", 512),
-                repetition_penalty = cmd.get("repetition_penalty", 1.1),
+                repetition_penalty = cmd.get("repetition_penalty", 1.0),
                 cancel_event = cancel_event,
             )
 

@@ -34,6 +34,9 @@ class TrainingStartRequest(BaseModel):
     local_datasets: List[str] = Field(
         default_factory = list, description = "List of local dataset paths"
     )
+    local_eval_datasets: List[str] = Field(
+        default_factory = list, description = "List of local eval dataset paths"
+    )
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")

@@ -19,6 +19,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={theme as ToasterProps["theme"]}
       className="toaster group"
+      duration={5000}
       icons={{
         success: (
           <HugeiconsIcon
@@ -67,6 +68,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast: "cn-toast",
+          closeButton: "!top-1.5 !translate-y-0",
         },
       }}
       {...props}

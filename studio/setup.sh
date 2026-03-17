@@ -33,12 +33,6 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
-# ── Detect pip install (no frontend source dir → already bundled) ──
-IS_PIP_INSTALL=false
-if [ ! -f "$SCRIPT_DIR/frontend/package.json" ]; then
-    IS_PIP_INSTALL=true
-fi
-
 # ── Detect Colab (like unsloth does) ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -46,9 +40,14 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
 
-# ── 1. Check existing Node/npm versions (skip if pip-installed) ──
-if [ "$IS_PIP_INSTALL" = true ]; then
-    echo "✅ Running from pip install — frontend already bundled, skipping Node/npm check."
+# ── Detect whether frontend needs building ──
+# Only skip when BOTH conditions are true:
+#   1. We're inside site-packages (PyPI / pip install, not editable)
+#   2. dist/ already exists (pre-built in the wheel)
+# Otherwise always (re)build — handles upgrades, editable installs, and
+# pip-from-source where dist/ was never built.
+if [[ "$SCRIPT_DIR" == */site-packages/* ]] && [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    echo "✅ Frontend pre-built (PyPI) — skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -85,6 +84,18 @@ if [ "$NEED_NODE" = true ]; then
     set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
+    # ── Fix npmrc conflict with nvm ──
+    # System npm (apt, conda, etc.) may have written `prefix` or `globalconfig`
+    # to ~/.npmrc, which is incompatible with nvm and causes "nvm use" to fail
+    # with: "has a `globalconfig` and/or a `prefix` setting, which are
+    # incompatible with nvm."
+    if [ -f "$HOME/.npmrc" ]; then
+        if grep -qE '^\s*(prefix|globalconfig)\s*=' "$HOME/.npmrc"; then
+            echo "   Removing incompatible prefix/globalconfig from ~/.npmrc for nvm..."
+            sed -i.bak '/^\s*\(prefix\|globalconfig\)\s*=/d' "$HOME/.npmrc"
+        fi
+    fi
+
     # ── 3. Install Node LTS ──
     echo "Installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
@@ -107,21 +118,42 @@ fi
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
 # ── 5. Build frontend ──
-echo ""
-echo "Building frontend..."
 cd "$SCRIPT_DIR/frontend"
+
+# Tailwind v4's oxide scanner respects .gitignore in parent directories.
+# Python venvs create a .gitignore with "*" (ignore everything), which
+# prevents Tailwind from scanning .tsx source files for class names.
+# Temporarily hide any such .gitignore during the build, then restore it.
+_HIDDEN_GITIGNORES=()
+_dir="$(pwd)"
+while [ "$_dir" != "/" ]; do
+    _dir="$(dirname "$_dir")"
+    if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+        mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+        _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+    fi
+done
+
+_restore_gitignores() {
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+    done
+}
+trap _restore_gitignores EXIT
+
 run_quiet "npm install" npm install
 run_quiet "npm run build" npm run build
+
+_restore_gitignores
+trap - EXIT
 cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
 run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end IS_PIP_INSTALL check
+fi  # end frontend dist check
 
 # ── 6. Python venv + deps ──
-echo ""
-echo "Setting up Python environment..."
 
 # ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
@@ -281,6 +313,35 @@ rm -rf "$LLAMA_CPP_DIR"
             if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="-DGGML_CUDA=ON"
+
+                # Detect GPU compute capability and limit CUDA architectures
+                # Without this, cmake builds for ALL default archs (very slow)
+                CUDA_ARCHS=""
+                if command -v nvidia-smi &>/dev/null; then
+                    # Read all GPUs, deduplicate (handles mixed-GPU hosts)
+                    _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                    while IFS= read -r _cap; do
+                        _cap=$(echo "$_cap" | tr -d '[:space:]')
+                        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                            # Append if not already present
+                            case ";$CUDA_ARCHS;" in
+                                *";$_arch;"*) ;;
+                                *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                            esac
+                        fi
+                    done <<< "$_raw_caps"
+                fi
+
+                if [ -n "$CUDA_ARCHS" ]; then
+                    echo "   GPU compute capabilities: ${CUDA_ARCHS//;/, } -- limiting build to detected archs"
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                else
+                    echo "   Could not detect GPU arch -- building for all default CUDA architectures (slower)"
+                fi
+
+                # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
@@ -290,7 +351,13 @@ rm -rf "$LLAMA_CPP_DIR"
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            # Use Ninja if available (faster parallel builds than Make)
+            CMAKE_GENERATOR_ARGS=""
+            if command -v ninja &>/dev/null; then
+                CMAKE_GENERATOR_ARGS="-G Ninja"
+            fi
+
+            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then

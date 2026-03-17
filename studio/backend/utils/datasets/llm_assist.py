@@ -22,12 +22,38 @@ import time
 from itertools import islice
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from loggers import get_logger
 
-DEFAULT_HELPER_MODEL_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
-DEFAULT_HELPER_MODEL_VARIANT = "Q8_0"
+logger = get_logger(__name__)
+
+DEFAULT_HELPER_MODEL_REPO = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
+DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500
+
+
+def _strip_think_tags(text: str) -> str:
+    """Strip <think>...</think> reasoning blocks emitted by some models.
+
+    If the model places its actual answer OUTSIDE the think block, we
+    discard the think block and keep the rest.  If the entire response
+    is INSIDE a think block (nothing useful outside), we extract and
+    return the inner content instead of discarding everything.
+    """
+    if "<think>" not in text:
+        return text
+
+    # Try stripping think blocks — keep content outside them
+    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
+    if stripped:
+        return stripped
+
+    # Everything was inside <think> tags — extract the inner content of the last block
+    matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
+    if matches:
+        return matches[-1].strip()
+
+    return text
 
 
 def precache_helper_gguf():
@@ -129,6 +155,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             cumulative = text  # cumulative — last value is full text
 
         result = cumulative.strip()
+        result = _strip_think_tags(result)
         logger.info(f"Helper model response ({len(result)} chars)")
         return result if result else None
 
@@ -399,7 +426,9 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         repetition_penalty = 1.0,
     ):
         cumulative = text
-    return cumulative.strip()
+    result = cumulative.strip()
+    result = _strip_think_tags(result)
+    return result
 
 
 def fetch_hf_dataset_card(
@@ -515,7 +544,12 @@ def _run_multi_pass_advisor(
             try:
                 from utils.models.model_config import load_model_config
 
-                config = load_model_config(model_name, use_auth = True, token = hf_token)
+                config = load_model_config(
+                    model_name,
+                    use_auth = True,
+                    token = hf_token,
+                    trust_remote_code = False,
+                )
                 archs = getattr(config, "architectures", [])
                 if archs and "Gemma3nForConditionalGeneration" in archs:
                     is_gemma_3n = True

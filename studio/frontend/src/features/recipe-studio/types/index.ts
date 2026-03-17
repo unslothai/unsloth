@@ -39,6 +39,11 @@ export type LayoutDirection = "LR" | "TB";
 export type SeedSamplingStrategy = "ordered" | "shuffle";
 export type SeedSelectionType = "none" | "index_range" | "partition_block";
 export type SeedSourceType = "hf" | "local" | "unstructured";
+export const INFRA_NODE_KINDS = new Set([
+  "model_provider",
+  "model_config",
+  "tool_config",
+]);
 
 export type RecipeNodeData = {
   title: string;

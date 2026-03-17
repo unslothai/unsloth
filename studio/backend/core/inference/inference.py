@@ -36,14 +36,9 @@ class InferenceBackend:
         self.active_model_name = None
         self.loading_models = set()
         self.loaded_local_models = []  # [(display_name, path), ...]
-        self.default_models = [
-            "unsloth/Qwen3-4B-Instruct-2507",
-            "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-            "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-            "unsloth/Phi-3.5-mini-instruct",
-            "unsloth/Gemma-3-4B-it",
-            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
-        ]
+        from core.inference.defaults import get_default_models
+
+        self.default_models = get_default_models()
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
 
@@ -633,7 +628,7 @@ class InferenceBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """
@@ -663,7 +658,7 @@ class InferenceBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
@@ -744,13 +739,21 @@ class InferenceBackend:
                 )
             else:
                 logger.info(
-                    f"No registered template for {self.active_model_name}, using tokenizer default"
+                    f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
                 )
         except Exception as e:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
         try:
+            if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
+                raise ValueError(
+                    f"Model '{self.active_model_name}' has no chat_template set in its "
+                    f"tokenizer_config.json. This is usually a problem with the model's "
+                    f"HuggingFace repository — it is missing a 'chat_template' key. "
+                    f"Please use a model that includes a chat template, or manually set "
+                    f"one via tokenizer.chat_template before inference."
+                )
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize = False, add_generation_prompt = True
             )
@@ -878,6 +881,7 @@ class InferenceBackend:
             output = ""
             from queue import Empty
 
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -885,9 +889,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -895,7 +901,7 @@ class InferenceBackend:
                         cleaned = self._clean_generated_text(output)
                         yield cleaned
             finally:
-                if cancel_event is not None:
+                if cancel_event is not None and not generation_complete:
                     cancel_event.set()
                 thread.join(timeout = 10)
                 if thread.is_alive():
@@ -944,7 +950,7 @@ class InferenceBackend:
                     break
 
         # Use ASR-specific system prompt if user hasn't set a custom one
-        if not system_prompt or system_prompt == "You are a helpful AI assistant.":
+        if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Build messages in Gemma 3n format — audio goes INTO apply_chat_template
@@ -1071,7 +1077,7 @@ class InferenceBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
@@ -1159,6 +1165,7 @@ class InferenceBackend:
             output = ""
             from queue import Empty
 
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -1166,9 +1173,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -1176,7 +1185,12 @@ class InferenceBackend:
                         cleaned = self._clean_generated_text(output)
                         yield cleaned
             finally:
-                if cancel_event is not None:
+                # Only set cancel_event when we exited early (user cancel),
+                # NOT on normal completion.  cancel_event is a shared mp.Event
+                # — setting it unconditionally would leave a stale cancel
+                # signal that could interfere with the next serialized
+                # generation request (e.g. in compare mode).
+                if cancel_event is not None and not generation_complete:
                     cancel_event.set()
                 thread.join(timeout = 10)
                 if thread.is_alive():
@@ -1201,7 +1215,7 @@ class InferenceBackend:
         top_k: int = 50,
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
     ) -> Tuple[bytes, int]:
         """

@@ -26,6 +26,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTrainingRuntimeStore } from "@/features/training";
+import { usePlatformStore } from "@/config/env";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
 import { useState } from "react";
@@ -50,6 +51,8 @@ export function Navbar() {
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+
   const tourId = getTourId(pathname);
 
   const openTour = () => {
@@ -63,7 +66,7 @@ export function Navbar() {
     <header className="relative top-0 z-40 h-16 w-full">
       <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 sm:px-6">
         {/* Left: logo */}
-        <Link to="/studio" className="flex items-center justify-self-start select-none">
+        <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center gap-1.5 justify-self-start select-none">
           <img
             src="/blacklogo.png"
             alt="Unsloth"
@@ -74,6 +77,9 @@ export function Navbar() {
             alt="Unsloth"
             className="hidden h-9 w-auto dark:block"
           />
+          <span className="mt-px text-[10px] leading-none font-extrabold tracking-[0.12em] text-primary">
+            BETA
+          </span>
         </Link>
 
         {/* Center: pill nav */}
@@ -86,7 +92,9 @@ export function Navbar() {
               pathname === item.href || pathname.startsWith(`${item.href}/`);
             const disabledByTraining =
               isTrainingRunning && item.href !== "/studio";
-            if (!item.enabled || disabledByTraining) {
+            const disabledByDevice =
+              chatOnly && item.href !== "/chat";
+            if (!item.enabled || disabledByTraining || disabledByDevice) {
               return (
                 <span
                   key={item.href}
@@ -231,7 +239,9 @@ export function Navbar() {
                   const active = pathname === item.href;
                   const disabledByTraining =
                     isTrainingRunning && item.href !== "/studio";
-                  if (disabledByTraining) {
+                  const disabledByDevice =
+                    chatOnly && item.href !== "/chat";
+                  if (disabledByTraining || disabledByDevice) {
                     return (
                       <span
                         key={item.href}

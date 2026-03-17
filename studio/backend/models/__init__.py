@@ -23,10 +23,10 @@ from .models import (
     ModelListResponse,
 )
 from .auth import (
-    AuthSetupRequest,
     AuthLoginRequest,
     RefreshTokenRequest,
     AuthStatusResponse,
+    ChangePasswordRequest,
 )
 from .export import (
     LoadCheckpointRequest,
@@ -79,10 +79,10 @@ __all__ = [
     "LoRAScanResponse",
     "ModelListResponse",
     # Auth schemas
-    "AuthSetupRequest",
     "AuthLoginRequest",
     "RefreshTokenRequest",
     "AuthStatusResponse",
+    "ChangePasswordRequest",
     # Export schemas
     "CheckpointInfo",
     "ModelCheckpoints",

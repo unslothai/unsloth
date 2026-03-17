@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useState } from "react";
+import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Spinner } from "@/components/ui/spinner";
+import { ModelLoadDescription } from "../components/model-load-status";
 import {
+  getDownloadProgress,
+  getGgufDownloadProgress,
   getInferenceStatus,
   listLoras,
   listModels,
@@ -24,7 +28,19 @@ type SelectedModelInput = {
   isLora?: boolean;
   ggufVariant?: string;
   loadingDescription?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
+  forceReload?: boolean;
 };
+
+const MODEL_LOAD_TOAST_CLASSNAMES = {
+  toast: "items-start gap-2.5 pr-8",
+  content: "gap-0.5",
+  title: "leading-5",
+  description: "mt-0",
+  closeButton:
+    "!left-auto !right-1.5 !top-1.5 !translate-x-0 !translate-y-0 !border-transparent !bg-transparent !shadow-none hover:!bg-transparent hover:opacity-70",
+} as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
@@ -117,9 +133,15 @@ function mergeRecommendedInference(
   modelId: string,
 ): InferenceParams {
   const inference = response.inference;
+  // GGUF: use actual context length from GGUF metadata, fallback to 131072
+  // Non-GGUF: 4096
+  const defaultMaxTokens = response.is_gguf
+    ? (response.context_length ?? 131072)
+    : 4096;
   return {
     ...current,
     checkpoint: modelId,
+    maxTokens: defaultMaxTokens,
     temperature:
       toFiniteNumber(inference?.temperature) ?? current.temperature,
     topP: toFiniteNumber(inference?.top_p) ?? current.topP,
@@ -146,7 +168,49 @@ export function useChatModelRuntime() {
   const [loadingModel, setLoadingModel] = useState<{
     id: string;
     displayName: string;
+    isDownloaded?: boolean;
   } | null>(null);
+  const [loadToastDismissed, setLoadToastDismissed] = useState(false);
+  const [loadProgress, setLoadProgress] = useState<{
+    percent: number | null;
+    label: string | null;
+    phase: "downloading" | "starting";
+  } | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const loadingModelRef = useRef<typeof loadingModel>(null);
+  const loadToastIdRef = useRef<string | number | null>(null);
+  const loadToastDismissedRef = useRef(false);
+
+  const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
+    loadToastDismissedRef.current = dismissed;
+    setLoadToastDismissed(dismissed);
+  }, []);
+
+  const resetLoadingUi = useCallback(() => {
+    setLoadingModel(null);
+    setLoadProgress(null);
+    loadingModelRef.current = null;
+    loadAbortRef.current = null;
+    loadToastIdRef.current = null;
+    setLoadToastDismissedState(false);
+    useChatRuntimeStore.getState().setModelLoading(false);
+  }, [setLoadToastDismissedState]);
+
+  const renderLoadDescription = useCallback(
+    (
+      message: string,
+      progressPercent?: number | null,
+      progressLabel?: string | null,
+      onStop?: () => void,
+    ) =>
+      createElement(ModelLoadDescription, {
+        message,
+        progressPercent,
+        progressLabel,
+        onStop,
+      }),
+    [],
+  );
 
   const refresh = useCallback(async () => {
     setModelsError(null);
@@ -173,20 +237,46 @@ export function useChatModelRuntime() {
     }
   }, [setCheckpoint, setLoras, setModels, setModelsError]);
 
+  const cancelLoading = useCallback(() => {
+    const model = loadingModelRef.current;
+    if (!model) return;
+    loadAbortRef.current?.abort();
+    loadAbortRef.current = null;
+    loadingModelRef.current = null;
+    const tid = loadToastIdRef.current;
+    loadToastIdRef.current = null;
+    setLoadingModel(null);
+    setLoadProgress(null);
+    setLoadToastDismissedState(false);
+    clearCheckpoint();
+    if (tid != null) toast.dismiss(tid);
+    toast.info("Stopped loading model", {
+      description: "The current download may still finish in the background.",
+    });
+    // Fire-and-forget: tell backend to stop, don't block UI
+    unloadModel({ model_path: model.id }).catch(() => {});
+  }, [clearCheckpoint, setLoadToastDismissedState]);
+
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
+      const forceReload =
+        typeof selection === "string" ? false : selection.forceReload ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null))) {
+      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
+      // Prevent duplicate loads if already loading this model
+      if (loadingModelRef.current?.id === modelId) return;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
       const extraLoadingDescription =
         typeof selection === "string" ? undefined : selection.loadingDescription;
+      const isDownloaded =
+        typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       const isLora =
@@ -206,17 +296,28 @@ export function useChatModelRuntime() {
       const previousIsLora =
         previousModel?.isLora ?? (previousLora ? true : false);
       const loadingDescription = [
-        currentCheckpoint ? "Unloading previous model first." : null,
+        currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
-        "This may include downloading. Large models can take a while.",
+        isDownloaded ? "Loading cached model into memory." : null,
       ]
         .filter(Boolean)
         .join(" ");
-
       setModelsError(null);
-      setLoadingModel({ id: modelId, displayName });
+      setLoadToastDismissedState(false);
+      const loadInfo = { id: modelId, displayName, isDownloaded };
+      setLoadingModel(loadInfo);
+      useChatRuntimeStore.getState().setModelLoading(true);
+      setLoadProgress(
+        isDownloaded
+          ? { percent: null, label: null, phase: "starting" }
+          : { percent: 0, label: "Preparing download", phase: "downloading" },
+      );
+      loadingModelRef.current = loadInfo;
+      const abortCtrl = new AbortController();
+      loadAbortRef.current = abortCtrl;
       try {
         async function performLoad(): Promise<void> {
+          if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
@@ -239,6 +340,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
+            const chatTemplateOverride = useChatRuntimeStore.getState().chatTemplateOverride;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
@@ -247,14 +349,30 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
+              chat_template_override: chatTemplateOverride,
             });
+
+            // If cancelled while loading, don't update UI to show
+            // the model as active -- it's being unloaded.
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
               mergeRecommendedInference(currentParams, loadResponse, modelId),
             );
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResponse.is_gguf
+                ? (loadResponse.context_length ?? 131072)
+                : null,
+              supportsReasoning: loadResponse.supports_reasoning ?? false,
+              reasoningEnabled: loadResponse.supports_reasoning ?? false,
+              defaultChatTemplate: loadResponse.chat_template ?? null,
+              chatTemplateOverride: null,
+            });
             await refresh();
           } catch (error) {
+            // Skip rollback if user cancelled -- model is already being unloaded.
+            if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
               try {
@@ -275,25 +393,180 @@ export function useChatModelRuntime() {
           }
         }
 
-        const loadPromise = performLoad().finally(() => {
-          setLoadingModel(null);
-        });
+        const toastId = toast(
+          isDownloaded ? "Starting model…" : "Downloading model…",
+          {
+            icon: createElement(Spinner, { className: "size-4" }),
+            description: renderLoadDescription(
+              loadingDescription,
+              isDownloaded ? null : 0,
+              isDownloaded ? null : "Preparing download",
+              cancelLoading,
+            ),
+            duration: Infinity,
+            closeButton: true,
+            classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+            onDismiss: (dismissedToast) => {
+              if (loadToastIdRef.current !== dismissedToast.id) {
+                return;
+              }
+              setLoadToastDismissedState(true);
+            },
+          },
+        );
+        loadToastIdRef.current = toastId;
 
-        await toast.promise(loadPromise, {
-          loading: "Loading model…",
-          success: `${displayName} loaded`,
-          error: (err) =>
-            err instanceof Error ? err.message : "Failed to load model",
-          description: loadingDescription,
-        });
+        // Poll download progress for non-cached models (GGUF and non-GGUF)
+        let progressInterval: ReturnType<typeof setInterval> | null = null;
+        if (!isDownloaded) {
+          const expectedBytes =
+            typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
+          let hasShownProgress = false;
+
+          const pollProgress = async () => {
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+              if (progressInterval) clearInterval(progressInterval);
+              return;
+            }
+            try {
+              const prog = ggufVariant && expectedBytes > 0
+                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
+                : await getDownloadProgress(modelId);
+
+              if (!loadingModelRef.current) return;
+
+              if (prog.progress > 0 && prog.progress < 1) {
+                hasShownProgress = true;
+                const dlGb = prog.downloaded_bytes / (1024 ** 3);
+                const totalGb = prog.expected_bytes / (1024 ** 3);
+                const pct = Math.round(prog.progress * 100);
+                const progressLabel = totalGb > 0
+                  ? `${dlGb.toFixed(1)} of ${totalGb.toFixed(1)} GB`
+                  : `${dlGb.toFixed(1)} GB downloaded`;
+                setLoadProgress({
+                  percent: pct,
+                  label: progressLabel,
+                  phase: "downloading",
+                });
+                if (loadToastDismissedRef.current) return;
+                toast(
+                  "Downloading model…",
+                  {
+                    id: toastId,
+                    icon: createElement(Spinner, { className: "size-4" }),
+                    description: renderLoadDescription(
+                      loadingDescription,
+                      pct,
+                      progressLabel,
+                      cancelLoading,
+                    ),
+                    duration: Infinity,
+                    closeButton: true,
+                    classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+                    onDismiss: (dismissedToast) => {
+                      if (loadToastIdRef.current !== dismissedToast.id) return;
+                      setLoadToastDismissedState(true);
+                    },
+                  },
+                );
+              } else if (prog.downloaded_bytes > 0 && prog.expected_bytes === 0 && prog.progress === 0) {
+                hasShownProgress = true;
+                const dlGb = prog.downloaded_bytes / (1024 ** 3);
+                setLoadProgress({
+                  percent: null,
+                  label: `${dlGb.toFixed(1)} GB downloaded`,
+                  phase: "downloading",
+                });
+              } else if (prog.progress >= 1 && hasShownProgress) {
+                setLoadProgress({
+                  percent: 100,
+                  label: "Download complete",
+                  phase: "starting",
+                });
+                if (loadToastDismissedRef.current) {
+                  if (progressInterval) clearInterval(progressInterval);
+                  return;
+                }
+                toast("Starting model…", {
+                  id: toastId,
+                  icon: createElement(Spinner, { className: "size-4" }),
+                  description: renderLoadDescription(
+                    "Download complete. Loading the model into memory.",
+                    100,
+                    "Download complete",
+                    cancelLoading,
+                  ),
+                  duration: Infinity,
+                  closeButton: true,
+                  classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+                  onDismiss: (dismissedToast) => {
+                    if (loadToastIdRef.current !== dismissedToast.id) return;
+                    setLoadToastDismissedState(true);
+                  },
+                });
+                if (progressInterval) clearInterval(progressInterval);
+              }
+            } catch {
+              // Ignore polling errors
+            }
+          };
+
+          setTimeout(pollProgress, 500);
+          progressInterval = setInterval(pollProgress, 2000);
+        }
+
+        try {
+          await performLoad();
+          if (loadToastDismissedRef.current) {
+            toast.success(`${displayName} loaded`);
+          } else {
+            toast.success(`${displayName} loaded`, {
+              id: toastId,
+              description: undefined,
+              closeButton: false,
+              duration: 2000,
+            });
+          }
+        } catch (err) {
+          if (!abortCtrl.signal.aborted) {
+            const message =
+              err instanceof Error ? err.message : "Failed to load model";
+            if (loadToastDismissedRef.current) {
+              toast.error(message);
+            } else {
+              toast.error(message, {
+                id: toastId,
+                description: undefined,
+                closeButton: false,
+                duration: 5000,
+              });
+            }
+          }
+          throw err;
+        } finally {
+          if (progressInterval) clearInterval(progressInterval);
+          resetLoadingUi();
+        }
       } catch (error) {
-        setLoadingModel(null);
+        if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
+        resetLoadingUi();
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
       }
     },
-    [loras, models, params.checkpoint, refresh, setModelsError, setParams],
+    [
+      cancelLoading,
+      loras,
+      models,
+      params.checkpoint,
+      refresh,
+      renderLoadDescription,
+      resetLoadingUi,
+      setLoadToastDismissedState,
+      setModelsError,
+      setParams,
+    ],
   );
 
   const ejectModel = useCallback(async () => {
@@ -326,6 +599,9 @@ export function useChatModelRuntime() {
     refresh,
     selectModel,
     ejectModel,
+    cancelLoading,
     loadingModel,
+    loadProgress,
+    loadToastDismissed,
   };
 }

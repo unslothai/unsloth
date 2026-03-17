@@ -13,6 +13,15 @@ from typing import List, Optional
 import structlog
 from loggers import get_logger
 
+import re as _re
+
+_VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def _is_valid_repo_id(repo_id: str) -> bool:
+    return bool(_VALID_REPO_ID.fullmatch(repo_id))
+
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -295,6 +304,22 @@ async def list_models(
             )
             loaded_models.append(model_info)
 
+        # Include active GGUF model (loaded via llama-server)
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            loaded_models.append(
+                ModelDetails(
+                    id = llama_backend.model_identifier,
+                    name = llama_backend.model_identifier.split("/")[-1],
+                    is_gguf = True,
+                    is_vision = llama_backend.is_vision,
+                    is_audio = getattr(llama_backend, "_is_audio", False),
+                    audio_type = getattr(llama_backend, "_audio_type", None),
+                )
+            )
+
         # Combine default and loaded models
         all_models = []
         seen_ids = set()
@@ -305,6 +330,7 @@ async def list_models(
                 model_info = ModelDetails(
                     id = model_id,
                     name = model_id.split("/")[-1] if "/" in model_id else model_id,
+                    is_gguf = model_id.upper().endswith("-GGUF"),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
@@ -555,6 +581,44 @@ async def get_gguf_variants(
         best = _pick_best_gguf(filenames)
         default_variant = _extract_quant_label(best) if best else None
 
+        # Check which variants are fully downloaded in the HF cache.
+        # For split GGUFs, ALL shards must be present -- sum cached bytes
+        # per variant and compare against the expected total.
+        # HF cache dir uses the exact case from the repo_id at download time,
+        # which may differ from the canonical HF repo_id, so do a
+        # case-insensitive match.
+        cached_bytes_by_quant: dict[str, int] = {}
+        try:
+            import re as _re
+            from huggingface_hub import constants as hf_constants
+
+            # Sanitize repo_id: must be "owner/name" with safe chars only
+            if not _is_valid_repo_id(repo_id):
+                raise ValueError(f"Invalid repo_id format: {repo_id}")
+
+            cache_dir = Path(hf_constants.HF_HUB_CACHE)
+            target = f"models--{repo_id.replace('/', '--')}".lower()
+            for entry in cache_dir.iterdir():
+                if entry.name.lower() == target:
+                    snapshots = entry / "snapshots"
+                    if snapshots.is_dir():
+                        for snap in snapshots.iterdir():
+                            for f in snap.rglob("*.gguf"):
+                                q = _extract_quant_label(f.name)
+                                cached_bytes_by_quant[q] = (
+                                    cached_bytes_by_quant.get(q, 0) + f.stat().st_size
+                                )
+                    break
+        except Exception:
+            pass
+
+        def _is_fully_downloaded(variant) -> bool:
+            cached = cached_bytes_by_quant.get(variant.quant, 0)
+            if cached == 0 or variant.size_bytes == 0:
+                return False
+            # Allow small rounding tolerance (symlinks vs real sizes)
+            return cached >= variant.size_bytes * 0.99
+
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [
@@ -562,6 +626,7 @@ async def get_gguf_variants(
                     filename = v.filename,
                     quant = v.quant,
                     size_bytes = v.size_bytes,
+                    downloaded = _is_fully_downloaded(v),
                 )
                 for v in variants
             ],
@@ -575,6 +640,237 @@ async def get_gguf_variants(
             status_code = 500,
             detail = f"Failed to list GGUF variants: {str(e)}",
         )
+
+
+@router.get("/gguf-download-progress")
+async def get_gguf_download_progress(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
+    expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return download progress by checking cached GGUF files for a specific variant.
+
+    Tracks completed shard downloads in snapshots and in-progress downloads
+    in the blobs directory (incomplete files).
+    """
+    try:
+        if not _is_valid_repo_id(repo_id):
+            return {
+                "downloaded_bytes": 0,
+                "expected_bytes": expected_bytes,
+                "progress": 0,
+            }
+
+        from huggingface_hub import constants as hf_constants
+
+        cache_dir = Path(hf_constants.HF_HUB_CACHE)
+        target = f"models--{repo_id.replace('/', '--')}".lower()
+        variant_lower = variant.lower().replace("-", "").replace("_", "")
+        downloaded_bytes = 0
+        in_progress_bytes = 0
+        for entry in cache_dir.iterdir():
+            if entry.name.lower() == target:
+                # Count completed .gguf files matching this variant in snapshots
+                for f in entry.rglob("*.gguf"):
+                    fname = f.name.lower().replace("-", "").replace("_", "")
+                    if not variant_lower or variant_lower in fname:
+                        downloaded_bytes += f.stat().st_size
+                # Check blobs for in-progress downloads (.incomplete files)
+                blobs_dir = entry / "blobs"
+                if blobs_dir.is_dir():
+                    for f in blobs_dir.iterdir():
+                        if f.is_file() and f.name.endswith(".incomplete"):
+                            in_progress_bytes += f.stat().st_size
+                break
+
+        total_progress_bytes = downloaded_bytes + in_progress_bytes
+        progress = (
+            min(total_progress_bytes / expected_bytes, 0.99)
+            if expected_bytes > 0
+            else 0
+        )
+        # Only report 1.0 when all bytes are in completed files (not in-progress)
+        if expected_bytes > 0 and downloaded_bytes >= expected_bytes:
+            progress = 1.0
+        return {
+            "downloaded_bytes": total_progress_bytes,
+            "expected_bytes": expected_bytes,
+            "progress": round(progress, 3),
+        }
+    except Exception:
+        return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
+
+
+@router.get("/download-progress")
+async def get_download_progress(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return download progress for any HuggingFace model repo.
+
+    Checks the local HF cache for completed blobs and in-progress
+    (.incomplete) downloads. Uses the HF API to determine the expected
+    total size on the first call, then caches it for subsequent polls.
+    """
+    _empty = {"downloaded_bytes": 0, "expected_bytes": 0, "progress": 0}
+    try:
+        if not _is_valid_repo_id(repo_id):
+            return _empty
+
+        from huggingface_hub import constants as hf_constants
+
+        cache_dir = Path(hf_constants.HF_HUB_CACHE)
+        target = f"models--{repo_id.replace('/', '--')}".lower()
+        completed_bytes = 0
+        in_progress_bytes = 0
+
+        for entry in cache_dir.iterdir():
+            if entry.name.lower() != target:
+                continue
+            blobs_dir = entry / "blobs"
+            if not blobs_dir.is_dir():
+                break
+            for f in blobs_dir.iterdir():
+                if not f.is_file():
+                    continue
+                if f.name.endswith(".incomplete"):
+                    in_progress_bytes += f.stat().st_size
+                else:
+                    completed_bytes += f.stat().st_size
+            break
+
+        downloaded_bytes = completed_bytes + in_progress_bytes
+        if downloaded_bytes == 0:
+            return _empty
+
+        # Get expected size from HF API (cached per repo_id)
+        expected_bytes = _get_repo_size_cached(repo_id)
+        if expected_bytes <= 0:
+            # Cannot determine total; report bytes only, no percentage
+            return {
+                "downloaded_bytes": downloaded_bytes,
+                "expected_bytes": 0,
+                "progress": 0,
+            }
+
+        # Use 95% threshold for completion (blob deduplication can make
+        # completed_bytes differ slightly from expected_bytes).
+        # Do NOT use "no .incomplete files" as a completion signal --
+        # HF downloads files sequentially, so between files there are
+        # no .incomplete files even though the download is far from done.
+        if completed_bytes >= expected_bytes * 0.95:
+            progress = 1.0
+        else:
+            progress = min(downloaded_bytes / expected_bytes, 0.99)
+        return {
+            "downloaded_bytes": downloaded_bytes,
+            "expected_bytes": expected_bytes,
+            "progress": round(progress, 3),
+        }
+    except Exception as e:
+        logger.warning(f"Error checking download progress for {repo_id}: {e}")
+        return _empty
+
+
+_repo_size_cache: dict[str, int] = {}
+
+
+def _get_repo_size_cached(repo_id: str) -> int:
+    if repo_id in _repo_size_cache:
+        return _repo_size_cache[repo_id]
+    try:
+        from huggingface_hub import model_info as hf_model_info
+
+        info = hf_model_info(repo_id, token = None, files_metadata = True)
+        total = sum(s.size for s in info.siblings if s.size)
+        _repo_size_cache[repo_id] = total
+        return total
+    except Exception as e:
+        logger.warning(f"Failed to get repo size for {repo_id}: {e}")
+        return 0
+
+
+@router.get("/cached-gguf")
+async def list_cached_gguf(
+    current_subject: str = Depends(get_current_subject),
+):
+    """List GGUF repos that have already been downloaded to the HF cache.
+
+    Uses scan_cache_dir() for proper repo IDs, then deduplicates by
+    lowercased key (HF cache dirs are lowercased but the canonical repo
+    ID preserves casing).
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        hf_cache = scan_cache_dir()
+        seen_lower: dict[str, dict] = {}
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            repo_id = repo_info.repo_id
+            if not repo_id.upper().endswith("-GGUF"):
+                continue
+            # Check for actual .gguf files and sum sizes
+            total_size = 0
+            has_gguf = False
+            for revision in repo_info.revisions:
+                for f in revision.files:
+                    if f.file_name.endswith(".gguf"):
+                        has_gguf = True
+                        total_size += f.size_on_disk
+            if not has_gguf:
+                continue
+            # Deduplicate: keep the entry with the most data
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            if existing is None or total_size > existing["size_bytes"]:
+                seen_lower[key] = {
+                    "repo_id": repo_id,
+                    "size_bytes": total_size,
+                    "cache_path": str(repo_info.repo_path),
+                }
+        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        return {"cached": cached}
+    except Exception as e:
+        logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
+        return {"cached": []}
+
+
+@router.get("/cached-models")
+async def list_cached_models(
+    current_subject: str = Depends(get_current_subject),
+):
+    """List non-GGUF model repos that have been downloaded to the HF cache."""
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        hf_cache = scan_cache_dir()
+        seen_lower: dict[str, dict] = {}
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            repo_id = repo_info.repo_id
+            if repo_id.upper().endswith("-GGUF"):
+                continue
+            total_size = sum(
+                f.size_on_disk for rev in repo_info.revisions for f in rev.files
+            )
+            if total_size == 0:
+                continue
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            if existing is None or total_size > existing["size_bytes"]:
+                seen_lower[key] = {
+                    "repo_id": repo_id,
+                    "size_bytes": total_size,
+                }
+        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        return {"cached": cached}
+    except Exception as e:
+        logger.error(f"Error listing cached models: {e}", exc_info = True)
+        return {"cached": []}
 
 
 @router.get("/checkpoints", response_model = CheckpointListResponse)

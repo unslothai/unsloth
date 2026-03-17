@@ -12,6 +12,7 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowDown01Icon,
+  CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
   PencilEdit01Icon,
@@ -26,6 +27,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "./types/runtime";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { Switch } from "@/components/ui/switch";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
@@ -45,7 +47,7 @@ const BUILTIN_PRESETS: Preset[] = [
       temperature: 1.2,
       topP: 0.95,
       topK: 80,
-      repetitionPenalty: 1.05,
+      repetitionPenalty: 1.0,
     },
   },
   {
@@ -55,7 +57,7 @@ const BUILTIN_PRESETS: Preset[] = [
       temperature: 0.2,
       topP: 0.7,
       topK: 20,
-      repetitionPenalty: 1.2,
+      repetitionPenalty: 1.0,
     },
   },
 ];
@@ -67,6 +69,7 @@ function ParamSlider({
   max,
   step,
   onChange,
+  displayValue,
 }: {
   label: string;
   value: number;
@@ -74,13 +77,14 @@ function ParamSlider({
   max: number;
   step: number;
   onChange: (v: number) => void;
+  displayValue?: string;
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium">{label}</span>
         <span className="text-xs tabular-nums text-muted-foreground">
-          {value}
+          {displayValue ?? value}
         </span>
       </div>
       <Slider
@@ -149,6 +153,7 @@ interface ChatSettingsPanelProps {
   onParamsChange: (params: InferenceParams) => void;
   autoTitle: boolean;
   onAutoTitleChange: (enabled: boolean) => void;
+  onReloadModel?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -157,7 +162,10 @@ export function ChatSettingsPanel({
   onParamsChange,
   autoTitle,
   onAutoTitleChange,
+  onReloadModel,
 }: ChatSettingsPanelProps) {
+  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
@@ -279,7 +287,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection
             icon={SlidersHorizontalIcon}
             label="Sampling"
-            defaultOpen={false}
+            defaultOpen={true}
           >
             <div className="flex flex-col gap-5">
               <ParamSlider
@@ -322,26 +330,33 @@ export function ChatSettingsPanel({
                 step={0.05}
                 onChange={set("repetitionPenalty")}
               />
-              <ParamSlider
-                label="Max Seq Length"
-                value={params.maxSeqLength}
-                min={128}
-                max={32768}
-                step={128}
-                onChange={set("maxSeqLength")}
-              />
+              {!isGguf && (
+                <ParamSlider
+                  label="Max Seq Length"
+                  value={params.maxSeqLength}
+                  min={128}
+                  max={32768}
+                  step={128}
+                  onChange={set("maxSeqLength")}
+                />
+              )}
               <ParamSlider
                 label="Max Tokens"
                 value={params.maxTokens}
                 min={64}
-                max={4096}
+                max={isGguf && ggufContextLength ? ggufContextLength : 32768}
                 step={64}
                 onChange={set("maxTokens")}
+                displayValue={
+                  isGguf && ggufContextLength && params.maxTokens >= ggufContextLength
+                    ? "Max"
+                    : undefined
+                }
               />
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection icon={Settings02Icon} label="Settings">
+          <CollapsibleSection icon={Settings02Icon} label="Settings" defaultOpen={true}>
             <div className="flex flex-col gap-3 py-1">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -369,8 +384,61 @@ export function ChatSettingsPanel({
               </div>
             </div>
           </CollapsibleSection>
+
+          <ChatTemplateSection onReloadModel={onReloadModel} />
         </div>
       </div>
     </aside>
+  );
+}
+
+function ChatTemplateSection({
+  onReloadModel,
+}: {
+  onReloadModel?: () => void;
+}) {
+  const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
+  const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
+  const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
+
+  if (!defaultTemplate) return null;
+
+  const displayValue = override ?? defaultTemplate;
+  const isModified = override !== null;
+
+  return (
+    <CollapsibleSection icon={CodeIcon} label="Chat Template">
+      <div className="flex flex-col gap-2 py-1">
+        <Textarea
+          value={displayValue}
+          onChange={(e) => setOverride(e.target.value)}
+          className="min-h-32 font-mono text-[10px] leading-relaxed corner-squircle"
+          rows={6}
+          spellCheck={false}
+        />
+        <div className="flex flex-wrap gap-1.5">
+          {isModified && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  onReloadModel?.();
+                }}
+                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                Apply & Reload
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverride(null)}
+                className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+              >
+                Revert changes
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </CollapsibleSection>
   );
 }
