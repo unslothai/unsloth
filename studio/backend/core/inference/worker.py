@@ -46,9 +46,8 @@ def _activate_transformers_version(model_name: str) -> None:
 
     resolved = _resolve_base_model(model_name)
     if needs_transformers_5(resolved):
-        venv_t5 = os.path.join(
-            os.path.expanduser("~"), ".unsloth", "studio", ".venv_t5"
-        )
+        from utils.paths.storage_roots import venv_t5_root
+        venv_t5 = str(venv_t5_root())
         if os.path.isdir(venv_t5):
             sys.path.insert(0, venv_t5)
             logger.info("Activated transformers 5.x from %s", venv_t5)

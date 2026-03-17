@@ -15,6 +15,11 @@ def studio_root() -> Path:
     return Path.home() / ".unsloth" / "studio"
 
 
+def venv_t5_root() -> Path:
+    """Pre-installed transformers 5.x directory, respects UNSLOTH_STUDIO_HOME."""
+    return studio_root() / ".venv_t5"
+
+
 def cache_root() -> Path:
     """Central cache directory for all studio downloads (models, datasets, etc.)."""
     return studio_root() / "cache"
