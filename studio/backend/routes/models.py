@@ -348,6 +348,15 @@ async def list_models(
         raise HTTPException(status_code = 500, detail = f"Failed to list models: {str(e)}")
 
 
+def _get_max_position_embeddings(config) -> Optional[int]:
+    """Extract max_position_embeddings from a model config, checking text_config fallback."""
+    if hasattr(config, "max_position_embeddings"):
+        return config.max_position_embeddings
+    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
+        return config.text_config.max_position_embeddings
+    return None
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
@@ -384,15 +393,7 @@ async def get_model_config(
             model_config = ModelConfig.from_identifier(model_name)
             is_lora = model_config.is_lora
             base_model = model_config.base_model if is_lora else None
-            # Extract max_position_embeddings from model config
-            if hasattr(model_config, "max_position_embeddings"):
-                max_position_embeddings = model_config.max_position_embeddings
-            elif hasattr(model_config, "text_config") and hasattr(
-                model_config.text_config, "max_position_embeddings"
-            ):
-                max_position_embeddings = (
-                    model_config.text_config.max_position_embeddings
-                )
+            max_position_embeddings = _get_max_position_embeddings(model_config)
         except Exception:
             pass
 
@@ -404,12 +405,7 @@ async def get_model_config(
                 _ac = _AutoConfig.from_pretrained(
                     model_name, trust_remote_code = True, token = hf_token
                 )
-                if hasattr(_ac, "max_position_embeddings"):
-                    max_position_embeddings = _ac.max_position_embeddings
-                elif hasattr(_ac, "text_config") and hasattr(
-                    _ac.text_config, "max_position_embeddings"
-                ):
-                    max_position_embeddings = _ac.text_config.max_position_embeddings
+                max_position_embeddings = _get_max_position_embeddings(_ac)
             except Exception:
                 pass
 

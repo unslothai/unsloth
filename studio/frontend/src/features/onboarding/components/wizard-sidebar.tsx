@@ -39,7 +39,7 @@ export function WizardSidebar() {
         className="mt-1 text-xs text-muted-foreground md:hidden"
         onClick={() => {
           markOnboardingDone();
-          navigate({ to: "/studio" });
+          navigate({ to: currentStep === 1 ? "/chat" : "/studio" });
         }}
       >
         {currentStep === 1 ? "Skip to Chat" : "Skip"}
@@ -55,7 +55,7 @@ export function WizardSidebar() {
         className="mt-3 hidden text-xs text-muted-foreground md:flex"
         onClick={() => {
           markOnboardingDone();
-          navigate({ to: "/studio" });
+          navigate({ to: currentStep === 1 ? "/chat" : "/studio" });
         }}
       >
         {currentStep === 1 ? "Skip to Chat" : "Skip"}
