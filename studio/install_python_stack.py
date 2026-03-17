@@ -59,7 +59,7 @@ def _enable_colors() -> bool:
     return True  # Unix terminals support ANSI by default
 
 
-_HAS_COLOR = _enable_colors()
+_HAS_COLOR = False  # colors disabled; export UNSLOTH_VERBOSE=1 for verbose output
 
 
 def _green(msg: str) -> str:
@@ -74,11 +74,26 @@ def _red(msg: str) -> str:
     return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
 
 
+def _progress(label: str) -> None:
+    """In-place progress bar. No-op in verbose mode."""
+    global _STEP
+    _STEP += 1
+    if VERBOSE:
+        return
+    width = 20
+    filled = int(width * _STEP / _TOTAL)
+    bar = "=" * filled + "-" * (width - filled)
+    end = "\n" if _STEP >= _TOTAL else ""
+    sys.stdout.write(f"\r[{bar}] {_STEP:2}/{_TOTAL}  {label:<40}{end}")
+    sys.stdout.flush()
+
+
 def run(
     label: str, cmd: list[str], *, quiet: bool = True
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a command; on failure print output and exit."""
-    print(_cyan(f"   {label}..."))
+    if VERBOSE:
+        print(f"   {label}...")
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
@@ -196,7 +211,8 @@ def pip_install(
     try:
         if USE_UV:
             uv_cmd = _build_uv_cmd(args) + constraint_args + req_args
-            print(_cyan(f"   {label}..."))
+            if VERBOSE:
+                print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
@@ -250,17 +266,19 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 
 
 def install_python_stack() -> int:
-    global USE_UV
+    global USE_UV, _STEP, _TOTAL
+    _STEP = 0
+    _TOTAL = 10 if IS_WINDOWS else 11
 
     # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
+    _progress("pip upgrade")
     run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
 
     # Try to use uv for faster installs
     USE_UV = _bootstrap_uv()
-    installer = "uv" if USE_UV else "pip"
-    print(_cyan(f"── Installing Python stack (via {installer}) ──"))
 
     # 2. Core packages: unsloth-zoo + unsloth
+    _progress("base packages")
     pip_install(
         "Installing base packages",
         "--no-cache-dir",
@@ -268,6 +286,7 @@ def install_python_stack() -> int:
     )
 
     # 3. Extra dependencies
+    _progress("unsloth extras")
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
@@ -275,6 +294,7 @@ def install_python_stack() -> int:
     )
 
     # 3b. Extra dependencies (no-deps) — audio model support etc.
+    _progress("extra codecs")
     pip_install(
         "Installing extras (no-deps)",
         "--no-deps",
@@ -283,6 +303,7 @@ def install_python_stack() -> int:
     )
 
     # 4. Overrides (torchao, transformers) — force-reinstall
+    _progress("dependency overrides")
     pip_install(
         "Installing dependency overrides",
         "--force-reinstall",
@@ -292,6 +313,7 @@ def install_python_stack() -> int:
 
     # 5. Triton kernels (no-deps, from source)
     if not IS_WINDOWS:
+        _progress("triton kernels")
         pip_install(
             "Installing triton kernels",
             "--no-deps",
@@ -322,6 +344,7 @@ def install_python_stack() -> int:
     # )
 
     # 8. Studio dependencies
+    _progress("studio deps")
     pip_install(
         "Installing studio dependencies",
         "--no-cache-dir",
@@ -329,6 +352,7 @@ def install_python_stack() -> int:
     )
 
     # 9. Data-designer dependencies
+    _progress("data designer deps")
     pip_install(
         "Installing data-designer base dependencies",
         "--no-cache-dir",
@@ -336,6 +360,7 @@ def install_python_stack() -> int:
     )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
+    _progress("data designer")
     pip_install(
         "Installing data-designer",
         "--no-cache-dir",
@@ -351,6 +376,7 @@ def install_python_stack() -> int:
             ),
         )
         return 1
+    _progress("local plugin")
     pip_install(
         "Installing local data-designer unstructured plugin",
         "--no-cache-dir",
@@ -360,6 +386,7 @@ def install_python_stack() -> int:
     )
 
     # 12. Patch metadata for single-env compatibility
+    _progress("finalizing")
     run(
         "Patching single-env metadata",
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
