@@ -1220,7 +1220,9 @@ def grpo_trainer_compute_loss(function_name, function):
                 min_len = min(x.shape[1], completion_mask.shape[1])
                 x_aligned = x[:, :min_len]
                 mask_aligned = completion_mask[:, :min_len]
-                return (x_aligned * mask_aligned).sum() / mask_aligned.sum().clamp(min = 1.0)
+                return (x_aligned * mask_aligned).sum() / mask_aligned.sum().clamp(
+                    min = 1.0
+                )
 
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
