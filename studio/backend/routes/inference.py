@@ -532,6 +532,11 @@ async def get_status(
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
 
+        # gpt-oss safetensors models support reasoning via harmony channels
+        supports_reasoning = False
+        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
+            supports_reasoning = backend._is_gpt_oss_model()
+
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             is_vision = is_vision,
@@ -541,6 +546,7 @@ async def get_status(
             has_audio_input = has_audio_input,
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
+            supports_reasoning = supports_reasoning,
         )
 
     except Exception as e:

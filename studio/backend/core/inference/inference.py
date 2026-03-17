@@ -28,6 +28,145 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+class HarmonyTextStreamer:
+    """Streaming text decoder for gpt-oss harmony channel protocol.
+
+    gpt-oss models emit multi-channel output using special tokens like
+    ``<|channel|>analysis<|message|>...`` and ``<|channel|>final<|message|>...``.
+    A plain ``TextIteratorStreamer(skip_special_tokens=True)`` strips the special
+    tokens but leaves the channel names concatenated with content, producing
+    garbled output such as ``analysisWe need to respond...assistantfinalHello!``.
+
+    This streamer decodes with ``skip_special_tokens=False`` so the full
+    harmony markup is visible, then parses it with a regex to extract channels.
+    The ``analysis`` channel is wrapped in ``<think>...</think>`` tags (reusing
+    the frontend reasoning UI) and the ``final`` channel is emitted as plain
+    text.
+
+    Implements the same ``put`` / ``end`` / iterator interface as
+    ``TextIteratorStreamer`` so ``generate_stream`` can use it as a drop-in
+    replacement.
+    """
+
+    import re as _re
+    _HARMONY_RE = _re.compile(
+        r"<\|channel\|>(\w+)<\|message\|>(.*?)(?=<\|end\|>|<\|channel\|>|\Z)",
+        _re.DOTALL,
+    )
+    # Tokens that should never appear in user-facing text
+    _STRIP_TOKENS_RE = _re.compile(
+        r"<\|(?:channel|message|start|end)\|>"
+    )
+
+    def __init__(self, tokenizer, *, skip_prompt: bool = True, timeout: float = 0.2):
+        import queue
+        self.tokenizer = tokenizer
+        self.skip_prompt = skip_prompt
+        self.timeout = timeout
+
+        self._queue: queue.Queue = queue.Queue()
+        self._token_ids: list = []
+        self._prompt_len: int = 0
+        self._is_first_put: bool = True
+        self._prev_emitted_len: int = 0
+        self._stop: bool = False
+
+    # ------------------------------------------------------------------
+    # put / end — called from the generation thread
+    # ------------------------------------------------------------------
+
+    def put(self, value):
+        """Receive new token IDs from model.generate()."""
+        import torch
+        if isinstance(value, torch.Tensor):
+            # value shape: (batch, seq) — take first batch element
+            ids = value[0].tolist() if value.dim() > 1 else value.tolist()
+        elif isinstance(value, (list, tuple)):
+            ids = list(value)
+        else:
+            ids = [value]
+
+        if self._is_first_put and self.skip_prompt:
+            # First call contains the full prompt; remember its length
+            self._prompt_len = len(ids)
+            self._token_ids = list(ids)
+            self._is_first_put = False
+            return
+
+        self._token_ids.extend(ids)
+
+        # Decode only the generated part (after the prompt)
+        gen_ids = self._token_ids[self._prompt_len:]
+        raw = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
+        transformed = self._transform(raw)
+
+        # Emit only the incremental delta
+        delta = transformed[self._prev_emitted_len:]
+        if delta:
+            self._prev_emitted_len = len(transformed)
+            self._queue.put(delta)
+
+    def end(self):
+        """Signal generation is complete."""
+        # Final decode to capture any remaining content
+        gen_ids = self._token_ids[self._prompt_len:]
+        if gen_ids:
+            raw = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
+            transformed = self._transform(raw)
+            delta = transformed[self._prev_emitted_len:]
+            if delta:
+                self._prev_emitted_len = len(transformed)
+                self._queue.put(delta)
+        self._stop = True
+        self._queue.put(None)  # sentinel
+
+    # ------------------------------------------------------------------
+    # Iterator interface — consumed by the streaming loop
+    # ------------------------------------------------------------------
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        from queue import Empty
+        while True:
+            try:
+                val = self._queue.get(timeout=self.timeout)
+            except Empty:
+                if self._stop:
+                    raise StopIteration
+                raise  # propagate Empty so caller can check thread liveness
+            if val is None:
+                raise StopIteration
+            return val
+
+    # ------------------------------------------------------------------
+    # Harmony protocol parsing
+    # ------------------------------------------------------------------
+
+    def _transform(self, raw: str) -> str:
+        """Parse harmony channel markup and return formatted text.
+
+        Maps ``analysis`` channel to ``<think>...</think>`` and ``final``
+        channel to plain text.  Any other channels are silently dropped.
+        """
+        matches = list(self._HARMONY_RE.finditer(raw))
+        if not matches:
+            # No harmony markup found — strip stray tokens and return as-is
+            return self._STRIP_TOKENS_RE.sub("", raw).strip()
+
+        parts: list = []
+        for m in matches:
+            channel = m.group(1).lower()
+            content = m.group(2)
+            if channel == "analysis":
+                parts.append(f"<think>{content}</think>")
+            elif channel in ("final", "assistant"):
+                parts.append(content)
+            # Other channels (if any) are intentionally omitted
+        return "".join(parts)
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -1069,6 +1208,22 @@ class InferenceBackend:
             logger.error(f"Whisper ASR error: {e}")
             yield f"Error: {str(e)}"
 
+    def _is_gpt_oss_model(self, model_name: str = None) -> bool:
+        """Check if the given (or active) model uses the gpt-oss harmony protocol."""
+        name = (model_name or self.active_model_name or "").lower()
+        try:
+            from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
+            # Exact match
+            if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
+                return True
+            # Partial match (e.g. name-bnb-4bit variants)
+            for key, tmpl in MODEL_TO_TEMPLATE_MAPPER.items():
+                if tmpl == "gpt-oss" and (key in name or name in key):
+                    return True
+        except Exception:
+            pass
+        return "gpt-oss" in name
+
     def generate_stream(
         self,
         prompt: str,
@@ -1104,12 +1259,30 @@ class InferenceBackend:
             from transformers import TextIteratorStreamer
             import threading
 
-            streamer = TextIteratorStreamer(
-                tokenizer,
-                skip_prompt = True,
-                skip_special_tokens = True,
-                timeout = 0.2,
-            )
+            # Use HarmonyTextStreamer for gpt-oss models to properly parse
+            # the multi-channel harmony protocol into <think> tags
+            if self._is_gpt_oss_model():
+                try:
+                    streamer = HarmonyTextStreamer(
+                        tokenizer,
+                        skip_prompt = True,
+                        timeout = 0.2,
+                    )
+                except Exception as e:
+                    logger.warning(f"HarmonyTextStreamer init failed, falling back: {e}")
+                    streamer = TextIteratorStreamer(
+                        tokenizer,
+                        skip_prompt = True,
+                        skip_special_tokens = True,
+                        timeout = 0.2,
+                    )
+            else:
+                streamer = TextIteratorStreamer(
+                    tokenizer,
+                    skip_prompt = True,
+                    skip_special_tokens = True,
+                    timeout = 0.2,
+                )
 
             generation_kwargs = dict(
                 **inputs,
@@ -1714,6 +1887,11 @@ class InferenceBackend:
             for token in getattr(tokenizer, "all_special_tokens", []):
                 if token in text:
                     text = text.replace(token, "")
+        # Safety fallback: strip stray harmony protocol tokens for gpt-oss
+        # in case they leak through (e.g. when HarmonyTextStreamer is not used)
+        if self._is_gpt_oss_model():
+            import re
+            text = re.sub(r"<\|(?:channel|message|start|end)\|>", "", text)
         return text.strip()
 
     def _load_chat_template_info(self, model_name: str):
