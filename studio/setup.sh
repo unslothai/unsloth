@@ -231,6 +231,9 @@ else
     # Configurable via UNSLOTH_STUDIO_HOME; defaults to ~/.unsloth/studio
     STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
     echo "   Studio home: $STUDIO_HOME"
+    # Persist for future `unsloth studio` runs (survives shell restarts)
+    mkdir -p "$HOME/.unsloth"
+    echo "$STUDIO_HOME" > "$HOME/.unsloth/studio_home"
     VENV_DIR="$STUDIO_HOME/.venv"
     VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
     mkdir -p "$STUDIO_HOME"
