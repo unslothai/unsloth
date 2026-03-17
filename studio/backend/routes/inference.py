@@ -95,6 +95,71 @@ async def load_model(
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
+        # ── Already-loaded check: skip reload if the exact model is active ──
+        backend = get_inference_backend()
+        llama_backend = get_llama_cpp_backend()
+
+        if request.gguf_variant:
+            if (
+                llama_backend.is_loaded
+                and llama_backend.hf_variant
+                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
+                and llama_backend.model_identifier
+                and llama_backend.model_identifier.lower() == request.model_path.lower()
+            ):
+                logger.info(
+                    f"Model already loaded (GGUF): {request.model_path} variant={request.gguf_variant}, skipping reload"
+                )
+                inference_config = load_inference_config(llama_backend.model_identifier)
+                from utils.models import is_audio_input_type
+                _gguf_audio = llama_backend._audio_type if hasattr(llama_backend, "_audio_type") else None
+                _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
+                return LoadResponse(
+                    status = "already_loaded",
+                    model = llama_backend.model_identifier,
+                    display_name = llama_backend.model_identifier,
+                    is_vision = llama_backend._is_vision,
+                    is_lora = False,
+                    is_gguf = True,
+                    is_audio = _gguf_is_audio,
+                    audio_type = _gguf_audio,
+                    has_audio_input = is_audio_input_type(_gguf_audio) if _gguf_audio else False,
+                    inference = inference_config,
+                    context_length = llama_backend.context_length,
+                    supports_reasoning = llama_backend.supports_reasoning,
+                    chat_template = llama_backend.chat_template,
+                )
+        else:
+            if (
+                backend.active_model_name
+                and backend.active_model_name.lower() == request.model_path.lower()
+            ):
+                logger.info(
+                    f"Model already loaded (Unsloth): {request.model_path}, skipping reload"
+                )
+                inference_config = load_inference_config(backend.active_model_name)
+                _model_info = backend.models.get(backend.active_model_name, {})
+                _chat_template = None
+                try:
+                    _tpl_info = _model_info.get("chat_template_info", {})
+                    _chat_template = _tpl_info.get("template")
+                except Exception:
+                    pass
+                _config = _model_info.get("config")
+                return LoadResponse(
+                    status = "already_loaded",
+                    model = backend.active_model_name,
+                    display_name = backend.active_model_name,
+                    is_vision = _model_info.get("is_vision", False),
+                    is_lora = _model_info.get("is_lora", False),
+                    is_gguf = False,
+                    is_audio = _model_info.get("is_audio", False),
+                    audio_type = _model_info.get("audio_type"),
+                    has_audio_input = _model_info.get("has_audio_input", False),
+                    inference = inference_config,
+                    chat_template = _chat_template,
+                )
+
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(

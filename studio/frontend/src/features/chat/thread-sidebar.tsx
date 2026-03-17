@@ -47,7 +47,7 @@ function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         title: t.title,
         createdAt: t.createdAt,
       });
-    } else if (t.modelType === "base") {
+    } else if (!t.pairId) {
       items.push({
         type: "single",
         id: t.id,

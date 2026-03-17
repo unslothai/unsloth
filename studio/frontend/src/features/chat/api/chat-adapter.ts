@@ -176,6 +176,11 @@ async function resolveUseAdapter(
     if (!thread?.pairId) {
       return undefined;
     }
+    // model1/model2 threads don't use the adapter toggle — each side
+    // loads its own model via /api/inference/load before generation.
+    if (thread.modelType === "model1" || thread.modelType === "model2") {
+      return undefined;
+    }
     return thread.modelType === "lora";
   } catch {
     return undefined;

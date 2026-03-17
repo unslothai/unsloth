@@ -7,6 +7,8 @@ import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { toast } from "sonner";
+import { loadModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type KeyboardEvent,
@@ -28,8 +30,14 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
+  /** Append a user message without triggering generation. */
+  appendMessage: (content: CompareMessagePart[]) => void;
+  /** Trigger generation on the current thread (after appendMessage). */
+  startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
+  /** Returns a promise that resolves when the current or next run finishes. */
+  waitForRunEnd: () => Promise<void>;
 }
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
@@ -139,8 +147,27 @@ export function RegisterCompareHandle({
       // fixes occasional reorder on reload.
       append: (content) =>
         aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
+      appendMessage: (content) =>
+        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
+      startRun: () => {
+        const msgs = aui.thread().getState().messages;
+        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+        aui.thread().startRun({ parentId: lastId });
+      },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      waitForRunEnd: () =>
+        new Promise<void>((resolve) => {
+          let wasRunning = false;
+          const unsub = useChatRuntimeStore.subscribe((state) => {
+            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
+            if (anyRunning) wasRunning = true;
+            if (wasRunning && !anyRunning) {
+              unsub();
+              resolve();
+            }
+          });
+        }),
     };
     return () => {
       delete currentHandles[name];
@@ -181,13 +208,24 @@ function PendingImageThumb({
   );
 }
 
+type CompareModelSelection = {
+  id: string;
+  isLora: boolean;
+  ggufVariant?: string;
+};
+
 export function SharedComposer({
   handlesRef,
+  model1,
+  model2,
 }: {
   handlesRef: CompareHandles;
+  model1?: CompareModelSelection;
+  model2?: CompareModelSelection;
 }): ReactElement {
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
+  const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -268,14 +306,100 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
-    for (const handle of Object.values(handlesRef.current)) {
-      handle.append(content);
-    }
     setText("");
     setPendingImages([]);
     setPendingAudio(null);
     clearPendingAudioStore();
     textareaRef.current?.focus();
+
+    // Generalized compare: load each model before dispatching to its side
+    const hasCompareHandles = Boolean(handlesRef.current["model1"] || handlesRef.current["model2"]);
+    const isGeneralizedCompare = hasCompareHandles && Boolean(model1?.id || model2?.id);
+    if (isGeneralizedCompare) {
+      const store = useChatRuntimeStore.getState();
+      const maxSeqLength = store.params.maxSeqLength;
+      const trustRemoteCode = store.params.trustRemoteCode ?? false;
+      const chatTemplateOverride = store.chatTemplateOverride;
+
+      function modelDisplayName(id: string): string {
+        const parts = id.split("/");
+        return parts[parts.length - 1] || id;
+      }
+
+      // Helper: load a model and update store checkpoint
+      async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
+        const resp = await loadModel({
+          model_path: sel.id,
+          hf_token: null,
+          max_seq_length: maxSeqLength,
+          load_in_4bit: true,
+          is_lora: sel.isLora,
+          gguf_variant: sel.ggufVariant ?? null,
+          trust_remote_code: trustRemoteCode,
+          chat_template_override: chatTemplateOverride,
+        });
+        useChatRuntimeStore.getState().setCheckpoint(
+          resp.model,
+          resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+        );
+        return resp.status;
+      }
+
+      const handle1 = handlesRef.current["model1"];
+      const handle2 = handlesRef.current["model2"];
+
+      // Show user messages immediately on both sides
+      if (handle1) handle1.appendMessage(content);
+      if (handle2) handle2.appendMessage(content);
+
+      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
+      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+      const toastId = toast("Comparing models…", { duration: Infinity });
+
+      setComparing(true);
+      try {
+        // Side 1: load → generate → wait
+        if (handle1 && model1?.id) {
+          toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
+          const status = await ensureModelLoaded(model1);
+          toast(status === "already_loaded" ? "Generating with Model 1…" : "Generating with Model 1…", {
+            id: toastId, description: name1, duration: Infinity,
+          });
+          const done = handle1.waitForRunEnd();
+          handle1.startRun();
+          await done;
+        }
+
+        // Side 2: load → generate → wait
+        if (handle2 && model2?.id) {
+          const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
+            || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          if (needsLoad) {
+            toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
+          }
+          await ensureModelLoaded(model2);
+          toast("Generating with Model 2…", { id: toastId, description: name2, duration: Infinity });
+          const done = handle2.waitForRunEnd();
+          handle2.startRun();
+          await done;
+        }
+
+        toast.success("Compare complete", { id: toastId, duration: 2000 });
+      } catch (err) {
+        toast.error("Compare failed", {
+          id: toastId,
+          description: err instanceof Error ? err.message : "Unknown error",
+          duration: 4000,
+        });
+      } finally {
+        setComparing(false);
+      }
+    } else {
+      // Original behavior: fire all handles simultaneously
+      for (const handle of Object.values(handlesRef.current)) {
+        handle.append(content);
+      }
+    }
   }
 
   function stop() {
@@ -285,16 +409,18 @@ export function SharedComposer({
     }
   }
 
+  const busy = running || comparing;
+
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!running) {
+      if (!busy) {
         send();
       }
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !running;
+  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy;
 
   return (
     <div
@@ -472,7 +598,7 @@ export function SharedComposer({
               )}
             </>
           )}
-          {running ? (
+          {busy ? (
             <Button
               type="button"
               variant="default"
