@@ -59,7 +59,9 @@ def _enable_colors() -> bool:
     return True  # Unix terminals support ANSI by default
 
 
-_HAS_COLOR = False  # colors disabled; export UNSLOTH_VERBOSE=1 for verbose output
+# Colors disabled — Colab and most CI runners render ANSI fine, but plain output
+# is cleaner in the notebook cell. Re-enable by setting _HAS_COLOR = _enable_colors()
+_HAS_COLOR = False
 
 
 def _green(msg: str) -> str:
@@ -75,15 +77,19 @@ def _red(msg: str) -> str:
 
 
 def _progress(label: str) -> None:
-    """In-place progress bar. No-op in verbose mode."""
+    """Print an in-place progress bar for the current install step.
+
+    Uses only stdlib (sys.stdout) — no extra packages required.
+    In VERBOSE mode this is a no-op; per-step labels are printed by run() instead.
+    """
     global _STEP
     _STEP += 1
     if VERBOSE:
-        return
+        return  # verbose mode: run() already printed the label
     width = 20
     filled = int(width * _STEP / _TOTAL)
     bar = "=" * filled + "-" * (width - filled)
-    end = "\n" if _STEP >= _TOTAL else ""
+    end = "\n" if _STEP >= _TOTAL else ""  # newline only on the final step
     sys.stdout.write(f"\r[{bar}] {_STEP:2}/{_TOTAL}  {label:<40}{end}")
     sys.stdout.flush()
 
