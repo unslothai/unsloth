@@ -16,14 +16,16 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 
 interface PlatformState {
   deviceType: DeviceType;
+  chatOnly: boolean;
   fetched: boolean;
   isChatOnly: () => boolean;
 }
 
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: "linux",
+  chatOnly: false,
   fetched: false,
-  isChatOnly: () => get().deviceType === "mac",
+  isChatOnly: () => get().chatOnly,
 }));
 
 export async function fetchDeviceType(): Promise<DeviceType> {
@@ -33,9 +35,10 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   try {
     const res = await fetch("/api/health");
     if (res.ok) {
-      const data = (await res.json()) as { device_type?: string };
+      const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
       const deviceType = data.device_type ?? "linux";
-      usePlatformStore.setState({ deviceType, fetched: true });
+      const chatOnly = data.chat_only ?? deviceType === "mac";
+      usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
       return deviceType;
     }
   } catch (err) {

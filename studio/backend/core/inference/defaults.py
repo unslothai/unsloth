@@ -3,7 +3,7 @@
 
 """Default model lists for inference, split by platform."""
 
-import sys
+import utils.hardware.hardware as hw
 
 DEFAULT_MODELS_GGUF = [
     "unsloth/Llama-3.2-1B-Instruct-GGUF",
@@ -25,6 +25,7 @@ DEFAULT_MODELS_STANDARD = [
 
 
 def get_default_models() -> list[str]:
-    if sys.platform == "darwin":
+    hw.get_device()  # ensure detect_hardware() has run
+    if hw.CHAT_ONLY:
         return list(DEFAULT_MODELS_GGUF)
     return list(DEFAULT_MODELS_STANDARD)

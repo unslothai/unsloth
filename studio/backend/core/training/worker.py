@@ -138,7 +138,22 @@ def run_training_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # ── 1b. Set fork start method so dataset.map() can multiprocess ──
+    # The parent launched us via spawn (clean process), but the compiled
+    # SFTTrainer checks get_start_method() and disables num_proc if not "fork".
+    # Linux only: fork is the default start method and is safe here (no CUDA
+    # context exists yet). macOS defaults to spawn since Python 3.8 because
+    # fork is unsafe with macOS frameworks (Metal/MPS, CoreFoundation) --
+    # do NOT override on macOS. Windows has no fork at all.
+    if sys.platform == "linux":
+        import multiprocessing as _mp
+
+        try:
+            _mp.set_start_method("fork", force = True)
+        except RuntimeError:
+            pass  # Already set
+
+    # ── 1c. On Windows, check Triton availability (must be before import torch) ──
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
@@ -347,6 +362,31 @@ def run_training_process(
                 )
             return
 
+        # ── Start tqdm monitor early so it captures download + tokenization bars ──
+        import threading as _th
+
+        _tqdm_stop = _th.Event()
+
+        def _monitor_tqdm():
+            from tqdm.auto import tqdm as _tqdm_cls
+
+            while not _tqdm_stop.is_set():
+                for bar in list(getattr(_tqdm_cls, "_instances", set())):
+                    try:
+                        n, total = bar.n or 0, bar.total or 0
+                        desc = getattr(bar, "desc", "") or ""
+                        if total > 0 and n > 0 and desc:
+                            pct = min(int(n * 100 / total), 100)
+                            _send_status(
+                                event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})"
+                            )
+                    except (AttributeError, ReferenceError):
+                        pass
+                _tqdm_stop.wait(3)
+
+        _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
+        _tqdm_thread.start()
+
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
@@ -476,6 +516,8 @@ def run_training_process(
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
         )
+
+        _tqdm_stop.set()
 
         # Check final state
         progress = trainer.get_training_progress()

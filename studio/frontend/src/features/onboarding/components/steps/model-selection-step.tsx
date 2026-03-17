@@ -33,7 +33,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK } from "@/config/training";
+import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -96,12 +96,16 @@ export function ModelSelectionStep() {
     task,
     accessToken: hfToken || undefined,
     excludeGguf: true,
+    priorityIds: PRIORITY_TRAINING_MODELS,
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);
 
-  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
+  const resultIds = useMemo(() => {
+    const ids = hfResults.map((r) => r.id);
+    return applyPriorityOrdering(ids);
+  }, [hfResults]);
 
   // Match Studio behavior: only show exception signals (OOM/TIGHT) in training flows.
   const vramMap = useMemo(() => {

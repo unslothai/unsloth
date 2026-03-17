@@ -210,6 +210,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           hfToken: state.hfToken.trim() || null,
           subset: state.datasetSubset,
           split,
+          isVlm: state.isVisionModel,
         })
           .then((res) => {
             if (controller.signal.aborted) return;

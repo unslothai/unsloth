@@ -127,6 +127,7 @@ def apply_chat_template_to_dataset(
     auto_detect_mapping = True,
     batch_size = 1000,
     num_proc = None,
+    progress_callback = None,
 ):
     """
     Applies chat template to dataset based on its format.
@@ -364,7 +365,37 @@ def apply_chat_template_to_dataset(
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = f"Applying chat template to {final_format}"
 
+            # Monitor tqdm progress from dataset.map() and relay to callback
+            _tqdm_monitor_stop = None
+            if progress_callback and not isinstance(dataset, IterableDataset):
+                import threading
+                from tqdm.auto import tqdm as _tqdm_cls
+
+                _tqdm_monitor_stop = threading.Event()
+                _total = len(dataset) if hasattr(dataset, "__len__") else 0
+                _desc = f"Applying chat template to {final_format}"
+
+                def _poll_tqdm():
+                    while not _tqdm_monitor_stop.is_set():
+                        for bar in list(getattr(_tqdm_cls, "_instances", set())):
+                            try:
+                                n = bar.n or 0
+                                total = bar.total or _total
+                                if total > 0 and n > 0:
+                                    pct = min(int(n * 100 / total), 100)
+                                    progress_callback(
+                                        status_message = f"{_desc}... {pct}% ({n:,}/{total:,})"
+                                    )
+                            except (AttributeError, ReferenceError):
+                                pass
+                        _tqdm_monitor_stop.wait(3)
+
+                threading.Thread(target = _poll_tqdm, daemon = True).start()
+
             formatted_dataset = dataset.map(_format_chatml, **dataset_map_kwargs)
+
+            if _tqdm_monitor_stop is not None:
+                _tqdm_monitor_stop.set()
 
             return {
                 "dataset": formatted_dataset,

@@ -213,9 +213,15 @@ export async function* streamChatCompletions(
 
       const parsed = JSON.parse(dataText) as
         | OpenAIChatChunk
-        | { error?: { message?: string } };
+        | { type?: string; content?: string; error?: { message?: string } };
       if ("error" in parsed && parsed.error) {
         throw new Error(parsed.error.message || "Stream error");
+      }
+      // Tool status events are custom SSE payloads, not OpenAI chunks
+      if ("type" in parsed && parsed.type === "tool_status") {
+        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
       }
       yield parsed as OpenAIChatChunk;
       separatorIndex = buffer.search(/\r?\n\r?\n/);

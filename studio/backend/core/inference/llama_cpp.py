@@ -49,6 +49,9 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
+        self._supports_tools: bool = False
+        self._cache_type_kv: Optional[str] = None
+        self._reasoning_default: bool = True
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -95,6 +98,18 @@ class LlamaCppBackend:
     @property
     def supports_reasoning(self) -> bool:
         return self._supports_reasoning
+
+    @property
+    def reasoning_default(self) -> bool:
+        return self._reasoning_default
+
+    @property
+    def supports_tools(self) -> bool:
+        return self._supports_tools
+
+    @property
+    def cache_type_kv(self) -> Optional[str]:
+        return self._cache_type_kv
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -492,6 +507,18 @@ class LlamaCppBackend:
                         logger.info(
                             "GGUF metadata: model supports reasoning (DeepSeek thinking)"
                         )
+                # Detect tool calling support from chat template
+                tool_markers = [
+                    "{%- if tools %}",
+                    "{% if tools %}",
+                    '"role" == "tool"',
+                    "'role' == 'tool'",
+                    'message.role == "tool"',
+                    "message.role == 'tool'",
+                ]
+                if any(marker in tpl for marker in tool_markers):
+                    self._supports_tools = True
+                    logger.info("GGUF metadata: model supports tool calling")
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -723,6 +750,7 @@ class LlamaCppBackend:
         is_vision: bool = False,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
+        cache_type_kv: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -828,6 +856,27 @@ class LlamaCppBackend:
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])
 
+            # KV cache data type
+            _valid_cache_types = {
+                "f16",
+                "bf16",
+                "q8_0",
+                "q4_0",
+                "q4_1",
+                "q5_0",
+                "q5_1",
+                "iq4_nl",
+                "f32",
+            }
+            if cache_type_kv and cache_type_kv in _valid_cache_types:
+                cmd.extend(
+                    ["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv]
+                )
+                self._cache_type_kv = cache_type_kv
+                logger.info(f"KV cache type: {cache_type_kv}")
+            else:
+                self._cache_type_kv = None
+
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
@@ -845,15 +894,31 @@ class LlamaCppBackend:
                     f"Using custom chat template file: {self._chat_template_file.name}"
                 )
 
-            # For reasoning models, default to thinking ON (user can toggle per-request)
+            # For reasoning models, set default thinking mode.
+            # Qwen3.5 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            # per Qwen's recommendation. Larger models default to thinking ON.
             if self._supports_reasoning:
+                import re
+
+                thinking_default = True
+                mid = (model_identifier or "").lower()
+                if "qwen3.5" in mid:
+                    # Extract size like "0.8b", "4b", "35b" etc.
+                    size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
+                    if size_match:
+                        size_val = float(size_match.group(1))
+                        if size_val <= 2:
+                            thinking_default = False
+                self._reasoning_default = thinking_default
                 cmd.extend(
                     [
                         "--chat-template-kwargs",
-                        json.dumps({"enable_thinking": True}),
+                        json.dumps({"enable_thinking": thinking_default}),
                     ]
                 )
-                logger.info("Reasoning model: enabled enable_thinking=true by default")
+                logger.info(
+                    f"Reasoning model: enable_thinking={thinking_default} by default"
+                )
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -888,9 +953,28 @@ class LlamaCppBackend:
                 env["PATH"] = ";".join(path_dirs) + ";" + existing_path
             else:
                 # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                # and CUDA runtime libs (libcudart, libcublas, etc.)
+                import platform
+
+                lib_dirs = [binary_dir]
+                _arch = platform.machine()  # x86_64, aarch64, etc.
+                for cuda_lib in [
+                    "/usr/local/cuda/lib64",
+                    f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                    # Fallback CUDA compat paths (e.g. binary built with
+                    # CUDA 12 on a system where default /usr/local/cuda
+                    # points to CUDA 13+).
+                    "/usr/local/cuda-12/lib64",
+                    "/usr/local/cuda-12.8/lib64",
+                    f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                    f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+                ]:
+                    if os.path.isdir(cuda_lib):
+                        lib_dirs.append(cuda_lib)
                 existing_ld = env.get("LD_LIBRARY_PATH", "")
+                new_ld = ":".join(lib_dirs)
                 env["LD_LIBRARY_PATH"] = (
-                    f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+                    f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
             # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
@@ -952,6 +1036,8 @@ class LlamaCppBackend:
             self._context_length = None
             self._chat_template = None
             self._supports_reasoning = False
+            self._supports_tools = False
+            self._cache_type_kv = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -1072,6 +1158,70 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
+    def _parse_tool_calls_from_text(content: str) -> list[dict]:
+        """
+        Parse tool calls from XML markup in content text.
+
+        Handles formats like:
+          <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
+          <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
+        Closing </tool_call> tag is optional (models sometimes omit it).
+        """
+        import re
+
+        tool_calls = []
+        # Pattern 1: JSON inside <tool_call> tags (closing tag optional)
+        for match in re.finditer(
+            r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>)?", content, re.DOTALL
+        ):
+            try:
+                obj = json.loads(match.group(1))
+                tc = {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": obj.get("name", ""),
+                        "arguments": obj.get("arguments", {}),
+                    },
+                }
+                if isinstance(tc["function"]["arguments"], dict):
+                    tc["function"]["arguments"] = json.dumps(
+                        tc["function"]["arguments"]
+                    )
+                tool_calls.append(tc)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
+        # Closing </tool_call> optional
+        if not tool_calls:
+            for match in re.finditer(
+                r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*(?:</tool_call>)?",
+                content,
+                re.DOTALL,
+            ):
+                func_name = match.group(1)
+                params_text = match.group(2)
+                arguments = {}
+                for param_match in re.finditer(
+                    r"<parameter=(\w+)>\s*(.*?)\s*</parameter>",
+                    params_text,
+                    re.DOTALL,
+                ):
+                    arguments[param_match.group(1)] = param_match.group(2)
+                tc = {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": json.dumps(arguments),
+                    },
+                }
+                tool_calls.append(tc)
+
+        return tool_calls
+
+    @staticmethod
     def _build_openai_messages(
         messages: list[dict],
         image_b64: Optional[str] = None,
@@ -1166,6 +1316,8 @@ class LlamaCppBackend:
                         )
 
                     buffer = ""
+                    has_content_tokens = False
+                    reasoning_text = ""
                     for raw_chunk in response.iter_text():
                         if cancel_event is not None and cancel_event.is_set():
                             break
@@ -1179,8 +1331,17 @@ class LlamaCppBackend:
                                 continue
                             if line == "data: [DONE]":
                                 if in_thinking:
-                                    cumulative += "</think>"
-                                    yield cumulative
+                                    if has_content_tokens:
+                                        # Real thinking + content: close the tag
+                                        cumulative += "</think>"
+                                        yield cumulative
+                                    else:
+                                        # Only reasoning_content, no content tokens:
+                                        # the model put its entire reply in reasoning
+                                        # (e.g. Qwen3 always-think mode). Show it
+                                        # as the main response, not as a thinking block.
+                                        cumulative = reasoning_text
+                                        yield cumulative
                                 return
                             if not line.startswith("data: "):
                                 continue
@@ -1196,6 +1357,7 @@ class LlamaCppBackend:
                                     # Wrap in <think> tags for the frontend parser
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
+                                        reasoning_text += reasoning
                                         if not in_thinking:
                                             cumulative += "<think>"
                                             in_thinking = True
@@ -1204,11 +1366,260 @@ class LlamaCppBackend:
 
                                     token = delta.get("content", "")
                                     if token:
+                                        has_content_tokens = True
                                         if in_thinking:
                                             cumulative += "</think>"
                                             in_thinking = False
                                         cumulative += token
                                         yield cumulative
+                            except json.JSONDecodeError:
+                                logger.debug(
+                                    f"Skipping malformed SSE line: {line[:100]}"
+                                )
+
+        except httpx.ConnectError:
+            raise RuntimeError("Lost connection to llama-server")
+        except Exception as e:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            raise
+
+    # ── Tool-calling agentic loop ──────────────────────────────
+
+    def generate_chat_completion_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_tokens: Optional[int] = None,
+        repetition_penalty: float = 1.0,
+        stop: Optional[list[str]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        enable_thinking: Optional[bool] = None,
+        max_tool_iterations: int = 5,
+    ) -> Generator[dict, None, None]:
+        """
+        Agentic loop: let the model call tools, execute them, and continue.
+
+        Yields dicts with:
+          {"type": "status", "text": "Searching: ..."}   -- tool status updates
+          {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
+          {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
+        """
+        from core.inference.tools import execute_tool
+
+        if not self.is_loaded:
+            raise RuntimeError("llama-server is not loaded")
+
+        conversation = list(messages)
+        url = f"{self.base_url}/v1/chat/completions"
+
+        for iteration in range(max_tool_iterations):
+            if cancel_event is not None and cancel_event.is_set():
+                return
+
+            # Build payload for non-streaming tool detection pass
+            payload = {
+                "messages": conversation,
+                "stream": False,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k if top_k >= 0 else 0,
+                "min_p": min_p,
+                "repeat_penalty": repetition_penalty,
+                "tools": tools,
+                "tool_choice": "auto",
+            }
+            if self._supports_reasoning and enable_thinking is not None:
+                payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+            if max_tokens is not None:
+                payload["max_tokens"] = max_tokens
+            if stop:
+                payload["stop"] = stop
+
+            try:
+                with httpx.Client(timeout = None) as client:
+                    resp = client.post(url, json = payload)
+                    if resp.status_code != 200:
+                        raise RuntimeError(
+                            f"llama-server returned {resp.status_code}: {resp.text}"
+                        )
+                    data = resp.json()
+            except httpx.ConnectError:
+                raise RuntimeError("Lost connection to llama-server")
+
+            choices = data.get("choices", [])
+            if not choices:
+                return
+
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason", "")
+            message = choice.get("message", {})
+
+            # If model wants to call tools
+            tool_calls = message.get("tool_calls")
+
+            # Fallback: detect tool calls embedded as XML/text in content
+            # Some models output <tool_call> XML instead of structured tool_calls
+            content_text = message.get("content", "") or ""
+            if not tool_calls and "<tool_call>" in content_text:
+                tool_calls = self._parse_tool_calls_from_text(content_text)
+                if tool_calls:
+                    # Strip the tool call markup from content
+                    import re
+
+                    content_text = re.sub(
+                        r"<tool_call>.*?(?:</tool_call>|$)",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    ).strip()
+                    logger.info(
+                        f"Parsed {len(tool_calls)} tool call(s) from content text"
+                    )
+
+            if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
+                # Append the assistant message with tool_calls to conversation
+                assistant_msg = {"role": "assistant", "content": content_text}
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                conversation.append(assistant_msg)
+
+                # Execute each tool call
+                for tc in tool_calls or []:
+                    func = tc.get("function", {})
+                    tool_name = func.get("name", "")
+                    raw_args = func.get("arguments", {})
+
+                    # Handle arguments as either string or dict
+                    if isinstance(raw_args, str):
+                        try:
+                            arguments = json.loads(raw_args)
+                        except (json.JSONDecodeError, ValueError):
+                            arguments = {"query": raw_args}
+                    else:
+                        arguments = raw_args
+
+                    # Yield status update
+                    query_text = arguments.get("query", tool_name)
+                    yield {"type": "status", "text": f"Searching: {query_text}"}
+
+                    # Execute the tool
+                    result = execute_tool(tool_name, arguments)
+
+                    # Append tool result to conversation
+                    tool_msg = {
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": result,
+                    }
+                    tool_call_id = tc.get("id")
+                    if tool_call_id:
+                        tool_msg["tool_call_id"] = tool_call_id
+                    conversation.append(tool_msg)
+
+                # Continue the loop to let model respond with context
+                continue
+
+            # No tool calls -- model answered directly.
+            # If no tools were executed at all, just yield the content
+            # from this response instead of making a redundant second request.
+            if iteration == 0 and content_text:
+                yield {"type": "status", "text": ""}
+                yield {"type": "content", "text": content_text}
+                return
+
+            # Tools were called in previous iterations; do a final
+            # streaming pass so the model can synthesize a response
+            # incorporating the tool results.
+            break
+
+        # Clear status
+        yield {"type": "status", "text": ""}
+
+        # Final streaming pass with the full conversation context
+        stream_payload = {
+            "messages": conversation,
+            "stream": True,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
+            "repeat_penalty": repetition_penalty,
+        }
+        if self._supports_reasoning and enable_thinking is not None:
+            stream_payload["chat_template_kwargs"] = {
+                "enable_thinking": enable_thinking
+            }
+        if max_tokens is not None:
+            stream_payload["max_tokens"] = max_tokens
+        if stop:
+            stream_payload["stop"] = stop
+
+        cumulative = ""
+        in_thinking = False
+        has_content_tokens = False
+        reasoning_text = ""
+
+        try:
+            with httpx.Client(timeout = None) as client:
+                with client.stream("POST", url, json = stream_payload) as response:
+                    if response.status_code != 200:
+                        error_body = response.read().decode()
+                        raise RuntimeError(
+                            f"llama-server returned {response.status_code}: {error_body}"
+                        )
+
+                    buffer = ""
+                    for raw_chunk in response.iter_text():
+                        if cancel_event is not None and cancel_event.is_set():
+                            break
+
+                        buffer += raw_chunk
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+
+                            if not line:
+                                continue
+                            if line == "data: [DONE]":
+                                if in_thinking:
+                                    if has_content_tokens:
+                                        cumulative += "</think>"
+                                        yield {"type": "content", "text": cumulative}
+                                    else:
+                                        cumulative = reasoning_text
+                                        yield {"type": "content", "text": cumulative}
+                                return
+                            if not line.startswith("data: "):
+                                continue
+
+                            try:
+                                chunk_data = json.loads(line[6:])
+                                choices = chunk_data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+
+                                    reasoning = delta.get("reasoning_content", "")
+                                    if reasoning:
+                                        reasoning_text += reasoning
+                                        if not in_thinking:
+                                            cumulative += "<think>"
+                                            in_thinking = True
+                                        cumulative += reasoning
+                                        yield {"type": "content", "text": cumulative}
+
+                                    token = delta.get("content", "")
+                                    if token:
+                                        has_content_tokens = True
+                                        if in_thinking:
+                                            cumulative += "</think>"
+                                            in_thinking = False
+                                        cumulative += token
+                                        yield {"type": "content", "text": cumulative}
                             except json.JSONDecodeError:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
