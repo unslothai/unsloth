@@ -118,8 +118,6 @@ fi
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
 # ── 5. Build frontend ──
-echo ""
-echo "Building frontend..."
 cd "$SCRIPT_DIR/frontend"
 
 # Tailwind v4's oxide scanner respects .gitignore in parent directories.
@@ -156,8 +154,6 @@ echo "✅ Frontend built to frontend/dist"
 fi  # end frontend dist check
 
 # ── 6. Python venv + deps ──
-echo ""
-echo "Setting up Python environment..."
 
 # ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
