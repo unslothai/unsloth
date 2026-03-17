@@ -111,6 +111,20 @@ async def load_model(
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
+            # Wait for llama.cpp to be compiled if a background build is in progress
+            from core.inference.llama_cpp_builder import get_llama_cpp_builder
+
+            builder = get_llama_cpp_builder()
+            if not builder.is_ready:
+                logger.info("Waiting for llama.cpp build to finish...")
+                ready = await asyncio.to_thread(builder.wait_for_ready, timeout = 600)
+                if not ready or builder.error:
+                    raise HTTPException(
+                        status_code = 503,
+                        detail = builder.error
+                        or "llama.cpp is still compiling. Please wait.",
+                    )
+
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -536,6 +550,19 @@ async def get_status(
     except Exception as e:
         logger.error(f"Error getting status: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to get status: {str(e)}")
+
+
+@router.get("/llama-cpp-status")
+async def llama_cpp_status():
+    """Check if llama.cpp is ready (built and available)."""
+    from core.inference.llama_cpp_builder import get_llama_cpp_builder
+
+    builder = get_llama_cpp_builder()
+    return {
+        "ready": builder.is_ready and builder.error is None,
+        "building": builder.is_building,
+        "error": builder.error,
+    }
 
 
 # =====================================================================

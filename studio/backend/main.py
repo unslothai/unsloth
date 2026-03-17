@@ -75,6 +75,12 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
+    # Build llama.cpp in the background if the binary is missing.
+    # Studio starts immediately; GGUF features wait for the build to finish.
+    from core.inference.llama_cpp_builder import get_llama_cpp_builder
+
+    get_llama_cpp_builder().check_and_build()
+
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
