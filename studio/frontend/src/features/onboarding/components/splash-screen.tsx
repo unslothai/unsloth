@@ -66,7 +66,7 @@ export function SplashScreen({
             Start Onboarding
           </Button>
           <Button size="lg" variant="outline" onClick={onGoToStudio}>
-            Skip to Chat
+            Skip Onboarding
           </Button>
         </motion.div>
       </Card>
