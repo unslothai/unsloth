@@ -605,9 +605,8 @@ except:
     pass
 
 
-HAS_FBGEMM_FP8_OPS = (
-    hasattr(torch.ops, "fbgemm")
-    and hasattr(torch.ops.fbgemm, "quantize_fp8_per_row")
+HAS_FBGEMM_FP8_OPS = hasattr(torch.ops, "fbgemm") and hasattr(
+    torch.ops.fbgemm, "quantize_fp8_per_row"
 )
 
 

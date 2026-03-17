@@ -819,7 +819,9 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        if load_in_fp8 != False or _has_prequantized_fp8_config(model_name, token=token, trust_remote_code=trust_remote_code):
+        if load_in_fp8 != False or _has_prequantized_fp8_config(
+            model_name, token = token, trust_remote_code = trust_remote_code
+        ):
             maybe_patch_stacked_moe_expert_fp8_scales(
                 model,
                 model_name = model_name,
@@ -1363,10 +1365,10 @@ class FastModel(FastBaseModel):
                 model_name = get_model_name(
                     model_name,
                     load_in_4bit,
-                    load_in_fp8=load_in_fp8,
-                    fast_inference=fast_inference,
-                    token=token,
-                    trust_remote_code=trust_remote_code,
+                    load_in_fp8 = load_in_fp8,
+                    fast_inference = fast_inference,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1576,7 +1578,9 @@ class FastModel(FastBaseModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
-        if load_in_fp8 != False or _has_prequantized_fp8_config(model_name, token=token, trust_remote_code=trust_remote_code):
+        if load_in_fp8 != False or _has_prequantized_fp8_config(
+            model_name, token = token, trust_remote_code = trust_remote_code
+        ):
             maybe_patch_stacked_moe_expert_fp8_scales(
                 model,
                 model_name = model_name,
