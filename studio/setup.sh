@@ -325,7 +325,7 @@ rm -rf "$LLAMA_CPP_DIR"
 
                 # Detect GPU compute capability and limit CUDA architectures
                 # Without this, cmake builds for ALL default archs (very slow)
-                CUDA_ARCHS=""
+                CUDA_ARCHS="86"
                 if command -v nvidia-smi &>/dev/null; then
                     # Read all GPUs, deduplicate (handles mixed-GPU hosts)
                     _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
