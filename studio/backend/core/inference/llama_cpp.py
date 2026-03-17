@@ -9,6 +9,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 """
 
 import atexit
+import contextlib
 import json
 import struct
 import structlog
@@ -1292,6 +1293,33 @@ class LlamaCppBackend:
                 # and re-check cancel_event.
                 continue
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _stream_with_retry(
+        client: "httpx.Client",
+        url: str,
+        payload: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ):
+        """Open an httpx streaming POST, retrying on ReadTimeout.
+
+        The short read timeout (0.5 s) that enables cancel-checking during
+        streaming can also fire while waiting for the server to produce
+        its first response bytes (e.g. a reasoning model thinking).
+        This wrapper retries the connection until headers arrive or
+        cancel_event is set.
+        """
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GeneratorExit
+            try:
+                with client.stream("POST", url, json = payload) as response:
+                    yield response
+                    return
+            except httpx.ReadTimeout:
+                # Server still thinking -- retry
+                continue
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -1347,7 +1375,9 @@ class LlamaCppBackend:
             # frequently instead of blocking indefinitely on slow models.
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
-                with client.stream("POST", url, json = payload) as response:
+                with self._stream_with_retry(
+                    client, url, payload, cancel_event
+                ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(
@@ -1629,7 +1659,9 @@ class LlamaCppBackend:
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
-                with client.stream("POST", url, json = stream_payload) as response:
+                with self._stream_with_retry(
+                    client, url, stream_payload, cancel_event
+                ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(
