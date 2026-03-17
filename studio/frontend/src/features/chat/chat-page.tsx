@@ -278,7 +278,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 onValueChange={(id, meta) => setModel1({ id, isLora: meta.isLora, ggufVariant: meta.ggufVariant })}
                 variant="ghost"
                 size="sm"
-                className="min-w-0 flex-1"
+                className="max-w-[50%]"
               />
             </div>
             <div className="min-h-0 flex-1">
@@ -304,7 +304,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 onValueChange={(id, meta) => setModel2({ id, isLora: meta.isLora, ggufVariant: meta.ggufVariant })}
                 variant="ghost"
                 size="sm"
-                className="min-w-0 flex-1"
+                className="max-w-[50%]"
               />
             </div>
             <div className="min-h-0 flex-1">
@@ -446,7 +446,9 @@ export function ChatPage(): ReactElement {
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
-  const canCompare = true;
+  const canCompare = useMemo(() => {
+    return Boolean(inferenceParams.checkpoint);
+  }, [inferenceParams.checkpoint]);
 
   const handleCheckpointChange = useCallback(
     (value: string, meta?: { isLora: boolean; ggufVariant?: string; isDownloaded?: boolean; expectedBytes?: number }) => {

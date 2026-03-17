@@ -115,7 +115,7 @@ export function HfDatasetSubsetSplitSelectors({
           </div>
           <SelectorDropdown
             variant={variant}
-            label="Eval Split"
+            label="Evaluation Split"
             tooltip="Select which split to use for evaluation. None means no evaluation during training."
             value={null}
             onChange={setDatasetEvalSplit}
@@ -199,7 +199,7 @@ export function HfDatasetSubsetSplitSelectors({
           )}
           <SelectorDropdown
             variant={variant}
-            label="Eval Split"
+            label="Evaluation Split"
             tooltip="Select which split to use for evaluation. None means no evaluation during training."
             value={datasetEvalSplit}
             onChange={setDatasetEvalSplit}

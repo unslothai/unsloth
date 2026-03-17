@@ -261,6 +261,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               reasoningEnabled: loadResp.supports_reasoning ?? false,
               supportsTools: loadResp.supports_tools ?? false,
               toolsEnabled: false,
+              codeToolsEnabled: false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
             });
@@ -384,6 +385,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const {
         supportsTools,
         toolsEnabled,
+        codeToolsEnabled,
       } = runtime;
 
       const outboundMessages = messages
@@ -434,6 +436,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               top_k: params.topK,
               min_p: params.minP,
               repetition_penalty: params.repetitionPenalty,
+              presence_penalty: params.presencePenalty,
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
             abortSignal,
@@ -513,11 +516,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             top_k: params.topK,
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
+            presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
-            ...(supportsTools && toolsEnabled ? { enable_tools: true } : {}),
+            ...(supportsTools && (toolsEnabled || codeToolsEnabled)
+              ? {
+                  enable_tools: true,
+                  enabled_tools: [
+                    ...(toolsEnabled ? ["web_search"] : []),
+                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                  ],
+                }
+              : {}),
           },
           abortSignal,
         );

@@ -7,6 +7,7 @@ export interface InferenceParams {
   topK: number;
   minP: number;
   repetitionPenalty: number;
+  presencePenalty: number;
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
@@ -16,11 +17,12 @@ export interface InferenceParams {
 }
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
-  temperature: 0.7,
-  topP: 0.9,
-  topK: 50,
+  temperature: 0.6,
+  topP: 0.95,
+  topK: 20,
   minP: 0.01,
   repetitionPenalty: 1.0,
+  presencePenalty: 0.0,
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",

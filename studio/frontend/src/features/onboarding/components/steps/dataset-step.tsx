@@ -51,6 +51,7 @@ import {
   InformationCircleIcon,
   Key01Icon,
   Search01Icon,
+  SparklesIcon,
   Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -391,6 +392,12 @@ export function DatasetStep() {
             <SelectContent>
               {FORMAT_OPTIONS.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
+                  {opt.value === "auto" && (
+                    <HugeiconsIcon
+                      icon={SparklesIcon}
+                      className="mr-1.5 inline size-3.5 align-text-bottom"
+                    />
+                  )}
                   {opt.label}
                 </SelectItem>
               ))}

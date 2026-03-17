@@ -5,7 +5,7 @@
 Automatic transformers version switching.
 
 Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
-tiny_qwen3_moe) require transformers>=5.2.0, while everything else needs the
+tiny_qwen3_moe) require transformers>=5.3.0, while everything else needs the
 default 4.57.x that ships with Unsloth.
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
@@ -48,8 +48,16 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
 )
 
+# Tokenizer classes that only exist in transformers>=5.x
+_TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
+    "TokenizersBackend",
+}
+
+# Cache for dynamic tokenizer_config.json lookups to avoid repeated fetches
+_tokenizer_class_cache: dict[str, bool] = {}
+
 # Versions
-TRANSFORMERS_5_VERSION = "5.2.0"
+TRANSFORMERS_5_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.1"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
@@ -107,11 +115,53 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
+def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
+    """Fetch tokenizer_config.json from HuggingFace and check if the
+    tokenizer_class requires transformers 5.x.
+
+    Results are cached in ``_tokenizer_class_cache`` to avoid repeated fetches.
+    Returns False on any network/parse error (fail-open to default version).
+    """
+    if model_name in _tokenizer_class_cache:
+        return _tokenizer_class_cache[model_name]
+
+    import urllib.request
+
+    url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    try:
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        with urllib.request.urlopen(req, timeout = 10) as resp:
+            data = json.loads(resp.read().decode())
+        tokenizer_class = data.get("tokenizer_class", "")
+        result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
+        if result:
+            logger.info(
+                "Dynamic check: %s uses tokenizer_class=%s (requires transformers 5.x)",
+                model_name,
+                tokenizer_class,
+            )
+        _tokenizer_class_cache[model_name] = result
+        return result
+    except Exception as exc:
+        logger.debug(
+            "Could not fetch tokenizer_config.json for '%s': %s", model_name, exc
+        )
+        _tokenizer_class_cache[model_name] = False
+        return False
+
+
 def needs_transformers_5(model_name: str) -> bool:
     """Return True if *model_name* belongs to an architecture that requires
-    ``transformers>=5.2.0``."""
+    ``transformers>=5.3.0``.
+
+    First checks the hardcoded substring list for known models, then
+    dynamically fetches ``tokenizer_config.json`` from HuggingFace to check
+    if the tokenizer_class (e.g. ``TokenizersBackend``) requires v5.
+    """
     lowered = model_name.lower()
-    return any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS)
+    if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
+        return True
+    return _check_tokenizer_config_needs_v5(model_name)
 
 
 # ---------------------------------------------------------------------------

@@ -896,7 +896,7 @@ python "$PSScriptRoot\install_python_stack.py"
 $ErrorActionPreference = $prevEAP
 
 # ── Pre-install transformers 5.x into .venv_t5/ ──
-# Models like GLM-4.7-Flash need transformers>=5.2.0. Instead of pip-installing
+# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
 # at runtime (slow, ~10-15s), we pre-install into a separate directory.
 # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
 Write-Host ""
@@ -906,9 +906,9 @@ if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-pip install --target $VenvT5Dir --no-deps "transformers==5.2.0" 2>&1 | Out-Null
+pip install --target $VenvT5Dir --no-deps "transformers==5.3.0" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[FAIL] Could not install transformers 5.2.0 into .venv_t5/" -ForegroundColor Red
+    Write-Host "[FAIL] Could not install transformers 5.3.0 into .venv_t5/" -ForegroundColor Red
     $ErrorActionPreference = $prevEAP_t5
     exit 1
 }

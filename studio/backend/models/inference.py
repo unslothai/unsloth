@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Annotated, Literal, Optional, List, Union
+from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag
 
@@ -90,15 +90,16 @@ class GenerateRequest(BaseModel):
 
     messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
     system_prompt: str = Field("", description = "System prompt")
-    temperature: float = Field(0.7, ge = 0.0, le = 2.0, description = "Sampling temperature")
-    top_p: float = Field(0.9, ge = 0.0, le = 1.0, description = "Top-p sampling")
-    top_k: int = Field(40, ge = -1, le = 100, description = "Top-k sampling")
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
+    top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
     max_new_tokens: int = Field(
         2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
     )
     repetition_penalty: float = Field(
         1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
     )
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"
     )
@@ -183,6 +184,18 @@ class InferenceStatusResponse(BaseModel):
     loaded: List[str] = Field(
         default_factory = list, description = "Models currently loaded"
     )
+    inference: Optional[Dict[str, Any]] = Field(
+        None, description = "Recommended inference parameters for the active model"
+    )
+    supports_reasoning: bool = Field(
+        False, description = "Whether the active model supports reasoning/thinking mode"
+    )
+    supports_tools: bool = Field(
+        False, description = "Whether the active model supports tool calling"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Context length of the active model"
+    )
 
 
 # =====================================================================
@@ -262,16 +275,17 @@ class ChatCompletionRequest(BaseModel):
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
     stream: bool = Field(True, description = "Whether to stream the response via SSE")
-    temperature: float = Field(0.7, ge = 0.0, le = 2.0)
-    top_p: float = Field(0.9, ge = 0.0, le = 1.0)
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0)
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
-    top_k: int = Field(40, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
+    top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
     min_p: float = Field(
-        0.0, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
         1.1, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
@@ -298,7 +312,11 @@ class ChatCompletionRequest(BaseModel):
     )
     enable_tools: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Enable tool calling (web search) for supported models",
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
     )
 
 

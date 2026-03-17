@@ -3270,25 +3270,25 @@ class UnslothTrainer:
                     logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
 
                     # [DEBUG] Decode first sample AFTER train_on_completions applied
-                    try:
-                        _row = self.trainer.train_dataset[0]
-                        _space = self.tokenizer(
-                            " ", add_special_tokens = False
-                        ).input_ids[0]
-                        print("[DEBUG] === After train_on_completions ===", flush = True)
-                        print(
-                            f"[DEBUG] input_ids decoded:\n{self.tokenizer.decode(_row['input_ids'])}\n",
-                            flush = True,
-                        )
-                        print(
-                            f"[DEBUG] labels decoded (-100 → space):\n{self.tokenizer.decode([_space if x == -100 else x for x in _row['labels']])}\n",
-                            flush = True,
-                        )
-                    except Exception as _dbg_e:
-                        print(
-                            f"[DEBUG] Could not decode post-completions sample: {_dbg_e}",
-                            flush = True,
-                        )
+                    # try:
+                    #     _row = self.trainer.train_dataset[0]
+                    #     _space = self.tokenizer(
+                    #         " ", add_special_tokens = False
+                    #     ).input_ids[0]
+                    #     print("[DEBUG] === After train_on_completions ===", flush = True)
+                    #     print(
+                    #         f"[DEBUG] input_ids decoded:\n{self.tokenizer.decode(_row['input_ids'])}\n",
+                    #         flush = True,
+                    #     )
+                    #     print(
+                    #         f"[DEBUG] labels decoded (-100 → space):\n{self.tokenizer.decode([_space if x == -100 else x for x in _row['labels']])}\n",
+                    #         flush = True,
+                    #     )
+                    # except Exception as _dbg_e:
+                    #     print(
+                    #         f"[DEBUG] Could not decode post-completions sample: {_dbg_e}",
+                    #         flush = True,
+                    #     )
 
                 except Exception as e:
                     logger.warning(f"Failed to apply train on responses only: {e}")

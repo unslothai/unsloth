@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { STEPS } from "@/config/training";
+import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
+import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { WizardStepItem } from "./wizard-step-item";
 
 export function WizardSidebar() {
@@ -29,11 +33,33 @@ export function WizardSidebar() {
       <p className="mt-2 text-xs text-muted-foreground md:hidden">
         Step {currentStep} of {STEPS.length}
       </p>
+      <Button
+        size="sm"
+        className="mt-2 w-full md:hidden"
+        onClick={() => {
+          markOnboardingDone();
+          window.location.href = "/chat";
+        }}
+      >
+        Skip to Chat
+        <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
+      </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
         {STEPS.map((step) => (
           <WizardStepItem key={step.number} step={step} />
         ))}
       </nav>
+      <Button
+        size="sm"
+        className="mt-3 hidden w-full md:flex"
+        onClick={() => {
+          markOnboardingDone();
+          window.location.href = "/chat";
+        }}
+      >
+        Skip to Chat
+        <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
+      </Button>
     </aside>
   );
 }

@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -8,7 +18,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listCachedGguf, listCachedModels, listGgufVariants } from "@/features/chat/api/chat-api";
+import { deleteCachedModel, listCachedGguf, listCachedModels, listGgufVariants } from "@/features/chat/api/chat-api";
 import type { CachedGgufRepo, CachedModelRepo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { usePlatformStore } from "@/config/env";
@@ -24,7 +34,9 @@ import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Trash2Icon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import type {
   LoraModelOption,
   ModelOption,
@@ -147,11 +159,13 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  onDeleteVariant,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  onDeleteVariant?: (quant: string) => void;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -296,38 +310,48 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         return (
-          <button
-            key={v.filename}
-            type="button"
-            onClick={() => handleVariantClick(v.quant, v.downloaded, v.size_bytes)}
-            className={cn(
-              "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
-            )}
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              {v.quant}
-              {v.downloaded ? (
-                <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
-                  downloaded
-                </span>
-              ) : v.quant === effectiveRecommended ? (
-                <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
-                  recommended
-                </span>
-              ) : null}
-            </span>
-            <span className="flex items-center gap-1.5 shrink-0">
-              {oom && (
-                <span className="text-[9px] font-medium text-red-400">OOM</span>
+          <div key={v.filename} className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => handleVariantClick(v.quant, v.downloaded, v.size_bytes)}
+              className={cn(
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
               )}
-              {tight && (
-                <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
-              )}
-              <span className="text-[10px] text-muted-foreground">
-                {formatBytes(v.size_bytes)}
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                {v.quant}
+                {v.downloaded ? (
+                  <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                    downloaded
+                  </span>
+                ) : v.quant === effectiveRecommended ? (
+                  <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
+                    recommended
+                  </span>
+                ) : null}
               </span>
-            </span>
-          </button>
+              <span className="flex items-center gap-1.5 shrink-0">
+                {oom && (
+                  <span className="text-[9px] font-medium text-red-400">OOM</span>
+                )}
+                {tight && (
+                  <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
+                )}
+                <span className="text-[10px] text-muted-foreground">
+                  {formatBytes(v.size_bytes)}
+                </span>
+              </span>
+            </button>
+            {v.downloaded && onDeleteVariant && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDeleteVariant(v.quant); }}
+                className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2Icon className="size-3" />
+              </button>
+            )}
+          </div>
         );
       })}
     </div>
@@ -373,12 +397,22 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
+  // Delete confirmation dialog state
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   // Cached (already downloaded) repos -- use module-level cache so
   // re-mounting the popover does not flash an empty "Downloaded" section.
   const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>(_cachedModelsCache);
   const alreadyCached = _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
+
+  const refreshCachedLists = useCallback(() => {
+    listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
+    listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (alreadyCached) return;
     let done = 0;
@@ -386,6 +420,25 @@ export function HubModelPicker({
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {}).finally(check);
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {}).finally(check);
   }, [alreadyCached]);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      // deleteTarget is "repo_id" or "repo_id::variant"
+      const sepIdx = deleteTarget.indexOf("::");
+      const repoId = sepIdx >= 0 ? deleteTarget.slice(0, sepIdx) : deleteTarget;
+      const variant = sepIdx >= 0 ? deleteTarget.slice(sepIdx + 2) : undefined;
+      await deleteCachedModel(repoId, variant);
+      toast.success(`Deleted ${variant ? `${repoId} ${variant}` : repoId}`);
+      refreshCachedLists();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete model");
+    } finally {
+      setDeleting(false);
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, refreshCachedLists]);
 
   // Deduplicate: don't show downloaded models in the recommended list.
   // Compare case-insensitively since HF cache lowercases repo IDs.
@@ -533,19 +586,35 @@ export function HubModelPicker({
                     vramStatus={null}
                   />
                   {expandedGguf === c.repo_id && (
-                    <GgufVariantExpander repoId={c.repo_id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                    <GgufVariantExpander
+                      repoId={c.repo_id}
+                      onSelect={onSelect}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                      systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                      onDeleteVariant={(quant) => setDeleteTarget(`${c.repo_id}::${quant}`)}
+                    />
                   )}
                 </div>
               ))}
               {!chatOnly && cachedModels.map((c) => (
-                <ModelRow
-                  key={c.repo_id}
-                  label={c.repo_id}
-                  meta={formatBytes(c.size_bytes)}
-                  selected={value === c.repo_id}
-                  onClick={() => onSelect(c.repo_id, { source: "hub", isLora: false, isDownloaded: true })}
-                  vramStatus={null}
-                />
+                <div key={c.repo_id} className="flex items-center gap-0.5">
+                  <div className="min-w-0 flex-1">
+                    <ModelRow
+                      label={c.repo_id}
+                      meta={formatBytes(c.size_bytes)}
+                      selected={value === c.repo_id}
+                      onClick={() => onSelect(c.repo_id, { source: "hub", isLora: false, isDownloaded: true })}
+                      vramStatus={null}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setDeleteTarget(c.repo_id); }}
+                    className="shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </button>
+                </div>
               ))}
             </>
           ) : null}
@@ -627,6 +696,27 @@ export function HubModelPicker({
           ) : null}
         </div>
       </div>
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null); }}>
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove <span className="font-medium text-foreground">{deleteTarget?.includes("::") ? `${deleteTarget.split("::")[0]} (${deleteTarget.split("::")[1]})` : deleteTarget}</span> from disk. You can re-download it later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>No</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleting}
+              onClick={(e) => { e.preventDefault(); handleDeleteConfirm(); }}
+            >
+              {deleting ? "Deleting..." : "Yes"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
