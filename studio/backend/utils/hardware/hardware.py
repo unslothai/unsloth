@@ -474,6 +474,7 @@ def get_visible_gpu_count() -> int:
     # CUDA_VISIBLE_DEVICES not set -- try torch, fall back to physical count
     try:
         import torch
+
         _visible_gpu_count = torch.cuda.device_count()
     except Exception:
         _visible_gpu_count = get_physical_gpu_count()

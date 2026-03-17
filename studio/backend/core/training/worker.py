@@ -147,8 +147,9 @@ def run_training_process(
     # do NOT override on macOS. Windows has no fork at all.
     if sys.platform == "linux":
         import multiprocessing as _mp
+
         try:
-            _mp.set_start_method("fork", force=True)
+            _mp.set_start_method("fork", force = True)
         except RuntimeError:
             pass  # Already set
 
