@@ -99,9 +99,7 @@ class GenerateRequest(BaseModel):
     repetition_penalty: float = Field(
         1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
     )
-    presence_penalty: float = Field(
-        0.0, ge = 0.0, le = 2.0, description = "Presence penalty"
-    )
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"
     )
@@ -270,9 +268,7 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(
-        0.0, ge = 0.0, le = 2.0, description = "Presence penalty"
-    )
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
