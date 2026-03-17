@@ -62,7 +62,8 @@ TRANSFORMERS_5_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
-_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
+from utils.paths.storage_roots import venv_t5_root
+_VENV_T5_DIR = str(venv_t5_root())
 
 
 def _resolve_base_model(model_name: str) -> str:

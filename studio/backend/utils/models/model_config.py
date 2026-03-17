@@ -427,7 +427,8 @@ _VLM_MODEL_TYPES = {
 }
 
 # Pre-computed .venv_t5 path and backend dir for subprocess version switching.
-_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
+from utils.paths.storage_roots import venv_t5_root
+_VENV_T5_DIR = str(venv_t5_root())
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # Inline script executed in a subprocess with transformers 5.x activated.
