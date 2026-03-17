@@ -802,6 +802,30 @@ class FastBaseModel:
             if hasattr(model, "generate"):
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
+
+            # Fix for GLM-OCR model: add prepare_inputs_for_generation if missing
+            # This is needed for PEFT compatibility when using LoRA
+            if (
+                hasattr(model, "config")
+                and hasattr(model.config, "model_type")
+                and model.config.model_type == "glm_ocr"
+                and not hasattr(model, "prepare_inputs_for_generation")
+            ):
+                # Try to get from language model if available
+                if hasattr(model, "language_model") and hasattr(
+                    model.language_model, "prepare_inputs_for_generation"
+                ):
+                    model.prepare_inputs_for_generation = (
+                        model.language_model.prepare_inputs_for_generation
+                    )
+                else:
+                    # Import and use the fast prepare function from llama
+                    from .llama import _fast_prepare_inputs_for_generation
+
+                    model.prepare_inputs_for_generation = (
+                        _fast_prepare_inputs_for_generation
+                    )
+
             if offload_embedding:
                 if bool(
                     os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")
