@@ -67,7 +67,7 @@ export function ModelTypeStep(): ReactElement {
         </p>
       </div>
       <RadioGroup
-        value={modelType ?? ""}
+        value={chatOnlySelected ? "" : (modelType ?? "")}
         onValueChange={(v) => {
           if (!COMING_SOON.includes(v as ModelType)) {
             setChatOnlySelected(false);
@@ -79,7 +79,7 @@ export function ModelTypeStep(): ReactElement {
       >
         {MODEL_TYPES.map((type) => {
           const Icon = TYPE_ICONS[type.value];
-          const isSelected = modelType === type.value;
+          const isSelected = !chatOnlySelected && modelType === type.value;
           const isDisabled = COMING_SOON.includes(type.value);
           const inputId = `model-type-${type.value}`;
 
