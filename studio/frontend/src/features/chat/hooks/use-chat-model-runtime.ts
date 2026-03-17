@@ -237,10 +237,14 @@ export function useChatModelRuntime() {
           );
         }
 
-        // Restore reasoning/tools support flags
+        // Restore reasoning/tools support flags and context length
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
-        useChatRuntimeStore.setState({ supportsReasoning, supportsTools });
+        useChatRuntimeStore.setState({
+          supportsReasoning,
+          supportsTools,
+          ggufContextLength: statusRes.is_gguf ? (statusRes.context_length ?? null) : null,
+        });
 
         // Set reasoning default for Qwen3.5 small models
         if (supportsReasoning) {
