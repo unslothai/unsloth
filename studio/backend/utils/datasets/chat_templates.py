@@ -327,26 +327,33 @@ def apply_chat_template_to_dataset(
             tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
 
         def _format_chatml(examples):
+            import os
+
             convos = examples[chat_column]
             texts = []
 
-            for convo in convos:
-                try:
-                    text = tokenizer.apply_chat_template(
-                        convo,
-                        tokenize = False,
-                        add_generation_prompt = False
-                    )
+            # Enable tokenizer parallelism for this hot loop
+            os.environ["TOKENIZERS_PARALLELISM"] = "true"
+            try:
+                for convo in convos:
+                    try:
+                        text = tokenizer.apply_chat_template(
+                            convo,
+                            tokenize = False,
+                            add_generation_prompt = False
+                        )
 
-                    if remove_bos_prefix:
-                        text = text.removeprefix('<bos>')
-                    text += eos_token
+                        if remove_bos_prefix:
+                            text = text.removeprefix('<bos>')
+                        text += eos_token
 
-                    texts.append(text)
-                except Exception as e:
-                    if len(texts) == 0:
-                        warnings.append(f"Chat template failed: {e}")
-                    texts.append("")
+                        texts.append(text)
+                    except Exception as e:
+                        if len(texts) == 0:
+                            warnings.append(f"Chat template failed: {e}")
+                        texts.append("")
+            finally:
+                os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
             return {"text": texts}
 
