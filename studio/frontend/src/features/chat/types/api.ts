@@ -40,6 +40,7 @@ export interface LoadModelRequest {
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
+  cache_type_kv?: string | null;
 }
 
 export interface ValidateModelResponse {
@@ -86,6 +87,7 @@ export interface LoadModelResponse {
   context_length?: number | null;
   supports_reasoning?: boolean;
   supports_tools?: boolean;
+  cache_type_kv?: string | null;
   chat_template?: string | null;
 }
 

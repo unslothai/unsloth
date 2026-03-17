@@ -37,6 +37,10 @@ class LoadRequest(BaseModel):
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -131,6 +135,10 @@ class LoadResponse(BaseModel):
     supports_tools: bool = Field(
         False,
         description = "Whether model supports tool calling (web search, etc.)",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
     )
     chat_template: Optional[str] = Field(
         None,

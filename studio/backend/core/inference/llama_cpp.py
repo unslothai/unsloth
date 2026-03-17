@@ -50,6 +50,7 @@ class LlamaCppBackend:
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._supports_tools: bool = False
+        self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
@@ -105,6 +106,10 @@ class LlamaCppBackend:
     @property
     def supports_tools(self) -> bool:
         return self._supports_tools
+
+    @property
+    def cache_type_kv(self) -> Optional[str]:
+        return self._cache_type_kv
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -745,6 +750,7 @@ class LlamaCppBackend:
         is_vision: bool = False,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
+        cache_type_kv: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -849,6 +855,15 @@ class LlamaCppBackend:
 
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])
+
+            # KV cache data type
+            _valid_cache_types = {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
+            if cache_type_kv and cache_type_kv in _valid_cache_types:
+                cmd.extend(["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv])
+                self._cache_type_kv = cache_type_kv
+                logger.info(f"KV cache type: {cache_type_kv}")
+            else:
+                self._cache_type_kv = None
 
             # Apply custom chat template override if provided
             if chat_template_override:
@@ -1010,6 +1025,7 @@ class LlamaCppBackend:
             self._chat_template = None
             self._supports_reasoning = False
             self._supports_tools = False
+            self._cache_type_kv = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -1130,7 +1146,6 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    @staticmethod
     def _parse_tool_calls_from_text(content: str) -> list[dict]:
         """
         Parse tool calls from XML markup in content text.
@@ -1138,13 +1153,14 @@ class LlamaCppBackend:
         Handles formats like:
           <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
           <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
+        Closing </tool_call> tag is optional (models sometimes omit it).
         """
         import re
 
         tool_calls = []
-        # Pattern 1: JSON inside <tool_call> tags
+        # Pattern 1: JSON inside <tool_call> tags (closing tag optional)
         for match in re.finditer(
-            r"<tool_call>\s*(\{.*?\})\s*</tool_call>", content, re.DOTALL
+            r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>)?", content, re.DOTALL
         ):
             try:
                 obj = json.loads(match.group(1))
@@ -1165,9 +1181,10 @@ class LlamaCppBackend:
                 pass
 
         # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
+        # Closing </tool_call> optional
         if not tool_calls:
             for match in re.finditer(
-                r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*</tool_call>",
+                r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*(?:</tool_call>)?",
                 content,
                 re.DOTALL,
             ):
@@ -1443,7 +1460,7 @@ class LlamaCppBackend:
                     import re
 
                     content_text = re.sub(
-                        r"<tool_call>.*?</tool_call>",
+                        r"<tool_call>.*?(?:</tool_call>|$)",
                         "",
                         content_text,
                         flags = re.DOTALL,

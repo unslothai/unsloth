@@ -166,6 +166,8 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
+  const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
   const [activePreset, setActivePreset] = useState("Default");
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
@@ -382,6 +384,34 @@ export function ChatSettingsPanel({
                   onCheckedChange={set("trustRemoteCode")}
                 />
               </div>
+              {isGguf && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">KV Cache Dtype</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Quantize KV cache to reduce VRAM. Reload to apply.
+                    </div>
+                  </div>
+                  <Select
+                    value={kvCacheDtype ?? "f16"}
+                    onValueChange={(v) => {
+                      setKvCacheDtype(v === "f16" ? null : v);
+                      onReloadModel?.();
+                    }}
+                  >
+                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="f16">f16</SelectItem>
+                      <SelectItem value="bf16">bf16</SelectItem>
+                      <SelectItem value="q8_0">q8_0</SelectItem>
+                      <SelectItem value="q5_1">q5_1</SelectItem>
+                      <SelectItem value="q4_1">q4_1</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           </CollapsibleSection>
 

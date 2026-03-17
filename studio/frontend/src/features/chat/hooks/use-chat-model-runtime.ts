@@ -340,7 +340,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const chatTemplateOverride = useChatRuntimeStore.getState().chatTemplateOverride;
+            const { chatTemplateOverride, kvCacheDtype } = useChatRuntimeStore.getState();
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
@@ -350,6 +350,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
               chat_template_override: chatTemplateOverride,
+              cache_type_kv: kvCacheDtype,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -379,6 +380,7 @@ export function useChatModelRuntime() {
               reasoningEnabled: reasoningDefault,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: false,
+              kvCacheDtype: loadResponse.cache_type_kv ?? null,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });
