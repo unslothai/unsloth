@@ -106,7 +106,7 @@ FORCE_FLOAT32 = [
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
     "gpt_oss",
-    "qwen3_5",  # Qwen3.5 RMSNorm uses (1+w) pattern like Gemma3, overflows float16
+    "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
 ]
 
 global DISABLE_COMPILE_MODEL_NAMES
