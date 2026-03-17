@@ -897,7 +897,13 @@ async def list_cached_gguf(
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
 ):
-    """List non-GGUF model repos that have been downloaded to the HF cache."""
+    """List non-GGUF model repos that have been downloaded to the HF cache.
+
+    Only includes repos that actually contain model weight files
+    (.safetensors, .bin), not repos with only config/metadata.
+    """
+    _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+
     try:
         from huggingface_hub import scan_cache_dir
 
@@ -913,6 +919,14 @@ async def list_cached_models(
                 f.size_on_disk for rev in repo_info.revisions for f in rev.files
             )
             if total_size == 0:
+                continue
+            # Skip repos that only have config/metadata files (no weights)
+            has_weights = any(
+                f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                for rev in repo_info.revisions
+                for f in rev.files
+            )
+            if not has_weights:
                 continue
             key = repo_id.lower()
             existing = seen_lower.get(key)
