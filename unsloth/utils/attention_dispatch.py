@@ -33,6 +33,13 @@ from ..utils.packing import (
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
+
+# xformers kernels (FA3, FA2, cutlass) only support compute capability <= 9.0.
+# Disable xformers on newer GPUs (e.g. RTX 5070 Ti / sm_120) and fall back to SDPA.
+if HAS_XFORMERS and torch.cuda.is_available():
+    _cc = torch.cuda.get_device_capability()
+    if _cc[0] >= 12:
+        HAS_XFORMERS = False
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 FLASH_VARLEN = "flash_varlen"
