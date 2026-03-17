@@ -450,6 +450,30 @@ def run_training_process(
         max_steps = config.get("max_steps", 0)
         save_steps = config.get("save_steps", 0)
 
+        # Monitor tqdm progress bars (captures Unsloth's "Tokenizing" step)
+        import threading as _th
+        _tqdm_stop = _th.Event()
+
+        def _monitor_tqdm():
+            from tqdm.auto import tqdm as _tqdm_cls
+            while not _tqdm_stop.is_set():
+                for bar in list(getattr(_tqdm_cls, "_instances", set())):
+                    try:
+                        n, total = bar.n or 0, bar.total or 0
+                        desc = getattr(bar, "desc", "") or ""
+                        if total > 0 and n > 0 and desc:
+                            pct = min(int(n * 100 / total), 100)
+                            _send_status(
+                                event_queue,
+                                f"{desc.strip()} {pct}% ({n:,}/{total:,})"
+                            )
+                    except (AttributeError, ReferenceError):
+                        pass
+                _tqdm_stop.wait(3)
+
+        _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
+        _tqdm_thread.start()
+
         trainer._train_worker(
             dataset,
             output_dir = output_dir,
@@ -476,6 +500,8 @@ def run_training_process(
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
         )
+
+        _tqdm_stop.set()
 
         # Check final state
         progress = trainer.get_training_progress()
