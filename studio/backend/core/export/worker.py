@@ -312,7 +312,7 @@ def run_export_process(
             resp_queue,
             {
                 "type": "status",
-                "message": "Importing ML libraries...",
+                "message": "Importing Unsloth...",
                 "ts": time.time(),
             },
         )
