@@ -16,7 +16,10 @@ import sys
 import tempfile
 import threading
 
-from unsloth_zoo.rl_environments import check_python_modules, check_signal_escape_patterns
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    check_signal_escape_patterns,
+)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
@@ -131,7 +134,9 @@ def _check_code_safety(code: str) -> str | None:
     # Check for signal/timeout escape patterns
     safe, info = check_signal_escape_patterns(code)
     if not safe:
-        reasons = [item.get("description", "") for item in info.get("signal_tampering", [])]
+        reasons = [
+            item.get("description", "") for item in info.get("signal_tampering", [])
+        ]
         return (
             f"Error: unsafe code detected ({'; '.join(reasons)}). "
             f"Please remove signal manipulation from your code."
