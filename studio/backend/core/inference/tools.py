@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-_EXEC_TIMEOUT = 300       # 5 minutes
+_EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
 
@@ -75,7 +75,7 @@ TERMINAL_TOOL = {
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 
-def execute_tool(name: str, arguments: dict, cancel_event=None) -> str:
+def execute_tool(name: str, arguments: dict, cancel_event = None) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string."""
     if name == "web_search":
         return _web_search(arguments.get("query", ""))
@@ -123,7 +123,7 @@ def _load_rl_environments():
     return mod
 
 
-def _cancel_watcher(proc, cancel_event, poll_interval=0.2):
+def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
     """Daemon thread that kills a process when cancel_event is set."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
@@ -138,7 +138,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-def _python_exec(code: str, cancel_event=None) -> str:
+def _python_exec(code: str, cancel_event = None) -> str:
     """Execute Python code in a subprocess sandbox."""
     if not code or not code.strip():
         return "No code provided."
@@ -165,27 +165,27 @@ def _python_exec(code: str, cancel_event=None) -> str:
 
     tmp_path = None
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="studio_exec_")
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_")
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
         proc = subprocess.Popen(
             [sys.executable, tmp_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=tempfile.gettempdir(),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            cwd = tempfile.gettempdir(),
         )
 
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher, args=(proc, cancel_event), daemon=True
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout=_EXEC_TIMEOUT)
+            output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
@@ -209,7 +209,7 @@ def _python_exec(code: str, cancel_event=None) -> str:
                 pass
 
 
-def _bash_exec(command: str, cancel_event=None) -> str:
+def _bash_exec(command: str, cancel_event = None) -> str:
     """Execute a bash command in a subprocess sandbox."""
     if not command or not command.strip():
         return "No command provided."
@@ -224,20 +224,20 @@ def _bash_exec(command: str, cancel_event=None) -> str:
         with tempfile.TemporaryDirectory() as tmpdir:
             proc = subprocess.Popen(
                 ["bash", "-c", command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=tmpdir,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                cwd = tmpdir,
             )
 
             if cancel_event is not None:
                 watcher = threading.Thread(
-                    target=_cancel_watcher, args=(proc, cancel_event), daemon=True
+                    target = _cancel_watcher, args = (proc, cancel_event), daemon = True
                 )
                 watcher.start()
 
             try:
-                output, _ = proc.communicate(timeout=_EXEC_TIMEOUT)
+                output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()

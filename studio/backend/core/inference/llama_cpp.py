@@ -1547,17 +1547,29 @@ class LlamaCppBackend:
                     if tool_name == "web_search":
                         status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
-                        preview = (arguments.get("code") or "").strip().split("\n")[0][:60]
-                        status_text = f"Running Python: {preview}" if preview else "Running Python..."
+                        preview = (
+                            (arguments.get("code") or "").strip().split("\n")[0][:60]
+                        )
+                        status_text = (
+                            f"Running Python: {preview}"
+                            if preview
+                            else "Running Python..."
+                        )
                     elif tool_name == "terminal":
                         cmd_preview = (arguments.get("command") or "")[:60]
-                        status_text = f"Running: {cmd_preview}" if cmd_preview else "Running command..."
+                        status_text = (
+                            f"Running: {cmd_preview}"
+                            if cmd_preview
+                            else "Running command..."
+                        )
                     else:
                         status_text = f"Calling: {tool_name}"
                     yield {"type": "status", "text": status_text}
 
                     # Execute the tool
-                    result = execute_tool(tool_name, arguments, cancel_event=cancel_event)
+                    result = execute_tool(
+                        tool_name, arguments, cancel_event = cancel_event
+                    )
 
                     # Append tool result to conversation
                     tool_msg = {
