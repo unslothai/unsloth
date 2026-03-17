@@ -64,7 +64,7 @@ export const MODEL_TYPES: ReadonlyArray<{
     },
   ];
 
-export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768];
+export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
 
 export const TARGET_MODULES = [
   "q_proj",
