@@ -327,6 +327,9 @@ def MistralForCausalLM_fast_forward(
             #     num_items_in_batch = n_items,
             #     logit_softcapping = logit_softcapping,
             # )
+            # Disable torch_compile for mistral3 models to avoid functorch tracing errors
+            # See https://github.com/unslothai/unsloth/issues/4295
+            model_type = getattr(getattr(self, "config", None), "model_type", "")
             loss = unsloth_fused_ce_loss(
                 trainer = None,
                 hidden_states = hidden_states,
@@ -337,7 +340,7 @@ def MistralForCausalLM_fast_forward(
                 n_items = n_items,
                 scaling = getattr(self, "accelerator_scaler", None),
                 target_gb = None,
-                torch_compile = True,
+                torch_compile = model_type != "mistral3",
                 logit_softcapping = logit_softcapping,
             )
             if not return_dict:
