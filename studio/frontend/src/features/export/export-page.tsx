@@ -480,7 +480,7 @@ export function ExportPage() {
               {/* Top row: Dropdowns + metadata | Guide */}
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
                 <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-end justify-between">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       {sourceMode === "checkpoint" ? "Training Run" : "Model Source"}
                       <Tooltip>
@@ -509,7 +509,7 @@ export function ExportPage() {
                           sourceMode === "checkpoint" ? "model" : "checkpoint",
                         )
                       }
-                      className="text-xs text-primary underline cursor-pointer"
+                      className="text-xs text-primary underline cursor-pointer leading-none"
                     >
                       {sourceMode === "checkpoint"
                         ? "Use Hugging Face / Local Model"
@@ -525,7 +525,7 @@ export function ExportPage() {
                       animate={{ height: "auto", opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="flex flex-col gap-2 overflow-hidden"
+                      className="flex flex-col gap-2 overflow-visible"
                     >
                       <div data-tour="export-training-run" className="flex flex-col gap-2">
                         <Select
@@ -646,7 +646,7 @@ export function ExportPage() {
                       animate={{ height: "auto", opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="flex flex-col gap-2 overflow-hidden"
+                      className="flex flex-col gap-2 overflow-visible"
                     >
                       <div className="flex gap-2">
                         <Button
@@ -698,7 +698,7 @@ export function ExportPage() {
                                   ) : (
                                     <ComboboxEmpty>No models found</ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1">
+                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                     {(id: string) => (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">
@@ -790,7 +790,7 @@ export function ExportPage() {
                                 ) : (
                                   <ComboboxEmpty>No local models found</ComboboxEmpty>
                                 )}
-                                <ComboboxList className="p-1">
+                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
@@ -913,7 +913,7 @@ export function ExportPage() {
 
               <AnimatePresence>
                 {exportMethod === "gguf" && (
-                  <motion.div {...collapseAnim} className="overflow-hidden">
+                  <motion.div {...collapseAnim} className="overflow-visible">
                     <QuantPicker value={quantLevels} onChange={setQuantLevels} />
                   </motion.div>
                 )}
