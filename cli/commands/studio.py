@@ -181,7 +181,7 @@ def setup(
         if not resolved.is_dir():
             typer.echo(f"Error: --with-llama-cpp-dir path does not exist: {resolved}")
             raise typer.Exit(1)
-        env["UNSLOTH_LLAMA_CPP_DIR"] = str(resolved)
+        env["UNSLOTH_LLAMA_CPP_PATH"] = str(resolved)
 
     if platform.system() == "Windows":
         result = subprocess.run(
