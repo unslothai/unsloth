@@ -484,12 +484,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         rejectFirstToken?.(err);
       }
 
-      let warmupToastShown = false;
       const warmupDelayMs = 450;
       const warmupTimer = setTimeout(() => {
         if (!waitingFirstChunk) return;
         if (abortSignal.aborted) return;
-        warmupToastShown = true;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
       runtime.setThreadRunning(threadKey, true);
