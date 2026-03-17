@@ -16,8 +16,8 @@ export interface InferenceParams {
 }
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
-  temperature: 0.7,
-  topP: 0.9,
+  temperature: 0.6,
+  topP: 0.95,
   topK: 20,
   minP: 0.01,
   repetitionPenalty: 1.0,
