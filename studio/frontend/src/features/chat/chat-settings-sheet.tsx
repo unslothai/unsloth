@@ -331,6 +331,7 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.05}
                 onChange={set("repetitionPenalty")}
+                displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
               />
               {!isGguf && (
                 <ParamSlider
