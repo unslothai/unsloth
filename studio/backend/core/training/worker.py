@@ -486,7 +486,12 @@ def run_training_process(
             ensure_dir(Path(tensorboard_dir))
 
         # Start training (directly — no inner thread, we ARE the subprocess)
-        _send_status(event_queue, "Starting training...")
+        dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
+        _send_status(
+            event_queue,
+            f'Training "{model_name}"'
+            + (f'\nDataset = {dataset_display}' if dataset_display else ""),
+        )
         max_steps = config.get("max_steps", 0)
         save_steps = config.get("save_steps", 0)
 
