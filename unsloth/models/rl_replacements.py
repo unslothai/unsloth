@@ -1216,7 +1216,11 @@ def grpo_trainer_compute_loss(function_name, function):
             if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
                 return x.mean()
             else:
-                return (x * completion_mask).sum() / completion_token_count
+                # Align shapes to handle off-by-one mismatches between x and completion_mask
+                min_len = min(x.shape[1], completion_mask.shape[1])
+                x_aligned = x[:, :min_len]
+                mask_aligned = completion_mask[:, :min_len]
+                return (x_aligned * mask_aligned).sum() / mask_aligned.sum().clamp(min = 1.0)
 
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
