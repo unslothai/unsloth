@@ -907,7 +907,7 @@ class LlamaCppBackend:
                     size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
                     if size_match:
                         size_val = float(size_match.group(1))
-                        if size_val <= 9:
+                        if size_val <= 2:
                             thinking_default = False
                 self._reasoning_default = thinking_default
                 cmd.extend(

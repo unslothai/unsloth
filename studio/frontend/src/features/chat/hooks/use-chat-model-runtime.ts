@@ -367,7 +367,7 @@ export function useChatModelRuntime() {
               const mid = modelId.toLowerCase();
               if (mid.includes("qwen3.5")) {
                 const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-                if (sizeMatch && parseFloat(sizeMatch[1]) <= 9) {
+                if (sizeMatch && parseFloat(sizeMatch[1]) <= 2) {
                   reasoningDefault = false;
                 }
               }
