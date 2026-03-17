@@ -143,32 +143,51 @@ def run_training_process(
     # transformers that require trust_remote_code=True as a workaround.
     # Only auto-enable for unsloth/* prefixed models (trusted source).
     from utils.transformers_version import needs_transformers_5
+
     if (
         needs_transformers_5(model_name)
         and model_name.lower().startswith("unsloth/")
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
-        logger.info("Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s", model_name)
+        logger.info(
+            "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+            model_name,
+        )
 
     # ── 1b. Auto-install mamba-ssm for SSM/hybrid models (NemotronH, Falcon-H1) ──
     _SSM_MODEL_SUBSTRINGS = ("nemotron_h", "nemotron-3-nano", "falcon_h1", "falcon-h1")
     if any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
         try:
             import mamba_ssm  # noqa: F401
+
             logger.info("mamba-ssm already installed")
         except ImportError:
-            logger.info("SSM model detected — installing mamba-ssm and causal-conv1d (this may take several minutes)...")
-            _send_status(event_queue, "Installing mamba-ssm (first time only, ~7 min)...")
+            logger.info(
+                "SSM model detected — installing mamba-ssm and causal-conv1d (this may take several minutes)..."
+            )
+            _send_status(
+                event_queue, "Installing mamba-ssm (first time only, ~7 min)..."
+            )
             import subprocess as _sp
+
             # --no-build-isolation: compile against current torch (no version conflicts)
             # --no-deps: don't pull in torch/transformers/triton (already installed)
             for _pkg in ["causal_conv1d", "mamba_ssm"]:
                 _r = _sp.run(
-                    [sys.executable, "-m", "pip", "install",
-                     "--no-build-isolation", "--no-deps", "--no-cache-dir",
-                     _pkg],
-                    stdout = _sp.PIPE, stderr = _sp.STDOUT, text = True,
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-build-isolation",
+                        "--no-deps",
+                        "--no-cache-dir",
+                        _pkg,
+                    ],
+                    stdout = _sp.PIPE,
+                    stderr = _sp.STDOUT,
+                    text = True,
                 )
                 if _r.returncode != 0:
                     logger.error("Failed to install %s:\n%s", _pkg, _r.stdout)

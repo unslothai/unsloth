@@ -137,12 +137,15 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         if result:
             logger.info(
                 "Dynamic check: %s uses tokenizer_class=%s (requires transformers 5.x)",
-                model_name, tokenizer_class,
+                model_name,
+                tokenizer_class,
             )
         _tokenizer_class_cache[model_name] = result
         return result
     except Exception as exc:
-        logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
+        logger.debug(
+            "Could not fetch tokenizer_config.json for '%s': %s", model_name, exc
+        )
         _tokenizer_class_cache[model_name] = False
         return False
 
