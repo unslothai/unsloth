@@ -279,14 +279,30 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+# Allow using a custom local llama.cpp directory via UNSLOTH_LLAMA_CPP_PATH
+# (set by `unsloth studio setup --with-llama-cpp-dir /path/to/llama.cpp`)
+USE_LOCAL_LLAMA_CPP=false
 rm -rf "$LLAMA_CPP_DIR"
+if [ -n "${UNSLOTH_LLAMA_CPP_PATH:-}" ] && [ -d "$UNSLOTH_LLAMA_CPP_PATH" ]; then
+    # Resolve to an absolute path so the symlink target is stable
+    _LOCAL_PATH="$(cd "$UNSLOTH_LLAMA_CPP_PATH" && pwd)"
+    if [ "$_LOCAL_PATH" = "$LLAMA_CPP_DIR" ]; then
+        echo "⚠️  --with-llama-cpp-dir points to the canonical build location; ignoring (will clone fresh)"
+    else
+        USE_LOCAL_LLAMA_CPP=true
+        # Symlink the user-provided directory so the rest of the build
+        # and runtime code finds it at the canonical location.
+        ln -sfn "$_LOCAL_PATH" "$LLAMA_CPP_DIR"
+        echo "   Using local llama.cpp directory: $_LOCAL_PATH"
+    fi
+fi
 {
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
         echo ""
         echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
         echo "   Install cmake and re-run setup.sh to enable GGUF inference."
-    elif ! command -v git &>/dev/null; then
+    elif ! command -v git &>/dev/null && [ "$USE_LOCAL_LLAMA_CPP" = false ]; then
         echo ""
         echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
     else
@@ -294,7 +310,9 @@ rm -rf "$LLAMA_CPP_DIR"
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        if [ "$USE_LOCAL_LLAMA_CPP" = false ]; then
+            run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        fi
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)

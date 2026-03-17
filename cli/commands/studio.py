@@ -162,19 +162,34 @@ def studio_default(
 
 
 @studio_app.command()
-def setup():
+def setup(
+    with_llama_cpp_dir: Optional[Path] = typer.Option(
+        None,
+        "--with-llama-cpp-dir",
+        help = "Path to a local llama.cpp directory to use instead of cloning from GitHub.",
+    ),
+):
     """Run one-time Studio environment setup."""
     script = _find_setup_script()
     if not script:
         typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
         raise typer.Exit(1)
 
+    env = os.environ.copy()
+    if with_llama_cpp_dir is not None:
+        resolved = with_llama_cpp_dir.resolve()
+        if not resolved.is_dir():
+            typer.echo(f"Error: --with-llama-cpp-dir path does not exist: {resolved}")
+            raise typer.Exit(1)
+        env["UNSLOTH_LLAMA_CPP_PATH"] = str(resolved)
+
     if platform.system() == "Windows":
         result = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            env = env,
         )
     else:
-        result = subprocess.run(["bash", str(script)])
+        result = subprocess.run(["bash", str(script)], env = env)
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
