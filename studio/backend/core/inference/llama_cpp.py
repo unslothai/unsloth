@@ -889,10 +889,13 @@ class LlamaCppBackend:
             else:
                 # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                 # and CUDA runtime libs (libcudart, libcublas, etc.)
+                import platform
+
                 lib_dirs = [binary_dir]
+                _arch = platform.machine()  # x86_64, aarch64, etc.
                 for cuda_lib in [
                     "/usr/local/cuda/lib64",
-                    "/usr/local/cuda/targets/x86_64-linux/lib",
+                    f"/usr/local/cuda/targets/{_arch}-linux/lib",
                 ]:
                     if os.path.isdir(cuda_lib):
                         lib_dirs.append(cuda_lib)
