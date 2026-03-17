@@ -6,6 +6,8 @@ import { Progress } from "@/components/ui/progress";
 import { STEPS } from "@/config/training";
 import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
+import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { WizardStepItem } from "./wizard-step-item";
 
@@ -34,15 +36,15 @@ export function WizardSidebar() {
         Step {currentStep} of {STEPS.length}
       </p>
       <Button
-        variant="ghost"
         size="sm"
-        className="mt-1 text-xs text-muted-foreground md:hidden"
+        className="mt-2 w-full md:hidden"
         onClick={() => {
           markOnboardingDone();
-          navigate({ to: currentStep === 1 ? "/chat" : "/studio" });
+          navigate({ to: "/chat" });
         }}
       >
-        {currentStep === 1 ? "Skip to Chat" : "Skip"}
+        Skip to Chat
+        <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
         {STEPS.map((step) => (
@@ -50,15 +52,15 @@ export function WizardSidebar() {
         ))}
       </nav>
       <Button
-        variant="ghost"
         size="sm"
-        className="mt-3 hidden text-xs text-muted-foreground md:flex"
+        className="mt-3 hidden w-full md:flex"
         onClick={() => {
           markOnboardingDone();
-          navigate({ to: currentStep === 1 ? "/chat" : "/studio" });
+          navigate({ to: "/chat" });
         }}
       >
-        {currentStep === 1 ? "Skip to Chat" : "Skip"}
+        Skip to Chat
+        <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
     </aside>
   );

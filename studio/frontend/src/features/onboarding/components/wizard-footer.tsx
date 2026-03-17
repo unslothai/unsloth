@@ -34,36 +34,50 @@ export function WizardFooter({ onBackToSplash }: { onBackToSplash: () => void })
           <HugeiconsIcon icon={ArrowLeft02Icon} data-icon="inline-start" />
           Back
         </Button>
-        {isLast ? (
-          <Button
-            onClick={() => {
-              markOnboardingDone();
-              navigate({ to: "/studio" });
-            }}
-            disabled={!canProceed}
-            className="px-4 !pr-4"
-          >
-            Go to Studio
-            <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
-          </Button>
-        ) : (
-          <Button
-            onClick={() => {
-              if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
-                sessionStorage.removeItem("unsloth_chat_only");
+        <div className="flex items-center gap-2">
+          {!isLast && (
+            <Button
+              variant="outline"
+              className="px-4"
+              onClick={() => {
                 markOnboardingDone();
-                navigate({ to: "/chat" });
-              } else {
-                nextStep();
-              }
-            }}
-            className="px-4 !pl-4"
-            disabled={!canProceed}
-          >
-            Continue
-            <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
-          </Button>
-        )}
+                navigate({ to: "/studio" });
+              }}
+            >
+              Skip
+            </Button>
+          )}
+          {isLast ? (
+            <Button
+              onClick={() => {
+                markOnboardingDone();
+                navigate({ to: "/studio" });
+              }}
+              disabled={!canProceed}
+              className="px-4 !pr-4"
+            >
+              Go to Studio
+              <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
+            </Button>
+          ) : (
+            <Button
+              onClick={() => {
+                if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
+                  sessionStorage.removeItem("unsloth_chat_only");
+                  markOnboardingDone();
+                  navigate({ to: "/chat" });
+                } else {
+                  nextStep();
+                }
+              }}
+              className="px-4 !pl-4"
+              disabled={!canProceed}
+            >
+              Continue
+              <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
+            </Button>
+          )}
+        </div>
       </div>
     </footer>
   );
