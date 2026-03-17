@@ -2345,6 +2345,9 @@ class UnslothTrainer:
                         status_message = f"Streamed {len(dataset)} rows from HuggingFace"
                     )
                 else:
+                    self._update_progress(
+                        status_message = f"Downloading dataset: {dataset_source}..."
+                    )
                     dataset = load_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
@@ -2352,11 +2355,12 @@ class UnslothTrainer:
                     logger.info("Stopped during dataset loading\n")
                     return None
 
+                n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
                 self._update_progress(
-                    status_message = f"Loaded dataset from HuggingFace: {dataset_source}"
+                    status_message = f"Downloaded {dataset_source} ({n_rows:,} rows)"
                 )
                 logger.info(
-                    f"Loaded dataset from Hugging Face: {dataset_source} ({len(dataset)} rows)\n"
+                    f"Loaded dataset from Hugging Face: {dataset_source} ({n_rows:,} rows)\n"
                 )
 
                 # Resolve eval split from a separate HF split (explicit or auto-detected)
@@ -2481,10 +2485,13 @@ class UnslothTrainer:
                 self._update_progress(error = error_msg)
                 return None
 
+            detected = dataset_info.get("detected_format", "unknown")
+            final_ds = dataset_info.get("dataset")
+            final_n = len(final_ds) if hasattr(final_ds, "__len__") else "?"
             self._update_progress(
-                status_message = f"Dataset formatted and ready for training"
+                status_message = f"Dataset ready ({final_n:,} samples, {detected} format)"
             )
-            logger.info(f"Dataset formatted successfully\n")
+            logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:

@@ -1092,6 +1092,9 @@ def format_and_template_dataset(
     # LLM FLOW (Existing code)
     else:
         # Step 1: Format the dataset
+        n_rows = len(dataset) if hasattr(dataset, "__len__") else None
+        if progress_callback and n_rows:
+            progress_callback(status_message = f"Formatting dataset ({n_rows:,} rows)...")
         dataset_info = format_dataset(
             dataset,
             format_type = format_type,
@@ -1106,6 +1109,11 @@ def format_and_template_dataset(
         )
 
         # Step 2: Apply chat template
+        detected = dataset_info.get("detected_format", "unknown")
+        if progress_callback and n_rows:
+            progress_callback(
+                status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
+            )
         # Gemma emits a leading <bos> that must be stripped for text-only chatml/sharegpt.
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
