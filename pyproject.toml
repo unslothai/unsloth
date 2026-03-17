@@ -1019,8 +1019,8 @@ intel-gpu-torch290 = [
     "unsloth[intelgputorch290]"
 ]
 intelgputorch210 = [
-    "unsloth_zoo[intelgpu]",
-    "unsloth[huggingfacenotorch]",
+    "unsloth_zoo[intelgpu] ; python_version < '3.13'",
+    "unsloth[huggingfacenotorch] ; python_version < '3.13'",
 
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=c169a1de14c19673b17c751290d467fa282fc90fa5da4314b2e5cdab1f553146 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
     "pytorch_triton_xpu @ https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=013d9dd5d6479bd22983161f462e61c8dbe1d82e6730624a7a8d5945507eaa61 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
