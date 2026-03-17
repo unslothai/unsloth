@@ -165,7 +165,6 @@ def _patch_granitemoehybrid_return_hidden_states():
         return_dict=None,
         cache_position=None,
         logits_to_keep=0,
-        **kwargs,
     ):
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -182,7 +181,6 @@ def _patch_granitemoehybrid_return_hidden_states():
                 output_router_logits=output_router_logits,
                 return_dict=return_dict,
                 cache_position=cache_position,
-                **kwargs,
             )
 
             hidden_states = outputs[0]
@@ -214,7 +212,6 @@ def _patch_granitemoehybrid_return_hidden_states():
             return_dict=return_dict,
             cache_position=cache_position,
             logits_to_keep=logits_to_keep,
-            **kwargs,
         )
 
     GraniteMoeHybridForCausalLM.forward = _patched_forward
