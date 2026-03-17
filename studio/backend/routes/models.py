@@ -404,8 +404,9 @@ async def get_model_config(
             try:
                 from transformers import AutoConfig as _AutoConfig
 
+                _trust = model_name.lower().startswith("unsloth/")
                 _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = True, token = hf_token
+                    model_name, trust_remote_code = _trust, token = hf_token
                 )
                 max_position_embeddings = _get_max_position_embeddings(_ac)
             except Exception:
