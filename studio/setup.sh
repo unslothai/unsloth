@@ -172,7 +172,8 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
     # Get version string, e.g. "Python 3.12.5"
-    ver_str=$("$candidate" --version 2>&1 | awk '{print $2}')
+    ver_str=$("$candidate" --version 2>&1) || continue
+    ver_str=$(echo "$ver_str" | awk '{print $2}')
     py_major=$(echo "$ver_str" | cut -d. -f1)
     py_minor=$(echo "$ver_str" | cut -d. -f2)
 
@@ -198,7 +199,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         BEST_MINOR="$py_minor"
     fi
 done
-
+echo "finished finding best python"
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
