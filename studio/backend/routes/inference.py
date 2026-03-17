@@ -112,7 +112,12 @@ async def load_model(
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
                 from utils.models import is_audio_input_type
-                _gguf_audio = llama_backend._audio_type if hasattr(llama_backend, "_audio_type") else None
+
+                _gguf_audio = (
+                    llama_backend._audio_type
+                    if hasattr(llama_backend, "_audio_type")
+                    else None
+                )
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
                 return LoadResponse(
                     status = "already_loaded",
@@ -123,7 +128,9 @@ async def load_model(
                     is_gguf = True,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
-                    has_audio_input = is_audio_input_type(_gguf_audio) if _gguf_audio else False,
+                    has_audio_input = is_audio_input_type(_gguf_audio)
+                    if _gguf_audio
+                    else False,
                     inference = inference_config,
                     context_length = llama_backend.context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
