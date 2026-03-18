@@ -9,8 +9,12 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
+import { Sources } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
-import { ToolOutputsGroup } from "@/components/assistant-ui/tool-outputs";
+import { ToolGroup } from "@/components/assistant-ui/tool-group";
+import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
+import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
@@ -501,10 +505,18 @@ const AssistantMessage: FC = () => {
             Text: MarkdownText,
             Reasoning: Reasoning,
             ReasoningGroup: ReasoningGroup,
-            tools: { Fallback: ToolFallback },
+            Source: Sources,
+            ToolGroup: ToolGroup,
+            tools: {
+              by_name: {
+                web_search: WebSearchToolUI,
+                python: PythonToolUI,
+                terminal: TerminalToolUI,
+              },
+              Fallback: ToolFallback,
+            },
           }}
         />
-        <ToolOutputsGroup />
         <MessageError />
       </div>
 
