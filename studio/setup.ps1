@@ -748,8 +748,11 @@ Write-Host ""
 # ==========================================================================
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
+$DistDir = Join-Path $FrontendDir "dist"
 if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
+} elseif (Test-Path $DistDir) {
+    Write-Host "[OK] Frontend already built (frontend/dist exists). To rebuild, delete frontend/dist and re-run setup." -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
@@ -758,9 +761,6 @@ if ($IsPipInstall) {
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    # Remove stale node_modules and package-lock.json to avoid version conflicts
-    if (Test-Path "node_modules") { Remove-Item -Recurse -Force "node_modules" }
-    if (Test-Path "package-lock.json") { Remove-Item -Force "package-lock.json" }
     npm install 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
