@@ -2,7 +2,7 @@
 # Most common workflow — adapter-based fine-tuning with 4-bit quantization.
 # Copy this file, edit model/dataset, then: unsloth train --config this-file.yaml --dry-run
 
-model: unsloth/Qwen2.5-0.5B              # HuggingFace model ID (non-GGUF for training)
+model: unsloth/Qwen3.5-4B              # HuggingFace model ID (non-GGUF for training)
 
 data:
   dataset: tatsu-lab/alpaca               # HuggingFace dataset ID

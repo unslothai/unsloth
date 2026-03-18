@@ -1,9 +1,9 @@
 # Unsloth Vision Model LoRA Config
-# LoRA fine-tuning for vision-language models (e.g. Qwen2-VL).
+# LoRA fine-tuning for vision-language models (e.g. Qwen2-VL, Qwen3-VL).
 # Key differences from text LoRA: vision_all_linear=true, empty target_modules.
 # Copy this file, edit model/dataset, then: unsloth train --config this-file.yaml --dry-run
 
-model: unsloth/Qwen2-VL-2B-Instruct-bnb-4bit   # vision-language model (4-bit variant)
+model: unsloth/Qwen2-VL-7B-Instruct-bnb-4bit   # vision-language model (4-bit variant)
 
 data:
   dataset: philschmid/amazon-product-descriptions-vlm   # vision dataset
