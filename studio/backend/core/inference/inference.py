@@ -976,7 +976,17 @@ class InferenceBackend:
         if messages and messages[-1]["role"] == "user":
             import re
 
-            user_message = messages[-1]["content"]
+            content = messages[-1]["content"]
+            # Handle both string content and multimodal list content
+            if isinstance(content, list):
+                # Extract text from multimodal content parts
+                text_parts = [
+                    part.get("text", "") for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                user_message = "\n".join(text_parts)
+            else:
+                user_message = content
             user_message = re.sub(r"<img[^>]*>", "", user_message).strip()
 
         if not user_message:
@@ -1666,6 +1676,15 @@ class InferenceBackend:
         for msg in messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
+
+            # Handle both string content and multimodal list content
+            if isinstance(content, list):
+                # Extract text from multimodal content parts
+                text_parts = [
+                    part.get("text", "") for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                content = "\n".join(text_parts)
 
             if role in ["system", "user", "assistant"] and content.strip():
                 if role == last_role:
