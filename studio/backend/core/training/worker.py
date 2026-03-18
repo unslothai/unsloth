@@ -36,59 +36,25 @@ def _activate_transformers_version(model_name: str) -> None:
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import needs_transformers_5, _resolve_base_model
+    from utils.transformers_version import (
+        needs_transformers_5,
+        _resolve_base_model,
+        _ensure_venv_t5_exists,
+        _VENV_T5_DIR,
+    )
 
     resolved = _resolve_base_model(model_name)
     if needs_transformers_5(resolved):
-        venv_t5 = os.path.join(
-            os.path.expanduser("~"), ".unsloth", "studio", ".venv_t5"
-        )
-        if os.path.isdir(venv_t5):
-            sys.path.insert(0, venv_t5)
-            logger.info("Activated transformers 5.x from %s", venv_t5)
-        else:
-            # Fallback: pip install at runtime (slower, ~10-15s)
-            logger.warning(".venv_t5 not found at %s — installing at runtime", venv_t5)
-            import subprocess as sp
-
-            os.makedirs(venv_t5, exist_ok = True)
-            r1 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "transformers==5.3.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
+        if not _ensure_venv_t5_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
             )
-            r2 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "huggingface_hub==1.3.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
-            )
-            if r1.returncode != 0 or r2.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to install transformers 5.x into {venv_t5}. "
-                    f"pip returncode: transformers={r1.returncode}, huggingface_hub={r2.returncode}"
-                )
-            sys.path.insert(0, venv_t5)
+        if _VENV_T5_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_DIR)
+        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
         # Propagate to child subprocesses (e.g. GGUF converter)
         _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = venv_t5 + (os.pathsep + _pp if _pp else "")
+        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
