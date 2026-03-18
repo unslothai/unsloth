@@ -8,7 +8,7 @@
     Always installs Node.js if needed. When running from pip install:
     skips frontend build (already bundled). When running from git repo:
     full setup including frontend build.
-    Requires an NVIDIA GPU -- CPU-only machines are not supported.
+    Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
     Usage: powershell -ExecutionPolicy Bypass -File setup.ps1
 #>
@@ -107,11 +107,15 @@ function Find-Nvcc {
 # Returns e.g. "80" for A100 (8.0), "89" for RTX 4090 (8.9), etc.
 # Returns $null if detection fails.
 function Get-CudaComputeCapability {
-    $nvSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if (-not $nvSmi) { return $null }
+    # Use the resolved absolute path ($NvidiaSmiExe) to survive Refresh-Environment
+    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+        $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($cmd) { $cmd.Source } else { $null }
+    }
+    if (-not $smiExe) { return $null }
 
     try {
-        $raw = & nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>$null
+        $raw = & $smiExe --query-gpu=compute_cap --format=csv,noheader 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
 
         # nvidia-smi may return multiple GPUs; take the first one
@@ -168,14 +172,17 @@ function Get-NvccMaxArch {
 # https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
 # capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
 function Get-PytorchCudaTag {
-    $nvSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if (-not $nvSmi) { return "cu124" }
+    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+        $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($cmd) { $cmd.Source } else { $null }
+    }
+    if (-not $smiExe) { return "cu124" }
 
     try {
         # 2>&1 | Out-String merges stderr into stdout then converts to a single
-        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 —
+        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
         # ErrorRecord objects leak into $output and break the -match.
-        $output = & nvidia-smi 2>&1 | Out-String
+        $output = & $smiExe 2>&1 | Out-String
         if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
@@ -251,23 +258,50 @@ Write-Host "+==============================================+" -ForegroundColor G
 # ==========================================================================
 
 # ============================================
-# 1a. GPU requirement check
+# 1a. GPU detection
 # ============================================
 $HasNvidiaSmi = $false
+$NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
-    nvidia-smi 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true }
+    $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($nvSmiCmd) {
+        & $nvSmiCmd.Source 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $HasNvidiaSmi = $true
+            $NvidiaSmiExe = $nvSmiCmd.Source
+        }
+    }
 } catch {}
+# Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
+# Check the default install location and the Windows driver store.
+if (-not $HasNvidiaSmi) {
+    $nvSmiDefaults = @(
+        "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        "$env:SystemRoot\System32\nvidia-smi.exe"
+    )
+    foreach ($p in $nvSmiDefaults) {
+        if (Test-Path $p) {
+            try {
+                & $p 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $HasNvidiaSmi = $true
+                    $NvidiaSmiExe = $p
+                    Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
+                    break
+                }
+            } catch {}
+        }
+    }
+}
 if (-not $HasNvidiaSmi) {
     Write-Host ""
-    Write-Host "[ERROR] Unsloth Studio requires an NVIDIA GPU." -ForegroundColor Red
-    Write-Host "        CPU-only machines are not supported." -ForegroundColor Red
+    Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
+    Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
+    Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "        If you have an NVIDIA GPU, ensure the driver is installed:" -ForegroundColor Yellow
-    Write-Host "        https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
-    exit 1
+} else {
+    Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
 }
-Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
 
 # ============================================
 # 1a.5. Windows Long Paths (required for deep node_modules / Python paths)
@@ -341,6 +375,30 @@ if (-not $HasCmake) {
             $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
         } catch { }
     }
+    # winget may succeed but cmake isn't on PATH yet (MSI PATH changes need a
+    # new shell). Try the default install location as a fallback.
+    if (-not $HasCmake) {
+        $cmakeDefaults = @(
+            "$env:ProgramFiles\CMake\bin",
+            "${env:ProgramFiles(x86)}\CMake\bin",
+            "$env:LOCALAPPDATA\CMake\bin"
+        )
+        foreach ($d in $cmakeDefaults) {
+            if (Test-Path (Join-Path $d "cmake.exe")) {
+                $env:Path = "$d;$env:Path"
+                # Persist to user PATH so Refresh-Environment does not drop it later
+                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+                if (-not $userPath -or $userPath -notlike "*$d*") {
+                    [Environment]::SetEnvironmentVariable('Path', "$d;$userPath", 'User')
+                }
+                $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+                if ($HasCmake) {
+                    Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
+                    break
+                }
+            }
+        }
+    }
     if ($HasCmake) {
         Write-Host "[OK] CMake installed" -ForegroundColor Green
     } else {
@@ -389,6 +447,7 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
+if ($HasNvidiaSmi) {
 # IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
 # NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
 # If we install a toolkit newer than the driver supports, llama-server will
@@ -397,7 +456,7 @@ if ($vsResult) {
 # -- Detect max CUDA version the driver supports --
 $DriverMaxCuda = $null
 try {
-    $smiOut = nvidia-smi 2>&1 | Out-String
+    $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
     if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         Write-Host "   Driver supports up to CUDA $DriverMaxCuda" -ForegroundColor Gray
@@ -624,11 +683,24 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                 Copy-Item "$cudaExtras\*" $vsCustomizations -Force -ErrorAction Stop
                 Write-Host "   [OK] CUDA VS integration files installed" -ForegroundColor Green
             } catch {
-                Write-Host "   [WARN] Could not copy CUDA VS integration files (may need admin)" -ForegroundColor Yellow
-                Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
-                Write-Host "            $cudaExtras" -ForegroundColor Cyan
-                Write-Host "          into:" -ForegroundColor Yellow
-                Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                # Direct copy failed (needs admin). Try elevated copy via Start-Process.
+                try {
+                    $copyCmd = "Copy-Item '$cudaExtras\*' '$vsCustomizations' -Force"
+                    Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
+                    $hasTargetsRetry = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
+                    if ($hasTargetsRetry) {
+                        Write-Host "   [OK] CUDA VS integration files installed (elevated)" -ForegroundColor Green
+                    } else {
+                        throw "Copy did not produce .targets files"
+                    }
+                } catch {
+                    Write-Host "   [WARN] Could not copy CUDA VS integration files" -ForegroundColor Yellow
+                    Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
+                    Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
+                    Write-Host "            $cudaExtras" -ForegroundColor Cyan
+                    Write-Host "          into:" -ForegroundColor Yellow
+                    Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                }
             }
         }
     }
@@ -642,6 +714,9 @@ Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 # influence which toolkit we picked.  Just log the final state here.
 if (-not $CudaArch) {
     Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
+}
+} else {
+    Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
 }
 
 # ============================================
@@ -935,14 +1010,32 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)" -ForegroundColor Green
 
-$CuTag = Get-PytorchCudaTag
-Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-Null
+if ($HasNvidiaSmi) {
+    $CuTag = Get-PytorchCudaTag
+    Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
+    Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
+    Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch CUDA install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
 
-# Install Triton for Windows (enables torch.compile -- without it training can hang)
-Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
-Fast-Install "triton-windows<3.7" | Out-Null
-Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+    # Install Triton for Windows (enables torch.compile -- without it training can hang)
+    Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
+    Fast-Install "triton-windows<3.7" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[WARN] Triton install failed -- torch.compile may not work" -ForegroundColor Yellow
+    } else {
+        Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+    }
+} else {
+    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
+}
 
 # Ordered heavy dependency installation -- shared cross-platform script
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
@@ -1033,12 +1126,46 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
+$HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+
+# Check if existing llama-server matches current GPU mode. A CUDA-built binary
+# on a now-CPU-only machine (or vice versa) needs to be rebuilt.
+$NeedRebuild = $false
 if (Test-Path $LlamaServerBin) {
+    $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
+    if (Test-Path $CmakeCacheFile) {
+        $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+        if ($HasNvidiaSmi -and -not $cachedCuda) {
+            Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
+            $NeedRebuild = $true
+        } elseif (-not $HasNvidiaSmi -and $cachedCuda) {
+            Write-Host "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
+            $NeedRebuild = $true
+        }
+    }
+}
+
+if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     Write-Host ""
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
+} elseif (-not $HasCmakeForBuild) {
+    Write-Host ""
+    if (-not $HasNvidiaSmi) {
+        # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
+        Write-Host "[ERROR] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Red
+        Write-Host "        Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "[SKIP] llama-server build -- cmake not available" -ForegroundColor Yellow
+    Write-Host "       GGUF inference and export will not be available." -ForegroundColor Yellow
+    Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
 } else {
     Write-Host ""
-    Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
+    if ($HasNvidiaSmi) {
+        Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
+    } else {
+        Write-Host "Building llama.cpp (CPU-only, no NVIDIA GPU detected)..." -ForegroundColor Cyan
+    }
     Write-Host "   This typically takes 5-10 minutes on first build." -ForegroundColor Gray
     Write-Host ""
 
@@ -1058,17 +1185,19 @@ if (Test-Path $LlamaServerBin) {
     # Re-sanitize CUDA_PATH_V* vars — Refresh-Environment (called during
     # Node/Python installs above) may have repopulated conflicting versioned
     # vars from the Machine registry.
-    $cudaPathVars2 = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
-    foreach ($v2 in $cudaPathVars2) {
-        [Environment]::SetEnvironmentVariable($v2, $null, 'Process')
+    if ($HasNvidiaSmi -and $CudaToolkitRoot) {
+        $cudaPathVars2 = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
+        foreach ($v2 in $cudaPathVars2) {
+            [Environment]::SetEnvironmentVariable($v2, $null, 'Process')
+        }
+        $tkDirName2 = Split-Path $CudaToolkitRoot -Leaf
+        if ($tkDirName2 -match '^v(\d+)\.(\d+)') {
+            [Environment]::SetEnvironmentVariable("CUDA_PATH_V$($Matches[1])_$($Matches[2])", $CudaToolkitRoot, 'Process')
+        }
+        # Also re-assert CUDA_PATH and CudaToolkitDir in case they were overwritten
+        [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
+        [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
     }
-    $tkDirName2 = Split-Path $CudaToolkitRoot -Leaf
-    if ($tkDirName2 -match '^v(\d+)\.(\d+)') {
-        [Environment]::SetEnvironmentVariable("CUDA_PATH_V$($Matches[1])_$($Matches[2])", $CudaToolkitRoot, 'Process')
-    }
-    # Also re-assert CUDA_PATH and CudaToolkitDir in case they were overwritten
-    [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
-    [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
 
     # -- Step A: Clone or pull llama.cpp --
 
@@ -1088,7 +1217,14 @@ if (Test-Path $LlamaServerBin) {
         }
     }
 
-    # -- Step B: cmake configure (CUDA + Unsloth flags) --
+    # -- Step B: cmake configure --
+    # Clean stale CMake cache to prevent previous CUDA settings from leaking
+    # into a CPU-only rebuild (or vice versa).
+    $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
+    if (Test-Path $CmakeCacheFile) {
+        Remove-Item -Recurse -Force $BuildDir
+    }
+
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake configure ---" -ForegroundColor Cyan
@@ -1117,37 +1253,45 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs += '-DLLAMA_CURL=OFF'
         }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
-        # CUDA flags (Unsloth-aligned)
-        $CmakeArgs += '-DGGML_CUDA=ON'
-        $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-        $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-        $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
-        $CmakeArgs += '-DGGML_CUDA_FA_ALL_QUANTS=ON'
-        $CmakeArgs += '-DGGML_CUDA_F16=OFF'
-        $CmakeArgs += '-DGGML_CUDA_GRAPHS=OFF'
-        $CmakeArgs += '-DGGML_CUDA_FORCE_CUBLAS=OFF'
-        $CmakeArgs += '-DGGML_CUDA_PEER_MAX_BATCH_SIZE=8192'
-        if ($CudaArch) {
-            # Validate nvcc actually supports this architecture
-            if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
-            } else {
-                # GPU arch too new for this toolkit — fall back to highest supported.
-                # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
-                $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
-                if ($maxArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                    Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
-                    Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+        # CUDA flags -- only if GPU available, otherwise explicitly disable
+        if ($HasNvidiaSmi -and $NvccPath) {
+            $CmakeArgs += '-DGGML_CUDA=ON'
+            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+            if ($CudaArch) {
+                # Validate nvcc actually supports this architecture
+                if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                } else {
+                    # GPU arch too new for this toolkit -- fall back to highest supported.
+                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                    $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                    if ($maxArch) {
+                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                        Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
+                        Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+                    }
+                    # else: omit flag entirely, let cmake pick defaults
                 }
-                # else: omit flag entirely, let cmake pick defaults
             }
+        } else {
+            $CmakeArgs += '-DGGML_CUDA=OFF'
         }
 
-        cmake @CmakeArgs 2>&1 | Out-Null
+        $cmakeOutput = cmake @CmakeArgs 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake configure"
+            Write-Host $cmakeOutput -ForegroundColor Red
+            if ($cmakeOutput -match 'No CUDA toolset found|CUDA_TOOLKIT_ROOT_DIR|nvcc') {
+                Write-Host ""
+                Write-Host "   Hint: CUDA VS integration may be missing. Try running as admin:" -ForegroundColor Yellow
+                Write-Host "   Copy contents of:" -ForegroundColor Yellow
+                Write-Host "     <CUDA_PATH>\extras\visual_studio_integration\MSBuildExtensions" -ForegroundColor Yellow
+                Write-Host "   into:" -ForegroundColor Yellow
+                Write-Host "     <VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" -ForegroundColor Yellow
+            }
         }
     }
 
