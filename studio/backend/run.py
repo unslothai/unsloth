@@ -12,6 +12,67 @@ import sys
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+
+def _fix_torch_cuda_ld_path():
+    """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH.
+
+    PyTorch wheels ship their own CUDA runtime (libcudart, libcublas, etc.)
+    inside ``site-packages/nvidia/*/lib/``.  On Linux the dynamic linker
+    checks LD_LIBRARY_PATH **before** the RUNPATH baked into the .so files,
+    so a user's pre-existing LD_LIBRARY_PATH pointing at a different system
+    CUDA (e.g. /usr/local/cuda-13/lib64) will shadow torch's libs and cause
+    symbol-version errors at import time.
+
+    Fix: detect torch's lib dirs (without importing torch) and prepend them
+    so they take priority.  Returns True if LD_LIBRARY_PATH was changed.
+    """
+    if sys.platform == "win32":
+        return False  # Windows uses PATH, not LD_LIBRARY_PATH
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    if not ld_path:
+        return False
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("torch")
+        if not spec or not spec.origin:
+            return False
+        torch_dir = os.path.dirname(spec.origin)
+        site_pkgs = os.path.dirname(torch_dir)
+        nvidia_dir = os.path.join(site_pkgs, "nvidia")
+
+        lib_dirs = []
+        torch_lib = os.path.join(torch_dir, "lib")
+        if os.path.isdir(torch_lib):
+            lib_dirs.append(torch_lib)
+        if os.path.isdir(nvidia_dir):
+            for sub in sorted(os.listdir(nvidia_dir)):
+                lib = os.path.join(nvidia_dir, sub, "lib")
+                if os.path.isdir(lib):
+                    lib_dirs.append(lib)
+        if not lib_dirs:
+            return False
+
+        # Already at the front -- nothing to do
+        existing = ld_path.split(":")
+        if existing[:len(lib_dirs)] == lib_dirs:
+            return False
+
+        # Prepend torch dirs, deduplicate
+        torch_set = set(lib_dirs)
+        cleaned = [p for p in existing if p not in torch_set]
+        os.environ["LD_LIBRARY_PATH"] = ":".join(lib_dirs + cleaned)
+        return True
+    except Exception:
+        return False
+
+
+# Fix LD_LIBRARY_PATH before any torch/CUDA libs get loaded.
+# If we changed it, re-exec so the dynamic linker sees the new value.
+_LD_FIXED_SENTINEL = "_UNSLOTH_STUDIO_LD_FIXED"
+if _LD_FIXED_SENTINEL not in os.environ and _fix_torch_cuda_ld_path():
+    os.environ[_LD_FIXED_SENTINEL] = "1"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 from pathlib import Path
 
 # Add the backend directory to Python path
