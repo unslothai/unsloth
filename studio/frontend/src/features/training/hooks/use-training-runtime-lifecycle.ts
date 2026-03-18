@@ -15,6 +15,15 @@ import type { TrainingRuntimeStore } from "../types/runtime";
 const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 1500;
+const AUTH_STATUS_RETRY_INTERVAL_MS = 3000;
+const AUTH_STATUS_TIMEOUT_MS = 3000;
+const INITIAL_HYDRATE_TIMEOUT_MS = 4000;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function shouldUseLiveSync(state: TrainingRuntimeStore): boolean {
   return state.isTrainingRunning || state.phase === "training";
@@ -26,8 +35,45 @@ export function useTrainingRuntimeLifecycle(): void {
     let openingStream = false;
     let streamController: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    /** HF Spaces / auth-disabled: no JWT, but train APIs allow anonymous access. */
+    let authDisabled = false;
 
     const runtimeStore = useTrainingRuntimeStore;
+
+    const canUseTrainApi = () => hasAuthToken() || authDisabled;
+    let authProbeInFlight = false;
+    let lastAuthProbeStartedAt = 0;
+
+    const maybeRefreshAuthMode = async (force = false) => {
+      if (disposed || hasAuthToken() || authDisabled) return;
+      if (authProbeInFlight) return;
+
+      const now = Date.now();
+      if (
+        !force &&
+        now - lastAuthProbeStartedAt < AUTH_STATUS_RETRY_INTERVAL_MS
+      ) {
+        return;
+      }
+
+      authProbeInFlight = true;
+      lastAuthProbeStartedAt = now;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => {
+        controller.abort();
+      }, AUTH_STATUS_TIMEOUT_MS);
+      try {
+        const res = await fetch("/api/auth/status", { signal: controller.signal });
+        if (!res.ok) return;
+        const data = (await res.json()) as { auth_disabled?: boolean };
+        authDisabled = Boolean(data.auth_disabled);
+      } catch {
+        // Keep previous mode and retry later.
+      } finally {
+        clearTimeout(timeout);
+        authProbeInFlight = false;
+      }
+    };
 
     const clearReconnect = () => {
       if (reconnectTimer) {
@@ -46,7 +92,10 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollMetrics = async () => {
-      if (!hasAuthToken()) return;
+      if (!canUseTrainApi()) {
+        void maybeRefreshAuthMode();
+        return;
+      }
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const metrics = await getTrainingMetrics();
@@ -55,14 +104,17 @@ export function useTrainingRuntimeLifecycle(): void {
         }
         runtimeStore.getState().applyMetrics(metrics);
       } catch (error) {
-        if (!isAbortError(error) && !disposed && hasAuthToken()) {
+        if (!isAbortError(error) && !disposed && canUseTrainApi()) {
           runtimeStore.getState().setSseConnected(false);
         }
       }
     };
 
     const pollStatus = async () => {
-      if (!hasAuthToken()) return;
+      if (!canUseTrainApi()) {
+        void maybeRefreshAuthMode();
+        return;
+      }
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const status = await getTrainingStatus();
@@ -79,7 +131,7 @@ export function useTrainingRuntimeLifecycle(): void {
           stopStream();
         }
       } catch (error) {
-        if (!isAbortError(error) && !disposed && hasAuthToken()) {
+        if (!isAbortError(error) && !disposed && canUseTrainApi()) {
           runtimeStore.getState().setSseConnected(false);
         }
       }
@@ -153,7 +205,11 @@ export function useTrainingRuntimeLifecycle(): void {
     const hydrate = async () => {
       runtimeStore.getState().setHydrating(true);
       try {
-        await Promise.all([pollStatus(), pollMetrics()]);
+        await maybeRefreshAuthMode(true);
+        await Promise.race([
+          Promise.allSettled([pollStatus(), pollMetrics()]).then(() => undefined),
+          wait(INITIAL_HYDRATE_TIMEOUT_MS),
+        ]);
       } finally {
         if (!disposed) {
           runtimeStore.getState().setHydrating(false);
@@ -162,13 +218,14 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    void hydrate();
+    let statusTimer: ReturnType<typeof setInterval> | null = null;
+    let metricsTimer: ReturnType<typeof setInterval> | null = null;
 
-    const statusTimer = setInterval(() => {
+    void hydrate();
+    statusTimer = setInterval(() => {
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
-
-    const metricsTimer = setInterval(() => {
+    metricsTimer = setInterval(() => {
       const state = runtimeStore.getState();
       if (shouldUseLiveSync(state) || state.currentStep > 0) {
         void pollMetrics();
@@ -177,8 +234,8 @@ export function useTrainingRuntimeLifecycle(): void {
 
     return () => {
       disposed = true;
-      clearInterval(statusTimer);
-      clearInterval(metricsTimer);
+      if (statusTimer) clearInterval(statusTimer);
+      if (metricsTimer) clearInterval(metricsTimer);
       stopStream();
     };
   }, []);
