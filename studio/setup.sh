@@ -41,21 +41,7 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Caching disabled: always rebuild to avoid stale dist/ issues with
-# git timestamp handling and the Tailwind v4 .gitignore requirement.
-# Set to false and uncomment the block below to re-enable caching.
 _NEED_FRONTEND_BUILD=true
-# if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-#     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
-#         -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
-#     if [ -z "$_changed" ]; then
-#         _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
-#             -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null) || true
-#     fi
-#     if [ -z "$_changed" ]; then
-#         _NEED_FRONTEND_BUILD=false
-#     fi
-# fi
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
