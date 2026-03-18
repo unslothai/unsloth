@@ -15,6 +15,14 @@ import type { TrainingRuntimeStore } from "../types/runtime";
 const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 1500;
+const AUTH_STATUS_RETRY_INTERVAL_MS = 3000;
+const INITIAL_HYDRATE_TIMEOUT_MS = 4000;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function shouldUseLiveSync(state: TrainingRuntimeStore): boolean {
   return state.isTrainingRunning || state.phase === "training";
@@ -32,6 +40,34 @@ export function useTrainingRuntimeLifecycle(): void {
     const runtimeStore = useTrainingRuntimeStore;
 
     const canUseTrainApi = () => hasAuthToken() || authDisabled;
+    let authProbeInFlight = false;
+    let lastAuthProbeStartedAt = 0;
+
+    const maybeRefreshAuthMode = async (force = false) => {
+      if (disposed || hasAuthToken() || authDisabled) return;
+      if (authProbeInFlight) return;
+
+      const now = Date.now();
+      if (
+        !force &&
+        now - lastAuthProbeStartedAt < AUTH_STATUS_RETRY_INTERVAL_MS
+      ) {
+        return;
+      }
+
+      authProbeInFlight = true;
+      lastAuthProbeStartedAt = now;
+      try {
+        const res = await fetch("/api/auth/status");
+        if (!res.ok) return;
+        const data = (await res.json()) as { auth_disabled?: boolean };
+        authDisabled = Boolean(data.auth_disabled);
+      } catch {
+        // Keep previous mode and retry later.
+      } finally {
+        authProbeInFlight = false;
+      }
+    };
 
     const clearReconnect = () => {
       if (reconnectTimer) {
@@ -50,7 +86,10 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollMetrics = async () => {
-      if (!canUseTrainApi()) return;
+      if (!canUseTrainApi()) {
+        void maybeRefreshAuthMode();
+        return;
+      }
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const metrics = await getTrainingMetrics();
@@ -66,7 +105,10 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollStatus = async () => {
-      if (!canUseTrainApi()) return;
+      if (!canUseTrainApi()) {
+        void maybeRefreshAuthMode();
+        return;
+      }
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const status = await getTrainingStatus();
@@ -155,20 +197,13 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const hydrate = async () => {
-      try {
-        const res = await fetch("/api/auth/status");
-        if (res.ok) {
-          const data = (await res.json()) as { auth_disabled?: boolean };
-          authDisabled = Boolean(data.auth_disabled);
-        }
-      } catch {
-        // Same as requireAuth fallback: treat as auth required until known.
-      }
-      if (disposed) return;
-
       runtimeStore.getState().setHydrating(true);
       try {
-        await Promise.all([pollStatus(), pollMetrics()]);
+        await maybeRefreshAuthMode(true);
+        await Promise.race([
+          Promise.allSettled([pollStatus(), pollMetrics()]).then(() => undefined),
+          wait(INITIAL_HYDRATE_TIMEOUT_MS),
+        ]);
       } finally {
         if (!disposed) {
           runtimeStore.getState().setHydrating(false);
@@ -180,19 +215,16 @@ export function useTrainingRuntimeLifecycle(): void {
     let statusTimer: ReturnType<typeof setInterval> | null = null;
     let metricsTimer: ReturnType<typeof setInterval> | null = null;
 
-    void (async () => {
-      await hydrate();
-      if (disposed) return;
-      statusTimer = setInterval(() => {
-        void pollStatus();
-      }, STATUS_POLL_INTERVAL_MS);
-      metricsTimer = setInterval(() => {
-        const state = runtimeStore.getState();
-        if (shouldUseLiveSync(state) || state.currentStep > 0) {
-          void pollMetrics();
-        }
-      }, METRICS_POLL_INTERVAL_MS);
-    })();
+    void hydrate();
+    statusTimer = setInterval(() => {
+      void pollStatus();
+    }, STATUS_POLL_INTERVAL_MS);
+    metricsTimer = setInterval(() => {
+      const state = runtimeStore.getState();
+      if (shouldUseLiveSync(state) || state.currentStep > 0) {
+        void pollMetrics();
+      }
+    }, METRICS_POLL_INTERVAL_MS);
 
     return () => {
       disposed = true;
