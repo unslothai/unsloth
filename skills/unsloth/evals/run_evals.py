@@ -147,7 +147,11 @@ def run_grader(
     with_response_path = eval_dir / "with_skill" / "outputs" / "response.md"
     without_response_path = eval_dir / "without_skill" / "outputs" / "response.md"
 
-    with_response = with_response_path.read_text() if with_response_path.exists() else "(run failed — no output)"
+    with_response = (
+        with_response_path.read_text()
+        if with_response_path.exists()
+        else "(run failed — no output)"
+    )
     without_response = (
         without_response_path.read_text()
         if without_result and without_response_path.exists()
