@@ -7,8 +7,7 @@ Export API routes: checkpoint discovery and model export operations.
 
 import sys
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
-import structlog
+from fastapi import APIRouter, Depends, HTTPException
 from loggers import get_logger
 
 # Add backend directory to path

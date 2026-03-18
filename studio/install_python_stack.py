@@ -150,7 +150,16 @@ def _bootstrap_uv() -> bool:
     if probe.returncode != 0:
         # Retry with --system to confirm it works
         probe_sys = subprocess.run(
-            ["uv", "pip", "install", "--dry-run", "--system", "--python", sys.executable, "pip"],
+            [
+                "uv",
+                "pip",
+                "install",
+                "--dry-run",
+                "--system",
+                "--python",
+                sys.executable,
+                "pip",
+            ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
         )
@@ -243,7 +252,7 @@ def pip_install(
             )
             if result.returncode == 0:
                 return
-            print(_red(f"   uv failed, falling back to pip..."))
+            print(_red("   uv failed, falling back to pip..."))
             if result.stdout:
                 print(result.stdout.decode(errors = "replace"))
 

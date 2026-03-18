@@ -38,12 +38,7 @@ from .format_conversion import (
 from .chat_templates import (
     apply_chat_template_to_dataset,
     get_dataset_info_summary,
-    get_tokenizer_chat_template,
-    DEFAULT_ALPACA_TEMPLATE,
 )
-from .vlm_processing import generate_smart_vlm_instruction
-from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
-from .model_mappings import TEMPLATE_TO_MODEL_MAPPER
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -701,7 +696,7 @@ def format_dataset(
             }
 
         else:
-            warnings.append(f"Cannot convert unknown format to Alpaca")
+            warnings.append("Cannot convert unknown format to Alpaca")
             return {
                 "dataset": dataset,
                 "detected_format": "unknown",
@@ -766,7 +761,7 @@ def format_dataset(
             }
 
         else:
-            warnings.append(f"Unknown format, attempting standardization")
+            warnings.append("Unknown format, attempting standardization")
             if detected["chat_column"]:
                 try:
                     standardized = standardize_chat_format(
@@ -914,7 +909,7 @@ def format_and_template_dataset(
                         f"falling back to auto-detection"
                     )
                     logger.info(
-                        f"⚠️ User VLM mapping failed, falling back to auto-detection..."
+                        "⚠️ User VLM mapping failed, falling back to auto-detection..."
                     )
                     custom_format_mapping = None  # clear so auto-detection runs below
             else:

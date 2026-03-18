@@ -207,7 +207,7 @@ def evaluate_model_aime(
 
     print(f"\n{'='*70}")
     print(f"🧮 AIME EVALUATION - {model_type.upper()} MODEL")
-    print(f"Combined Dataset: test2024 + test2025-I + test2025-II")
+    print("Combined Dataset: test2024 + test2025-I + test2025-II")
     print(f"{'='*70}")
 
     # Load combined AIME dataset
@@ -244,7 +244,7 @@ def evaluate_model_aime(
         seed = seed,
     )
 
-    print(f"\n🔧 Configuration:")
+    print("\n🔧 Configuration:")
     print(f"   Temperature: {temperature}")
     print(f"   Samples per question: {n_sampling}")
     print(f"   Max tokens: {max_tokens}")
@@ -421,28 +421,28 @@ def evaluate_model_aime(
     print(f"📊 AIME EVALUATION RESULTS - {model_type.upper()}")
     print(f"{'='*70}")
 
-    print(f"\n🎯 Overall Performance:")
+    print("\n🎯 Overall Performance:")
     print(f"   Total problems:       {total_problems:>6}")
     print(
         f"   Correct answers:      {correct_answers:>6}/{total_problems} ({accuracy:>5.1f}%)"
     )
     print(f"   Pass@{n_sampling}:              {pass_at_k:>10.1f}%")
 
-    print(f"\n📈 Performance by Dataset:")
+    print("\n📈 Performance by Dataset:")
     for source, stats in source_stats.items():
         source_acc = source_accuracies[source]
         print(
             f"   {source:>12}: {stats['correct']:>3}/{stats['total']:>3} ({source_acc:>5.1f}%)"
         )
 
-    print(f"\n🔧 Configuration:")
+    print("\n🔧 Configuration:")
     print(f"   Temperature:          {temperature}")
     print(f"   Samples per problem:  {n_sampling}")
     print(f"   Max tokens:           {max_tokens}")
     print(f"   Top-p:                {top_p}")
     print(f"   Seed:                 {seed}")
 
-    print(f"\n📝 Token Statistics:")
+    print("\n📝 Token Statistics:")
     print(f"   Avg input tokens:     {results['avg_input_tokens']:>10.1f}")
     print(f"   Avg output tokens:    {results['avg_output_tokens']:>10.1f}")
     print(f"   Max input tokens:     {results['max_input_tokens']:>10}")

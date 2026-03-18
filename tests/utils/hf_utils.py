@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-from contextlib import contextmanager, nullcontext
-from typing import Callable, Optional
+from contextlib import nullcontext
+from typing import Callable
 
 import bitsandbytes as bnb
 import torch

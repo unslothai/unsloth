@@ -16,7 +16,6 @@ from ..device_type import DEVICE_TYPE_TORCH
 import importlib
 import os
 import torch
-import re
 import tempfile
 from typing import Union
 from .mapper import (

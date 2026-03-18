@@ -41,7 +41,6 @@ def standardize_chat_format(
     """
     import collections
     import itertools
-    from datasets import IterableDataset
 
     # Check if vision tokenizer is used
     is_vlm = False

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from .llama import *
-from ._utils import __version__
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype, Version
 from ..utils.packing import get_packed_info_from_kwargs
@@ -30,9 +29,6 @@ try:
         CohereDecoderLayer,
         CohereModel,
         CohereForCausalLM,
-        CohereRotaryEmbedding,
-        apply_rotary_pos_emb,
-        repeat_kv,
     )
 except:
     transformers_version = Version(transformers_version)

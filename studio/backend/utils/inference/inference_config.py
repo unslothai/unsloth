@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 import json
 import yaml
-import structlog
 from loggers import get_logger
 
 from utils.models.model_config import load_model_defaults

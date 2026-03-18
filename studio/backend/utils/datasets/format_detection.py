@@ -229,7 +229,7 @@ def detect_custom_format_heuristic(dataset):
                     if prefix in ["generation", "pass", "inference"]:
                         return True
 
-        if len(col_lower) <= 2 and not col_lower in ["qa", "q", "a"]:
+        if len(col_lower) <= 2 and col_lower not in ["qa", "q", "a"]:
             return True
 
         return False

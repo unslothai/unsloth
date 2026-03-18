@@ -384,7 +384,7 @@ def _push_to_hub_gguf(
 
     # Save to temporary directory first
     with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
-        print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
+        print("Unsloth: Converting SentenceTransformer to GGUF format...")
 
         # Call save_pretrained_gguf to do the local conversion
         result = _save_pretrained_gguf(
@@ -577,9 +577,9 @@ class FastSentenceTransformer(FastModel):
                                 print(f"Pooling mode detected as {mode}, updating...")
                             return mode
 
-        except Exception as e:
+        except Exception:
             print(
-                f"Failed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work."
+                "Failed to detect pooling mode, not a sentence-transformers model. Using default pooling mode 'mean', this may or may not work."
             )
             return "mean"
 

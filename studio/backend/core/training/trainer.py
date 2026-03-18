@@ -17,18 +17,15 @@ from utils.hardware import clear_gpu_cache, safe_num_proc
 
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
-from unsloth.chat_templates import get_chat_template
 
 import json
 import threading
 import math
-import structlog
 from loggers import get_logger
 import time
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
-import pandas as pd
 from datasets import Dataset, load_dataset
 
 from utils.models import is_vision_model, detect_audio_type
@@ -777,7 +774,7 @@ class UnslothTrainer:
                 # second attempt because the failed first call's partial
                 # imports clean up the stale state as a side effect.
                 self._source_code_retried = True
-                logger.info(f"\n'could not get source code' — retrying once...\n")
+                logger.info("\n'could not get source code' — retrying once...\n")
                 return self.load_model(
                     model_name,
                     max_seq_length,
@@ -978,7 +975,7 @@ class UnslothTrainer:
                 # Phase 2: Whisper uses FastModel.get_peft_model with task_type=None
                 from unsloth import FastModel
 
-                logger.info(f"Audio model (whisper) LoRA configuration:")
+                logger.info("Audio model (whisper) LoRA configuration:")
                 logger.info(f"  - Target modules: {target_modules}\n")
 
                 self.model = FastModel.get_peft_model(
@@ -1019,7 +1016,7 @@ class UnslothTrainer:
 
             elif self.is_vlm:
                 # Vision model LoRA
-                logger.info(f"Vision model LoRA configuration:")
+                logger.info("Vision model LoRA configuration:")
                 logger.info(f"  - Finetune vision layers: {finetune_vision_layers}")
                 logger.info(f"  - Finetune language layers: {finetune_language_layers}")
                 logger.info(
@@ -1047,7 +1044,7 @@ class UnslothTrainer:
                 )
             else:
                 # Text model LoRA
-                logger.info(f"Text model LoRA configuration:")
+                logger.info("Text model LoRA configuration:")
                 logger.info(f"  - Target modules: {target_modules}\n")
 
                 self.model = FastLanguageModel.get_peft_model(
@@ -1076,7 +1073,6 @@ class UnslothTrainer:
 
         except Exception as e:
             import traceback
-            import sys
 
             error_details = (
                 f"{type(e).__name__}: {str(e)}"
@@ -1102,7 +1098,6 @@ class UnslothTrainer:
         and strip non-TransformersKwargs params that Unsloth/PEFT inject.
         """
         import types
-        import torch
         import torch.nn as nn
         from transformers.models.csm.modeling_csm import (
             CsmForConditionalGeneration,
@@ -1666,7 +1661,6 @@ class UnslothTrainer:
         """
         import sys
         import torch
-        import numpy as np
         import torchaudio.transforms as T
 
         import subprocess
@@ -2509,7 +2503,7 @@ class UnslothTrainer:
                     custom_format_mapping = custom_format_mapping,
                 )
                 eval_dataset = eval_info["dataset"]
-                logger.info(f"Eval dataset formatted successfully\n")
+                logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source:
                 # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
@@ -2996,7 +2990,7 @@ class UnslothTrainer:
             else:
                 # Default to warmup_steps if neither provided
                 config_args["warmup_steps"] = 5
-                logger.info(f"Using default warmup_steps: 5\n")
+                logger.info("Using default warmup_steps: 5\n")
 
             # Add save_steps if specified
             save_steps_val = training_args.get("save_steps", 0)
@@ -3138,7 +3132,7 @@ class UnslothTrainer:
                     self.tokenizer, "tokenizer"
                 ):
                     logger.info(
-                        f"  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer"
+                        "  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer"
                     )
                     sft_tokenizer = self.tokenizer.tokenizer
 
@@ -3446,7 +3440,6 @@ def _ensure_deepseek_ocr_installed():
             sys.path.insert(0, parent_dir)
 
         # Try importing again
-        from deepseek_ocr.modeling_deepseekocr import format_messages
 
         logger.info("DeepSeek OCR module installed successfully")
         logger.info("DeepSeek OCR module installed successfully!\n")
