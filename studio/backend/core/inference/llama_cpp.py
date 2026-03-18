@@ -1338,7 +1338,9 @@ class LlamaCppBackend:
                             try:
                                 r.close()
                             except Exception as e:
-                                logger.debug(f"Error closing response in cancel watcher: {e}")
+                                logger.debug(
+                                    f"Error closing response in cancel watcher: {e}"
+                                )
                             return
                         # Response not created yet -- wait briefly and retry
                         _cancel_closed.wait(timeout = 0.1)
