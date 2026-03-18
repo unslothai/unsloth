@@ -981,7 +981,8 @@ class InferenceBackend:
             if isinstance(content, list):
                 # Extract text from multimodal content parts
                 text_parts = [
-                    part.get("text", "") for part in content
+                    part.get("text", "")
+                    for part in content
                     if isinstance(part, dict) and part.get("type") == "text"
                 ]
                 user_message = "\n".join(text_parts)
@@ -1681,7 +1682,8 @@ class InferenceBackend:
             if isinstance(content, list):
                 # Extract text from multimodal content parts
                 text_parts = [
-                    part.get("text", "") for part in content
+                    part.get("text", "")
+                    for part in content
                     if isinstance(part, dict) and part.get("type") == "text"
                 ]
                 content = "\n".join(text_parts)
