@@ -45,9 +45,7 @@ def run_claude(
     """Run a single eval via claude -p and return the JSON result."""
     output_dir.mkdir(parents = True, exist_ok = True)
 
-    full_prompt = (
-        f"{prompt}\n\n{ENV_CONTEXT.format(repo_root = REPO_ROOT, output_dir = output_dir)}"
-    )
+    full_prompt = f"{prompt}\n\n{ENV_CONTEXT.format(repo_root = REPO_ROOT, output_dir = output_dir)}"
 
     cmd = [
         "claude",
