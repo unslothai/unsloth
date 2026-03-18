@@ -376,35 +376,29 @@ rm -rf "$LLAMA_CPP_DIR"
                 # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
             elif [ "$GPU_BACKEND" = "rocm" ]; then
+                # Derive ROCm root from hipcc path for cmake find_package(hip)
+                ROCM_ROOT="$(cd "$(dirname "$ROCM_PATH")/.." 2>/dev/null && pwd)"
                 echo "   Building with ROCm support (AMD GPU, hipcc: $ROCM_PATH)..."
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
+                export ROCM_PATH="$ROCM_ROOT"
 
                 # Detect AMD GPU architecture (gfx target)
-                AMDGPU_TARGETS=""
+                GPU_TARGETS=""
                 if command -v rocminfo &>/dev/null; then
-                    # Extract gfx architectures from all AMD GPUs
-                    # Look for lines like "  Name:                    gfx90a" or "gfx90a"
-                    _gfx_list=$(rocminfo 2>/dev/null | grep -oP 'gfx[0-9]{3,4}[a-z]?' | sort -u || true)
-
-                    # Validate that we got proper gfx targets (at least 3 digits after gfx)
+                    _gfx_list=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]{2,4}[a-z]?' | sort -u || true)
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
-                        # Only include targets with format gfxNNN or gfxNNNx (e.g., gfx90a, gfx942)
-                        if [[ "$_gfx" =~ ^gfx[0-9]{3,4}[a-z]?$ ]]; then
-                            _valid_gfx="${_valid_gfx}${_valid_gfx:+$'\n'}$_gfx"
+                        if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done
-
-                    if [ -n "$_valid_gfx" ]; then
-                        # Join with semicolons for CMake
-                        AMDGPU_TARGETS=$(echo "$_valid_gfx" | tr '\n' ';' | sed 's/;$//')
-                    fi
+                    [ -n "$_valid_gfx" ] && GPU_TARGETS="$_valid_gfx"
                 fi
 
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=hipcc -DCMAKE_CXX_COMPILER=hipcc"
-                if [ -n "$AMDGPU_TARGETS" ]; then
-                    echo "   AMD GPU architectures: ${AMDGPU_TARGETS//;/, } -- limiting build to detected targets"
-                    CMAKE_ARGS="$CMAKE_ARGS -DAMDGPU_TARGETS=${AMDGPU_TARGETS}"
+                if [ -n "$GPU_TARGETS" ]; then
+                    echo "   AMD GPU architectures: ${GPU_TARGETS//;/, } -- limiting build to detected targets"
+                    CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                 else
                     echo "   Could not detect AMD GPU arch -- building for default targets (cmake will auto-detect)"
                 fi
