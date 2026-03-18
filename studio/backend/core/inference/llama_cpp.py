@@ -1303,23 +1303,25 @@ class LlamaCppBackend:
     ):
         """Open an httpx streaming POST with cancel support.
 
-        Sends the request ONCE with a long read timeout (up to 120 s) for
-        the initial response headers.  Prompt processing (prefill) can take
-        many seconds for long contexts or reasoning models; the previous
-        0.5 s timeout caused a retry storm that sent duplicate requests to
+        Sends the request once.  Prompt processing (prefill) can take many
+        seconds for long contexts or reasoning models; the previous 0.5 s
+        read timeout caused a retry storm that sent duplicate requests to
         llama-server every half second, forcing it to restart processing
         each time.
 
-        Cancel support during the prefill wait is provided by a lightweight
-        background thread that closes the underlying response when
-        cancel_event is set.  Once headers arrive, _iter_text_cancellable
-        handles per-token cancel checking with its own short timeout.
+        Instead of using a single long timeout (which would also delay
+        cancel during token streaming), we keep the client's short read
+        timeout and tolerate ReadTimeout during the prefill phase -- just
+        re-checking cancel_event each time instead of re-sending the POST.
+        Once the first bytes arrive, we yield the response and let
+        _iter_text_cancellable handle per-token cancel with the same short
+        timeout.
+
+        A background watcher thread provides fast cancel during the prefill
+        wait by closing the response when cancel_event is set.
         """
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
-
-        # Long timeout for prefill; per-token cancel uses _iter_text_cancellable.
-        prefill_timeout = httpx.Timeout(connect = 10, read = 120.0, write = 10, pool = 10)
 
         # Background watcher: close the response if cancel is requested
         # so the blocking httpx read is interrupted immediately.
@@ -1354,12 +1356,54 @@ class LlamaCppBackend:
             watcher.start()
 
         try:
+            # Use a longer connect timeout but keep the client's short read
+            # timeout.  During prefill the server sends no data, so ReadTimeout
+            # fires every 0.5 s -- we catch it and loop (re-checking cancel)
+            # instead of re-sending the POST.
+            prefill_timeout = httpx.Timeout(
+                connect = 30, read = client.timeout.read, write = 10, pool = 10,
+            )
             with client.stream(
                 "POST", url, json = payload, timeout = prefill_timeout
             ) as response:
                 _response_ref[0] = response
-                if cancel_event is not None and cancel_event.is_set():
-                    raise GeneratorExit
+                # Wait for the first bytes (prefill). ReadTimeout means the
+                # server is still processing -- loop and re-check cancel.
+                # Once any data arrives, break out and yield the response.
+                body_iter = response.stream.__iter__()
+                first_chunk = None
+                while first_chunk is None:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise GeneratorExit
+                    try:
+                        first_chunk = next(body_iter)
+                    except httpx.ReadTimeout:
+                        continue
+                    except StopIteration:
+                        break
+
+                # Re-inject the first chunk so iter_text() sees it.
+                # We do this by replacing the response stream with a wrapper.
+                original_stream = response.stream
+
+                class _PrependStream:
+                    """Byte stream that yields a buffered first chunk, then the rest."""
+                    def __init__(self, first: bytes, rest):
+                        self._first = first
+                        self._rest = rest
+                        self._sent_first = False
+                    def __iter__(self):
+                        if not self._sent_first and self._first is not None:
+                            self._sent_first = True
+                            yield self._first
+                        yield from self._rest
+                    def close(self):
+                        if hasattr(self._rest, "close"):
+                            self._rest.close()
+
+                if first_chunk is not None:
+                    response.stream = _PrependStream(first_chunk, body_iter)
+
                 yield response
                 return
         except (httpx.ReadError, httpx.RemoteProtocolError, httpx.CloseError):
@@ -1422,8 +1466,9 @@ class LlamaCppBackend:
 
         try:
             # Short read timeout for per-token cancel checking in
-            # _iter_text_cancellable. _stream_with_retry overrides this
-            # with a longer timeout for the initial prefill wait.
+            # _iter_text_cancellable. _stream_with_retry uses this same
+            # timeout during prefill (catching ReadTimeout to re-check
+            # cancel_event) and during streaming.
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
