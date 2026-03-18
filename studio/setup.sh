@@ -41,6 +41,24 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
+# Skip if dist/ exists AND no tracked input is newer than dist/.
+# Checks top-level config/entry files and src/, public/ recursively.
+# This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
+# and upgrades/pulls (source newer than dist/ triggers rebuild).
+_NEED_FRONTEND_BUILD=true
+if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
+        -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+    # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
+    if [ -z "$_changed" ]; then
+        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
+            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null) || true
+    fi
+    if [ -z "$_changed" ]; then
+        _NEED_FRONTEND_BUILD=false
+    fi
+fi
 _NEED_FRONTEND_BUILD=true
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
