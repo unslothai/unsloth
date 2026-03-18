@@ -28,57 +28,6 @@ import httpx
 logger = get_logger(__name__)
 
 
-class _ShortTimeoutStream(httpx.SyncByteStream):
-    """Wraps an httpx byte stream and enforces a short read timeout.
-
-    After prefill completes, the response was opened with a long read
-    timeout (120 s).  This wrapper re-raises httpx.ReadTimeout if the
-    underlying iterator blocks for longer than ``timeout`` seconds,
-    restoring the fast cancel-checking that _iter_text_cancellable
-    relies on.
-    """
-
-    def __init__(self, inner: httpx.SyncByteStream, timeout: float):
-        self._inner = inner
-        self._timeout = timeout
-
-    def __iter__(self):
-        import queue as _queue
-
-        inner_iter = iter(self._inner)
-        buf: _queue.Queue = _queue.Queue()
-        exhausted = threading.Event()
-
-        def _reader():
-            try:
-                for chunk in inner_iter:
-                    buf.put(chunk)
-                buf.put(None)  # sentinel
-            except BaseException as exc:
-                buf.put(exc)
-            finally:
-                exhausted.set()
-
-        reader = threading.Thread(target = _reader, daemon = True)
-        reader.start()
-
-        while True:
-            try:
-                item = buf.get(timeout = self._timeout)
-            except _queue.Empty:
-                raise httpx.ReadTimeout(
-                    f"Timed out after {self._timeout}s waiting for next chunk"
-                )
-            if item is None:
-                return
-            if isinstance(item, BaseException):
-                raise item
-            yield item
-
-    def close(self):
-        self._inner.close()
-
-
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -1354,22 +1303,16 @@ class LlamaCppBackend:
     ):
         """Open an httpx streaming POST with cancel support.
 
-        Sends the request once.  Prompt processing (prefill) can take many
-        seconds for long contexts or reasoning models; the previous 0.5 s
-        read timeout caused a retry storm that sent duplicate requests to
-        llama-server every half second, forcing it to restart processing
-        each time.
+        Sends the request once with a long read timeout (120 s) so
+        prompt processing (prefill) can finish without triggering a
+        retry storm.  The previous 0.5 s timeout caused duplicate POST
+        requests every half second, forcing llama-server to restart
+        processing each time.
 
-        Instead of using a single long timeout (which would also delay
-        cancel during token streaming), we keep the client's short read
-        timeout and tolerate ReadTimeout during the prefill phase -- just
-        re-checking cancel_event each time instead of re-sending the POST.
-        Once the first bytes arrive, we yield the response and let
-        _iter_text_cancellable handle per-token cancel with the same short
-        timeout.
-
-        A background watcher thread provides fast cancel during the prefill
-        wait by closing the response when cancel_event is set.
+        A background watcher thread provides fast cancel during both
+        prefill and token streaming by closing the response when
+        cancel_event is set, which unblocks any blocking httpx read
+        within ~0.3 s.
         """
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
@@ -1407,36 +1350,19 @@ class LlamaCppBackend:
             watcher.start()
 
         try:
-            # Long read timeout for the initial prefill wait (server
-            # processing the prompt before sending headers).  The cancel
-            # watcher provides fast cancellation during this phase by
-            # closing the response.
-            #
-            # Once headers arrive, we swap the response stream for a
-            # _ShortTimeoutStream wrapper that re-raises ReadTimeout
-            # after the client's original short interval.  This keeps
-            # _iter_text_cancellable's cancel-checking responsive
-            # during token streaming.
+            # Long read timeout so prefill (prompt processing) can finish
+            # without triggering a retry storm.  Cancel during both
+            # prefill and streaming is handled by the watcher thread
+            # which closes the response, unblocking any httpx read.
             prefill_timeout = httpx.Timeout(
-                connect = 30,
-                read = 120.0,
-                write = 10,
-                pool = 10,
+                connect = 30, read = 120.0, write = 10, pool = 10,
             )
-            short_read = client.timeout.read  # typically 0.5 s
             with client.stream(
                 "POST", url, json = payload, timeout = prefill_timeout
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
                     raise GeneratorExit
-                # Headers arrived -- swap to a short-timeout stream so
-                # _iter_text_cancellable can re-check cancel every 0.5 s.
-                if short_read and short_read > 0:
-                    response.stream = _ShortTimeoutStream(
-                        response.stream,
-                        short_read,
-                    )
                 yield response
                 return
         except (httpx.ReadError, httpx.RemoteProtocolError, httpx.CloseError):
@@ -1498,10 +1424,9 @@ class LlamaCppBackend:
         in_thinking = False
 
         try:
-            # Short read timeout for per-token cancel checking in
-            # _iter_text_cancellable. _stream_with_retry uses a long
-            # timeout for prefill, then swaps to a _ShortTimeoutStream
-            # wrapper that enforces this same short interval.
+            # _stream_with_retry uses a 120 s read timeout so prefill
+            # can finish.  Cancel during streaming is handled by the
+            # watcher thread (closes the response on cancel_event).
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
