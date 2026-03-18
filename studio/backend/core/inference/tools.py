@@ -17,7 +17,6 @@ import tempfile
 import threading
 
 from loggers import get_logger
-from unsloth_zoo.rl_environments import check_signal_escape_patterns
 
 logger = get_logger(__name__)
 
@@ -171,6 +170,11 @@ def _check_code_safety(code: str) -> str | None:
     Returns an error message string if the code is unsafe, or None if OK.
     """
     # Check for signal/timeout escape patterns
+    try:
+        from unsloth_zoo.rl_environments import check_signal_escape_patterns
+    except (ImportError, NotImplementedError):
+        # unsloth_zoo may not be available or may fail on non-GPU platforms (e.g. Mac)
+        return None
     safe, info = check_signal_escape_patterns(code)
     if not safe:
         reasons = [
