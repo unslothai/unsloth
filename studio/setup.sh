@@ -41,10 +41,19 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Skip frontend build if dist/ already exists (PyPI wheel, previous build, etc.)
-# To force a rebuild, delete frontend/dist and re-run setup.
+# Skip if dist/ exists AND no source file is newer than dist/.
+# This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
+# and upgrades/pulls (source newer than dist/ triggers rebuild).
+_NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    echo "✅ Frontend already built (frontend/dist exists) -- skipping Node/npm check."
+    # Check if any src/ file is newer than dist/
+    _newest_src=$(find "$SCRIPT_DIR/frontend/src" -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+    if [ -z "$_newest_src" ]; then
+        _NEED_FRONTEND_BUILD=false
+    fi
+fi
+if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then

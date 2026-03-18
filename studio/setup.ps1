@@ -749,11 +749,24 @@ Write-Host ""
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
 $DistDir = Join-Path $FrontendDir "dist"
+$SrcDir = Join-Path $FrontendDir "src"
+# Skip build if dist/ exists and no source file is newer than dist/
+$NeedFrontendBuild = $true
 if ($IsPipInstall) {
+    $NeedFrontendBuild = $false
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } elseif (Test-Path $DistDir) {
-    Write-Host "[OK] Frontend already built (frontend/dist exists). To rebuild, delete frontend/dist and re-run setup." -ForegroundColor Green
-} else {
+    $DistTime = (Get-Item $DistDir).LastWriteTime
+    $NewerSrc = Get-ChildItem -Path $SrcDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
+    if (-not $NewerSrc) {
+        $NeedFrontendBuild = $false
+        Write-Host "[OK] Frontend already built and up to date -- skipping build" -ForegroundColor Green
+    } else {
+        Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
+    }
+}
+if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
     # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
