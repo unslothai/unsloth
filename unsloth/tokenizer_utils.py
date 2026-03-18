@@ -311,11 +311,13 @@ def fix_sentencepiece_tokenizer(
 ):
     try:
         from transformers.convert_slow_tokenizer import import_protobuf
+
         sentencepiece_model_pb2 = import_protobuf()
     except Exception as e:
         try:
             import google.protobuf
             from unsloth_zoo.utils import Version
+
             protobuf_version = Version(google.protobuf.__version__)
             if protobuf_version > Version("3.20.3"):
                 raise RuntimeError(
@@ -360,6 +362,7 @@ def fix_sentencepiece_tokenizer(
         file.write(tokenizer_file.SerializeToString())
 
     from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(
         temporary_location,
         eos_token = new_tokenizer.eos_token,
@@ -679,6 +682,7 @@ def check_tokenizer(
                 added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
                 special_tokens = tokenizer.special_tokens_map
                 import itertools
+
                 special_tokens = frozenset(
                     itertools.chain.from_iterable(
                         [x] if type(x) is str else x for x in special_tokens.values()
@@ -803,18 +807,18 @@ def get_tokenizer_info(tokenizer) -> dict:
         A ``dict`` of tokenizer properties. Safe to serialize to JSON.
     """
     return {
-        "name_or_path"      : getattr(tokenizer, "name_or_path", None),
-        "tokenizer_class"   : type(tokenizer).__name__,
-        "is_fast"           : getattr(tokenizer, "is_fast", False),
-        "vocab_size"        : getattr(tokenizer, "vocab_size", None),
+        "name_or_path": getattr(tokenizer, "name_or_path", None),
+        "tokenizer_class": type(tokenizer).__name__,
+        "is_fast": getattr(tokenizer, "is_fast", False),
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
         "added_tokens_count": len(getattr(tokenizer, "added_tokens_decoder", {})),
-        "model_max_length"  : getattr(tokenizer, "model_max_length", None),
-        "padding_side"      : getattr(tokenizer, "padding_side", None),
-        "bos_token"         : getattr(tokenizer, "bos_token", None),
-        "eos_token"         : getattr(tokenizer, "eos_token", None),
-        "pad_token"         : getattr(tokenizer, "pad_token", None),
-        "unk_token"         : getattr(tokenizer, "unk_token", None),
-        "has_chat_template" : getattr(tokenizer, "chat_template", None) is not None,
+        "model_max_length": getattr(tokenizer, "model_max_length", None),
+        "padding_side": getattr(tokenizer, "padding_side", None),
+        "bos_token": getattr(tokenizer, "bos_token", None),
+        "eos_token": getattr(tokenizer, "eos_token", None),
+        "pad_token": getattr(tokenizer, "pad_token", None),
+        "unk_token": getattr(tokenizer, "unk_token", None),
+        "has_chat_template": getattr(tokenizer, "chat_template", None) is not None,
         "special_tokens_count": len(getattr(tokenizer, "all_special_tokens", [])),
     }
 
