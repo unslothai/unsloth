@@ -1273,10 +1273,11 @@ class LlamaCppBackend:
     ) -> Generator[str, None, None]:
         """Iterate over an httpx streaming response with cancel support.
 
-        Uses a short read timeout on the stream so that cancel_event is
-        checked at least every 0.5s, even if the model is slow to produce
-        the next token.  Without this, iter_text() blocks until the next
-        chunk arrives and cancellation can take many seconds on large models.
+        Checks cancel_event between chunks and on ReadTimeout.  The
+        cancel watcher in _stream_with_retry also calls response.close()
+        on cancel, which unblocks iter_text() once the response exists.
+        During normal streaming llama-server sends tokens frequently,
+        so the cancel check between chunks is the primary mechanism.
         """
         text_iter = response.iter_text()
         while True:
@@ -1309,16 +1310,21 @@ class LlamaCppBackend:
         requests every half second, forcing llama-server to restart
         processing each time.
 
-        A background watcher thread provides fast cancel during both
-        prefill and token streaming by closing the response when
-        cancel_event is set, which unblocks any blocking httpx read
-        within ~0.3 s.
+        A background watcher thread provides cancel by closing the
+        response when cancel_event is set.  Limitation: httpx does not
+        allow interrupting a blocked read from another thread before
+        the response object exists, so cancel during the initial
+        header wait (prefill phase) only takes effect once headers
+        arrive.  After that, response.close() unblocks reads promptly.
+        In practice llama-server prefill is 1-5 s for typical prompts,
+        during which cancel is deferred -- still much better than the
+        old retry storm which made prefill slower.
         """
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
 
-        # Background watcher: close the response if cancel is requested
-        # so the blocking httpx read is interrupted immediately.
+        # Background watcher: close the response if cancel is requested.
+        # Only effective after response headers arrive (httpx limitation).
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
 
