@@ -35,8 +35,6 @@ def train(
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
-    _reexec_cli_in_studio_venv(sys.argv[1:])
-
     try:
         cfg = load_config(config)
     except FileNotFoundError as e:
@@ -63,6 +61,9 @@ def train(
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
+
+    # Only re-exec into studio venv for actual training (not dry-run)
+    _reexec_cli_in_studio_venv(sys.argv[1:])
 
     if not cfg.model:
         typer.echo("Error: provide --model or set model in --config", err = True)

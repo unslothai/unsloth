@@ -144,10 +144,13 @@ def run_grader(
     eval_id = eval_entry["id"]
     eval_dir = iteration_dir / eval_id
 
-    with_response = (eval_dir / "with_skill" / "outputs" / "response.md").read_text()
+    with_response_path = eval_dir / "with_skill" / "outputs" / "response.md"
+    without_response_path = eval_dir / "without_skill" / "outputs" / "response.md"
+
+    with_response = with_response_path.read_text() if with_response_path.exists() else "(run failed — no output)"
     without_response = (
-        (eval_dir / "without_skill" / "outputs" / "response.md").read_text()
-        if without_result
+        without_response_path.read_text()
+        if without_result and without_response_path.exists()
         else "N/A"
     )
 
