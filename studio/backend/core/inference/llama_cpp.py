@@ -1232,14 +1232,16 @@ class LlamaCppBackend:
             # boundaries.  We avoid using </function> as a boundary because
             # code parameter values can contain that literal string.
             # After extracting, we trim a trailing </function> if present.
-            func_starts = list(
-                re.finditer(r"<function=(\w+)>\s*", content)
-            )
+            func_starts = list(re.finditer(r"<function=(\w+)>\s*", content))
             for idx, fm in enumerate(func_starts):
                 func_name = fm.group(1)
                 body_start = fm.end()
                 # Hard boundaries: next <function= tag or </tool_call>
-                next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+                next_func = (
+                    func_starts[idx + 1].start()
+                    if idx + 1 < len(func_starts)
+                    else len(content)
+                )
                 end_tag = re.search(r"</tool_call>", content[body_start:])
                 if end_tag:
                     body_end = body_start + end_tag.start()
@@ -1255,14 +1257,12 @@ class LlamaCppBackend:
                 # query), use body end as the only boundary to avoid false matches
                 # on </parameter> inside code strings.
                 arguments = {}
-                param_starts = list(
-                    re.finditer(r"<parameter=(\w+)>\s*", body)
-                )
+                param_starts = list(re.finditer(r"<parameter=(\w+)>\s*", body))
                 if len(param_starts) == 1:
                     # Single parameter: value is everything from after the tag
                     # to end of body, trimming any trailing </parameter>.
                     pm = param_starts[0]
-                    val = body[pm.end():]
+                    val = body[pm.end() :]
                     val = re.sub(r"\s*</parameter>\s*$", "", val)
                     arguments[pm.group(1)] = val.strip()
                 else:
@@ -1270,7 +1270,11 @@ class LlamaCppBackend:
                         param_name = pm.group(1)
                         val_start = pm.end()
                         # Value ends at next <parameter= or end of body
-                        next_param = param_starts[pidx + 1].start() if pidx + 1 < len(param_starts) else len(body)
+                        next_param = (
+                            param_starts[pidx + 1].start()
+                            if pidx + 1 < len(param_starts)
+                            else len(body)
+                        )
                         val = body[val_start:next_param]
                         # Trim trailing </parameter> if present
                         val = re.sub(r"\s*</parameter>\s*$", "", val)
@@ -1754,12 +1758,14 @@ class LlamaCppBackend:
             stream_payload["stop"] = stop
 
         import re as _re_final
+
         _TOOL_CALL_PATTERNS = [
             _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
             _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
             _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
             _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
         ]
+
         def _strip_tool_markup(text: str) -> str:
             for pat in _TOOL_CALL_PATTERNS:
                 text = pat.sub("", text)
@@ -1797,7 +1803,10 @@ class LlamaCppBackend:
                                 if in_thinking:
                                     if has_content_tokens:
                                         cumulative += "</think>"
-                                        yield {"type": "content", "text": _strip_tool_markup(cumulative)}
+                                        yield {
+                                            "type": "content",
+                                            "text": _strip_tool_markup(cumulative),
+                                        }
                                     else:
                                         cumulative = reasoning_text
                                         yield {"type": "content", "text": cumulative}

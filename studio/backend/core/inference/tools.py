@@ -27,13 +27,14 @@ _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"
 # Uses ~/studio_sandbox/ so files are accessible to the user.
 _persistent_workdir: str | None = None
 
+
 def _get_workdir() -> str:
     """Return (and lazily create) a persistent working directory for tool execution."""
     global _persistent_workdir
     if _persistent_workdir is None or not os.path.isdir(_persistent_workdir):
         home = os.path.expanduser("~")
         workdir = os.path.join(home, "studio_sandbox")
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, exist_ok = True)
         _persistent_workdir = workdir
     return _persistent_workdir
 
