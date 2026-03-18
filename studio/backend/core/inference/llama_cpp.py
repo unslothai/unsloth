@@ -1367,7 +1367,10 @@ class LlamaCppBackend:
             # _iter_text_cancellable's cancel-checking responsive
             # during token streaming.
             prefill_timeout = httpx.Timeout(
-                connect = 30, read = 120.0, write = 10, pool = 10,
+                connect = 30,
+                read = 120.0,
+                write = 10,
+                pool = 10,
             )
             short_read = client.timeout.read  # typically 0.5 s
             with client.stream(
@@ -1380,7 +1383,8 @@ class LlamaCppBackend:
                 # _iter_text_cancellable can re-check cancel every 0.5 s.
                 if short_read and short_read > 0:
                     response.stream = _ShortTimeoutStream(
-                        response.stream, short_read,
+                        response.stream,
+                        short_read,
                     )
                 yield response
                 return
@@ -1402,6 +1406,7 @@ class _ShortTimeoutStream(httpx.SyncByteStream):
     restoring the fast cancel-checking that _iter_text_cancellable
     relies on.
     """
+
     def __init__(self, inner: httpx.SyncByteStream, timeout: float):
         self._inner = inner
         self._timeout = timeout
