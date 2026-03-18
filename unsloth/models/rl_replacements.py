@@ -25,6 +25,7 @@ import re
 import torch
 import inspect
 import linecache
+from contextlib import nullcontext
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
@@ -244,10 +245,10 @@ def grpo_trainer__prepare_inputs(function_name, function):
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
-        "torch.amp.autocast(device_type = 'cuda', "
-        "dtype = ((torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "
-        "if not torch.is_autocast_enabled('cuda') else nullcontext())"
-        "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '0' else torch.float16):",
+        "(nullcontext() if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' else "
+        "(torch.amp.autocast(device_type = 'cuda', "
+        "dtype = (torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16)) "
+        "if not torch.is_autocast_enabled('cuda') else nullcontext())):",
     )
     function = function.replace(
         "self.accelerator.unwrap_model(self.model)",
@@ -624,17 +625,21 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None  # Unsloth efficient GRPO
         # Otherwise, calculate normally:
-        if not hasattr(self, "_autocast_dtype"):
-            self._autocast_dtype = (
-                torch.float16
-                if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                else torch.bfloat16
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            autocaster = nullcontext()
+        else:
+            if not hasattr(self, "_autocast_dtype"):
+                self._autocast_dtype = (
+                    torch.float16
+                    if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
+                    else torch.bfloat16
+                )
+            autocaster = torch.amp.autocast(
+                device_type = DEVICE_TYPE, dtype = self._autocast_dtype
             )
-            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                self._autocast_dtype = torch.float16
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype):
+        with autocaster:
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
                 input_ids = input_ids,
@@ -690,14 +695,25 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         if compute_efficient:
             return None, None
         else:
-            if not hasattr(self, "_autocast_dtype"):
-                self._autocast_dtype = (
-                    torch.float16
-                    if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                    else torch.bfloat16
+            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+                autocaster = nullcontext()
+                dtype_bytes = 32
+            else:
+                if not hasattr(self, "_autocast_dtype"):
+                    self._autocast_dtype = (
+                        torch.float16
+                        if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16")
+                        == "fp16"
+                        else torch.bfloat16
+                    )
+                autocaster = torch.amp.autocast(
+                    device_type = DEVICE_TYPE, dtype = self._autocast_dtype
                 )
-                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                    self._autocast_dtype = torch.float16
+                dtype_bytes = (
+                    16
+                    if self._autocast_dtype in [torch.float16, torch.bfloat16]
+                    else 32
+                )
 
             pixel_values, image_grid_thw = (
                 kwargs.get("pixel_values", None),
@@ -714,9 +730,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             lm_head = self.model.get_output_embeddings().weight
 
-            dtype_bytes = (
-                16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
-            )
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
@@ -843,9 +856,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
                 ) in zipped_inputs:
-                    with torch.amp.autocast(
-                        device_type = "cuda", dtype = self._autocast_dtype
-                    ):
+                    with autocaster:
                         if pixel_values is None:
                             logits_chunk = unwrapped_model(
                                 input_ids = input_ids_chunk,
