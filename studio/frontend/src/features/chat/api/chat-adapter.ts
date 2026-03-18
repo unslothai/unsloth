@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatModelAdapter } from "@assistant-ui/react";
-import type { MessageTiming } from "@assistant-ui/core";
+import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import {
   generateAudio,
@@ -527,7 +527,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningDuration = 0;
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
-      const toolCallParts: { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown>; result?: unknown }[] = [];
+      const toolCallParts: ToolCallMessagePart[] = [];
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -582,11 +582,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           if (toolEvent !== undefined) {
             if (toolEvent.type === "tool_start") {
               const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+              const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
               toolCallParts.push({
                 type: "tool-call" as const,
                 toolCallId: id,
                 toolName: toolEvent.tool_name as string,
-                args: (toolEvent.arguments as Record<string, unknown>) ?? {},
+                argsText: JSON.stringify(toolArgs),
+                args: toolArgs,
               });
             } else if (toolEvent.type === "tool_end") {
               const id = (toolEvent.tool_call_id as string) ||
