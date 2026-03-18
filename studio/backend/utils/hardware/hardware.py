@@ -283,100 +283,28 @@ def get_package_versions() -> Dict[str, Optional[str]]:
 # ========== Live GPU Utilization (nvidia-smi) ==========
 
 
-def get_gpu_utilization() -> Dict[str, Any]:
-    """
-    Return a live snapshot of GPU utilization via ``nvidia-smi``.
-
-    Designed to be polled by the frontend during training (not streaming).
-    Uses ``nvidia-smi --query-gpu`` which is the most accurate source for
-    utilization %, temperature, and power draw – stats that PyTorch does
-    not expose.
-
-    Returns dict with keys:
-        available          – bool, whether stats could be retrieved
-        gpu_utilization_pct – GPU core utilization %
-        temperature_c      – GPU temperature in °C
-        vram_used_gb       – VRAM currently used (GiB)
-        vram_total_gb      – VRAM total (GiB)
-        vram_utilization_pct – VRAM used / total * 100
-        power_draw_w       – current power draw (W)
-        power_limit_w      – power limit (W)
-        power_utilization_pct – power draw / limit * 100
-    """
-    device = get_device()
-
-    if device != DeviceType.CUDA:
-        return {"available": False, "backend": device.value}
-
-    def _parse_smi_value(raw: str):
-        """Parse a single nvidia-smi CSV value. Returns float or None for [N/A]."""
-        raw = raw.strip()
-        if not raw or raw == "[N/A]":
-            return None
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            return None
-
-    # ── nvidia-smi (most complete source) ───────────────────────
-    smi_data = {}
+def _parse_nvidia_smi_value(raw: str) -> Optional[float]:
+    """Parse a single nvidia-smi CSV value."""
+    raw = raw.strip()
+    if not raw or raw == "[N/A]":
+        return None
     try:
-        import subprocess
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
 
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu,temperature.gpu,"
-                "memory.used,memory.total,power.draw,power.limit",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
 
-        if result.returncode == 0 and result.stdout.strip():
-            # nvidia-smi outputs one line per GPU; take GPU 0
-            first_line = result.stdout.strip().splitlines()[0]
-            parts = [p.strip() for p in first_line.split(",")]
-            if len(parts) >= 6:
-                smi_data = {
-                    "gpu_util": _parse_smi_value(parts[0]),
-                    "temp": _parse_smi_value(parts[1]),
-                    "vram_used_mb": _parse_smi_value(parts[2]),
-                    "vram_total_mb": _parse_smi_value(parts[3]),
-                    "power_draw": _parse_smi_value(parts[4]),
-                    "power_limit": _parse_smi_value(parts[5]),
-                }
-
-    except FileNotFoundError:
-        logger.debug("nvidia-smi not found, falling back to torch.cuda")
-    except Exception as e:
-        logger.warning(f"nvidia-smi query failed: {e}")
-
-    # ── Backfill VRAM from torch.cuda if nvidia-smi returned [N/A] ──
-    vram_used_mb = smi_data.get("vram_used_mb")
-    vram_total_mb = smi_data.get("vram_total_mb")
-
-    if vram_used_mb is None or vram_total_mb is None:
-        try:
-            import torch
-
-            idx = torch.cuda.current_device()
-            props = torch.cuda.get_device_properties(idx)
-            if vram_total_mb is None:
-                vram_total_mb = props.total_memory / (1024**2)  # bytes → MiB
-            if vram_used_mb is None:
-                vram_used_mb = torch.cuda.memory_allocated(idx) / (1024**2)
-        except Exception as e:
-            logger.debug(f"torch.cuda VRAM backfill failed: {e}")
-
-    # ── Build response ──────────────────────────────────────────
-    gpu_util = smi_data.get("gpu_util")
-    temp = smi_data.get("temp")
-    power_draw = smi_data.get("power_draw")
-    power_limit = smi_data.get("power_limit")
-
+def _build_gpu_utilization_entry(
+    index: int,
+    name: Optional[str],
+    gpu_util: Optional[float],
+    temp: Optional[float],
+    vram_used_mb: Optional[float],
+    vram_total_mb: Optional[float],
+    power_draw: Optional[float],
+    power_limit: Optional[float],
+) -> Dict[str, Any]:
+    """Normalize one GPU's live telemetry into the frontend payload shape."""
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
     vram_total_gb = (
         round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
@@ -392,14 +320,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
         else None
     )
 
-    # If we got at least something useful, report available
-    has_any = any(v is not None for v in [gpu_util, temp, vram_used_gb, power_draw])
-    if not has_any:
-        return {"available": False, "backend": device.value}
-
     return {
-        "available": True,
-        "backend": device.value,
+        "index": index,
+        "name": name,
         "gpu_utilization_pct": gpu_util,
         "temperature_c": temp,
         "vram_used_gb": vram_used_gb,
@@ -408,6 +331,182 @@ def get_gpu_utilization() -> Dict[str, Any]:
         "power_draw_w": power_draw,
         "power_limit_w": power_limit,
         "power_utilization_pct": power_pct,
+    }
+
+
+def get_gpu_utilization() -> Dict[str, Any]:
+    """
+    Return a live snapshot of GPU utilization via ``nvidia-smi``.
+
+    Designed to be polled by the frontend during training (not streaming).
+    Uses ``nvidia-smi --query-gpu`` which is the most accurate source for
+    utilization %, temperature, and power draw – stats that PyTorch does
+    not expose.
+
+    Returns dict with keys:
+        available            – bool, whether stats could be retrieved
+        gpu_count            – number of GPU entries returned
+        physical_gpu_count   – number of physical NVIDIA GPUs on the machine
+        visible_gpu_count    – number of GPUs visible to this process
+        gpus                 – list of per-GPU telemetry dicts
+
+    For backwards compatibility, the top-level metric fields still mirror GPU 0.
+    """
+    device = get_device()
+
+    if device != DeviceType.CUDA:
+        return {
+            "available": False,
+            "backend": device.value,
+            "gpu_count": 0,
+            "physical_gpu_count": 0,
+            "visible_gpu_count": 0,
+            "gpus": [],
+        }
+
+    # ── nvidia-smi (most complete source) ───────────────────────
+    gpu_entries = []
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,temperature.gpu,"
+                "memory.used,memory.total,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 8:
+                    continue
+                index_raw = parts[0]
+                try:
+                    index = int(index_raw)
+                except ValueError:
+                    index = len(gpu_entries)
+
+                gpu_entries.append(
+                    _build_gpu_utilization_entry(
+                        index = index,
+                        name = parts[1] or None,
+                        gpu_util = _parse_nvidia_smi_value(parts[2]),
+                        temp = _parse_nvidia_smi_value(parts[3]),
+                        vram_used_mb = _parse_nvidia_smi_value(parts[4]),
+                        vram_total_mb = _parse_nvidia_smi_value(parts[5]),
+                        power_draw = _parse_nvidia_smi_value(parts[6]),
+                        power_limit = _parse_nvidia_smi_value(parts[7]),
+                    )
+                )
+
+    except FileNotFoundError:
+        logger.debug("nvidia-smi not found, falling back to torch.cuda")
+    except Exception as e:
+        logger.warning(f"nvidia-smi query failed: {e}")
+
+    # ── Backfill VRAM from torch.cuda if nvidia-smi returned [N/A] ──
+    if not gpu_entries:
+        try:
+            import torch
+
+            idx = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(idx)
+            gpu_entries = [
+                _build_gpu_utilization_entry(
+                    index = idx,
+                    name = props.name,
+                    gpu_util = None,
+                    temp = None,
+                    vram_used_mb = torch.cuda.memory_allocated(idx) / (1024**2),
+                    vram_total_mb = props.total_memory / (1024**2),
+                    power_draw = None,
+                    power_limit = None,
+                )
+            ]
+        except Exception as e:
+            logger.debug(f"torch.cuda VRAM backfill failed: {e}")
+    else:
+        try:
+            import torch
+
+            current_idx = torch.cuda.current_device()
+            current_entry = next(
+                (entry for entry in gpu_entries if entry["index"] == current_idx),
+                None,
+            )
+            if current_entry is not None:
+                props = torch.cuda.get_device_properties(current_idx)
+                if current_entry["vram_total_gb"] is None:
+                    current_entry["vram_total_gb"] = round(
+                        props.total_memory / (1024**3), 2
+                    )
+                if current_entry["vram_used_gb"] is None:
+                    current_entry["vram_used_gb"] = round(
+                        torch.cuda.memory_allocated(current_idx) / (1024**3), 2
+                    )
+                if (
+                    current_entry["vram_used_gb"] is not None
+                    and current_entry["vram_total_gb"] is not None
+                    and current_entry["vram_total_gb"] > 0
+                ):
+                    current_entry["vram_utilization_pct"] = round(
+                        (
+                            current_entry["vram_used_gb"]
+                            / current_entry["vram_total_gb"]
+                        )
+                        * 100,
+                        1,
+                    )
+        except Exception as e:
+            logger.debug(f"torch.cuda VRAM backfill failed: {e}")
+
+    # ── Build response ──────────────────────────────────────────
+    # If we got at least something useful, report available
+    has_any = any(
+        any(
+            entry.get(key) is not None
+            for key in (
+                "gpu_utilization_pct",
+                "temperature_c",
+                "vram_used_gb",
+                "power_draw_w",
+            )
+        )
+        for entry in gpu_entries
+    )
+    if not has_any:
+        return {
+            "available": False,
+            "backend": device.value,
+            "gpu_count": len(gpu_entries),
+            "physical_gpu_count": get_physical_gpu_count(),
+            "visible_gpu_count": get_visible_gpu_count(),
+            "gpus": gpu_entries,
+        }
+
+    primary = gpu_entries[0]
+
+    return {
+        "available": True,
+        "backend": device.value,
+        "gpu_count": len(gpu_entries),
+        "physical_gpu_count": get_physical_gpu_count(),
+        "visible_gpu_count": get_visible_gpu_count(),
+        "gpus": gpu_entries,
+        "gpu_utilization_pct": primary.get("gpu_utilization_pct"),
+        "temperature_c": primary.get("temperature_c"),
+        "vram_used_gb": primary.get("vram_used_gb"),
+        "vram_total_gb": primary.get("vram_total_gb"),
+        "vram_utilization_pct": primary.get("vram_utilization_pct"),
+        "power_draw_w": primary.get("power_draw_w"),
+        "power_limit_w": primary.get("power_limit_w"),
+        "power_utilization_pct": primary.get("power_utilization_pct"),
     }
 
 
