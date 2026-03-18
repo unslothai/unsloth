@@ -10,6 +10,14 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -37,7 +45,7 @@ import {
   Settings04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, type ReactNode, useState } from "react";
+import { type ReactElement, type ReactNode, useRef, useState } from "react";
 
 function Row({
   label,
@@ -120,6 +128,9 @@ export function ParamsSection(): ReactElement {
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
+  const [ctxInput, setCtxInput] = useState(String(store.contextLength));
+  const ctxAnchorRef = useRef<HTMLDivElement>(null);
+  const ctxItems = CONTEXT_LENGTHS.map(String);
   const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
     maxSteps: store.maxSteps,
     epochs: store.epochs,
@@ -259,21 +270,61 @@ export function ParamsSection(): ReactElement {
                 </TooltipContent>
               </Tooltip>
             </span>
-            <Select
-              value={String(store.contextLength)}
-              onValueChange={(v) => store.setContextLength(Number(v))}
-            >
-              <SelectTrigger className="w-full font-mono">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CONTEXT_LENGTHS.map((len) => (
-                  <SelectItem key={len} value={String(len)} className="font-mono">
-                    {len.toLocaleString()}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div ref={ctxAnchorRef}>
+              <Combobox
+                items={ctxItems}
+                filteredItems={ctxItems}
+                filter={null}
+                value={String(store.contextLength)}
+                onValueChange={(v) => {
+                  if (v) {
+                    const n = Number(v);
+                    if (Number.isInteger(n) && n > 0) {
+                      store.setContextLength(n);
+                      setCtxInput(v);
+                    }
+                  }
+                }}
+                onInputValueChange={setCtxInput}
+                itemToStringValue={(id) => Number(id).toLocaleString()}
+                autoHighlight={false}
+              >
+                <ComboboxInput
+                  placeholder={String(store.contextLength)}
+                  className="w-full font-mono"
+                  onBlur={() => {
+                    const n = Number(ctxInput);
+                    if (Number.isInteger(n) && n > 0) {
+                      store.setContextLength(n);
+                    }
+                    setCtxInput(String(store.contextLength));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter") { return; }
+                    const n = Number(ctxInput);
+                    if (!Number.isInteger(n) || n <= 0) { return; }
+                    // If the typed value isn't an exact preset, prevent the
+                    // combobox from selecting a highlighted dropdown item.
+                    if (!ctxItems.includes(ctxInput.trim())) {
+                      e.stopPropagation();
+                      e.preventDefault();
+                    }
+                    store.setContextLength(n);
+                    setCtxInput(String(n));
+                  }}
+                />
+                <ComboboxContent anchor={ctxAnchorRef}>
+                  <ComboboxEmpty>Enter a custom value</ComboboxEmpty>
+                  <ComboboxList className="p-1">
+                    {(id: string) => (
+                      <ComboboxItem key={id} value={id} className="font-mono">
+                        {Number(id).toLocaleString()}
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
             <p className="text-[10px] text-muted-foreground">
               Max sequence length for training samples
             </p>

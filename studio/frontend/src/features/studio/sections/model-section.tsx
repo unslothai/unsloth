@@ -372,7 +372,7 @@ export function ModelSection() {
 
           <div data-tour="studio-base-model" className="flex flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Base Model
+            Hugging Face Model
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button

@@ -151,7 +151,7 @@ function ModelSelectorContent({
           <button
             type="button"
             onClick={onEject}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
             title="Eject model"
           >
             <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
