@@ -1837,21 +1837,28 @@ class LlamaCppBackend:
 
         import re as _re_final
 
-        _TOOL_CALL_PATTERNS = [
+        # Closed blocks only -- safe to strip mid-stream without shrinking later.
+        _TOOL_CLOSED_PATTERNS = [
             _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
             _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
+        ]
+        # Open-ended patterns strip from an opening tag to end-of-string.
+        # Only applied on the final flush to avoid non-monotonic shrinking.
+        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
             _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
             _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
         ]
 
-        def _strip_tool_markup(text: str) -> str:
+        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
-            for pat in _TOOL_CALL_PATTERNS:
+            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
+            for pat in patterns:
                 text = pat.sub("", text)
-            return text.strip()
+            return text.strip() if final else text
 
         cumulative = ""
+        _last_emitted = ""
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
@@ -1885,7 +1892,7 @@ class LlamaCppBackend:
                                         cumulative += "</think>"
                                         yield {
                                             "type": "content",
-                                            "text": _strip_tool_markup(cumulative),
+                                            "text": _strip_tool_markup(cumulative, final = True),
                                         }
                                     else:
                                         cumulative = reasoning_text
@@ -1917,7 +1924,10 @@ class LlamaCppBackend:
                                             in_thinking = False
                                         cumulative += token
                                         cleaned = _strip_tool_markup(cumulative)
-                                        yield {"type": "content", "text": cleaned}
+                                        # Only emit when cleaned text grows (monotonic).
+                                        if len(cleaned) > len(_last_emitted):
+                                            _last_emitted = cleaned
+                                            yield {"type": "content", "text": cleaned}
                             except json.JSONDecodeError:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"

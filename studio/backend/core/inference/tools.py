@@ -207,8 +207,9 @@ def _python_exec(
         return error
 
     tmp_path = None
+    workdir = _get_workdir(session_id)
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_")
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
@@ -217,7 +218,7 @@ def _python_exec(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            cwd = _get_workdir(session_id),
+            cwd = workdir,
         )
 
         # Spawn cancel watcher if we have a cancel event
