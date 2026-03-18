@@ -16,8 +16,8 @@ metadata:
 ## Prerequisites
 
 ```bash
-pip install unsloth                # install the CLI entrypoint
-unsloth studio setup               # one-time runtime setup (~/.unsloth/studio/.venv)
+pip install unsloth
+unsloth studio setup
 ```
 
 - Python 3.11-3.13 is required inside the studio venv (created by `unsloth studio setup`). The system Python can differ — the CLI re-executes in the studio venv automatically.
