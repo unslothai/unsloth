@@ -70,13 +70,14 @@ unsloth studio -H 0.0.0.0 -p 8888
 ### Unsloth Core (code-based)
 #### Windows, Linux, WSL
 ```bash
-pip install unsloth
+pip install --upgrade pip && pip install uv
+uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
 You can use the same Docker image as Unsloth Studio.
 
 #### AMD, Intel
-For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
+For RTX 50x, B200, 6000 GPUs: `uv pip install unsloth --torch-backend=auto`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/get-started/install/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
 ## ✨ Free Notebooks
