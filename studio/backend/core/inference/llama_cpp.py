@@ -28,6 +28,56 @@ import httpx
 logger = get_logger(__name__)
 
 
+class _ShortTimeoutStream(httpx.SyncByteStream):
+    """Wraps an httpx byte stream and enforces a short read timeout.
+
+    After prefill completes, the response was opened with a long read
+    timeout (120 s).  This wrapper re-raises httpx.ReadTimeout if the
+    underlying iterator blocks for longer than ``timeout`` seconds,
+    restoring the fast cancel-checking that _iter_text_cancellable
+    relies on.
+    """
+    def __init__(self, inner: httpx.SyncByteStream, timeout: float):
+        self._inner = inner
+        self._timeout = timeout
+
+    def __iter__(self):
+        import queue as _queue
+
+        inner_iter = iter(self._inner)
+        buf: _queue.Queue = _queue.Queue()
+        exhausted = threading.Event()
+
+        def _reader():
+            try:
+                for chunk in inner_iter:
+                    buf.put(chunk)
+                buf.put(None)  # sentinel
+            except BaseException as exc:
+                buf.put(exc)
+            finally:
+                exhausted.set()
+
+        reader = threading.Thread(target = _reader, daemon = True)
+        reader.start()
+
+        while True:
+            try:
+                item = buf.get(timeout = self._timeout)
+            except _queue.Empty:
+                raise httpx.ReadTimeout(
+                    f"Timed out after {self._timeout}s waiting for next chunk"
+                )
+            if item is None:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+
+    def close(self):
+        self._inner.close()
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -1396,56 +1446,6 @@ class LlamaCppBackend:
         finally:
             _cancel_closed.set()
 
-
-class _ShortTimeoutStream(httpx.SyncByteStream):
-    """Wraps an httpx byte stream and enforces a short read timeout.
-
-    After prefill completes, the response was opened with a long read
-    timeout (120 s).  This wrapper re-raises httpx.ReadTimeout if the
-    underlying iterator blocks for longer than ``timeout`` seconds,
-    restoring the fast cancel-checking that _iter_text_cancellable
-    relies on.
-    """
-
-    def __init__(self, inner: httpx.SyncByteStream, timeout: float):
-        self._inner = inner
-        self._timeout = timeout
-
-    def __iter__(self):
-        import queue as _queue
-
-        inner_iter = iter(self._inner)
-        buf: _queue.Queue = _queue.Queue()
-        exhausted = threading.Event()
-
-        def _reader():
-            try:
-                for chunk in inner_iter:
-                    buf.put(chunk)
-                buf.put(None)  # sentinel
-            except BaseException as exc:
-                buf.put(exc)
-            finally:
-                exhausted.set()
-
-        reader = threading.Thread(target = _reader, daemon = True)
-        reader.start()
-
-        while True:
-            try:
-                item = buf.get(timeout = self._timeout)
-            except _queue.Empty:
-                raise httpx.ReadTimeout(
-                    f"Timed out after {self._timeout}s waiting for next chunk"
-                )
-            if item is None:
-                return
-            if isinstance(item, BaseException):
-                raise item
-            yield item
-
-    def close(self):
-        self._inner.close()
 
     def generate_chat_completion(
         self,
