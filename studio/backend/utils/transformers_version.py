@@ -23,7 +23,6 @@ Strategy:
 
 import importlib
 import json
-import structlog
 from loggers import get_logger
 import os
 import subprocess

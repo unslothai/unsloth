@@ -17,7 +17,6 @@ Run with:
     python -m pytest tests/test_utils.py -v
 """
 
-import platform
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -295,8 +294,6 @@ class TestLogGpuMemory:
             "utilization_pct": 12.5,
             "free_gb": 14.0,
         }
-        import structlog
-        from loggers import get_logger
 
         with (
             patch(
@@ -312,8 +309,6 @@ class TestLogGpuMemory:
 
     def test_logs_cpu_fallback_when_no_gpu(self, caplog):
         fake_info = {"available": False, "backend": "cpu"}
-        import structlog
-        from loggers import get_logger
 
         with (
             patch(

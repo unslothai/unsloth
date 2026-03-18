@@ -8,7 +8,6 @@ Path utilities for model and dataset handling
 import os
 from pathlib import Path
 from typing import Optional
-import structlog
 from loggers import get_logger
 
 logger = get_logger(__name__)

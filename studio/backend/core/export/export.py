@@ -8,7 +8,6 @@ Export backend - handles model exporting in various formats
 
 import glob
 import json
-import structlog
 from loggers import get_logger
 import os
 import shutil
@@ -23,7 +22,7 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
-from utils.paths import ensure_dir, outputs_root, resolve_export_dir, resolve_output_dir
+from utils.paths import ensure_dir, outputs_root, resolve_export_dir
 from core.inference import get_inference_backend
 
 logger = get_logger(__name__)

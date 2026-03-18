@@ -1,6 +1,4 @@
 from unsloth import FastLanguageModel
-from transformers import AutoModelForCausalLM
-from peft import PeftModel
 from pathlib import Path
 import sys
 import warnings

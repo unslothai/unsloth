@@ -17,7 +17,6 @@ Pattern follows core/training/worker.py.
 from __future__ import annotations
 
 import base64
-import structlog
 from loggers import get_logger
 import os
 import queue as _queue
