@@ -85,27 +85,18 @@ unsloth train \
 # Standard inference
 unsloth inference "unsloth/Qwen3-0.6B" "What is AI?"
 
-# GGUF inference
+# GGUF inference (use on macOS / CPU-only systems)
 unsloth inference "unsloth/Qwen3.5-0.8B-GGUF" "What is AI?"
 
-# With all options
-# --temperature: sampling temperature (default: 0.7)
-# --top-p: nucleus sampling (default: 0.9)
-# --top-k: top-k sampling (default: 40)
-# --max-new-tokens: max tokens to generate (default: 256)
-# --repetition-penalty: penalty for repeated tokens (default: 1.1)
-# --system-prompt: optional system prompt to prepend
-# --max-seq-length: max sequence length (default: 2048)
-# --load-in-4bit: 4-bit quantization (default: on)
-unsloth inference "unsloth/Qwen3-0.6B" "Explain LoRA" \
-  --temperature 0.7 \
-  --top-p 0.9 \
-  --top-k 40 \
-  --max-new-tokens 256 \
-  --repetition-penalty 1.1 \
-  --system-prompt "You are a helpful assistant" \
-  --max-seq-length 2048 \
-  --load-in-4bit
+# Inference options:
+#   --temperature (float, default: 0.7) — sampling temperature
+#   --top-p (float, default: 0.9) — nucleus sampling
+#   --top-k (int, default: 40) — top-k sampling
+#   --max-new-tokens (int, default: 256) — max tokens to generate
+#   --repetition-penalty (float, default: 1.1) — penalty for repeated tokens
+#   --system-prompt (str) — optional system prompt to prepend
+#   --max-seq-length (int, default: 2048) — max sequence length
+#   --load-in-4bit (default: on) — 4-bit quantization
 
 # ═══ EXPORT ═══
 
