@@ -250,12 +250,13 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
             grading = json.loads(grading_file.read_text())
 
         for config, res in [("with_skill", with_res), ("without_skill", without_res)]:
-            if not res or "error" in res:
+            if not res:
                 continue
+            is_error = "error" in res
             g = grading.get(config, {})
             expectations = g.get("expectations", [])
-            passed = sum(1 for e in expectations if e.get("passed"))
-            total = len(expectations)
+            passed = 0 if is_error else sum(1 for e in expectations if e.get("passed"))
+            total = len(expectations) or (1 if is_error else 0)
             runs.append(
                 {
                     "eval_id": eval_id,
@@ -270,7 +271,7 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
                         "time_seconds": res.get("total_duration_seconds", 0),
                         "tokens": res.get("total_tokens", 0),
                         "cost_usd": res.get("cost_usd", 0),
-                        "errors": 0,
+                        "errors": 1 if is_error else 0,
                     },
                     "expectations": expectations,
                 }
