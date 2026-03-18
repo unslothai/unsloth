@@ -17,7 +17,7 @@ import {
 
 const MAX_DISPLAY = 10_000;
 const COPY_RESET_MS = 2000;
-const SHIKI_THEME = ["github-light", "github-dark"] as const;
+const SHIKI_THEME = ["github-light", "github-dark"] as ["github-light", "github-dark"];
 
 function truncate(text: string): string {
   return text.length <= MAX_DISPLAY
