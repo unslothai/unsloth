@@ -20,6 +20,7 @@ from auth.authentication import (
     create_refresh_token,
     get_current_subject,
     get_current_subject_allow_password_change,
+    is_auth_disabled,
     refresh_access_token,
 )
 
@@ -34,6 +35,14 @@ async def auth_status() -> AuthStatusResponse:
     - initialized = False -> frontend should wait for the seeded admin bootstrap.
     - initialized = True  -> frontend should show login or force the first password change.
     """
+    if is_auth_disabled():
+        return AuthStatusResponse(
+            initialized = True,
+            default_username = storage.DEFAULT_ADMIN_USERNAME,
+            requires_password_change = False,
+            auth_disabled = True,
+        )
+
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
@@ -42,6 +51,7 @@ async def auth_status() -> AuthStatusResponse:
         )
         if storage.is_initialized()
         else True,
+        auth_disabled = False,
     )
 
 
