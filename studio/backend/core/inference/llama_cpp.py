@@ -1301,24 +1301,65 @@ class LlamaCppBackend:
         payload: dict,
         cancel_event: Optional[threading.Event] = None,
     ):
-        """Open an httpx streaming POST, retrying on ReadTimeout.
+        """Open an httpx streaming POST with cancel support.
 
-        The short read timeout (0.5 s) that enables cancel-checking during
-        streaming can also fire while waiting for the server to produce
-        its first response bytes (e.g. a reasoning model thinking).
-        This wrapper retries the connection until headers arrive or
-        cancel_event is set.
+        Sends the request ONCE with a long read timeout (up to 120 s) for
+        the initial response headers.  Prompt processing (prefill) can take
+        many seconds for long contexts or reasoning models; the previous
+        0.5 s timeout caused a retry storm that sent duplicate requests to
+        llama-server every half second, forcing it to restart processing
+        each time.
+
+        Cancel support during the prefill wait is provided by a lightweight
+        background thread that closes the underlying response when
+        cancel_event is set.  Once headers arrive, _iter_text_cancellable
+        handles per-token cancel checking with its own short timeout.
         """
-        while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise GeneratorExit
+
+        # Long timeout for prefill; per-token cancel uses _iter_text_cancellable.
+        prefill_timeout = httpx.Timeout(connect = 10, read = 120.0, write = 10, pool = 10)
+
+        # Background watcher: close the response if cancel is requested
+        # so the blocking httpx read is interrupted immediately.
+        _cancel_closed = threading.Event()
+        _response_ref: list = [None]
+
+        def _cancel_watcher():
+            while not _cancel_closed.is_set():
+                if cancel_event is not None and cancel_event.wait(timeout = 0.3):
+                    r = _response_ref[0]
+                    if r is not None:
+                        try:
+                            r.close()
+                        except Exception:
+                            pass
+                    return
+
+        watcher = None
+        if cancel_event is not None:
+            watcher = threading.Thread(
+                target = _cancel_watcher, daemon = True, name = "prefill-cancel"
+            )
+            watcher.start()
+
+        try:
+            with client.stream(
+                "POST", url, json = payload, timeout = prefill_timeout
+            ) as response:
+                _response_ref[0] = response
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GeneratorExit
+                yield response
+                return
+        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.CloseError):
+            # Response was closed by the cancel watcher
             if cancel_event is not None and cancel_event.is_set():
                 raise GeneratorExit
-            try:
-                with client.stream("POST", url, json = payload) as response:
-                    yield response
-                    return
-            except httpx.ReadTimeout:
-                # Server still thinking -- retry
-                continue
+            raise
+        finally:
+            _cancel_closed.set()
 
     def generate_chat_completion(
         self,
@@ -1371,8 +1412,9 @@ class LlamaCppBackend:
         in_thinking = False
 
         try:
-            # Use a short read timeout so we can check cancel_event
-            # frequently instead of blocking indefinitely on slow models.
+            # Short read timeout for per-token cancel checking in
+            # _iter_text_cancellable. _stream_with_retry overrides this
+            # with a longer timeout for the initial prefill wait.
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
