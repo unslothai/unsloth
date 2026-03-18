@@ -36,10 +36,18 @@ def _get_workdir(session_id: str | None = None) -> str:
     key = session_id or "_default"
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
+        sandbox_root = os.path.join(home, "studio_sandbox")
         if session_id:
-            workdir = os.path.join(home, "studio_sandbox", session_id)
+            # Sanitize: strip path separators and parent-dir references
+            safe_id = os.path.basename(session_id.replace("..", ""))
+            if not safe_id:
+                safe_id = "_invalid"
+            workdir = os.path.join(sandbox_root, safe_id)
+            # Verify resolved path stays under sandbox root
+            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root)):
+                workdir = os.path.join(sandbox_root, "_invalid")
         else:
-            workdir = os.path.join(home, "studio_sandbox")
+            workdir = sandbox_root
         os.makedirs(workdir, exist_ok = True)
         _workdirs[key] = workdir
     return _workdirs[key]
