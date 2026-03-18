@@ -33,6 +33,7 @@ def _fix_torch_cuda_ld_path():
         return False
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("torch")
         if not spec or not spec.origin:
             return False
@@ -54,7 +55,7 @@ def _fix_torch_cuda_ld_path():
 
         # Already at the front -- nothing to do
         existing = ld_path.split(":")
-        if existing[:len(lib_dirs)] == lib_dirs:
+        if existing[: len(lib_dirs)] == lib_dirs:
             return False
 
         # Prepend torch dirs, deduplicate
