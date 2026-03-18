@@ -254,6 +254,11 @@ else
     mkdir -p "$VENV_T5_DIR"
     run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
     run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
+    # tiktoken is needed by Qwen-family tokenizers (and others). The main venv
+    # may already have it, but on Windows the main venv sometimes doesn't, and
+    # the tokenizer loads while .venv_t5 is prepended to sys.path. Install it
+    # here so it is always available.
+    run_quiet "pip install tiktoken for t5" pip install --target "$VENV_T5_DIR" "tiktoken"
     echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
     # ── 7. WSL: pre-install GGUF build dependencies ──
