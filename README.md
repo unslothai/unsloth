@@ -19,7 +19,8 @@ Run and train AI models with a unified local interface.
  <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
-Unsloth Studio lets you run and train models for text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) and more. Available on Windows, Linux and macOS.
+Unsloth Studio lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+
 ## ⭐ Features
 Unsloth provides several key features for both inference and training:
 ### Inference
