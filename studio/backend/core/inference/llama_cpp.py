@@ -1664,8 +1664,10 @@ class LlamaCppBackend:
             # Some models output <tool_call> XML instead of structured tool_calls,
             # or bare <function=...> tags without <tool_call> wrapper.
             content_text = message.get("content", "") or ""
-            if auto_heal_tool_calls and not tool_calls and (
-                "<tool_call>" in content_text or "<function=" in content_text
+            if (
+                auto_heal_tool_calls
+                and not tool_calls
+                and ("<tool_call>" in content_text or "<function=" in content_text)
             ):
                 tool_calls = self._parse_tool_calls_from_text(content_text)
                 if tool_calls:
@@ -1763,9 +1765,14 @@ class LlamaCppBackend:
                     }
 
                     # Execute the tool
-                    _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+                    _effective_timeout = (
+                        None if tool_call_timeout >= 9999 else tool_call_timeout
+                    )
                     result = execute_tool(
-                        tool_name, arguments, cancel_event = cancel_event, timeout = _effective_timeout
+                        tool_name,
+                        arguments,
+                        cancel_event = cancel_event,
+                        timeout = _effective_timeout,
                     )
 
                     # Emit tool_end so the frontend can record outputs

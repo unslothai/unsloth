@@ -96,7 +96,9 @@ TERMINAL_TOOL = {
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 
-def execute_tool(name: str, arguments: dict, cancel_event = None, timeout: int | None = None) -> str:
+def execute_tool(
+    name: str, arguments: dict, cancel_event = None, timeout: int | None = None
+) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string."""
     effective_timeout = timeout if timeout is not None else _EXEC_TIMEOUT
     if name == "web_search":
