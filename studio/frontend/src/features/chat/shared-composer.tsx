@@ -363,8 +363,8 @@ export function SharedComposer({
         // Side 1: load → generate → wait
         if (handle1 && model1?.id) {
           toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
-          const status = await ensureModelLoaded(model1);
-          toast("Generating with Model 1…", { id: toastId, description: name1, duration: Infinity });
+          const status1 = await ensureModelLoaded(model1);
+          toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
@@ -377,8 +377,8 @@ export function SharedComposer({
           if (needsLoad) {
             toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
           }
-          await ensureModelLoaded(model2);
-          toast("Generating with Model 2…", { id: toastId, description: name2, duration: Infinity });
+          const status2 = await ensureModelLoaded(model2);
+          toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
