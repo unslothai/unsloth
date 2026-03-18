@@ -50,42 +50,87 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### Windows, MacOS, Linux or WSL Setup (One time):
-```
+#### MacOS, Linux or WSL Setup (One time):
+```bash
 pip install -U pip uv
-uv venv
+uv venv unsloth_studio
+source unsloth_studio/bin/activate
 uv pip install unsloth --torch-backend=auto
-uv run unsloth studio setup
-uv run unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch everytime:
+```bash
+source unsloth_studio/bin/activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-uv run unsloth studio -H 0.0.0.0 -p 8888
+
+#### Windows PowerShell (One time):
+```bash
+pip install -U pip uv
+uv venv unsloth_studio
+.\unsloth_studio\Scripts\activate
+uv pip install unsloth --torch-backend=auto
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch everytime:
+```bash
+.\unsloth_studio\Scripts\activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
 
-You can also install directly from source:
-```
-pip install --upgrade pip uv
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git
-cd unsloth
+#### Nightly Installation - MacOS, Linux or WSL Setup (One time):
+```bash
+pip install -U pip uv
+git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
+cd unsloth_studio
 uv venv
-uv pip install -e .
-uv run unsloth studio setup
-uv run unsloth studio -H 0.0.0.0 -p 8888
+source .venv/bin/activate
+uv pip install -e . --torch-backend=auto
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch everytime:
+```bash
+cd unsloth_studio
+source .venv/bin/activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-cd unsloth
-uv run unsloth studio -H 0.0.0.0 -p 8888
+
+#### Nightly Installation - Windows Powershell (One time):
+```bash
+pip install -U pip uv
+git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
+cd unsloth_studio
+uv venv
+.\.venv\Scripts\activate
+uv pip install -e . --torch-backend=auto
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch everytime:
+```bash
+cd unsloth_studio
+.\.venv\Scripts\activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 ### Unsloth Core (code-based)
-#### Windows, Linux, WSL
+#### Linux, WSL
 ```bash
 pip install -U pip uv
-uv venv
+uv venv unsloth_env
+source unsloth_env/bin/activate
+uv pip install unsloth --torch-backend=auto
+```
+#### Windows Powershell
+```bash
+pip install -U pip uv
+uv venv unsloth_env
+.\unsloth_env\Scripts\activate
 uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
