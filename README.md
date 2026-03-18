@@ -19,7 +19,8 @@ Run and train AI models with a unified local interface.
  <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
-Unsloth Studio lets you run and train models for text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) and more. Available on Windows, Linux and macOS.
+Unsloth Studio lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+
 ## ⭐ Features
 Unsloth provides several key features for both inference and training:
 ### Inference
@@ -50,42 +51,87 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### Windows, MacOS, Linux or WSL Setup (One time):
-```
+#### MacOS, Linux or WSL Setup (One time):
+```bash
 pip install -U pip uv
-uv venv
+uv venv unsloth_studio
+source unsloth_studio/bin/activate
 uv pip install unsloth --torch-backend=auto
-uv run unsloth studio setup
-uv run unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch everytime:
+Then to launch every time:
+```bash
+source unsloth_studio/bin/activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-uv run unsloth studio -H 0.0.0.0 -p 8888
+
+#### Windows PowerShell (One time):
+```bash
+pip install -U pip uv
+uv venv unsloth_studio
+.\unsloth_studio\Scripts\activate
+uv pip install unsloth --torch-backend=auto
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch every time:
+```bash
+.\unsloth_studio\Scripts\activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
 
-You can also install directly from source:
-```
-pip install --upgrade pip uv
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git
-cd unsloth
+#### Nightly Installation - MacOS, Linux or WSL Setup (One time):
+```bash
+pip install -U pip uv
+git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
+cd unsloth_studio
 uv venv
+source .venv/bin/activate
 uv pip install -e . --torch-backend=auto
-uv run unsloth studio setup
-uv run unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch everytime:
+Then to launch every time:
+```bash
+cd unsloth_studio
+source .venv/bin/activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
-cd unsloth
-uv run unsloth studio -H 0.0.0.0 -p 8888
+
+#### Nightly Installation - Windows Powershell (One time):
+```bash
+pip install -U pip uv
+git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
+cd unsloth_studio
+uv venv
+.\.venv\Scripts\activate
+uv pip install -e . --torch-backend=auto
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch every time:
+```bash
+cd unsloth_studio
+.\.venv\Scripts\activate
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 ### Unsloth Core (code-based)
-#### Windows, Linux, WSL
+#### Linux, WSL
 ```bash
 pip install -U pip uv
-uv venv
+uv venv unsloth_env
+source unsloth_env/bin/activate
+uv pip install unsloth --torch-backend=auto
+```
+#### Windows Powershell
+```bash
+pip install -U pip uv
+uv venv unsloth_env
+.\unsloth_env\Scripts\activate
 uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).

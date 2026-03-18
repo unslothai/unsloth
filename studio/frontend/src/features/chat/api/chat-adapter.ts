@@ -26,6 +26,28 @@ type RunMessage = RunMessages[number];
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
+/** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
+function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] {
+  if (!raw) return [];
+  const blocks = raw.split(/\n---\n/).filter(Boolean);
+  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] = [];
+  for (const block of blocks) {
+    const titleMatch = block.match(/Title:\s*(.+)/);
+    const urlMatch = block.match(/URL:\s*(.+)/);
+    if (titleMatch && urlMatch) {
+      const url = urlMatch[1].trim();
+      sources.push({
+        type: "source" as const,
+        sourceType: "url" as const,
+        id: url,
+        url,
+        title: titleMatch[1].trim(),
+      });
+    }
+  }
+  return sources;
+}
+
 function estimateTokenCount(text: string): number | undefined {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -40,6 +62,7 @@ function buildTiming(
   firstTokenTime?: number,
   totalStreamTime?: number,
   tokenCount?: number,
+  toolCallCount = 0,
 ): MessageTiming {
   return {
     streamStartTime,
@@ -53,7 +76,7 @@ function buildTiming(
         ? tokenCount / (totalStreamTime / 1000)
         : undefined,
     totalChunks,
-    toolCallCount: 0,
+    toolCallCount,
   };
 }
 
@@ -502,6 +525,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
+      // Tool call content parts — accumulated and yielded cumulatively.
+      // result is set directly on the tool-call part when tool_end arrives.
+      const toolCallParts: { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown>; result?: unknown }[] = [];
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -528,6 +554,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
+                  auto_heal_tool_calls: useChatRuntimeStore.getState().autoHealToolCalls,
+                  max_tool_calls_per_message: useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  tool_call_timeout: (() => {
+                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    return mins >= 9999 ? 9999 : mins * 60;
+                  })(),
+                  session_id: unstable_threadId || undefined,
                 }
               : {}),
           },
@@ -539,6 +572,39 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
           if (toolStatusText !== undefined) {
             runtime.setToolStatus(toolStatusText || null);
+            continue;
+          }
+
+          // Emit tool-call content parts for assistant-ui.
+          // On tool_start: add a new tool-call part (renders in "running" state).
+          // On tool_end: set result on the existing part (transitions to "complete").
+          const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+          if (toolEvent !== undefined) {
+            if (toolEvent.type === "tool_start") {
+              const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+              toolCallParts.push({
+                type: "tool-call" as const,
+                toolCallId: id,
+                toolName: toolEvent.tool_name as string,
+                args: (toolEvent.arguments as Record<string, unknown>) ?? {},
+              });
+            } else if (toolEvent.type === "tool_end") {
+              const id = (toolEvent.tool_call_id as string) ||
+                toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
+              const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
+              if (idx !== -1) {
+                toolCallParts[idx] = { ...toolCallParts[idx], result: toolEvent.result as string };
+              }
+            }
+            // Yield cumulative state so tool UI updates (tools first, text after)
+            const textParts = parseAssistantContent(cumulativeText);
+            yield {
+              content: [...toolCallParts, ...textParts],
+              metadata: {
+                timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
+                custom: { reasoningDuration },
+              },
+            };
             continue;
           }
 
@@ -564,9 +630,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
           }
 
-          if (parts.length > 0) {
+          if (parts.length > 0 || toolCallParts.length > 0) {
             yield {
-              content: parts,
+              content: [...toolCallParts, ...parts],
               metadata: {
                 timing: buildTiming(
                   streamStartTime,
@@ -579,7 +645,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
         }
         settleFirstTokenOk();
+
+        // Extract source parts from completed web_search tool calls
+        const sourceParts = toolCallParts.flatMap((tc) => {
+          if (tc.toolName !== "web_search" || !tc.result) return [];
+          return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
+        });
+
         yield {
+          content: [
+            ...toolCallParts,
+            ...parseAssistantContent(cumulativeText),
+            ...sourceParts,
+          ],
           metadata: {
             timing: buildTiming(
               streamStartTime,
@@ -587,6 +665,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               firstTokenTime,
               Date.now() - streamStartTime,
               estimateTokenCount(cumulativeText),
+              toolCallParts.length,
             ),
             custom: { reasoningDuration },
           },

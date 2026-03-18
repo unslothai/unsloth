@@ -59,6 +59,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
         _NEED_FRONTEND_BUILD=false
     fi
 fi
+_NEED_FRONTEND_BUILD=true
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else

@@ -855,6 +855,7 @@ if ($IsPipInstall) {
         Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
     }
 }
+$NeedFrontendBuild = $true
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan

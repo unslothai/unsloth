@@ -426,6 +426,9 @@ export function ChatSettingsPanel({
                   </Select>
                 </div>
               )}
+              <AutoHealToolCallsToggle />
+              <MaxToolCallsSlider />
+              <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
 
@@ -433,6 +436,73 @@ export function ChatSettingsPanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+function MaxToolCallsSlider() {
+  const maxToolCalls = useChatRuntimeStore((s) => s.maxToolCallsPerMessage);
+  const setMaxToolCalls = useChatRuntimeStore((s) => s.setMaxToolCallsPerMessage);
+
+  // Slider range 0-41; 41 maps to 9999 ("Max")
+  const sliderValue = maxToolCalls >= 9999 ? 41 : Math.min(maxToolCalls, 40);
+
+  return (
+    <ParamSlider
+      label="Max Tool Calls Per Message"
+      value={sliderValue}
+      min={0}
+      max={41}
+      step={1}
+      onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
+      displayValue={sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined}
+    />
+  );
+}
+
+function ToolCallTimeoutSlider() {
+  const timeout = useChatRuntimeStore((s) => s.toolCallTimeout);
+  const setTimeout_ = useChatRuntimeStore((s) => s.setToolCallTimeout);
+
+  // Slider 1-31; 31 maps to 9999 ("Max")
+  const sliderValue = timeout >= 9999 ? 31 : Math.min(Math.max(timeout, 1), 30);
+
+  const displayValue =
+    sliderValue >= 31
+      ? "Max"
+      : sliderValue === 1
+        ? "1 minute"
+        : `${sliderValue} minutes`;
+
+  return (
+    <ParamSlider
+      label="Max Tool Call Duration"
+      value={sliderValue}
+      min={1}
+      max={31}
+      step={1}
+      onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
+      displayValue={displayValue}
+    />
+  );
+}
+
+function AutoHealToolCallsToggle() {
+  const autoHealToolCalls = useChatRuntimeStore((s) => s.autoHealToolCalls);
+  const setAutoHealToolCalls = useChatRuntimeStore((s) => s.setAutoHealToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-xs font-medium">Auto Heal Tool Calls 🦥</div>
+        <div className="text-[11px] text-muted-foreground">
+          Fix malformed tool calls from the model automatically.
+        </div>
+      </div>
+      <Switch
+        checked={autoHealToolCalls}
+        onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
   );
 }
 
