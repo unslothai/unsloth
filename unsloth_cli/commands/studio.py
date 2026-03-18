@@ -71,7 +71,9 @@ def _find_setup_script() -> Optional[Path]:
     return None
 
 
-def _stage_setup_script_if_needed(script: Path) -> tuple[Path, Optional[tempfile.TemporaryDirectory]]:
+def _stage_setup_script_if_needed(
+    script: Path,
+) -> tuple[Path, Optional[tempfile.TemporaryDirectory]]:
     """Stage setup assets outside the Studio venv when the source lives inside it.
 
     `unsloth studio setup` recreates `~/.unsloth/studio/.venv`. When the setup
@@ -125,7 +127,9 @@ def _reexec_cli_in_studio_venv(command_args: list[str], silent: bool = False) ->
     backend_dir = str(_PACKAGE_ROOT / "studio" / "backend")
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{backend_dir}{os.pathsep}{existing}" if existing else backend_dir
+    env["PYTHONPATH"] = (
+        f"{backend_dir}{os.pathsep}{existing}" if existing else backend_dir
+    )
 
     args = [str(studio_python), "-m", "unsloth_cli", *command_args]
 

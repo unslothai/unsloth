@@ -64,11 +64,15 @@ def _install_fake_modules(monkeypatch, *, model_config, standard_backend):
 
     _FakeModelConfigType.next_config = model_config
     monkeypatch.setitem(sys.modules, "studio.backend.core", core_module)
-    monkeypatch.setitem(sys.modules, "studio.backend.core.inference.llama_cpp", llama_module)
+    monkeypatch.setitem(
+        sys.modules, "studio.backend.core.inference.llama_cpp", llama_module
+    )
 
 
 def test_standard_models_use_unsloth_backend(monkeypatch, capsys):
-    monkeypatch.setattr(inference_cmd, "_reexec_cli_in_studio_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        inference_cmd, "_reexec_cli_in_studio_venv", lambda *args, **kwargs: None
+    )
     standard_backend = _FakeStandardBackend()
     _install_fake_modules(
         monkeypatch,
@@ -87,7 +91,9 @@ def test_standard_models_use_unsloth_backend(monkeypatch, capsys):
 
 
 def test_gguf_models_use_llama_cpp_backend(monkeypatch, capsys):
-    monkeypatch.setattr(inference_cmd, "_reexec_cli_in_studio_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        inference_cmd, "_reexec_cli_in_studio_venv", lambda *args, **kwargs: None
+    )
     standard_backend = _FakeStandardBackend()
     _install_fake_modules(
         monkeypatch,

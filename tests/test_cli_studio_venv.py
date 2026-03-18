@@ -11,7 +11,11 @@ from unsloth_cli.commands import studio
 def test_reexec_cli_in_studio_venv_execs_on_unix(monkeypatch):
     monkeypatch.setattr(studio, "STUDIO_HOME", Path("/tmp/unsloth-studio"))
     monkeypatch.setattr(sys, "prefix", "/usr/local")
-    monkeypatch.setattr(studio, "_studio_venv_python", lambda: Path("/tmp/unsloth-studio/.venv/bin/python"))
+    monkeypatch.setattr(
+        studio,
+        "_studio_venv_python",
+        lambda: Path("/tmp/unsloth-studio/.venv/bin/python"),
+    )
 
     captured = {}
 
@@ -83,7 +87,9 @@ def test_stage_setup_script_copies_when_inside_studio_venv(monkeypatch, tmp_path
     studio_home = tmp_path / ".unsloth" / "studio"
     monkeypatch.setattr(studio, "STUDIO_HOME", studio_home)
 
-    package_root = studio_home / ".venv" / "lib" / "python3.11" / "site-packages" / "studio"
+    package_root = (
+        studio_home / ".venv" / "lib" / "python3.11" / "site-packages" / "studio"
+    )
     package_root.mkdir(parents = True)
     script = package_root / "setup.sh"
     helper = package_root / "install_python_stack.py"

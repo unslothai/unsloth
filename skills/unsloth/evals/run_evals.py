@@ -39,17 +39,26 @@ CONTEXT about the environment:
 """.strip()
 
 
-def run_claude(prompt: str, with_skill: bool, output_dir: Path, model: str = "opus") -> dict:
+def run_claude(
+    prompt: str, with_skill: bool, output_dir: Path, model: str = "opus"
+) -> dict:
     """Run a single eval via claude -p and return the JSON result."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents = True, exist_ok = True)
 
-    full_prompt = f"{prompt}\n\n{ENV_CONTEXT.format(repo_root=REPO_ROOT, output_dir=output_dir)}"
+    full_prompt = (
+        f"{prompt}\n\n{ENV_CONTEXT.format(repo_root = REPO_ROOT, output_dir = output_dir)}"
+    )
 
     cmd = [
-        "claude", "-p", full_prompt,
-        "--output-format", "json",
-        "--model", model,
-        "--allowedTools", "Bash,Read,Write,Glob,Grep,Edit",
+        "claude",
+        "-p",
+        full_prompt,
+        "--output-format",
+        "json",
+        "--model",
+        model,
+        "--allowedTools",
+        "Bash,Read,Write,Glob,Grep,Edit",
         "--no-session-persistence",
         "--dangerously-skip-permissions",
     ]
@@ -57,23 +66,33 @@ def run_claude(prompt: str, with_skill: bool, output_dir: Path, model: str = "op
     if with_skill:
         # Inject skill content as appended system prompt
         skill_content = SKILL_FILE.read_text()
-        cmd.extend(["--append-system-prompt",
-                     f"You have the following skill loaded. Use it to complete the task:\n\n{skill_content}"])
+        cmd.extend(
+            [
+                "--append-system-prompt",
+                f"You have the following skill loaded. Use it to complete the task:\n\n{skill_content}",
+            ]
+        )
     else:
         # Without skill: tell the agent to explore the codebase, but not read skills/
-        cmd.extend(["--append-system-prompt",
-                     "You do NOT have any skill documentation. Figure out how to complete the task by exploring the codebase. Do NOT read any files under the skills/ directory."])
+        cmd.extend(
+            [
+                "--append-system-prompt",
+                "You do NOT have any skill documentation. Figure out how to complete the task by exploring the codebase. Do NOT read any files under the skills/ directory.",
+            ]
+        )
 
-    print(f"  Running claude -p ({('with_skill' if with_skill else 'without_skill')})...")
+    print(
+        f"  Running claude -p ({('with_skill' if with_skill else 'without_skill')})..."
+    )
     start = time.time()
 
     try:
         result = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 min max per eval
-            cwd=str(REPO_ROOT),
+            capture_output = True,
+            text = True,
+            timeout = 300,  # 5 min max per eval
+            cwd = str(REPO_ROOT),
         )
         elapsed = time.time() - start
     except subprocess.TimeoutExpired:
@@ -91,14 +110,16 @@ def run_claude(prompt: str, with_skill: bool, output_dir: Path, model: str = "op
         return {"error": "json_parse_failed", "duration_ms": int(elapsed * 1000)}
 
     # Save results
-    (output_dir / "result.json").write_text(json.dumps(data, indent=2))
+    (output_dir / "result.json").write_text(json.dumps(data, indent = 2))
     (output_dir / "response.md").write_text(data.get("result", ""))
 
     # Extract timing
     timing = {
         "total_tokens": sum(
-            v.get("inputTokens", 0) + v.get("outputTokens", 0) +
-            v.get("cacheReadInputTokens", 0) + v.get("cacheCreationInputTokens", 0)
+            v.get("inputTokens", 0)
+            + v.get("outputTokens", 0)
+            + v.get("cacheReadInputTokens", 0)
+            + v.get("cacheCreationInputTokens", 0)
             for v in data.get("modelUsage", {}).values()
         ),
         "duration_ms": data.get("duration_ms", int(elapsed * 1000)),
@@ -106,20 +127,31 @@ def run_claude(prompt: str, with_skill: bool, output_dir: Path, model: str = "op
         "cost_usd": data.get("total_cost_usd", 0),
         "num_turns": data.get("num_turns", 0),
     }
-    (output_dir / "timing.json").write_text(json.dumps(timing, indent=2))
+    (output_dir / "timing.json").write_text(json.dumps(timing, indent = 2))
 
-    print(f"  Done: {timing['total_tokens']} tokens, {timing['total_duration_seconds']}s, ${timing['cost_usd']:.4f}")
+    print(
+        f"  Done: {timing['total_tokens']} tokens, {timing['total_duration_seconds']}s, ${timing['cost_usd']:.4f}"
+    )
     return {**timing, "data": data}
 
 
-def run_grader(eval_entry: dict, with_result: dict, without_result: dict,
-               iteration_dir: Path, model: str = "opus") -> dict:
+def run_grader(
+    eval_entry: dict,
+    with_result: dict,
+    without_result: dict,
+    iteration_dir: Path,
+    model: str = "opus",
+) -> dict:
     """Run grader via claude -p to evaluate both outputs."""
     eval_id = eval_entry["id"]
     eval_dir = iteration_dir / eval_id
 
     with_response = (eval_dir / "with_skill" / "outputs" / "response.md").read_text()
-    without_response = (eval_dir / "without_skill" / "outputs" / "response.md").read_text() if without_result else "N/A"
+    without_response = (
+        (eval_dir / "without_skill" / "outputs" / "response.md").read_text()
+        if without_result
+        else "N/A"
+    )
 
     expectations = eval_entry.get("expectations", [])
     expectations_text = "\n".join(f"- {e}" for e in expectations)
@@ -163,16 +195,23 @@ Grade each expectation as passed/failed for BOTH runs. Use this exact JSON forma
 Output ONLY the JSON, nothing else."""
 
     cmd = [
-        "claude", "-p", grader_prompt,
-        "--output-format", "json",
-        "--model", model,
+        "claude",
+        "-p",
+        grader_prompt,
+        "--output-format",
+        "json",
+        "--model",
+        model,
         "--no-session-persistence",
         "--dangerously-skip-permissions",
-        "--tools", "",  # no tools needed for grading
+        "--tools",
+        "",  # no tools needed for grading
     ]
 
     print(f"  Grading {eval_id}...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(REPO_ROOT))
+    result = subprocess.run(
+        cmd, capture_output = True, text = True, timeout = 120, cwd = str(REPO_ROOT)
+    )
 
     try:
         data = json.loads(result.stdout)
@@ -182,9 +221,11 @@ Output ONLY the JSON, nothing else."""
         json_end = grading_text.rfind("}") + 1
         if json_start >= 0:
             grading = json.loads(grading_text[json_start:json_end])
-            (eval_dir / "grading.json").write_text(json.dumps(grading, indent=2))
-            print(f"  Graded: with_skill={grading.get('with_skill', {}).get('pass_rate', '?')}, "
-                  f"without_skill={grading.get('without_skill', {}).get('pass_rate', '?')}")
+            (eval_dir / "grading.json").write_text(json.dumps(grading, indent = 2))
+            print(
+                f"  Graded: with_skill={grading.get('with_skill', {}).get('pass_rate', '?')}, "
+                f"without_skill={grading.get('without_skill', {}).get('pass_rate', '?')}"
+            )
             return grading
     except (json.JSONDecodeError, KeyError) as e:
         print(f"  Grading parse error: {e}")
@@ -210,23 +251,25 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
             expectations = g.get("expectations", [])
             passed = sum(1 for e in expectations if e.get("passed"))
             total = len(expectations)
-            runs.append({
-                "eval_id": eval_id,
-                "eval_name": eval_id,
-                "configuration": config,
-                "run_number": 1,
-                "result": {
-                    "pass_rate": passed / total if total else 0,
-                    "passed": passed,
-                    "failed": total - passed,
-                    "total": total,
-                    "time_seconds": res.get("total_duration_seconds", 0),
-                    "tokens": res.get("total_tokens", 0),
-                    "cost_usd": res.get("cost_usd", 0),
-                    "errors": 0,
-                },
-                "expectations": expectations,
-            })
+            runs.append(
+                {
+                    "eval_id": eval_id,
+                    "eval_name": eval_id,
+                    "configuration": config,
+                    "run_number": 1,
+                    "result": {
+                        "pass_rate": passed / total if total else 0,
+                        "passed": passed,
+                        "failed": total - passed,
+                        "total": total,
+                        "time_seconds": res.get("total_duration_seconds", 0),
+                        "tokens": res.get("total_tokens", 0),
+                        "cost_usd": res.get("cost_usd", 0),
+                        "errors": 0,
+                    },
+                    "expectations": expectations,
+                }
+            )
 
     # Compute summaries
     with_runs = [r for r in runs if r["configuration"] == "with_skill"]
@@ -236,7 +279,11 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
         vals = [r["result"][key] for r in run_list]
         if not vals:
             return {"mean": 0, "min": 0, "max": 0}
-        return {"mean": round(sum(vals) / len(vals), 3), "min": min(vals), "max": max(vals)}
+        return {
+            "mean": round(sum(vals) / len(vals), 3),
+            "min": min(vals),
+            "max": max(vals),
+        }
 
     benchmark = {
         "metadata": {
@@ -278,13 +325,22 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run unsloth skill evals")
-    parser.add_argument("--evals-file", type=Path, default=DEFAULT_EVALS)
-    parser.add_argument("--only", type=str, help="Run only this eval id")
-    parser.add_argument("--skip-baseline", action="store_true", help="Skip without-skill runs")
-    parser.add_argument("--skip-grading", action="store_true", help="Skip grading step")
-    parser.add_argument("--model", type=str, default="opus", help="Model to use (opus, sonnet, haiku)")
-    parser.add_argument("--iteration", type=int, default=None, help="Iteration number (auto-detected if omitted)")
+    parser = argparse.ArgumentParser(description = "Run unsloth skill evals")
+    parser.add_argument("--evals-file", type = Path, default = DEFAULT_EVALS)
+    parser.add_argument("--only", type = str, help = "Run only this eval id")
+    parser.add_argument(
+        "--skip-baseline", action = "store_true", help = "Skip without-skill runs"
+    )
+    parser.add_argument("--skip-grading", action = "store_true", help = "Skip grading step")
+    parser.add_argument(
+        "--model", type = str, default = "opus", help = "Model to use (opus, sonnet, haiku)"
+    )
+    parser.add_argument(
+        "--iteration",
+        type = int,
+        default = None,
+        help = "Iteration number (auto-detected if omitted)",
+    )
     args = parser.parse_args()
 
     # Load evals
@@ -302,10 +358,12 @@ def main():
     if args.iteration is not None:
         iteration = args.iteration
     else:
-        existing = sorted(WORKSPACE_DIR.glob("iteration-*")) if WORKSPACE_DIR.exists() else []
+        existing = (
+            sorted(WORKSPACE_DIR.glob("iteration-*")) if WORKSPACE_DIR.exists() else []
+        )
         iteration = len(existing) + 1
     iteration_dir = WORKSPACE_DIR / f"iteration-{iteration}"
-    iteration_dir.mkdir(parents=True, exist_ok=True)
+    iteration_dir.mkdir(parents = True, exist_ok = True)
 
     print(f"=== Unsloth Skill Evals — Iteration {iteration} ===")
     print(f"Evals: {[e['id'] for e in evals]}")
@@ -322,13 +380,17 @@ def main():
 
         # With skill
         with_dir = iteration_dir / eval_id / "with_skill" / "outputs"
-        with_result = run_claude(prompt, with_skill=True, output_dir=with_dir, model=args.model)
+        with_result = run_claude(
+            prompt, with_skill = True, output_dir = with_dir, model = args.model
+        )
 
         # Without skill (baseline)
         without_result = None
         if not args.skip_baseline:
             without_dir = iteration_dir / eval_id / "without_skill" / "outputs"
-            without_result = run_claude(prompt, with_skill=False, output_dir=without_dir, model=args.model)
+            without_result = run_claude(
+                prompt, with_skill = False, output_dir = without_dir, model = args.model
+            )
 
         results.append((eval_entry, with_result, without_result))
 
@@ -336,13 +398,15 @@ def main():
     if not args.skip_grading:
         print(f"\n=== Grading ===")
         for eval_entry, with_res, without_res in results:
-            run_grader(eval_entry, with_res, without_res, iteration_dir, model=args.model)
+            run_grader(
+                eval_entry, with_res, without_res, iteration_dir, model = args.model
+            )
 
     # Build benchmark
     print(f"\n=== Building Benchmark ===")
     benchmark = build_benchmark(iteration_dir, results, evals)
     benchmark_path = iteration_dir / "benchmark.json"
-    benchmark_path.write_text(json.dumps(benchmark, indent=2))
+    benchmark_path.write_text(json.dumps(benchmark, indent = 2))
     print(f"Saved: {benchmark_path}")
 
     # Print summary
@@ -353,21 +417,42 @@ def main():
     print(f"{'='*60}")
     print(f"{'Metric':<20} {'With Skill':<15} {'Without Skill':<15} {'Delta':<10}")
     print(f"{'-'*60}")
-    print(f"{'Pass rate':<20} {summary['with_skill']['pass_rate']['mean']:<15.1%} "
-          f"{summary['without_skill']['pass_rate']['mean']:<15.1%} {delta.get('pass_rate', 'N/A')}")
-    print(f"{'Tokens':<20} {summary['with_skill']['tokens']['mean']:<15.0f} "
-          f"{summary['without_skill']['tokens']['mean']:<15.0f} {delta.get('tokens', 'N/A')}")
-    print(f"{'Time (s)':<20} {summary['with_skill']['time_seconds']['mean']:<15.1f} "
-          f"{summary['without_skill']['time_seconds']['mean']:<15.1f} {delta.get('time_seconds', 'N/A')}")
+    print(
+        f"{'Pass rate':<20} {summary['with_skill']['pass_rate']['mean']:<15.1%} "
+        f"{summary['without_skill']['pass_rate']['mean']:<15.1%} {delta.get('pass_rate', 'N/A')}"
+    )
+    print(
+        f"{'Tokens':<20} {summary['with_skill']['tokens']['mean']:<15.0f} "
+        f"{summary['without_skill']['tokens']['mean']:<15.0f} {delta.get('tokens', 'N/A')}"
+    )
+    print(
+        f"{'Time (s)':<20} {summary['with_skill']['time_seconds']['mean']:<15.1f} "
+        f"{summary['without_skill']['time_seconds']['mean']:<15.1f} {delta.get('time_seconds', 'N/A')}"
+    )
 
     # Try to launch viewer
-    viewer_script = Path.home() / ".claude" / "skills" / "skill-creator" / "eval-viewer" / "generate_review.py"
+    viewer_script = (
+        Path.home()
+        / ".claude"
+        / "skills"
+        / "skill-creator"
+        / "eval-viewer"
+        / "generate_review.py"
+    )
     if viewer_script.exists():
         print(f"\nLaunching eval viewer...")
         subprocess.Popen(
-            ["python3", str(viewer_script), str(iteration_dir),
-             "--skill-name", "unsloth", "--benchmark", str(benchmark_path)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                "python3",
+                str(viewer_script),
+                str(iteration_dir),
+                "--skill-name",
+                "unsloth",
+                "--benchmark",
+                str(benchmark_path),
+            ],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
         )
     else:
         print(f"\nViewer not found at {viewer_script}")
