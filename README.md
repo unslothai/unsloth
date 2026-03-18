@@ -52,7 +52,7 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 
 #### Windows, MacOS, Linux or WSL:
 ```
-pip install --upgrade pip && pip install uv
+pip install --upgrade pip ; pip install uv
 uv pip install unsloth --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
@@ -61,7 +61,7 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 
 You can also install directly from source:
 ```
-pip install --upgrade pip && pip install uv
+pip install --upgrade pip ; pip install uv
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git
 cd unsloth
 uv pip install -e . --torch-backend=auto
@@ -72,7 +72,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ### Unsloth Core (code-based)
 #### Windows, Linux, WSL
 ```bash
-pip install --upgrade pip && pip install uv
+pip install --upgrade pip ; pip install uv
 uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
