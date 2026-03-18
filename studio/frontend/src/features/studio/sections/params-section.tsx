@@ -45,7 +45,7 @@ import {
   Settings04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, type ReactNode, useRef, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
 
 function Row({
   label,
@@ -131,6 +131,22 @@ export function ParamsSection(): ReactElement {
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
+
+  // Keep input in sync when the store value changes externally
+  // (e.g. model defaults being applied after model selection).
+  useEffect(() => {
+    setCtxInput(String(store.contextLength));
+  }, [store.contextLength]);
+
+  const trySetContextLength = (input: string): number | null => {
+    const n = Number(input);
+    if (Number.isInteger(n) && n > 0) {
+      store.setContextLength(n);
+      return n;
+    }
+    return null;
+  };
+
   const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
     maxSteps: store.maxSteps,
     epochs: store.epochs,
@@ -277,12 +293,8 @@ export function ParamsSection(): ReactElement {
                 filter={null}
                 value={String(store.contextLength)}
                 onValueChange={(v) => {
-                  if (v) {
-                    const n = Number(v);
-                    if (Number.isInteger(n) && n > 0) {
-                      store.setContextLength(n);
-                      setCtxInput(v);
-                    }
+                  if (v && trySetContextLength(v)) {
+                    setCtxInput(v);
                   }
                 }}
                 onInputValueChange={setCtxInput}
@@ -293,23 +305,17 @@ export function ParamsSection(): ReactElement {
                   placeholder={String(store.contextLength)}
                   className="w-full font-mono"
                   onBlur={() => {
-                    const n = Number(ctxInput);
-                    if (Number.isInteger(n) && n > 0) {
-                      store.setContextLength(n);
-                    }
+                    trySetContextLength(ctxInput);
                     setCtxInput(String(store.contextLength));
                   }}
                   onKeyDown={(e) => {
                     if (e.key !== "Enter") { return; }
-                    const n = Number(ctxInput);
-                    if (!Number.isInteger(n) || n <= 0) { return; }
-                    // If the typed value isn't an exact preset, prevent the
-                    // combobox from selecting a highlighted dropdown item.
+                    const n = trySetContextLength(ctxInput);
+                    if (n === null) { return; }
                     if (!ctxItems.includes(ctxInput.trim())) {
                       e.stopPropagation();
                       e.preventDefault();
                     }
-                    store.setContextLength(n);
                     setCtxInput(String(n));
                   }}
                 />
