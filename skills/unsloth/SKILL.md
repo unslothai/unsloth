@@ -111,8 +111,6 @@ unsloth ui -p 8000
 
 ## Config File Format
 
-A YAML config has 5 sections: `model`, `data`, `training`, `lora`, `logging`. Copy-paste templates:
-
 - `assets/lora-text-train.yaml` — LoRA text fine-tuning (most common)
 - `assets/full-finetune.yaml` — full fine-tuning (no LoRA, more VRAM)
 - `assets/vision-lora-train.yaml` — vision model LoRA
