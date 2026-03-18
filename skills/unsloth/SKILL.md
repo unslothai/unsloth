@@ -25,17 +25,18 @@ unsloth studio setup               # one-time runtime setup (~/.unsloth/studio/.
 - Training requires a supported GPU. For chat-only inference on macOS / CPU-only systems, use GGUF models so the CLI routes to the llama.cpp backend.
 - Environment variables: `HF_TOKEN` (HuggingFace), `WANDB_API_KEY` (Weights & Biases)
 
-## All CLI Commands
+## Training
+
+Config file approach is recommended — handles lists, avoids shell quoting.
 
 ```bash
-# ═══ TRAINING ═══
-
-# Config file approach (RECOMMENDED — handles lists, avoids shell quoting)
 unsloth train --config config.yaml
-# --dry-run prints resolved config as YAML and exits (does NOT validate required fields)
 unsloth train --config config.yaml --dry-run
+```
 
-# Pure CLI flags (CLI flags override config file values)
+CLI flags (override config values). Use non-GGUF model IDs for training.
+
+```bash
 unsloth train \
   --model "unsloth/Qwen3-0.6B" \
   --dataset "tatsu-lab/alpaca" \
@@ -50,88 +51,62 @@ unsloth train \
   --output-dir ./outputs \
   --hf-token $HF_TOKEN \
   --wandb-token $WANDB_API_KEY
+```
 
-# IMPORTANT: --local-dataset has no CLI flag — use the YAML config to set local_dataset as a list.
-# IMPORTANT: --dry-run prints the resolved config but does NOT check required fields (model, dataset).
-#   Verify the printed YAML yourself before running without --dry-run.
-# IMPORTANT: Use non-GGUF model IDs for training (e.g. unsloth/Qwen3-0.6B, NOT the -GGUF variant)
+- `--dry-run` prints resolved config as YAML and exits. Does NOT validate required fields.
+- `--local-dataset` has no CLI flag — set `local_dataset` as a list in the YAML config.
+- `--format-type` auto | alpaca | chatml | sharegpt (default: auto)
+- `--warmup-steps` (default: 5), `--max-steps` (default: 0, uses num-epochs), `--save-steps` (default: 0)
+- `--weight-decay` (default: 0.01), `--random-seed` (default: 3407)
+- `--packing`, `--train-on-completions`, `--gradient-checkpointing` unsloth | true | none
+- `--lora-dropout` (default: 0.0), `--target-modules` (default: q/k/v/o/gate/up/down_proj)
+- `--vision-all-linear`, `--finetune-vision-layers`, `--finetune-language-layers`
+- `--enable-wandb`, `--wandb-project`, `--enable-tensorboard`, `--tensorboard-dir`
 
-# Additional training flags:
-#   --format-type auto|alpaca|chatml|sharegpt   (default: auto)
-#   --warmup-steps 5                            (linear warmup)
-#   --max-steps 0                               (0 = use num-epochs)
-#   --save-steps 0                              (0 = don't save intermediate checkpoints)
-#   --weight-decay 0.01
-#   --random-seed 3407
-#   --packing / --no-packing                    (pack sequences to max_seq_length)
-#   --train-on-completions / --no-train-on-completions
-#   --gradient-checkpointing unsloth|true|none  (default: unsloth)
-#   --lora-dropout 0.0
-#   --target-modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
-#   --vision-all-linear / --no-vision-all-linear  (for vision models)
-#   --use-rslora / --no-use-rslora
-#   --use-loftq / --no-use-loftq
-#   --finetune-vision-layers / --no-finetune-vision-layers
-#   --finetune-language-layers / --no-finetune-language-layers
-#   --finetune-attention-modules / --no-finetune-attention-modules
-#   --finetune-mlp-modules / --no-finetune-mlp-modules
-#   --enable-wandb / --no-enable-wandb
-#   --wandb-project "unsloth-training"
-#   --enable-tensorboard / --no-enable-tensorboard
-#   --tensorboard-dir "runs"
+## Inference
 
-# ═══ INFERENCE ═══
+Two positional args: `MODEL` and `PROMPT`. Use GGUF models on macOS / CPU-only systems.
 
-# Standard inference
+```bash
 unsloth inference "unsloth/Qwen3-0.6B" "What is AI?"
-
-# GGUF inference (use on macOS / CPU-only systems)
 unsloth inference "unsloth/Qwen3.5-0.8B-GGUF" "What is AI?"
+```
 
-# Inference options:
-#   --temperature (float, default: 0.7) — sampling temperature
-#   --top-p (float, default: 0.9) — nucleus sampling
-#   --top-k (int, default: 40) — top-k sampling
-#   --max-new-tokens (int, default: 256) — max tokens to generate
-#   --repetition-penalty (float, default: 1.1) — penalty for repeated tokens
-#   --system-prompt (str) — optional system prompt to prepend
-#   --max-seq-length (int, default: 2048) — max sequence length
-#   --load-in-4bit (default: on) — 4-bit quantization
+- `--temperature` (float, default: 0.7) — sampling temperature
+- `--top-p` (float, default: 0.9) — nucleus sampling
+- `--top-k` (int, default: 40) — top-k sampling
+- `--max-new-tokens` (int, default: 256) — max tokens to generate
+- `--repetition-penalty` (float, default: 1.1) — penalty for repeated tokens
+- `--system-prompt` (str) — optional system prompt to prepend
+- `--max-seq-length` (int, default: 2048) — max sequence length
+- `--load-in-4bit` (default: on) — 4-bit quantization
 
-# ═══ EXPORT ═══
+## Export
 
-# List available checkpoints
+```bash
 unsloth list-checkpoints --outputs-dir ./outputs
-
-# Export to GGUF (most common for deployment)
-# --format: merged-16bit | merged-4bit | gguf | lora
-# --quantization: q4_k_m | q5_k_m | q8_0 | f16 (gguf only)
 unsloth export ./outputs/checkpoint-100 ./exported \
   --format gguf \
   --quantization q4_k_m
-
-# Export and push to HuggingFace Hub
 unsloth export ./outputs/checkpoint-100 ./exported \
   --format lora \
   --push-to-hub --repo-id user/model-name \
   --hf-token $HF_TOKEN \
   --private
+```
 
-# Additional export flags:
-#   --max-seq-length 2048
-#   --load-in-4bit / --no-load-in-4bit
+- `--format` merged-16bit | merged-4bit | gguf | lora
+- `--quantization` q4_k_m | q5_k_m | q8_0 | f16 (gguf only)
+- `--push-to-hub` requires `--repo-id`
+- `--max-seq-length` (default: 2048), `--load-in-4bit` / `--no-load-in-4bit`
 
-# ═══ STUDIO SERVER ═══
+## Studio Server
 
-# one-time environment setup
+```bash
 unsloth studio setup
-# start web UI (default port: 8000)
 unsloth studio -H 0.0.0.0 -p 8000
-# suppress startup messages
 unsloth studio --silent
-# reset admin password (deletes auth DB)
 unsloth studio reset-password
-# alias for "unsloth studio"
 unsloth ui -p 8000
 ```
 
