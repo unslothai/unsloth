@@ -42,17 +42,19 @@ fi
 
 # ── Detect whether frontend needs building ──
 # Skip if dist/ exists AND no tracked input is newer than dist/.
-# Checks src/, public/, package.json, config files -- not just src/.
+# Checks top-level config/entry files and src/, public/ recursively.
 # This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
 # and upgrades/pulls (source newer than dist/ triggers rebuild).
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    # Check top-level config files (package.json, vite.config.ts, index.html, bun.lock, etc.)
-    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+    # Check top-level config and entry files (package.json, vite.config.ts, index.html, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 \
+        \( -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.mjs" -o -name "*.html" \) \
+        -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
     # Check src/ and public/ recursively
     if [ -z "$_changed" ]; then
         _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
-            -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
     fi
     if [ -z "$_changed" ]; then
         _NEED_FRONTEND_BUILD=false

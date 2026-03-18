@@ -767,10 +767,10 @@ if ($IsPipInstall) {
             if ($NewerFile) { break }
         }
     }
-    # Also check ALL top-level files (package.json, index.html, bun.lock, configs, etc.)
+    # Also check top-level config and entry files (package.json, vite.config.ts, index.html, etc.)
     if (-not $NewerFile) {
         $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -gt $DistTime } |
+            Where-Object { $_.Name -match '\.(json|ts|js|mjs|html)$' -and $_.LastWriteTime -gt $DistTime } |
             Select-Object -First 1
     }
     if (-not $NewerFile) {
