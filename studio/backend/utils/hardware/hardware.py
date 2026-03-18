@@ -456,10 +456,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     and current_entry["vram_total_gb"] > 0
                 ):
                     current_entry["vram_utilization_pct"] = round(
-                        (
-                            current_entry["vram_used_gb"]
-                            / current_entry["vram_total_gb"]
-                        )
+                        (current_entry["vram_used_gb"] / current_entry["vram_total_gb"])
                         * 100,
                         1,
                     )

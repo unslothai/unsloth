@@ -9,9 +9,7 @@ from utils.hardware.hardware import DeviceType, get_gpu_utilization
 
 class TestGetGpuUtilization:
     def test_cpu_returns_empty_gpu_list(self):
-        with patch(
-            "utils.hardware.hardware.get_device", return_value = DeviceType.CPU
-        ):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             result = get_gpu_utilization()
 
         assert result["available"] is False
