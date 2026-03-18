@@ -44,8 +44,10 @@ Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/d
 Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 
 * **CPU:** Supported for **chat inference only**
-* **NVIDIA GPUs:** Training works on RTX 30/40/50, Blackwell, DGX Spark, DGX Station and more
+* **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Currently supports chat only; **MLX training** is coming very soon
+* **AMD:** Chat works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is coming soon.
+* **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### Windows, MacOS, Linux or WSL:
