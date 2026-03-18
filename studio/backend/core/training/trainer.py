@@ -462,11 +462,11 @@ class UnslothTrainer:
         model_name: str,
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
-        full_finetuning: bool = False,
         hf_token: Optional[str] = None,
         is_dataset_image: bool = False,
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
+        full_finetuning: bool = False,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
@@ -788,14 +788,14 @@ class UnslothTrainer:
                 self._source_code_retried = True
                 logger.info(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(
-                    model_name,
-                    max_seq_length,
-                    load_in_4bit,
-                    full_finetuning,
-                    hf_token,
-                    is_dataset_image,
-                    is_dataset_audio,
-                    trust_remote_code,
+                    model_name = model_name,
+                    max_seq_length = max_seq_length,
+                    load_in_4bit = load_in_4bit,
+                    hf_token = hf_token,
+                    is_dataset_image = is_dataset_image,
+                    is_dataset_audio = is_dataset_audio,
+                    trust_remote_code = trust_remote_code,
+                    full_finetuning = full_finetuning,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
