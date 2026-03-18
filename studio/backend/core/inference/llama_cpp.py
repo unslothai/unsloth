@@ -1892,7 +1892,9 @@ class LlamaCppBackend:
                                         cumulative += "</think>"
                                         yield {
                                             "type": "content",
-                                            "text": _strip_tool_markup(cumulative, final = True),
+                                            "text": _strip_tool_markup(
+                                                cumulative, final = True
+                                            ),
                                         }
                                     else:
                                         cumulative = reasoning_text

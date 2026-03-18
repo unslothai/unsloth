@@ -209,7 +209,9 @@ def _python_exec(
     tmp_path = None
     workdir = _get_workdir(session_id)
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
+        fd, tmp_path = tempfile.mkstemp(
+            suffix = ".py", prefix = "studio_exec_", dir = workdir
+        )
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
