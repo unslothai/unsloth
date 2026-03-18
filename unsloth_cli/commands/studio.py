@@ -125,7 +125,7 @@ def _reexec_cli_in_studio_venv(command_args: list[str], silent: bool = False) ->
     backend_dir = str(_PACKAGE_ROOT / "studio" / "backend")
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{backend_dir}:{existing}" if existing else backend_dir
+    env["PYTHONPATH"] = f"{backend_dir}{os.pathsep}{existing}" if existing else backend_dir
 
     args = [str(studio_python), "-m", "unsloth_cli", *command_args]
 

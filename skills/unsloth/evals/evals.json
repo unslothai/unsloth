@@ -38,9 +38,9 @@
     },
     {
       "id": "train-and-export",
-      "prompt": "Fine-tune Qwen2.5-0.5B on the Alpaca dataset with LoRA, 3 epochs, then export to GGUF q4_k_m.",
+      "prompt": "Fine-tune Qwen3-0.6B on the Alpaca dataset with LoRA, 3 epochs, then export to GGUF q4_k_m.",
       "expectations": [
-        "Uses non-GGUF model ID: unsloth/Qwen2.5-0.5B (not -GGUF variant)",
+        "Uses non-GGUF model ID: unsloth/Qwen3-0.6B (not -GGUF variant)",
         "Writes a YAML config or uses correct CLI flags for training",
         "Sets num_epochs to 3",
         "Uses --dry-run before actual training",
@@ -49,7 +49,7 @@
         "No hallucinated flags"
       ],
       "assertions": {
-        "model_id": "unsloth/Qwen2.5-0.5B",
+        "model_id": "unsloth/Qwen3-0.6B",
         "model_id_not": "GGUF",
         "training_type": "lora",
         "num_epochs": 3,
@@ -61,7 +61,7 @@
     },
     {
       "id": "inference",
-      "prompt": "Run inference on Qwen2.5-0.5B with the prompt 'Summarize the benefits of LoRA' at temperature 0.5.",
+      "prompt": "Run inference on Qwen3-0.6B with the prompt 'Summarize the benefits of LoRA' at temperature 0.5.",
       "expectations": [
         "Uses correct command: unsloth inference",
         "Model and prompt are positional arguments",
@@ -70,7 +70,7 @@
       ],
       "assertions": {
         "command": "unsloth inference",
-        "positional_args": ["unsloth/Qwen2.5-0.5B", "Summarize the benefits of LoRA"],
+        "positional_args": ["unsloth/Qwen3-0.6B", "Summarize the benefits of LoRA"],
         "flags": {"--temperature": "0.5"},
         "max_exploration_turns": 0
       }
@@ -93,9 +93,9 @@
     },
     {
       "id": "local-dataset",
-      "prompt": "I have local JSONL files at ./data/train.jsonl. Fine-tune Qwen2.5-0.5B on them.",
+      "prompt": "I have local JSONL files at ./data/train.jsonl. Fine-tune Qwen3-0.6B on them.",
       "expectations": [
-        "Uses non-GGUF model ID: unsloth/Qwen2.5-0.5B",
+        "Uses non-GGUF model ID: unsloth/Qwen3-0.6B",
         "Writes a YAML config file (local_dataset is YAML-only, no CLI flag)",
         "Config includes local_dataset with ./data/train.jsonl",
         "Does NOT use --dataset with a local file path (that's the HuggingFace field)",
@@ -103,7 +103,7 @@
         "Uses config file approach: unsloth train --config <file>"
       ],
       "assertions": {
-        "model_id": "unsloth/Qwen2.5-0.5B",
+        "model_id": "unsloth/Qwen3-0.6B",
         "model_id_not": "GGUF",
         "uses_config_file": true,
         "config_has_local_dataset": true,

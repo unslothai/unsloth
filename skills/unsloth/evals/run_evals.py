@@ -29,11 +29,11 @@ REPO_ROOT = SKILL_DIR.parent.parent  # skills/unsloth -> skills -> repo root
 ENV_CONTEXT = """
 CONTEXT about the environment:
 - Working directory: {repo_root}
-- Mac M4, no NVIDIA GPU. Training/inference won't work but --dry-run and --help do.
+- Mac M4, no NVIDIA GPU. Full Unsloth training does not work here, but dry-run flows do. GGUF inference does work on this machine.
 - unsloth CLI is installed at /opt/homebrew/bin/unsloth (version 2026.3.5)
 - Studio venv exists at ~/.unsloth/studio/.venv (Python 3.11)
 - Use pip3, not pip.
-- Do NOT run 'unsloth studio setup' — it's already done.
+- `unsloth studio setup` is already done in this environment. Only run it if the task explicitly requires verifying setup behavior.
 - If a command fails, note it and keep going.
 - Save all output/files you create into: {output_dir}
 """.strip()
