@@ -10,6 +10,9 @@ import {
 } from "../types/runtime";
 
 const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
+const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
+const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
+const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -35,6 +38,27 @@ function saveBool(key: string, value: boolean): void {
   }
 }
 
+function loadInt(key: string, fallback: number): number {
+  if (!canUseStorage()) return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = parseInt(raw, 10);
+    return Number.isNaN(parsed) ? fallback : parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveInt(key: string, value: number): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // ignore
+  }
+}
+
 type ChatRuntimeStore = {
   params: InferenceParams;
   models: ChatModelSummary[];
@@ -51,6 +75,9 @@ type ChatRuntimeStore = {
   codeToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
+  autoHealToolCalls: boolean;
+  maxToolCallsPerMessage: number;
+  toolCallTimeout: number;
   kvCacheDtype: string | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -73,6 +100,9 @@ type ChatRuntimeStore = {
   setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
+  setAutoHealToolCalls: (enabled: boolean) => void;
+  setMaxToolCallsPerMessage: (value: number) => void;
+  setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -95,6 +125,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   codeToolsEnabled: false,
   toolStatus: null,
   generatingStatus: null,
+  autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
+  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 10),
+  toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -154,6 +187,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
+  setAutoHealToolCalls: (autoHealToolCalls) =>
+    set(() => {
+      saveBool(AUTO_HEAL_TOOL_CALLS_KEY, autoHealToolCalls);
+      return { autoHealToolCalls };
+    }),
+  setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
+    set(() => {
+      saveInt(MAX_TOOL_CALLS_KEY, maxToolCallsPerMessage);
+      return { maxToolCallsPerMessage };
+    }),
+  setToolCallTimeout: (toolCallTimeout) =>
+    set(() => {
+      saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout);
+      return { toolCallTimeout };
+    }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
