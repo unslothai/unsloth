@@ -71,7 +71,7 @@ pip install --upgrade pip uv
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git
 cd unsloth
 uv venv
-uv pip install -e . --torch-backend=auto
+uv pip install -e .
 uv run unsloth studio setup
 uv run unsloth studio -H 0.0.0.0 -p 8888
 ```
