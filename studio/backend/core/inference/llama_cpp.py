@@ -1361,7 +1361,10 @@ class LlamaCppBackend:
             # fires every 0.5 s -- we catch it and loop (re-checking cancel)
             # instead of re-sending the POST.
             prefill_timeout = httpx.Timeout(
-                connect = 30, read = client.timeout.read, write = 10, pool = 10,
+                connect = 30,
+                read = client.timeout.read,
+                write = 10,
+                pool = 10,
             )
             with client.stream(
                 "POST", url, json = payload, timeout = prefill_timeout
@@ -1388,15 +1391,18 @@ class LlamaCppBackend:
 
                 class _PrependStream:
                     """Byte stream that yields a buffered first chunk, then the rest."""
+
                     def __init__(self, first: bytes, rest):
                         self._first = first
                         self._rest = rest
                         self._sent_first = False
+
                     def __iter__(self):
                         if not self._sent_first and self._first is not None:
                             self._sent_first = True
                             yield self._first
                         yield from self._rest
+
                     def close(self):
                         if hasattr(self._rest, "close"):
                             self._rest.close()
