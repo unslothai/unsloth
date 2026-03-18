@@ -26,8 +26,8 @@ def _fix_torch_cuda_ld_path():
     Fix: detect torch's lib dirs (without importing torch) and prepend them
     so they take priority.  Returns True if LD_LIBRARY_PATH was changed.
     """
-    if sys.platform == "win32":
-        return False  # Windows uses PATH, not LD_LIBRARY_PATH
+    if sys.platform != "linux":
+        return False
     ld_path = os.environ.get("LD_LIBRARY_PATH", "")
     if not ld_path:
         return False
@@ -67,12 +67,24 @@ def _fix_torch_cuda_ld_path():
         return False
 
 
-# Fix LD_LIBRARY_PATH before any torch/CUDA libs get loaded.
-# If we changed it, re-exec so the dynamic linker sees the new value.
 _LD_FIXED_SENTINEL = "_UNSLOTH_STUDIO_LD_FIXED"
-if _LD_FIXED_SENTINEL not in os.environ and _fix_torch_cuda_ld_path():
+
+
+def _maybe_reexec_for_cuda_ld_path():
+    """Re-exec once so the dynamic linker sees corrected LD_LIBRARY_PATH.
+
+    Must only be called from a true entry point (``if __name__ == "__main__"``
+    or an explicit startup function), never at module import time, because
+    os.execv replaces the entire process.
+    """
+    if _LD_FIXED_SENTINEL in os.environ:
+        return
+    if not _fix_torch_cuda_ld_path():
+        return
     os.environ[_LD_FIXED_SENTINEL] = "1"
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    argv = getattr(sys, "orig_argv", None) or [sys.executable] + sys.argv
+    os.execv(sys.executable, argv)
+
 
 from pathlib import Path
 
@@ -237,6 +249,8 @@ def run_server(
     """
     global _server, _shutdown_event
 
+    _maybe_reexec_for_cuda_ld_path()
+
     import nest_asyncio
 
     nest_asyncio.apply()
@@ -300,6 +314,8 @@ def run_server(
 
 # For direct execution (also invoked by CLI via os.execvp / subprocess)
 if __name__ == "__main__":
+    _maybe_reexec_for_cuda_ld_path()
+
     import argparse
     import signal
 
