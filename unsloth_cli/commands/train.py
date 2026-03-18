@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -9,6 +10,7 @@ import typer
 
 from unsloth_cli.config import Config, load_config
 from unsloth_cli.options import add_options_from_config
+from unsloth_cli.commands.studio import _reexec_cli_in_studio_venv
 
 
 @add_options_from_config(Config)
@@ -33,6 +35,8 @@ def train(
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
+    _reexec_cli_in_studio_venv(sys.argv[1:])
+
     try:
         cfg = load_config(config)
     except FileNotFoundError as e:

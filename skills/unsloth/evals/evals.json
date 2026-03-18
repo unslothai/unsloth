@@ -1,0 +1,115 @@
+{
+  "skill": "unsloth",
+  "evals": [
+    {
+      "id": "setup-verify",
+      "prompt": "I want to get started with Unsloth. Verify it's set up correctly and show me what commands are available.",
+      "expectations": [
+        "Verifies unsloth CLI is installed (e.g. unsloth --help, which unsloth, or pip show)",
+        "Verifies studio venv exists or runs unsloth studio setup",
+        "Shows available commands (train, inference, export, list-checkpoints, studio)",
+        "Runs a quick sanity check (e.g. unsloth train --dry-run or unsloth list-checkpoints)",
+        "No errors in the verification commands"
+      ],
+      "assertions": {
+        "cli_verified": true,
+        "commands_listed": true,
+        "sanity_check_ran": true,
+        "no_errors": true
+      }
+    },
+    {
+      "id": "setup-fresh",
+      "prompt": "Install Unsloth from scratch and set up the Studio environment. This is a clean machine with nothing installed.",
+      "expectations": [
+        "Runs pip install unsloth (or pip install -e . if in repo)",
+        "Runs unsloth studio setup",
+        "Install comes before studio setup",
+        "Verifies the CLI works after install (e.g. unsloth --help)",
+        "No unnecessary exploration before installing"
+      ],
+      "assertions": {
+        "pip_install_ran": true,
+        "studio_setup_ran": true,
+        "correct_order": true,
+        "cli_verified_after": true
+      },
+      "notes": "Best run in a clean Docker container with local repo mounted. Use: docker run -v $(pwd):/workspace -w /workspace python:3.11 bash"
+    },
+    {
+      "id": "train-and-export",
+      "prompt": "Fine-tune Qwen2.5-0.5B on the Alpaca dataset with LoRA, 3 epochs, then export to GGUF q4_k_m.",
+      "expectations": [
+        "Uses non-GGUF model ID: unsloth/Qwen2.5-0.5B (not -GGUF variant)",
+        "Writes a YAML config or uses correct CLI flags for training",
+        "Sets num_epochs to 3",
+        "Uses --dry-run before actual training",
+        "After training, runs unsloth list-checkpoints to find checkpoint path",
+        "Runs export with --format gguf --quantization q4_k_m",
+        "No hallucinated flags"
+      ],
+      "assertions": {
+        "model_id": "unsloth/Qwen2.5-0.5B",
+        "model_id_not": "GGUF",
+        "training_type": "lora",
+        "num_epochs": 3,
+        "dry_run_used": true,
+        "export_format": "gguf",
+        "export_quantization": "q4_k_m",
+        "no_hallucinated_flags": true
+      }
+    },
+    {
+      "id": "inference",
+      "prompt": "Run inference on Qwen2.5-0.5B with the prompt 'Summarize the benefits of LoRA' at temperature 0.5.",
+      "expectations": [
+        "Uses correct command: unsloth inference",
+        "Model and prompt are positional arguments",
+        "Uses --temperature 0.5",
+        "No unnecessary flags or exploration"
+      ],
+      "assertions": {
+        "command": "unsloth inference",
+        "positional_args": ["unsloth/Qwen2.5-0.5B", "Summarize the benefits of LoRA"],
+        "flags": {"--temperature": "0.5"},
+        "max_exploration_turns": 0
+      }
+    },
+    {
+      "id": "inference-gguf",
+      "prompt": "I'm on a Mac with no NVIDIA GPU. Run inference with a small model and the prompt 'What is LoRA?' — make sure it actually works.",
+      "expectations": [
+        "Uses a GGUF model ID (e.g. unsloth/Llama-3.2-1B-Instruct-GGUF or similar -GGUF variant)",
+        "Uses correct command: unsloth inference with model and prompt as positional args",
+        "Inference actually succeeds (exit code 0, model response generated)",
+        "Does NOT try a non-GGUF model that would fail on Mac"
+      ],
+      "assertions": {
+        "command": "unsloth inference",
+        "model_id_contains": "GGUF",
+        "inference_succeeds": true,
+        "no_gpu_error": true
+      }
+    },
+    {
+      "id": "local-dataset",
+      "prompt": "I have local JSONL files at ./data/train.jsonl. Fine-tune Qwen2.5-0.5B on them.",
+      "expectations": [
+        "Uses non-GGUF model ID: unsloth/Qwen2.5-0.5B",
+        "Writes a YAML config file (local_dataset is YAML-only, no CLI flag)",
+        "Config includes local_dataset with ./data/train.jsonl",
+        "Does NOT use --dataset with a local file path (that's the HuggingFace field)",
+        "Uses --dry-run before training",
+        "Uses config file approach: unsloth train --config <file>"
+      ],
+      "assertions": {
+        "model_id": "unsloth/Qwen2.5-0.5B",
+        "model_id_not": "GGUF",
+        "uses_config_file": true,
+        "config_has_local_dataset": true,
+        "no_dataset_flag_with_local_path": true,
+        "dry_run_used": true
+      }
+    }
+  ]
+}

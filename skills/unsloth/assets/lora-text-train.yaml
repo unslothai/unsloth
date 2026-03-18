@@ -1,0 +1,50 @@
+# Unsloth LoRA Text Fine-Tuning Config
+# Most common workflow — adapter-based fine-tuning with 4-bit quantization.
+# Copy this file, edit model/dataset, then: unsloth train --config this-file.yaml --dry-run
+
+model: unsloth/Qwen2.5-0.5B              # HuggingFace model ID (non-GGUF for training)
+
+data:
+  dataset: tatsu-lab/alpaca               # HuggingFace dataset ID
+  # local_dataset:                        # uncomment for local files (list of paths)
+  #   - ./data/train.jsonl
+  format_type: auto                       # auto | alpaca | chatml | sharegpt
+
+training:
+  training_type: lora                     # lora adapter training
+  max_seq_length: 2048                    # max tokens per sequence
+  load_in_4bit: true                      # 4-bit quantization (saves VRAM)
+  output_dir: outputs                     # checkpoint output directory
+  num_epochs: 1                           # training epochs (ignored if max_steps > 0)
+  learning_rate: 0.0002                   # 2e-4
+  batch_size: 2                           # per-device batch size
+  gradient_accumulation_steps: 4          # effective batch = 2 * 4 = 8
+  warmup_steps: 5                         # linear warmup
+  max_steps: 0                            # 0 = use num_epochs
+  save_steps: 0                           # 0 = save only at end
+  weight_decay: 0.01                      # AdamW weight decay
+  random_seed: 3407                       # reproducibility
+  packing: false                          # pack sequences into max_seq_length windows
+  train_on_completions: false             # train on full sequence (not just completions)
+  gradient_checkpointing: "unsloth"       # unsloth | true | none (unsloth = optimized)
+
+lora:
+  lora_r: 64                              # LoRA rank (higher = more params)
+  lora_alpha: 16                          # LoRA scaling factor
+  lora_dropout: 0.0                       # dropout on LoRA layers
+  target_modules: "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+  vision_all_linear: false                # true for vision models
+  use_rslora: false                       # Rank-Stabilized LoRA
+  use_loftq: false                        # LoFTQ initialization
+  finetune_vision_layers: true            # for vision-language models
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+logging:
+  enable_wandb: false                     # set true + wandb_token to log to W&B
+  wandb_project: unsloth-training
+  # wandb_token: ...                      # or set WANDB_API_KEY env var
+  enable_tensorboard: false
+  tensorboard_dir: runs
+  # hf_token: ...                         # or set HF_TOKEN env var

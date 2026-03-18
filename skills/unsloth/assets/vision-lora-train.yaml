@@ -1,0 +1,49 @@
+# Unsloth Vision Model LoRA Config
+# LoRA fine-tuning for vision-language models (e.g. Qwen2-VL).
+# Key differences from text LoRA: vision_all_linear=true, empty target_modules.
+# Copy this file, edit model/dataset, then: unsloth train --config this-file.yaml --dry-run
+
+model: unsloth/Qwen2-VL-2B-Instruct-bnb-4bit   # vision-language model (4-bit variant)
+
+data:
+  dataset: philschmid/amazon-product-descriptions-vlm   # vision dataset
+  # local_dataset:                        # uncomment for local files (list of paths)
+  #   - ./data/train.jsonl
+  format_type: auto                       # auto | alpaca | chatml | sharegpt
+
+training:
+  training_type: lora                     # LoRA adapter training
+  max_seq_length: 2048
+  load_in_4bit: true                      # 4-bit quantization
+  output_dir: outputs
+  num_epochs: 1
+  learning_rate: 0.0002
+  batch_size: 1                           # vision models use more VRAM per sample
+  gradient_accumulation_steps: 4
+  warmup_steps: 5
+  max_steps: 0
+  save_steps: 0
+  weight_decay: 0.01
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: "unsloth"
+
+lora:
+  lora_r: 64
+  lora_alpha: 16
+  lora_dropout: 0.0
+  target_modules: ""                      # leave empty — vision_all_linear handles module selection
+  vision_all_linear: true                 # KEY: apply LoRA to all linear layers in vision model
+  use_rslora: false
+  use_loftq: false
+  finetune_vision_layers: true            # fine-tune vision encoder
+  finetune_language_layers: true          # fine-tune language decoder
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+logging:
+  enable_wandb: false
+  wandb_project: unsloth-training
+  enable_tensorboard: false
+  tensorboard_dir: runs

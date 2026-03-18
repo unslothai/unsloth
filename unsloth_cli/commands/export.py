@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sys
 from pathlib import Path
 from typing import Optional
 
 import typer
+
+from unsloth_cli.commands.studio import _reexec_cli_in_studio_venv
 
 
 EXPORT_FORMATS = ["merged-16bit", "merged-4bit", "gguf", "lora"]
@@ -17,6 +20,8 @@ def list_checkpoints(
     ),
 ):
     """List checkpoints detected in the outputs directory."""
+    _reexec_cli_in_studio_venv(["list-checkpoints", *sys.argv[2:]])
+
     from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
@@ -63,6 +68,8 @@ def export(
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
 ):
     """Export a checkpoint to various formats (merged, GGUF, LoRA adapter)."""
+    _reexec_cli_in_studio_venv(sys.argv[1:])
+
     if format not in EXPORT_FORMATS:
         typer.echo(
             f"Error: Invalid format '{format}'. Choose from: {', '.join(EXPORT_FORMATS)}",
