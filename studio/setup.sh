@@ -47,9 +47,8 @@ fi
 # and upgrades/pulls (source newer than dist/ triggers rebuild).
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    # Check top-level config and entry files (package.json, vite.config.ts, index.html, etc.)
-    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 \
-        \( -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.mjs" -o -name "*.html" \) \
+    # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
         -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
     # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
     if [ -z "$_changed" ]; then
