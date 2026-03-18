@@ -58,7 +58,7 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 
 You can also install directly from source:
 ```
-git clone https://github.com/unslothai/unsloth.git
+git clone --filter=blob:none https://github.com/unslothai/unsloth.git
 cd unsloth
 pip install -e .
 unsloth studio setup
