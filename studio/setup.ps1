@@ -1072,7 +1072,6 @@ $output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[WARN] Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" -ForegroundColor Yellow
 }
-}
 $ErrorActionPreference = $prevEAP_t5
 Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
 

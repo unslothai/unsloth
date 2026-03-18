@@ -231,7 +231,9 @@ def _venv_t5_is_valid() -> bool:
         return False
     # Check that the key package directories exist AND match the required version
     for pkg_spec in _VENV_T5_PACKAGES:
-        pkg_name, pkg_version = pkg_spec.split("==")
+        parts = pkg_spec.split("==")
+        pkg_name = parts[0]
+        pkg_version = parts[1] if len(parts) > 1 else None
         pkg_name_norm = pkg_name.replace("-", "_")
         # Check directory exists
         if not any(
@@ -239,6 +241,9 @@ def _venv_t5_is_valid() -> bool:
             for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
         ):
             return False
+        # For unpinned packages, existence is enough
+        if pkg_version is None:
+            continue
         # Check version via .dist-info metadata
         dist_info_found = False
         for di in Path(_VENV_T5_DIR).glob(f"{pkg_name_norm}-*.dist-info"):
