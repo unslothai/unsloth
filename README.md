@@ -50,29 +50,42 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### Windows, MacOS, Linux or WSL:
+#### Windows, MacOS, Linux or WSL Setup (One time):
 ```
-pip install --upgrade pip && pip install uv
+pip install -U pip uv
+uv venv
 uv pip install unsloth --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
+uv run unsloth studio setup
+uv run unsloth studio -H 0.0.0.0 -p 8888
 ```
+Then to launch everytime:
+```
+uv run unsloth studio -H 0.0.0.0 -p 8888
+```
+
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
 
 You can also install directly from source:
 ```
-pip install --upgrade pip && pip install uv
+pip install --upgrade pip uv
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git
 cd unsloth
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
+uv venv
+uv pip install -e .
+uv run unsloth studio setup
+uv run unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch everytime:
+```
+cd unsloth
+uv run unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 ### Unsloth Core (code-based)
 #### Windows, Linux, WSL
 ```bash
-pip install --upgrade pip && pip install uv
+pip install -U pip uv
+uv venv
 uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
