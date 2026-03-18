@@ -749,17 +749,25 @@ Write-Host ""
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
 $DistDir = Join-Path $FrontendDir "dist"
-$SrcDir = Join-Path $FrontendDir "src"
-# Skip build if dist/ exists and no source file is newer than dist/
+# Skip build if dist/ exists and no tracked input is newer than dist/.
+# Checks src/, public/, package.json, config files -- not just src/.
 $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
-    $NewerSrc = Get-ChildItem -Path $SrcDir -Recurse -File -ErrorAction SilentlyContinue |
+    # Check src/ and public/ recursively
+    $NewerFile = Get-ChildItem -Path $FrontendDir -Include "src","public" -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ChildItem -Path $_.FullName -Recurse -File -ErrorAction SilentlyContinue } |
         Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
-    if (-not $NewerSrc) {
+    # Also check top-level config files (package.json, vite.config.ts, etc.)
+    if (-not $NewerFile) {
+        $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '\.(json|ts|js|mjs)$' -and $_.LastWriteTime -gt $DistTime } |
+            Select-Object -First 1
+    }
+    if (-not $NewerFile) {
         $NeedFrontendBuild = $false
         Write-Host "[OK] Frontend already built and up to date -- skipping build" -ForegroundColor Green
     } else {

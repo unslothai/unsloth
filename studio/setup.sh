@@ -41,14 +41,19 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Skip if dist/ exists AND no source file is newer than dist/.
+# Skip if dist/ exists AND no tracked input is newer than dist/.
+# Checks src/, public/, package.json, config files -- not just src/.
 # This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
 # and upgrades/pulls (source newer than dist/ triggers rebuild).
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    # Check if any src/ file is newer than dist/
-    _newest_src=$(find "$SCRIPT_DIR/frontend/src" -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
-    if [ -z "$_newest_src" ]; then
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.mjs" | \
+        xargs -r find -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+    if [ -z "$_changed" ]; then
+        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
+            -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+    fi
+    if [ -z "$_changed" ]; then
         _NEED_FRONTEND_BUILD=false
     fi
 fi
@@ -152,12 +157,17 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
-cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end frontend dist check
+fi  # end frontend build check
+
+# ── oxc-validator runtime (always install, independent of frontend build) ──
+if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ]; then
+    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+    run_quiet "npm install (oxc validator runtime)" npm install
+    cd "$SCRIPT_DIR"
+fi
 
 # ── 6. Python venv + deps ──
 
