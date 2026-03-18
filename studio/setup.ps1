@@ -757,14 +757,20 @@ if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
-    # Check src/ and public/ recursively
-    $NewerFile = Get-ChildItem -Path $FrontendDir -Include "src","public" -Directory -ErrorAction SilentlyContinue |
-        ForEach-Object { Get-ChildItem -Path $_.FullName -Recurse -File -ErrorAction SilentlyContinue } |
-        Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
-    # Also check top-level config files (package.json, vite.config.ts, etc.)
+    $NewerFile = $null
+    # Check src/ and public/ recursively (probe paths directly, not via -Include)
+    foreach ($subDir in @("src", "public")) {
+        $subPath = Join-Path $FrontendDir $subDir
+        if (Test-Path $subPath) {
+            $NewerFile = Get-ChildItem -Path $subPath -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
+            if ($NewerFile) { break }
+        }
+    }
+    # Also check ALL top-level files (package.json, index.html, bun.lock, configs, etc.)
     if (-not $NewerFile) {
         $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '\.(json|ts|js|mjs)$' -and $_.LastWriteTime -gt $DistTime } |
+            Where-Object { $_.LastWriteTime -gt $DistTime } |
             Select-Object -First 1
     }
     if (-not $NewerFile) {

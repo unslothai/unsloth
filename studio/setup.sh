@@ -47,8 +47,9 @@ fi
 # and upgrades/pulls (source newer than dist/ triggers rebuild).
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.mjs" | \
-        xargs -r find -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+    # Check top-level config files (package.json, vite.config.ts, index.html, bun.lock, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
+    # Check src/ and public/ recursively
     if [ -z "$_changed" ]; then
         _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
             -type f -newer "$SCRIPT_DIR/frontend/dist" 2>/dev/null | head -1)
@@ -162,8 +163,8 @@ echo "✅ Frontend built to frontend/dist"
 
 fi  # end frontend build check
 
-# ── oxc-validator runtime (always install, independent of frontend build) ──
-if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ]; then
+# ── oxc-validator runtime (needs npm -- skip if not available) ──
+if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
     run_quiet "npm install (oxc validator runtime)" npm install
     cd "$SCRIPT_DIR"
