@@ -71,39 +71,13 @@ unsloth ui -p 8000
 
 ## Config File Format
 
-A YAML config has 5 sections: `model`, `data`, `training`, `lora`, `logging`.
+A YAML config has 5 sections: `model`, `data`, `training`, `lora`, `logging`. Copy-paste templates:
 
-```yaml
-model: unsloth/Qwen3-0.6B                # HuggingFace model ID (use non-GGUF for training)
-
-data:
-  dataset: tatsu-lab/alpaca               # HuggingFace dataset ID
-  local_dataset:                          # local paths (YAML only — no CLI flag for list fields)
-    - ./data/train.jsonl
-  format_type: auto                       # auto | alpaca | chatml | sharegpt
-
-training:
-  training_type: lora                     # lora | full
-  max_seq_length: 2048
-  load_in_4bit: true
-  output_dir: outputs
-  num_epochs: 3
-  learning_rate: 0.0002
-  batch_size: 2
-  gradient_accumulation_steps: 4
-
-lora:
-  lora_r: 64
-  lora_alpha: 16
-  target_modules: "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
-
-logging:
-  enable_wandb: false
-  wandb_project: unsloth-training
-```
+- `assets/lora-text-train.yaml` — LoRA text fine-tuning (most common)
+- `assets/full-finetune.yaml` — full fine-tuning (no LoRA, more VRAM)
+- `assets/vision-lora-train.yaml` — vision model LoRA
 
 See `references/config-reference.md` for every field with type, default, and description.
-See `assets/lora-text-train.yaml` for a copy-paste template.
 
 ## Key Gotchas
 
