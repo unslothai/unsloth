@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -93,6 +94,8 @@ export function ExportPage() {
     "checkpoint",
   );
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
+  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
+    useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -292,14 +295,10 @@ export function ExportPage() {
       setSourceMode(next);
       if (next === "model") {
         setExportMethod("gguf");
-        setSelectedSourceModel(null);
-        setLocalModelInput("");
-        setModelInput("");
-      } else {
-        setSelectedSourceModel(null);
-        setLocalModelInput("");
-        setModelInput("");
       }
+      setSelectedSourceModel(null);
+      setLocalModelInput("");
+      setModelInput("");
     },
     [],
   );
@@ -363,6 +362,8 @@ export function ExportPage() {
         await loadCheckpoint({
           checkpoint_path: source,
           load_in_4bit: false,
+          trust_remote_code:
+            modelSource === "hf" ? hfExportTrustRemoteCode : true,
         });
       }
 
@@ -435,6 +436,8 @@ export function ExportPage() {
     modelName,
     hfToken,
     privateRepo,
+    modelSource,
+    hfExportTrustRemoteCode,
   ]);
 
   // ---- Render ----
@@ -715,6 +718,43 @@ export function ExportPage() {
                                 {tokenValidationError ?? hfSearchError}
                               </p>
                             )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              id="hf-export-trust-remote-code"
+                              size="sm"
+                              checked={hfExportTrustRemoteCode}
+                              onCheckedChange={setHfExportTrustRemoteCode}
+                              disabled={exporting}
+                            />
+                            <label
+                              htmlFor="hf-export-trust-remote-code"
+                              className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
+                            >
+                              Trust remote code
+                            </label>
+                            <Tooltip>
+                              <TooltipTrigger asChild={true}>
+                                <button
+                                  type="button"
+                                  className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
+                                  aria-label="About trust remote code"
+                                >
+                                  <HugeiconsIcon
+                                    icon={InformationCircleIcon}
+                                    className="size-3.5"
+                                  />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                className="max-w-[260px] text-xs"
+                              >
+                                Loads custom Python from the repo if the model
+                                needs it. Turn off if you do not trust the
+                                source.
+                              </TooltipContent>
+                            </Tooltip>
                           </div>
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
