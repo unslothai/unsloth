@@ -107,11 +107,15 @@ function Find-Nvcc {
 # Returns e.g. "80" for A100 (8.0), "89" for RTX 4090 (8.9), etc.
 # Returns $null if detection fails.
 function Get-CudaComputeCapability {
-    $nvSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if (-not $nvSmi) { return $null }
+    # Use the resolved absolute path ($NvidiaSmiExe) to survive Refresh-Environment
+    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+        $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($cmd) { $cmd.Source } else { $null }
+    }
+    if (-not $smiExe) { return $null }
 
     try {
-        $raw = & nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>$null
+        $raw = & $smiExe --query-gpu=compute_cap --format=csv,noheader 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
 
         # nvidia-smi may return multiple GPUs; take the first one
@@ -168,14 +172,17 @@ function Get-NvccMaxArch {
 # https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
 # capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
 function Get-PytorchCudaTag {
-    $nvSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if (-not $nvSmi) { return "cu124" }
+    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+        $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($cmd) { $cmd.Source } else { $null }
+    }
+    if (-not $smiExe) { return "cu124" }
 
     try {
         # 2>&1 | Out-String merges stderr into stdout then converts to a single
-        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 —
+        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
         # ErrorRecord objects leak into $output and break the -match.
-        $output = & nvidia-smi 2>&1 | Out-String
+        $output = & $smiExe 2>&1 | Out-String
         if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
@@ -254,9 +261,16 @@ Write-Host "+==============================================+" -ForegroundColor G
 # 1a. GPU detection
 # ============================================
 $HasNvidiaSmi = $false
+$NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
-    nvidia-smi 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true }
+    $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($nvSmiCmd) {
+        & $nvSmiCmd.Source 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $HasNvidiaSmi = $true
+            $NvidiaSmiExe = $nvSmiCmd.Source
+        }
+    }
 } catch {}
 # Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
 # Check the default install location and the Windows driver store.
@@ -270,10 +284,9 @@ if (-not $HasNvidiaSmi) {
             try {
                 & $p 2>&1 | Out-Null
                 if ($LASTEXITCODE -eq 0) {
-                    $nvSmiDir = Split-Path $p -Parent
-                    $env:Path = "$nvSmiDir;$env:Path"
                     $HasNvidiaSmi = $true
-                    Write-Host "   Found nvidia-smi at $nvSmiDir (added to PATH)" -ForegroundColor Gray
+                    $NvidiaSmiExe = $p
+                    Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
                     break
                 }
             } catch {}
@@ -443,7 +456,7 @@ if ($HasNvidiaSmi) {
 # -- Detect max CUDA version the driver supports --
 $DriverMaxCuda = $null
 try {
-    $smiOut = nvidia-smi 2>&1 | Out-String
+    $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
     if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         Write-Host "   Driver supports up to CUDA $DriverMaxCuda" -ForegroundColor Gray
@@ -1086,6 +1099,12 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
 } elseif (-not $HasCmakeForBuild) {
     Write-Host ""
+    if (-not $HasNvidiaSmi) {
+        # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
+        Write-Host "[ERROR] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Red
+        Write-Host "        Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
+        exit 1
+    }
     Write-Host "[SKIP] llama-server build -- cmake not available" -ForegroundColor Yellow
     Write-Host "       GGUF inference and export will not be available." -ForegroundColor Yellow
     Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
