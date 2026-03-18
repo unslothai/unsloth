@@ -59,7 +59,7 @@ uv pip install unsloth --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch everytime:
+Then to launch every time:
 ```bash
 source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
@@ -74,7 +74,7 @@ uv pip install unsloth --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch everytime:
+Then to launch every time:
 ```bash
 .\unsloth_studio\Scripts\activate
 unsloth studio -H 0.0.0.0 -p 8888
@@ -93,7 +93,7 @@ uv pip install -e . --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch everytime:
+Then to launch every time:
 ```bash
 cd unsloth_studio
 source .venv/bin/activate
@@ -111,7 +111,7 @@ uv pip install -e . --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch everytime:
+Then to launch every time:
 ```bash
 cd unsloth_studio
 .\.venv\Scripts\activate
