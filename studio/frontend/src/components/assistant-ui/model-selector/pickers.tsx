@@ -35,7 +35,7 @@ import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Trash2Icon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import type {
   LoraModelOption,
@@ -455,21 +455,43 @@ export function HubModelPicker({
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
       .filter((id) => !chatOnly || isGgufRepo(id));
-    // Cap at 4 GGUFs + 4 non-GGUFs so the list stays manageable
+    // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
     const hub: string[] = [];
     for (const id of all) {
-      if (isGgufRepo(id) && gguf.length < 4) gguf.push(id);
-      else if (!isGgufRepo(id) && hub.length < 4) hub.push(id);
+      if (isGgufRepo(id)) gguf.push(id);
+      else hub.push(id);
     }
     return [...gguf, ...hub];
   }, [models, value, downloadedSet, chatOnly]);
 
+  // Infinite scroll paging for the recommended section
+  const [recommendedPage, setRecommendedPage] = useState(1);
+  // Reset page when the underlying list changes
+  useEffect(() => { setRecommendedPage(1); }, [models, chatOnly]);
+
+  const visibleRecommendedIds = useMemo(() => {
+    const hubStartIndex = recommendedIds.findIndex((id) => !isGgufRepo(id));
+    const allGguf = hubStartIndex === -1 ? recommendedIds : recommendedIds.slice(0, hubStartIndex);
+    const allHub = hubStartIndex === -1 ? [] : recommendedIds.slice(hubStartIndex);
+    // Interleave in chunks of 4: [4 gguf, 4 hub, 4 gguf, 4 hub, ...]
+    const result: string[] = [];
+    for (let p = 0; p < recommendedPage; p++) {
+      result.push(...allGguf.slice(p * 4, (p + 1) * 4));
+      result.push(...allHub.slice(p * 4, (p + 1) * 4));
+    }
+    return result;
+  }, [recommendedIds, recommendedPage]);
+
+  const hasMoreRecommended = visibleRecommendedIds.length < recommendedIds.length;
+
+  // Fetch VRAM info for the full pool once (recommendedIds is stable across
+  // page increments) so we don't re-fetch on every scroll.
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(recommendedIds);
 
   const showHfSection = debouncedQuery.trim().length > 0;
-  const recommendedSet = useMemo(() => new Set(recommendedIds), [recommendedIds]);
+  const recommendedSet = useMemo(() => new Set(visibleRecommendedIds), [visibleRecommendedIds]);
 
   const hfIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -519,7 +541,7 @@ export function HubModelPicker({
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
-    for (const id of recommendedIds) {
+    for (const id of visibleRecommendedIds) {
       const totalParams = recommendedParamCountById.get(id);
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
@@ -531,9 +553,35 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [recommendedIds, recommendedParamCountById, gpu]);
+  }, [visibleRecommendedIds, recommendedParamCountById, gpu]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, results.length);
+
+  // Sentinel + IntersectionObserver for recommended infinite scroll.
+  // We disconnect after each fire so the observer doesn't loop while
+  // React re-renders; the effect re-creates it on the next page.
+  // Uses a callback ref for the sentinel so we detect mount/unmount reliably.
+  const [recommendedSentinel, setRecommendedSentinel] = useState<HTMLDivElement | null>(null);
+  const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
+    setRecommendedSentinel(node);
+  }, []);
+  useEffect(() => {
+    if (!recommendedSentinel || !hasMoreRecommended) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const obs = new IntersectionObserver(
+      ([e]) => {
+        if (e.isIntersecting) {
+          obs.disconnect();
+          setRecommendedPage((p) => p + 1);
+        }
+      },
+      { threshold: 0, root },
+    );
+    // Small delay so the browser finishes layout after the previous page render
+    const timer = setTimeout(() => obs.observe(recommendedSentinel), 100);
+    return () => { clearTimeout(timer); obs.disconnect(); };
+  }, [recommendedSentinel, hasMoreRecommended, recommendedPage, scrollRef]);
 
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
@@ -622,12 +670,12 @@ export function HubModelPicker({
           {!showHfSection && cachedReady ? (
             <>
               <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
-              {recommendedIds.length === 0 ? (
+              {visibleRecommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
                 </div>
               ) : (
-                recommendedIds.map((id) => {
+                visibleRecommendedIds.map((id) => {
                   const vram = recommendedVramMap.get(id);
                   return (
                     <div key={id}>
@@ -650,6 +698,14 @@ export function HubModelPicker({
                     </div>
                   );
                 })
+              )}
+              {hasMoreRecommended && (
+                <>
+                  <div ref={recommendedSentinelRef} className="h-px" />
+                  <div className="flex items-center justify-center py-2">
+                    <Spinner className="size-3.5 text-muted-foreground" />
+                  </div>
+                </>
               )}
             </>
           ) : null}
