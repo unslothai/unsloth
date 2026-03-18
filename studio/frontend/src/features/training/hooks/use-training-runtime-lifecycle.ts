@@ -16,6 +16,7 @@ const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 1500;
 const AUTH_STATUS_RETRY_INTERVAL_MS = 3000;
+const AUTH_STATUS_TIMEOUT_MS = 3000;
 const INITIAL_HYDRATE_TIMEOUT_MS = 4000;
 
 function wait(ms: number): Promise<void> {
@@ -57,14 +58,19 @@ export function useTrainingRuntimeLifecycle(): void {
 
       authProbeInFlight = true;
       lastAuthProbeStartedAt = now;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => {
+        controller.abort();
+      }, AUTH_STATUS_TIMEOUT_MS);
       try {
-        const res = await fetch("/api/auth/status");
+        const res = await fetch("/api/auth/status", { signal: controller.signal });
         if (!res.ok) return;
         const data = (await res.json()) as { auth_disabled?: boolean };
         authDisabled = Boolean(data.auth_disabled);
       } catch {
         // Keep previous mode and retry later.
       } finally {
+        clearTimeout(timeout);
         authProbeInFlight = false;
       }
     };
