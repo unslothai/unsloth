@@ -872,7 +872,35 @@ $ErrorActionPreference = "Continue"
 
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
-pip install --upgrade pip 2>&1 | Out-Null
+
+# Try to use uv (much faster than pip), fall back to pip if unavailable
+$UseUv = $false
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    $UseUv = $true
+} else {
+    Write-Host "   Installing uv package manager..." -ForegroundColor Cyan
+    try {
+        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        Refresh-Environment
+        # Re-activate venv since Refresh-Environment rebuilds PATH from
+        # registry and drops the venv's Scripts directory
+        . $ActivateScript
+        if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
+    } catch { }
+}
+
+# Helper: install a package, preferring uv with pip fallback
+function Fast-Install {
+    param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    if ($UseUv) {
+        $VenvPy = (Get-Command python).Source
+        $result = & uv pip install --python $VenvPy @Args_ 2>&1
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    & python -m pip install @Args_ 2>&1
+}
+
+Fast-Install --upgrade pip | Out-Null
 
 # if (-not $IsPipInstall) {
 #     # Running from repo: copy requirements and do editable install
@@ -909,14 +937,14 @@ Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH 
 
 $CuTag = Get-PytorchCudaTag
 Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
+Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-Null
 
-# Install Triton for Windows (enables torch.compile — without it training can hang)
+# Install Triton for Windows (enables torch.compile -- without it training can hang)
 Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
-pip install "triton-windows<3.7" 2>&1 | Out-Null
+Fast-Install "triton-windows<3.7" | Out-Null
 Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
 
-# Ordered heavy dependency installation — shared cross-platform script
+# Ordered heavy dependency installation -- shared cross-platform script
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python "$PSScriptRoot\install_python_stack.py"
 # Restore ErrorActionPreference after pip/python work
@@ -925,7 +953,7 @@ $ErrorActionPreference = $prevEAP
 # ── Pre-install transformers 5.x into .venv_t5/ ──
 # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
 # at runtime (slow, ~10-15s), we pre-install into a separate directory.
-# The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
+# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
 Write-Host ""
 Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
 $VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
@@ -933,17 +961,13 @@ if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-pip install --target $VenvT5Dir --no-deps "transformers==5.3.0" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[FAIL] Could not install transformers 5.3.0 into .venv_t5/" -ForegroundColor Red
-    $ErrorActionPreference = $prevEAP_t5
-    exit 1
-}
-pip install --target $VenvT5Dir --no-deps "huggingface_hub==1.3.0" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[FAIL] Could not install huggingface_hub 1.3.0 into .venv_t5/" -ForegroundColor Red
-    $ErrorActionPreference = $prevEAP_t5
-    exit 1
+foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4.2")) {
+    Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
 }
 $ErrorActionPreference = $prevEAP_t5
 Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green

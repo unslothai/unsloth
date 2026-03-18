@@ -140,15 +140,15 @@ def _bootstrap_uv() -> bool:
     global UV_NEEDS_SYSTEM
     if not shutil.which("uv"):
         return False
-    # Probe: try a dry-run install without --system.
-    # If uv can't find a venv it exits with code 2.
+    # Probe: try a dry-run install targeting the current Python explicitly.
+    # Without --python, uv can ignore the activated venv on some platforms.
     probe = subprocess.run(
-        ["uv", "pip", "install", "--dry-run", "pip"],
+        ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
     )
     if probe.returncode != 0:
-        # Retry with --system to confirm it works
+        # Retry with --system (some envs need it when uv can't find a venv)
         probe_sys = subprocess.run(
             ["uv", "pip", "install", "--dry-run", "--system", "pip"],
             stdout = subprocess.PIPE,
@@ -204,6 +204,10 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     cmd = ["uv", "pip", "install"]
     if UV_NEEDS_SYSTEM:
         cmd.append("--system")
+    # Always pass --python so uv targets the correct environment.
+    # Without this, uv can ignore an activated venv and install into
+    # the system Python (observed on Colab and similar environments).
+    cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
     cmd.append("--torch-backend=auto")
     return cmd
