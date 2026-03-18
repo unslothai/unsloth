@@ -320,7 +320,7 @@ def _ensure_venv_t5_exists() -> bool:
     logger.warning(
         ".venv_t5 not found or incomplete at %s -- installing at runtime", _VENV_T5_DIR
     )
-    shutil.rmtree(_VENV_T5_DIR, ignore_errors=True)
+    shutil.rmtree(_VENV_T5_DIR, ignore_errors = True)
     os.makedirs(_VENV_T5_DIR, exist_ok = True)
     for pkg in _VENV_T5_PACKAGES:
         if not _install_to_venv_t5(pkg):
