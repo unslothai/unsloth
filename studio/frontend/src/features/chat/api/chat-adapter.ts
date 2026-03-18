@@ -543,6 +543,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
+                  session_id: unstable_threadId || undefined,
                 }
               : {}),
           },

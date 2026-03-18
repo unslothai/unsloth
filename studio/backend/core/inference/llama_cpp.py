@@ -1597,6 +1597,7 @@ class LlamaCppBackend:
         max_tool_iterations: int = 10,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
+        session_id: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -1773,6 +1774,7 @@ class LlamaCppBackend:
                         arguments,
                         cancel_event = cancel_event,
                         timeout = _effective_timeout,
+                        session_id = session_id,
                     )
 
                     # Emit tool_end so the frontend can record outputs

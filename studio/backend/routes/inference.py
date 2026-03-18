@@ -1059,6 +1059,7 @@ async def openai_chat_completions(
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
+                    session_id = payload.session_id,
                 )
 
             _tool_sentinel = object()

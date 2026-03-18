@@ -16,27 +16,33 @@ import sys
 import tempfile
 import threading
 
+from loggers import get_logger
 from unsloth_zoo.rl_environments import check_signal_escape_patterns
+
+logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
 
-# Persistent working directory shared across tool calls within the server
-# lifetime so files written by one call are visible to the next.
-# Uses ~/studio_sandbox/ so files are accessible to the user.
-_persistent_workdir: str | None = None
+# Per-session working directories so each chat thread gets its own sandbox.
+# Falls back to a shared ~/studio_sandbox/ for API callers without a session_id.
+_workdirs: dict[str, str] = {}
 
 
-def _get_workdir() -> str:
+def _get_workdir(session_id: str | None = None) -> str:
     """Return (and lazily create) a persistent working directory for tool execution."""
-    global _persistent_workdir
-    if _persistent_workdir is None or not os.path.isdir(_persistent_workdir):
+    global _workdirs
+    key = session_id or "_default"
+    if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
-        workdir = os.path.join(home, "studio_sandbox")
+        if session_id:
+            workdir = os.path.join(home, "studio_sandbox", session_id)
+        else:
+            workdir = os.path.join(home, "studio_sandbox")
         os.makedirs(workdir, exist_ok = True)
-        _persistent_workdir = workdir
-    return _persistent_workdir
+        _workdirs[key] = workdir
+    return _workdirs[key]
 
 
 WEB_SEARCH_TOOL = {
@@ -100,20 +106,22 @@ _TIMEOUT_UNSET = object()
 
 
 def execute_tool(
-    name: str, arguments: dict, cancel_event = None, timeout: int | None = _TIMEOUT_UNSET
+    name: str, arguments: dict, cancel_event = None, timeout: int | None = _TIMEOUT_UNSET, session_id: str | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string.
 
     ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
+    ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
     """
+    logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
         return _web_search(arguments.get("query", ""), timeout = effective_timeout)
     if name == "python":
-        return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout)
+        return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout, session_id)
     if name == "terminal":
-        return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout)
+        return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout, session_id)
     return f"Unknown tool: {name}"
 
 
@@ -173,7 +181,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) -> str:
+def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT, session_id: str | None = None) -> str:
     """Execute Python code in a subprocess sandbox."""
     if not code or not code.strip():
         return "No code provided."
@@ -194,7 +202,7 @@ def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) -
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            cwd = _get_workdir(),
+            cwd = _get_workdir(session_id),
         )
 
         # Spawn cancel watcher if we have a cancel event
@@ -229,7 +237,7 @@ def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) -
                 pass
 
 
-def _bash_exec(command: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) -> str:
+def _bash_exec(command: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT, session_id: str | None = None) -> str:
     """Execute a bash command in a subprocess sandbox."""
     if not command or not command.strip():
         return "No command provided."
@@ -241,7 +249,7 @@ def _bash_exec(command: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) 
         return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
 
     try:
-        workdir = _get_workdir()
+        workdir = _get_workdir(session_id)
         proc = subprocess.Popen(
             ["bash", "-c", command],
             stdout = subprocess.PIPE,

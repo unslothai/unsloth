@@ -324,11 +324,17 @@ class ChatCompletionRequest(BaseModel):
     )
     max_tool_calls_per_message: Optional[int] = Field(
         10,
+        ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
     tool_call_timeout: Optional[int] = Field(
         300,
+        ge = 1,
         description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
 
 
