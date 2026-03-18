@@ -245,7 +245,9 @@ def prefer_flex_attn_if_supported(model_class, config):
         # NemotronH: hybrid Mamba-2 + Transformer model that does not
         # support flex_attention (raises NotImplementedError from transformers).
         model_type = getattr(config, "model_type", "") if config else ""
-        if model_type in ("gpt_oss", "mllama", "nemotron_h") or str(model_type).startswith("gemma3n"):
+        if model_type in ("gpt_oss", "mllama", "nemotron_h") or str(
+            model_type
+        ).startswith("gemma3n"):
             return None
         if config is not None:
             setattr(config, "_attn_implementation", "flex_attention")
