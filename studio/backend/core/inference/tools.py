@@ -221,8 +221,16 @@ def _check_signal_escape_patterns(code: str):
             if node.module == "signal":
                 self.imports_signal = True
                 for alias in node.names:
-                    if alias.name in ("signal", "SIGALRM", "SIG_IGN", "setitimer",
-                                      "ITIMER_REAL", "pthread_sigmask", "SIG_BLOCK", "alarm"):
+                    if alias.name in (
+                        "signal",
+                        "SIGALRM",
+                        "SIG_IGN",
+                        "setitimer",
+                        "ITIMER_REAL",
+                        "pthread_sigmask",
+                        "SIG_BLOCK",
+                        "alarm",
+                    ):
                         self.signal_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
@@ -250,32 +258,44 @@ def _check_signal_escape_patterns(code: str):
             if func_name:
                 if func_name in ("signal.signal", "signal"):
                     if len(node.args) >= 1:
-                        if _ast_name_matches(node.args[0], ("SIGALRM", "signal.SIGALRM")):
-                            signal_tampering.append({
-                                "type": "signal_handler_override",
-                                "line": node.lineno,
-                                "description": "Overrides SIGALRM handler",
-                            })
+                        if _ast_name_matches(
+                            node.args[0], ("SIGALRM", "signal.SIGALRM")
+                        ):
+                            signal_tampering.append(
+                                {
+                                    "type": "signal_handler_override",
+                                    "line": node.lineno,
+                                    "description": "Overrides SIGALRM handler",
+                                }
+                            )
                 elif func_name in ("signal.setitimer", "setitimer"):
                     if len(node.args) >= 1:
-                        if _ast_name_matches(node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")):
-                            signal_tampering.append({
-                                "type": "timer_manipulation",
-                                "line": node.lineno,
-                                "description": "Manipulates ITIMER_REAL timer",
-                            })
+                        if _ast_name_matches(
+                            node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")
+                        ):
+                            signal_tampering.append(
+                                {
+                                    "type": "timer_manipulation",
+                                    "line": node.lineno,
+                                    "description": "Manipulates ITIMER_REAL timer",
+                                }
+                            )
                 elif func_name in ("signal.alarm", "alarm"):
-                    signal_tampering.append({
-                        "type": "alarm_manipulation",
-                        "line": node.lineno,
-                        "description": "Manipulates alarm timer",
-                    })
+                    signal_tampering.append(
+                        {
+                            "type": "alarm_manipulation",
+                            "line": node.lineno,
+                            "description": "Manipulates alarm timer",
+                        }
+                    )
                 elif func_name in ("signal.pthread_sigmask", "pthread_sigmask"):
-                    signal_tampering.append({
-                        "type": "signal_mask",
-                        "line": node.lineno,
-                        "description": "Modifies signal mask (may block SIGALRM)",
-                    })
+                    signal_tampering.append(
+                        {
+                            "type": "signal_mask",
+                            "line": node.lineno,
+                            "description": "Modifies signal mask (may block SIGALRM)",
+                        }
+                    )
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
@@ -283,27 +303,33 @@ def _check_signal_escape_patterns(code: str):
                 self.generic_visit(node)
                 return
             if node.type is None:
-                exception_catching.append({
-                    "type": "bare_except_in_loop",
-                    "line": node.lineno,
-                    "description": "Bare except in loop catches TimeoutError and continues looping",
-                })
+                exception_catching.append(
+                    {
+                        "type": "bare_except_in_loop",
+                        "line": node.lineno,
+                        "description": "Bare except in loop catches TimeoutError and continues looping",
+                    }
+                )
             elif isinstance(node.type, ast.Name):
                 if node.type.id in ("TimeoutError", "BaseException", "Exception"):
-                    exception_catching.append({
-                        "type": f"catches_{node.type.id}_in_loop",
-                        "line": node.lineno,
-                        "description": f"Catches {node.type.id} in loop - may suppress timeout and continue",
-                    })
+                    exception_catching.append(
+                        {
+                            "type": f"catches_{node.type.id}_in_loop",
+                            "line": node.lineno,
+                            "description": f"Catches {node.type.id} in loop - may suppress timeout and continue",
+                        }
+                    )
             elif isinstance(node.type, ast.Tuple):
                 for elt in node.type.elts:
                     if isinstance(elt, ast.Name):
                         if elt.id in ("TimeoutError", "BaseException", "Exception"):
-                            exception_catching.append({
-                                "type": f"catches_{elt.id}_in_loop",
-                                "line": node.lineno,
-                                "description": f"Catches {elt.id} in loop - may suppress timeout and continue",
-                            })
+                            exception_catching.append(
+                                {
+                                    "type": f"catches_{elt.id}_in_loop",
+                                    "line": node.lineno,
+                                    "description": f"Catches {elt.id} in loop - may suppress timeout and continue",
+                                }
+                            )
             self.generic_visit(node)
 
     visitor = SignalEscapeVisitor()
