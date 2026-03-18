@@ -96,14 +96,15 @@ TERMINAL_TOOL = {
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 
-def execute_tool(name: str, arguments: dict, cancel_event = None) -> str:
+def execute_tool(name: str, arguments: dict, cancel_event = None, timeout: int | None = None) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string."""
+    effective_timeout = timeout if timeout is not None else _EXEC_TIMEOUT
     if name == "web_search":
         return _web_search(arguments.get("query", ""))
     if name == "python":
-        return _python_exec(arguments.get("code", ""), cancel_event)
+        return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout)
     if name == "terminal":
-        return _bash_exec(arguments.get("command", ""), cancel_event)
+        return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout)
     return f"Unknown tool: {name}"
 
 
@@ -163,7 +164,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-def _python_exec(code: str, cancel_event = None) -> str:
+def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) -> str:
     """Execute Python code in a subprocess sandbox."""
     if not code or not code.strip():
         return "No code provided."
@@ -195,11 +196,11 @@ def _python_exec(code: str, cancel_event = None) -> str:
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
-            return _truncate("Execution timed out after 5 minutes.")
+            return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."
@@ -219,7 +220,7 @@ def _python_exec(code: str, cancel_event = None) -> str:
                 pass
 
 
-def _bash_exec(command: str, cancel_event = None) -> str:
+def _bash_exec(command: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT) -> str:
     """Execute a bash command in a subprocess sandbox."""
     if not command or not command.strip():
         return "No command provided."
@@ -247,11 +248,11 @@ def _bash_exec(command: str, cancel_event = None) -> str:
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
-            return _truncate("Execution timed out after 5 minutes.")
+            return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."

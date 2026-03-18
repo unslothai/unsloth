@@ -1594,7 +1594,9 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-        max_tool_iterations: int = 5,
+        max_tool_iterations: int = 10,
+        auto_heal_tool_calls: bool = True,
+        tool_call_timeout: int = 300,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -1662,7 +1664,7 @@ class LlamaCppBackend:
             # Some models output <tool_call> XML instead of structured tool_calls,
             # or bare <function=...> tags without <tool_call> wrapper.
             content_text = message.get("content", "") or ""
-            if not tool_calls and (
+            if auto_heal_tool_calls and not tool_calls and (
                 "<tool_call>" in content_text or "<function=" in content_text
             ):
                 tool_calls = self._parse_tool_calls_from_text(content_text)
@@ -1722,7 +1724,10 @@ class LlamaCppBackend:
                         try:
                             arguments = json.loads(raw_args)
                         except (json.JSONDecodeError, ValueError):
-                            arguments = {"query": raw_args}
+                            if auto_heal_tool_calls:
+                                arguments = {"query": raw_args}
+                            else:
+                                arguments = {"raw": raw_args}
                     else:
                         arguments = raw_args
 
@@ -1758,8 +1763,9 @@ class LlamaCppBackend:
                     }
 
                     # Execute the tool
+                    _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     result = execute_tool(
-                        tool_name, arguments, cancel_event = cancel_event
+                        tool_name, arguments, cancel_event = cancel_event, timeout = _effective_timeout
                     )
 
                     # Emit tool_end so the frontend can record outputs
@@ -1830,6 +1836,8 @@ class LlamaCppBackend:
         ]
 
         def _strip_tool_markup(text: str) -> str:
+            if not auto_heal_tool_calls:
+                return text
             for pat in _TOOL_CALL_PATTERNS:
                 text = pat.sub("", text)
             return text.strip()

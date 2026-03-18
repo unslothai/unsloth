@@ -1050,6 +1050,9 @@ async def openai_chat_completions(
                     presence_penalty = payload.presence_penalty,
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
+                    auto_heal_tool_calls = payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True,
+                    max_tool_iterations = payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 10,
+                    tool_call_timeout = payload.tool_call_timeout if payload.tool_call_timeout is not None else 300,
                 )
 
             _tool_sentinel = object()

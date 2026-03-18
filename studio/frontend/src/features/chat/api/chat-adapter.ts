@@ -537,6 +537,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
+                  auto_heal_tool_calls: useChatRuntimeStore.getState().autoHealToolCalls,
+                  max_tool_calls_per_message: useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  tool_call_timeout: (() => {
+                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    return mins >= 9999 ? 9999 : mins * 60;
+                  })(),
                 }
               : {}),
           },
