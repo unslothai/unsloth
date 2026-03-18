@@ -823,10 +823,31 @@ Write-Host ""
 # ==========================================================================
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
+# Caching disabled: always rebuild. Set $NeedFrontendBuild = $false and
+# uncomment the elseif block below to re-enable mtime-based caching.
 $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
+# } elseif (Test-Path (Join-Path $FrontendDir "dist")) {
+#     $DistTime = (Get-Item (Join-Path $FrontendDir "dist")).LastWriteTime
+#     $NewerFile = $null
+#     foreach ($subDir in @("src", "public")) {
+#         $subPath = Join-Path $FrontendDir $subDir
+#         if (Test-Path $subPath) {
+#             $NewerFile = Get-ChildItem -Path $subPath -Recurse -File -ErrorAction SilentlyContinue |
+#                 Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
+#             if ($NewerFile) { break }
+#         }
+#     }
+#     if (-not $NewerFile) {
+#         $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
+#             Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
+#     }
+#     if (-not $NewerFile) {
+#         $NeedFrontendBuild = $false
+#         Write-Host "[OK] Frontend already built and up to date -- skipping build" -ForegroundColor Green
+#     }
 }
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
