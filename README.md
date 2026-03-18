@@ -53,7 +53,7 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 
 #### MacOS, Linux or WSL Setup (One time):
 ```bash
-pip install -U pip uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv unsloth_studio
 source unsloth_studio/bin/activate
 uv pip install unsloth --torch-backend=auto
@@ -68,7 +68,8 @@ unsloth studio -H 0.0.0.0 -p 8888
 
 #### Windows PowerShell (One time):
 ```bash
-pip install -U pip uv
+winget install -e --id Python.Python.3.13
+winget install --id=astral-sh.uv  -e
 uv venv unsloth_studio
 .\unsloth_studio\Scripts\activate
 uv pip install unsloth --torch-backend=auto
@@ -85,7 +86,7 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 
 #### Nightly Installation - MacOS, Linux or WSL Setup (One time):
 ```bash
-pip install -U pip uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
 cd unsloth_studio
 uv venv
@@ -103,7 +104,8 @@ unsloth studio -H 0.0.0.0 -p 8888
 
 #### Nightly Installation - Windows Powershell (One time):
 ```bash
-pip install -U pip uv
+winget install -e --id Python.Python.3.13
+winget install --id=astral-sh.uv  -e
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
 cd unsloth_studio
 uv venv
