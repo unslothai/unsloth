@@ -68,8 +68,7 @@ unsloth train \
 Two positional args: `MODEL` and `PROMPT`. Use GGUF models on macOS / CPU-only systems.
 
 ```bash
-unsloth inference "unsloth/Qwen3-0.6B" "What is AI?"
-unsloth inference "unsloth/Qwen3.5-0.8B-GGUF" "What is AI?"
+unsloth inference "unsloth/Qwen3.5-4B-GGUF" "What is AI?"
 ```
 
 - `--temperature` (float, default: 0.7) — sampling temperature
