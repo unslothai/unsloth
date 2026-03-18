@@ -15,8 +15,8 @@ pytest<9.0
 pytest-json-report
 pytest-rerunfailures==15.1
 pytest-xdist
-# Also needed by sentence_transformers
-# scikit-learn==1.7.1            # 31.8 MB - no imports in unsloth/zoo/studio
+# Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt)
+scikit-learn==1.7.1
 
 # Additional extras
 pybind11
