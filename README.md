@@ -54,7 +54,7 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 #### MacOS, Linux or WSL Setup (One time):
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv unsloth_studio
+uv venv unsloth_studio --python 3.13
 source unsloth_studio/bin/activate
 uv pip install unsloth --torch-backend=auto
 unsloth studio setup
@@ -70,7 +70,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```bash
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
-uv venv unsloth_studio
+uv venv unsloth_studio --python 3.13
 .\unsloth_studio\Scripts\activate
 uv pip install unsloth --torch-backend=auto
 unsloth studio setup
@@ -89,7 +89,7 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
 cd unsloth_studio
-uv venv
+uv venv --python 3.13
 source .venv/bin/activate
 uv pip install -e . --torch-backend=auto
 unsloth studio setup
@@ -108,7 +108,7 @@ winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
 cd unsloth_studio
-uv venv
+uv venv --python 3.13
 .\.venv\Scripts\activate
 uv pip install -e . --torch-backend=auto
 unsloth studio setup
@@ -124,15 +124,16 @@ unsloth studio -H 0.0.0.0 -p 8888
 ### Unsloth Core (code-based)
 #### Linux, WSL
 ```bash
-pip install -U pip uv
-uv venv unsloth_env
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv unsloth_env --python 3.13
 source unsloth_env/bin/activate
 uv pip install unsloth --torch-backend=auto
 ```
 #### Windows Powershell
 ```bash
-pip install -U pip uv
-uv venv unsloth_env
+winget install -e --id Python.Python.3.13
+winget install --id=astral-sh.uv  -e
+uv venv unsloth_env --python 3.13
 .\unsloth_env\Scripts\activate
 uv pip install unsloth --torch-backend=auto
 ```
