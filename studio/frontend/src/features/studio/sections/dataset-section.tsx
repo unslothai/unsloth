@@ -310,8 +310,8 @@ export function DatasetSection() {
     if (datasetSource !== "upload") return;
     if (!uploadedFile) return;
     if (selectedLocalDataset) return;
-    // Don't clear if this is a direct file upload (not a recipe directory)
-    if (isLikelyLocalDatasetRef(uploadedFile)) return;
+    // Don't clear if this is a direct file upload (e.g. user uploaded a .jsonl/.csv)
+    if (/\.(jsonl|json|csv|parquet|arrow)$/i.test(uploadedFile)) return;
     selectLocalDataset(null);
   }, [
     datasetSource,

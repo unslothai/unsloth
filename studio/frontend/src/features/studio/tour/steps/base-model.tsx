@@ -6,7 +6,7 @@ import { ReadMore, type TourStep } from "@/features/tour";
 export const studioBaseModelStep: TourStep = {
   id: "base-model",
   target: "studio-base-model",
-  title: "Base model from Hugging Face",
+  title: "Hugging Face Model",
   body: (
     <>
       Paste <span className="font-mono">org/model</span> or search. Pick a base
