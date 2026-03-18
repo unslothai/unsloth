@@ -8,7 +8,7 @@
     Always installs Node.js if needed. When running from pip install:
     skips frontend build (already bundled). When running from git repo:
     full setup including frontend build.
-    Requires an NVIDIA GPU -- CPU-only machines are not supported.
+    Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
     Usage: powershell -ExecutionPolicy Bypass -File setup.ps1
 #>
@@ -260,14 +260,13 @@ try {
 } catch {}
 if (-not $HasNvidiaSmi) {
     Write-Host ""
-    Write-Host "[ERROR] Unsloth Studio requires an NVIDIA GPU." -ForegroundColor Red
-    Write-Host "        CPU-only machines are not supported." -ForegroundColor Red
+    Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
+    Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
+    Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "        If you have an NVIDIA GPU, ensure the driver is installed:" -ForegroundColor Yellow
-    Write-Host "        https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
-    exit 1
+} else {
+    Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
 }
-Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
 
 # ============================================
 # 1a.5. Windows Long Paths (required for deep node_modules / Python paths)
@@ -389,6 +388,7 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
+if ($HasNvidiaSmi) {
 # IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
 # NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
 # If we install a toolkit newer than the driver supports, llama-server will
@@ -643,6 +643,9 @@ Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 if (-not $CudaArch) {
     Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
 }
+} else {
+    Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
+}
 
 # ============================================
 # 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
@@ -880,14 +883,21 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)" -ForegroundColor Green
 
-$CuTag = Get-PytorchCudaTag
-Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
+if ($HasNvidiaSmi) {
+    $CuTag = Get-PytorchCudaTag
+    Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
+    pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
 
-# Install Triton for Windows (enables torch.compile — without it training can hang)
-Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
-pip install "triton-windows<3.7" 2>&1 | Out-Null
-Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+    # Install Triton for Windows (enables torch.compile -- without it training can hang)
+    Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
+    pip install "triton-windows<3.7" 2>&1 | Out-Null
+} else {
+    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    pip install torch torchvision torchaudio 2>&1 | Out-Null
+}
+if ($HasNvidiaSmi) {
+    Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+}
 
 # Ordered heavy dependency installation — shared cross-platform script
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
@@ -987,7 +997,11 @@ if (Test-Path $LlamaServerBin) {
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
 } else {
     Write-Host ""
-    Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
+    if ($HasNvidiaSmi) {
+        Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
+    } else {
+        Write-Host "Building llama.cpp (CPU-only, no NVIDIA GPU detected)..." -ForegroundColor Cyan
+    }
     Write-Host "   This typically takes 5-10 minutes on first build." -ForegroundColor Gray
     Write-Host ""
 
@@ -1066,7 +1080,8 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs += '-DLLAMA_CURL=OFF'
         }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
-        # CUDA flags (Unsloth-aligned)
+        # CUDA flags (Unsloth-aligned) -- only if GPU available
+        if ($HasNvidiaSmi -and $NvccPath) {
         $CmakeArgs += '-DGGML_CUDA=ON'
         $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
         $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
@@ -1091,6 +1106,7 @@ if (Test-Path $LlamaServerBin) {
                 }
                 # else: omit flag entirely, let cmake pick defaults
             }
+        }
         }
 
         cmake @CmakeArgs 2>&1 | Out-Null
