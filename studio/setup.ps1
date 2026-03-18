@@ -340,6 +340,25 @@ if (-not $HasCmake) {
             $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
         } catch { }
     }
+    # winget may succeed but cmake isn't on PATH yet (MSI PATH changes need a
+    # new shell). Try the default install location as a fallback.
+    if (-not $HasCmake) {
+        $cmakeDefaults = @(
+            "$env:ProgramFiles\CMake\bin",
+            "${env:ProgramFiles(x86)}\CMake\bin",
+            "$env:LOCALAPPDATA\CMake\bin"
+        )
+        foreach ($d in $cmakeDefaults) {
+            if (Test-Path (Join-Path $d "cmake.exe")) {
+                $env:Path = "$d;$env:Path"
+                $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+                if ($HasCmake) {
+                    Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
+                    break
+                }
+            }
+        }
+    }
     if ($HasCmake) {
         Write-Host "[OK] CMake installed" -ForegroundColor Green
     } else {
@@ -991,9 +1010,16 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
+$HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+
 if (Test-Path $LlamaServerBin) {
     Write-Host ""
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
+} elseif (-not $HasCmakeForBuild) {
+    Write-Host ""
+    Write-Host "[SKIP] llama-server build -- cmake not available" -ForegroundColor Yellow
+    Write-Host "       GGUF inference and export will not be available." -ForegroundColor Yellow
+    Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
 } else {
     Write-Host ""
     if ($HasNvidiaSmi) {
