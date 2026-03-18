@@ -671,6 +671,20 @@ def _fix_chat_template(chat_template):
         )
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
+
+    elif after_endfor.strip() == "" and "<|im_start|>" in chat_template:
+        # GH#4150: ChatML-style templates (Hermes, etc.) that end with
+        # {% endfor %} and have no add_generation_prompt block.
+        # Append the standard ChatML generation prompt.
+        generation_block = (
+            "{%" + dash + " if add_generation_prompt %}"
+            "{{ '<|im_start|>assistant\n' }}"
+            "{%" + dash + " endif %}"
+        )
+        chat_template = (
+            chat_template[: where + len(chosen_end)] + generation_block
+        )
+
     return chat_template
 
 
