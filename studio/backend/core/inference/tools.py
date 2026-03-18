@@ -98,7 +98,10 @@ ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 _TIMEOUT_UNSET = object()
 
-def execute_tool(name: str, arguments: dict, cancel_event = None, timeout: int | None = _TIMEOUT_UNSET) -> str:
+
+def execute_tool(
+    name: str, arguments: dict, cancel_event = None, timeout: int | None = _TIMEOUT_UNSET
+) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string.
 
     ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
