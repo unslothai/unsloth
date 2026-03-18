@@ -325,20 +325,22 @@ rm -rf "$LLAMA_CPP_DIR"
                 GPU_BACKEND="cuda"
             fi
 
-            # Check for ROCm (AMD)
+            # Check for ROCm (AMD) only if CUDA was not already selected
             ROCM_PATH=""
-            if command -v hipcc &>/dev/null; then
-                ROCM_PATH="$(command -v hipcc)"
-                GPU_BACKEND="rocm"
-            elif [ -x /opt/rocm/bin/hipcc ]; then
-                ROCM_PATH="/opt/rocm/bin/hipcc"
-                export PATH="/opt/rocm/bin:$PATH"
-                GPU_BACKEND="rocm"
-            elif ls /opt/rocm-*/bin/hipcc &>/dev/null 2>&1; then
-                # Pick the newest rocm-X.X directory
-                ROCM_PATH="$(ls -d /opt/rocm-*/bin/hipcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$ROCM_PATH"):$PATH"
-                GPU_BACKEND="rocm"
+            if [ -z "$GPU_BACKEND" ]; then
+                if command -v hipcc &>/dev/null; then
+                    ROCM_PATH="$(command -v hipcc)"
+                    GPU_BACKEND="rocm"
+                elif [ -x /opt/rocm/bin/hipcc ]; then
+                    ROCM_PATH="/opt/rocm/bin/hipcc"
+                    export PATH="/opt/rocm/bin:$PATH"
+                    GPU_BACKEND="rocm"
+                elif ls /opt/rocm-*/bin/hipcc &>/dev/null 2>&1; then
+                    # Pick the newest rocm-X.X directory
+                    ROCM_PATH="$(ls -d /opt/rocm-*/bin/hipcc 2>/dev/null | sort -V | tail -1)"
+                    export PATH="$(dirname "$ROCM_PATH"):$PATH"
+                    GPU_BACKEND="rocm"
+                fi
             fi
 
             if [ "$GPU_BACKEND" = "cuda" ]; then
@@ -399,14 +401,12 @@ rm -rf "$LLAMA_CPP_DIR"
                     fi
                 fi
 
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=hipcc -DCMAKE_CXX_COMPILER=hipcc"
                 if [ -n "$AMDGPU_TARGETS" ]; then
                     echo "   AMD GPU architectures: ${AMDGPU_TARGETS//;/, } -- limiting build to detected targets"
                     CMAKE_ARGS="$CMAKE_ARGS -DAMDGPU_TARGETS=${AMDGPU_TARGETS}"
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=hipcc -DCMAKE_CXX_COMPILER=hipcc"
                 else
-                    echo "   Could not detect AMD GPU arch -- building for common gfx targets (gfx900,gfx906,gfx908,gfx90a,gfx1030,gfx1100)"
-                    CMAKE_ARGS="$CMAKE_ARGS -DAMDGPU_TARGETS=gfx900;gfx906;gfx908;gfx90a;gfx1030;gfx1100"
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=hipcc -DCMAKE_CXX_COMPILER=hipcc"
+                    echo "   Could not detect AMD GPU arch -- building for default targets (cmake will auto-detect)"
                 fi
             elif [ -d /usr/local/cuda ] || command -v nvidia-smi &>/dev/null; then
                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
