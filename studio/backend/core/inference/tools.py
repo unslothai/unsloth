@@ -7,6 +7,7 @@ Tool definitions and executors for LLM tool calling.
 Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 """
 
+import ast
 import os
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -17,7 +18,6 @@ import tempfile
 import threading
 
 from loggers import get_logger
-from unsloth_zoo.rl_environments import check_signal_escape_patterns
 
 logger = get_logger(__name__)
 
@@ -165,13 +165,167 @@ def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) 
         return f"Search failed: {e}"
 
 
+def _check_signal_escape_patterns(code: str):
+    """
+    Check if code contains patterns that could escape signal-based timeouts.
+
+    Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo
+    (which requires GPU drivers and fails on Mac/Apple Silicon).
+
+    Returns (safe: bool, details: dict)
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, {
+            "error": f"SyntaxError: {e}",
+            "signal_tampering": [],
+            "exception_catching": [],
+            "warnings": [],
+        }
+
+    signal_tampering = []
+    exception_catching = []
+    warnings = []
+
+    def _ast_name_matches(node, names):
+        if isinstance(node, ast.Name):
+            return node.id in names
+        elif isinstance(node, ast.Attribute):
+            full_name = []
+            current = node
+            while isinstance(current, ast.Attribute):
+                full_name.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                full_name.append(current.id)
+            full_name = ".".join(reversed(full_name))
+            return full_name in names
+        return False
+
+    class SignalEscapeVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.imports_signal = False
+            self.signal_aliases = {"signal"}
+            self.loop_depth = 0
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                if alias.name == "signal":
+                    self.imports_signal = True
+                    if alias.asname:
+                        self.signal_aliases.add(alias.asname)
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            if node.module == "signal":
+                self.imports_signal = True
+                for alias in node.names:
+                    if alias.name in ("signal", "SIGALRM", "SIG_IGN", "setitimer",
+                                      "ITIMER_REAL", "pthread_sigmask", "SIG_BLOCK", "alarm"):
+                        self.signal_aliases.add(alias.asname or alias.name)
+            self.generic_visit(node)
+
+        def visit_While(self, node):
+            self.loop_depth += 1
+            self.generic_visit(node)
+            self.loop_depth -= 1
+
+        def visit_For(self, node):
+            self.loop_depth += 1
+            self.generic_visit(node)
+            self.loop_depth -= 1
+
+        def visit_Call(self, node):
+            func = node.func
+            func_name = None
+            if isinstance(func, ast.Attribute):
+                if isinstance(func.value, ast.Name):
+                    if func.value.id in self.signal_aliases:
+                        func_name = f"signal.{func.attr}"
+            elif isinstance(func, ast.Name):
+                if func.id in ("signal", "setitimer", "alarm", "pthread_sigmask"):
+                    func_name = func.id
+
+            if func_name:
+                if func_name in ("signal.signal", "signal"):
+                    if len(node.args) >= 1:
+                        if _ast_name_matches(node.args[0], ("SIGALRM", "signal.SIGALRM")):
+                            signal_tampering.append({
+                                "type": "signal_handler_override",
+                                "line": node.lineno,
+                                "description": "Overrides SIGALRM handler",
+                            })
+                elif func_name in ("signal.setitimer", "setitimer"):
+                    if len(node.args) >= 1:
+                        if _ast_name_matches(node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")):
+                            signal_tampering.append({
+                                "type": "timer_manipulation",
+                                "line": node.lineno,
+                                "description": "Manipulates ITIMER_REAL timer",
+                            })
+                elif func_name in ("signal.alarm", "alarm"):
+                    signal_tampering.append({
+                        "type": "alarm_manipulation",
+                        "line": node.lineno,
+                        "description": "Manipulates alarm timer",
+                    })
+                elif func_name in ("signal.pthread_sigmask", "pthread_sigmask"):
+                    signal_tampering.append({
+                        "type": "signal_mask",
+                        "line": node.lineno,
+                        "description": "Modifies signal mask (may block SIGALRM)",
+                    })
+            self.generic_visit(node)
+
+        def visit_ExceptHandler(self, node):
+            if self.loop_depth == 0:
+                self.generic_visit(node)
+                return
+            if node.type is None:
+                exception_catching.append({
+                    "type": "bare_except_in_loop",
+                    "line": node.lineno,
+                    "description": "Bare except in loop catches TimeoutError and continues looping",
+                })
+            elif isinstance(node.type, ast.Name):
+                if node.type.id in ("TimeoutError", "BaseException", "Exception"):
+                    exception_catching.append({
+                        "type": f"catches_{node.type.id}_in_loop",
+                        "line": node.lineno,
+                        "description": f"Catches {node.type.id} in loop - may suppress timeout and continue",
+                    })
+            elif isinstance(node.type, ast.Tuple):
+                for elt in node.type.elts:
+                    if isinstance(elt, ast.Name):
+                        if elt.id in ("TimeoutError", "BaseException", "Exception"):
+                            exception_catching.append({
+                                "type": f"catches_{elt.id}_in_loop",
+                                "line": node.lineno,
+                                "description": f"Catches {elt.id} in loop - may suppress timeout and continue",
+                            })
+            self.generic_visit(node)
+
+    visitor = SignalEscapeVisitor()
+    visitor.visit(tree)
+
+    if visitor.imports_signal and not signal_tampering:
+        warnings.append("Code imports 'signal' module - review manually for safety")
+
+    is_safe = len(signal_tampering) == 0 and len(exception_catching) == 0
+    return is_safe, {
+        "signal_tampering": signal_tampering,
+        "exception_catching": exception_catching,
+        "warnings": warnings,
+    }
+
+
 def _check_code_safety(code: str) -> str | None:
-    """Validate code safety using unsloth_zoo.
+    """Validate code safety via static analysis.
 
     Returns an error message string if the code is unsafe, or None if OK.
     """
-    # Check for signal/timeout escape patterns
-    safe, info = check_signal_escape_patterns(code)
+    safe, info = _check_signal_escape_patterns(code)
     if not safe:
         reasons = [
             item.get("description", "") for item in info.get("signal_tampering", [])
