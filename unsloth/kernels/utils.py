@@ -88,12 +88,27 @@ def is_cdna():
 
 @functools.lru_cache(1)
 def is_rdna():
-    """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA3, RDNA4)."""
+    """Detect RDNA consumer/workstation GPUs (RDNA2, RDNA3, RDNA3.5, RDNA4)."""
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
-        "gfx1100",
-        "gfx1101",
-        "gfx1200",
-        "gfx1201",
+        # RDNA2 (GFX10.3) — RX 6000 series
+        "gfx1030",  # Navi 21: RX 6900 XT, RX 6800 XT/X
+        "gfx1031",  # Navi 22: RX 6700 XT
+        "gfx1032",  # Navi 23: RX 6600 XT, RX 6600
+        "gfx1034",  # Navi 24: RX 6400
+        "gfx1035",  # Rembrandt APU
+        "gfx1036",  # Barcelo-R APU
+        # RDNA3 (GFX11) — RX 7000 series
+        "gfx1100",  # Navi 31: RX 7900 XTX/XT/GRE, PRO W7900/W7800
+        "gfx1101",  # Navi 32: RX 7800 XT, RX 7700 XT, PRO W7700
+        "gfx1102",  # Navi 33: RX 7700, RX 7600 XT, RX 7600
+        "gfx1103",  # Phoenix APU: Radeon 780M/760M/740M
+        # RDNA3.5 (GFX11.5) — Strix Point / Strix Halo APU
+        "gfx1150",  # Strix Halo: Radeon 890M
+        "gfx1151",
+        "gfx1152",  # Strix Point: Radeon 860M
+        # RDNA4 (GFX12) — RX 9000 series
+        "gfx1200",  # Navi 48: RX 9070 XT, RX 9070
+        "gfx1201",  # Navi 44: RX 9060 XT
     )
 
 
