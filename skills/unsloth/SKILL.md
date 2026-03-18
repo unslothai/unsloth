@@ -16,7 +16,9 @@ metadata:
 ## Prerequisites
 
 ```bash
+# install the CLI entrypoint
 pip install unsloth
+# one-time runtime setup (~/.unsloth/studio/.venv)
 unsloth studio setup
 ```
 
