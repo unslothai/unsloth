@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-unsloth = "cli:app"
+unsloth = "unsloth_cli:app"
 
 [tool.setuptools.dynamic]
 version = {attr = "unsloth.models._utils.__version__"}
