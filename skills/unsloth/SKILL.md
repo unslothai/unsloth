@@ -25,59 +25,168 @@ unsloth studio setup               # one-time runtime setup (~/.unsloth/studio/.
 - Training requires a supported GPU. For chat-only inference on macOS / CPU-only systems, use GGUF models so the CLI routes to the llama.cpp backend.
 - Environment variables: `HF_TOKEN` (HuggingFace), `WANDB_API_KEY` (Weights & Biases)
 
-## Training
-
-Use a YAML config file (recommended) or CLI flags. Always use non-GGUF model IDs for training.
+## All CLI Commands
 
 ```bash
+# ══════════════════════════════════════════════════════════════════════════════
+# TRAINING
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Config file approach (RECOMMENDED — handles lists, avoids shell quoting)
 unsloth train --config config.yaml
+# --dry-run prints resolved config as YAML and exits (does NOT validate required fields)
 unsloth train --config config.yaml --dry-run
-```
 
-`--dry-run` prints the resolved config as YAML and exits. It does not validate required fields.
-`--local-dataset` has no CLI flag — set `local_dataset` as a list in the YAML config.
-CLI flags override config values. See `references/config-reference.md` for all fields.
+# Pure CLI flags (CLI flags override config file values)
+unsloth train \
+  --model "unsloth/Qwen3-0.6B" \
+  --dataset "tatsu-lab/alpaca" \
+  --training-type lora \
+  --num-epochs 3 \
+  --learning-rate 2e-4 \
+  --batch-size 2 \
+  --gradient-accumulation-steps 4 \
+  --max-seq-length 2048 \
+  --load-in-4bit \
+  --lora-r 64 --lora-alpha 16 \
+  --output-dir ./outputs \
+  --hf-token $HF_TOKEN \
+  --wandb-token $WANDB_API_KEY
 
-## Inference
+# IMPORTANT: --local-dataset has no CLI flag — use the YAML config to set local_dataset as a list.
+# IMPORTANT: --dry-run prints the resolved config but does NOT check required fields (model, dataset).
+#   Verify the printed YAML yourself before running without --dry-run.
+# IMPORTANT: Use non-GGUF model IDs for training (e.g. unsloth/Qwen3-0.6B, NOT the -GGUF variant)
 
-Two positional args: `MODEL` and `PROMPT`. Use GGUF models on macOS / CPU-only systems.
+# Additional training flags:
+#   --format-type auto|alpaca|chatml|sharegpt   (default: auto)
+#   --warmup-steps 5                            (linear warmup)
+#   --max-steps 0                               (0 = use num-epochs)
+#   --save-steps 0                              (0 = don't save intermediate checkpoints)
+#   --weight-decay 0.01
+#   --random-seed 3407
+#   --packing / --no-packing                    (pack sequences to max_seq_length)
+#   --train-on-completions / --no-train-on-completions
+#   --gradient-checkpointing unsloth|true|none  (default: unsloth)
+#   --lora-dropout 0.0
+#   --target-modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+#   --vision-all-linear / --no-vision-all-linear  (for vision models)
+#   --use-rslora / --no-use-rslora
+#   --use-loftq / --no-use-loftq
+#   --finetune-vision-layers / --no-finetune-vision-layers
+#   --finetune-language-layers / --no-finetune-language-layers
+#   --finetune-attention-modules / --no-finetune-attention-modules
+#   --finetune-mlp-modules / --no-finetune-mlp-modules
+#   --enable-wandb / --no-enable-wandb
+#   --wandb-project "unsloth-training"
+#   --enable-tensorboard / --no-enable-tensorboard
+#   --tensorboard-dir "runs"
 
-```bash
+# ══════════════════════════════════════════════════════════════════════════════
+# INFERENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Standard inference
 unsloth inference "unsloth/Qwen3-0.6B" "What is AI?"
+
+# GGUF inference
 unsloth inference "unsloth/Qwen3.5-0.8B-GGUF" "What is AI?"
-unsloth inference "unsloth/Qwen3-0.6B" "Explain LoRA" --temperature 0.7 --max-new-tokens 512
-```
 
-Flags: `--temperature` `--top-p` `--top-k` `--max-new-tokens` `--repetition-penalty` `--system-prompt` `--max-seq-length` `--load-in-4bit`
+# With all options
+# --temperature: sampling temperature (default: 0.7)
+# --top-p: nucleus sampling (default: 0.9)
+# --top-k: top-k sampling (default: 40)
+# --max-new-tokens: max tokens to generate (default: 256)
+# --repetition-penalty: penalty for repeated tokens (default: 1.1)
+# --system-prompt: optional system prompt to prepend
+# --max-seq-length: max sequence length (default: 2048)
+# --load-in-4bit: 4-bit quantization (default: on)
+unsloth inference "unsloth/Qwen3-0.6B" "Explain LoRA" \
+  --temperature 0.7 \
+  --top-p 0.9 \
+  --top-k 40 \
+  --max-new-tokens 256 \
+  --repetition-penalty 1.1 \
+  --system-prompt "You are a helpful assistant" \
+  --max-seq-length 2048 \
+  --load-in-4bit
 
-## Export
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPORT
+# ══════════════════════════════════════════════════════════════════════════════
 
-```bash
+# List available checkpoints
 unsloth list-checkpoints --outputs-dir ./outputs
-unsloth export ./outputs/checkpoint-100 ./exported --format gguf --quantization q4_k_m
-unsloth export ./outputs/checkpoint-100 ./exported --format lora --push-to-hub --repo-id user/model-name --hf-token $HF_TOKEN --private
-```
 
-Formats: `merged-16bit` `merged-4bit` `gguf` `lora`. GGUF quantizations: `q4_k_m` `q5_k_m` `q8_0` `f16`. `--push-to-hub` requires `--repo-id`.
+# Export to GGUF (most common for deployment)
+# --format: merged-16bit | merged-4bit | gguf | lora
+# --quantization: q4_k_m | q5_k_m | q8_0 | f16 (gguf only)
+unsloth export ./outputs/checkpoint-100 ./exported \
+  --format gguf \
+  --quantization q4_k_m
 
-## Studio Server
+# Export and push to HuggingFace Hub
+unsloth export ./outputs/checkpoint-100 ./exported \
+  --format lora \
+  --push-to-hub --repo-id user/model-name \
+  --hf-token $HF_TOKEN \
+  --private
 
-```bash
+# Additional export flags:
+#   --max-seq-length 2048
+#   --load-in-4bit / --no-load-in-4bit
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STUDIO SERVER
+# ══════════════════════════════════════════════════════════════════════════════
+
+# one-time environment setup
 unsloth studio setup
+# start web UI (default port: 8000)
 unsloth studio -H 0.0.0.0 -p 8000
+# suppress startup messages
+unsloth studio --silent
+# reset admin password (deletes auth DB)
 unsloth studio reset-password
+# alias for "unsloth studio"
 unsloth ui -p 8000
 ```
 
 ## Config File Format
 
-A YAML config has 5 sections: `model`, `data`, `training`, `lora`, `logging`. Copy-paste templates:
+A YAML config has 5 sections: `model`, `data`, `training`, `lora`, `logging`.
 
-- `assets/lora-text-train.yaml` — LoRA text fine-tuning (most common)
-- `assets/full-finetune.yaml` — full fine-tuning (no LoRA, more VRAM)
-- `assets/vision-lora-train.yaml` — vision model LoRA
+```yaml
+model: unsloth/Qwen3-0.6B                # HuggingFace model ID (use non-GGUF for training)
+
+data:
+  dataset: tatsu-lab/alpaca               # HuggingFace dataset ID
+  local_dataset:                          # local paths (YAML only — no CLI flag for list fields)
+    - ./data/train.jsonl
+  format_type: auto                       # auto | alpaca | chatml | sharegpt
+
+training:
+  training_type: lora                     # lora | full
+  max_seq_length: 2048
+  load_in_4bit: true
+  output_dir: outputs
+  num_epochs: 3
+  learning_rate: 0.0002
+  batch_size: 2
+  gradient_accumulation_steps: 4
+
+lora:
+  lora_r: 64
+  lora_alpha: 16
+  target_modules: "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+
+logging:
+  enable_wandb: false
+  wandb_project: unsloth-training
+```
 
 See `references/config-reference.md` for every field with type, default, and description.
+See `assets/lora-text-train.yaml` for a copy-paste template.
 
 ## Key Gotchas
 
