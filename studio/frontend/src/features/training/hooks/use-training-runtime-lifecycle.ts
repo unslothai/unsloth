@@ -26,8 +26,12 @@ export function useTrainingRuntimeLifecycle(): void {
     let openingStream = false;
     let streamController: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    /** HF Spaces / auth-disabled: no JWT, but train APIs allow anonymous access. */
+    let authDisabled = false;
 
     const runtimeStore = useTrainingRuntimeStore;
+
+    const canUseTrainApi = () => hasAuthToken() || authDisabled;
 
     const clearReconnect = () => {
       if (reconnectTimer) {
@@ -46,7 +50,7 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollMetrics = async () => {
-      if (!hasAuthToken()) return;
+      if (!canUseTrainApi()) return;
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const metrics = await getTrainingMetrics();
@@ -55,14 +59,14 @@ export function useTrainingRuntimeLifecycle(): void {
         }
         runtimeStore.getState().applyMetrics(metrics);
       } catch (error) {
-        if (!isAbortError(error) && !disposed && hasAuthToken()) {
+        if (!isAbortError(error) && !disposed && canUseTrainApi()) {
           runtimeStore.getState().setSseConnected(false);
         }
       }
     };
 
     const pollStatus = async () => {
-      if (!hasAuthToken()) return;
+      if (!canUseTrainApi()) return;
       const gen = runtimeStore.getState().resetGeneration;
       try {
         const status = await getTrainingStatus();
@@ -79,7 +83,7 @@ export function useTrainingRuntimeLifecycle(): void {
           stopStream();
         }
       } catch (error) {
-        if (!isAbortError(error) && !disposed && hasAuthToken()) {
+        if (!isAbortError(error) && !disposed && canUseTrainApi()) {
           runtimeStore.getState().setSseConnected(false);
         }
       }
@@ -151,6 +155,17 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const hydrate = async () => {
+      try {
+        const res = await fetch("/api/auth/status");
+        if (res.ok) {
+          const data = (await res.json()) as { auth_disabled?: boolean };
+          authDisabled = Boolean(data.auth_disabled);
+        }
+      } catch {
+        // Same as requireAuth fallback: treat as auth required until known.
+      }
+      if (disposed) return;
+
       runtimeStore.getState().setHydrating(true);
       try {
         await Promise.all([pollStatus(), pollMetrics()]);
@@ -162,23 +177,27 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    void hydrate();
+    let statusTimer: ReturnType<typeof setInterval> | null = null;
+    let metricsTimer: ReturnType<typeof setInterval> | null = null;
 
-    const statusTimer = setInterval(() => {
-      void pollStatus();
-    }, STATUS_POLL_INTERVAL_MS);
-
-    const metricsTimer = setInterval(() => {
-      const state = runtimeStore.getState();
-      if (shouldUseLiveSync(state) || state.currentStep > 0) {
-        void pollMetrics();
-      }
-    }, METRICS_POLL_INTERVAL_MS);
+    void (async () => {
+      await hydrate();
+      if (disposed) return;
+      statusTimer = setInterval(() => {
+        void pollStatus();
+      }, STATUS_POLL_INTERVAL_MS);
+      metricsTimer = setInterval(() => {
+        const state = runtimeStore.getState();
+        if (shouldUseLiveSync(state) || state.currentStep > 0) {
+          void pollMetrics();
+        }
+      }, METRICS_POLL_INTERVAL_MS);
+    })();
 
     return () => {
       disposed = true;
-      clearInterval(statusTimer);
-      clearInterval(metricsTimer);
+      if (statusTimer) clearInterval(statusTimer);
+      if (metricsTimer) clearInterval(metricsTimer);
       stopStream();
     };
   }, []);
