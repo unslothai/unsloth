@@ -1014,25 +1014,28 @@ if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
     Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
-    Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-Null
+    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[FAILED] PyTorch CUDA install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
         exit 1
     }
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
     Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
-    Fast-Install "triton-windows<3.7" | Out-Null
+    $output = Fast-Install "triton-windows<3.7" | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[WARN] Triton install failed -- torch.compile may not work" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor Yellow
     } else {
         Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
     }
 } else {
     Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
-    Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-Null
+    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
         exit 1
     }
 }
@@ -1055,9 +1058,10 @@ New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4.2")) {
-    Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-Null
+    $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
         exit 1
     }
@@ -1305,10 +1309,11 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
         Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
         Write-Host ""
 
-        cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-Null
+        $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake build (llama-server)"
+            Write-Host $output -ForegroundColor Red
         }
     }
 
@@ -1316,9 +1321,10 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake build (llama-quantize) ---" -ForegroundColor Cyan
-        cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-Null
+        $output = cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
+            Write-Host $output -ForegroundColor Yellow
         }
     }
 
