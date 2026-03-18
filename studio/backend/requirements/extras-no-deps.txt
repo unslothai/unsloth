@@ -8,7 +8,7 @@ snac
 # TRL and related packages
 trl==0.23.1
 git+https://github.com/meta-pytorch/OpenEnv.git
-executorch>=1.0.1
+# executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
 sentence_transformers==5.2.0
-transformers==4.57.1
+transformers==4.57.6

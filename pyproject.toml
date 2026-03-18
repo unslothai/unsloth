@@ -55,7 +55,7 @@ dependencies = [
 ]
 
 [project.scripts]
-unsloth = "cli:app"
+unsloth = "unsloth_cli:app"
 
 [tool.setuptools.dynamic]
 version = {attr = "unsloth.models._utils.__version__"}
@@ -737,6 +737,6 @@ cu130-ampere-torch2100 = [
 ]
 
 [project.urls]
-homepage = "http://www.unsloth.ai"
-documentation = "https://github.com/unslothai/unsloth"
+homepage = "https://unsloth.ai"
+documentation = "https://unsloth.ai/docs"
 repository = "https://github.com/unslothai/unsloth"

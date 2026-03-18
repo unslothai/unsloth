@@ -9,7 +9,12 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
+import { Sources } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { ToolGroup } from "@/components/assistant-ui/tool-group";
+import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
+import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
@@ -52,7 +57,7 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { type FC, useCallback, useRef, useState } from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
@@ -384,6 +389,20 @@ const CodeToolsToggle: FC = () => {
 
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!toolStatus) {
+      setElapsed(0);
+      return;
+    }
+    setElapsed(0);
+    const interval = setInterval(() => {
+      setElapsed((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [toolStatus]);
+
   if (!toolStatus) return null;
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
@@ -392,6 +411,7 @@ const ToolStatusDisplay: FC = () => {
       <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
         <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
+        <span className="tabular-nums opacity-60">{elapsed}s</span>
       </div>
     </div>
   );
@@ -485,7 +505,16 @@ const AssistantMessage: FC = () => {
             Text: MarkdownText,
             Reasoning: Reasoning,
             ReasoningGroup: ReasoningGroup,
-            tools: { Fallback: ToolFallback },
+            Source: Sources,
+            ToolGroup: ToolGroup,
+            tools: {
+              by_name: {
+                web_search: WebSearchToolUI,
+                python: PythonToolUI,
+                terminal: TerminalToolUI,
+              },
+              Fallback: ToolFallback,
+            },
           }}
         />
         <MessageError />

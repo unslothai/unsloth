@@ -16,11 +16,41 @@ import sys
 import tempfile
 import threading
 
+from loggers import get_logger
 from unsloth_zoo.rl_environments import check_signal_escape_patterns
+
+logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
+
+# Per-session working directories so each chat thread gets its own sandbox.
+# Falls back to a shared ~/studio_sandbox/ for API callers without a session_id.
+_workdirs: dict[str, str] = {}
+
+
+def _get_workdir(session_id: str | None = None) -> str:
+    """Return (and lazily create) a persistent working directory for tool execution."""
+    global _workdirs
+    key = session_id or "_default"
+    if key not in _workdirs or not os.path.isdir(_workdirs[key]):
+        home = os.path.expanduser("~")
+        sandbox_root = os.path.join(home, "studio_sandbox")
+        if session_id:
+            # Sanitize: strip path separators and parent-dir references
+            safe_id = os.path.basename(session_id.replace("..", ""))
+            if not safe_id:
+                safe_id = "_invalid"
+            workdir = os.path.join(sandbox_root, safe_id)
+            # Verify resolved path stays under sandbox root
+            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root)):
+                workdir = os.path.join(sandbox_root, "_invalid")
+        else:
+            workdir = sandbox_root
+        os.makedirs(workdir, exist_ok = True)
+        _workdirs[key] = workdir
+    return _workdirs[key]
 
 
 WEB_SEARCH_TOOL = {
@@ -80,25 +110,47 @@ TERMINAL_TOOL = {
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 
-def execute_tool(name: str, arguments: dict, cancel_event = None) -> str:
-    """Execute a tool by name with the given arguments. Returns result as a string."""
+_TIMEOUT_UNSET = object()
+
+
+def execute_tool(
+    name: str,
+    arguments: dict,
+    cancel_event = None,
+    timeout: int | None = _TIMEOUT_UNSET,
+    session_id: str | None = None,
+) -> str:
+    """Execute a tool by name with the given arguments. Returns result as a string.
+
+    ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
+    unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
+    ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
+    """
+    logger.info(
+        f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
+    )
+    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
-        return _web_search(arguments.get("query", ""))
+        return _web_search(arguments.get("query", ""), timeout = effective_timeout)
     if name == "python":
-        return _python_exec(arguments.get("code", ""), cancel_event)
+        return _python_exec(
+            arguments.get("code", ""), cancel_event, effective_timeout, session_id
+        )
     if name == "terminal":
-        return _bash_exec(arguments.get("command", ""), cancel_event)
+        return _bash_exec(
+            arguments.get("command", ""), cancel_event, effective_timeout, session_id
+        )
     return f"Unknown tool: {name}"
 
 
-def _web_search(query: str, max_results: int = 5) -> str:
+def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
     """Search the web using DuckDuckGo and return formatted results."""
     if not query.strip():
         return "No query provided."
     try:
         from ddgs import DDGS
 
-        results = DDGS().text(query, max_results = max_results)
+        results = DDGS(timeout = timeout).text(query, max_results = max_results)
         if not results:
             return "No results found."
         parts = []
@@ -147,7 +199,12 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-def _python_exec(code: str, cancel_event = None) -> str:
+def _python_exec(
+    code: str,
+    cancel_event = None,
+    timeout: int = _EXEC_TIMEOUT,
+    session_id: str | None = None,
+) -> str:
     """Execute Python code in a subprocess sandbox."""
     if not code or not code.strip():
         return "No code provided."
@@ -158,8 +215,11 @@ def _python_exec(code: str, cancel_event = None) -> str:
         return error
 
     tmp_path = None
+    workdir = _get_workdir(session_id)
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_")
+        fd, tmp_path = tempfile.mkstemp(
+            suffix = ".py", prefix = "studio_exec_", dir = workdir
+        )
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
@@ -168,7 +228,7 @@ def _python_exec(code: str, cancel_event = None) -> str:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            cwd = tempfile.gettempdir(),
+            cwd = workdir,
         )
 
         # Spawn cancel watcher if we have a cancel event
@@ -179,11 +239,11 @@ def _python_exec(code: str, cancel_event = None) -> str:
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
-            return _truncate("Execution timed out after 5 minutes.")
+            return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."
@@ -203,7 +263,12 @@ def _python_exec(code: str, cancel_event = None) -> str:
                 pass
 
 
-def _bash_exec(command: str, cancel_event = None) -> str:
+def _bash_exec(
+    command: str,
+    cancel_event = None,
+    timeout: int = _EXEC_TIMEOUT,
+    session_id: str | None = None,
+) -> str:
     """Execute a bash command in a subprocess sandbox."""
     if not command or not command.strip():
         return "No command provided."
@@ -215,35 +280,35 @@ def _bash_exec(command: str, cancel_event = None) -> str:
         return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            proc = subprocess.Popen(
-                ["bash", "-c", command],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                text = True,
-                cwd = tmpdir,
+        workdir = _get_workdir(session_id)
+        proc = subprocess.Popen(
+            ["bash", "-c", command],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            cwd = workdir,
+        )
+
+        if cancel_event is not None:
+            watcher = threading.Thread(
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
+            watcher.start()
 
-            if cancel_event is not None:
-                watcher = threading.Thread(
-                    target = _cancel_watcher, args = (proc, cancel_event), daemon = True
-                )
-                watcher.start()
+        try:
+            output, _ = proc.communicate(timeout = timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return _truncate(f"Execution timed out after {timeout} seconds.")
 
-            try:
-                output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                return _truncate("Execution timed out after 5 minutes.")
+        if cancel_event is not None and cancel_event.is_set():
+            return "Execution cancelled."
 
-            if cancel_event is not None and cancel_event.is_set():
-                return "Execution cancelled."
-
-            result = output or ""
-            if proc.returncode != 0:
-                result = f"Exit code {proc.returncode}:\n{result}"
-            return _truncate(result) if result.strip() else "(no output)"
+        result = output or ""
+        if proc.returncode != 0:
+            result = f"Exit code {proc.returncode}:\n{result}"
+        return _truncate(result) if result.strip() else "(no output)"
 
     except Exception as e:
         return f"Execution error: {e}"

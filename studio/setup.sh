@@ -41,13 +41,27 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Only skip when BOTH conditions are true:
-#   1. We're inside site-packages (PyPI / pip install, not editable)
-#   2. dist/ already exists (pre-built in the wheel)
-# Otherwise always (re)build — handles upgrades, editable installs, and
-# pip-from-source where dist/ was never built.
-if [[ "$SCRIPT_DIR" == */site-packages/* ]] && [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    echo "✅ Frontend pre-built (PyPI) — skipping Node/npm check."
+# Skip if dist/ exists AND no tracked input is newer than dist/.
+# Checks top-level config/entry files and src/, public/ recursively.
+# This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
+# and upgrades/pulls (source newer than dist/ triggers rebuild).
+_NEED_FRONTEND_BUILD=true
+if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
+        -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+    # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
+    if [ -z "$_changed" ]; then
+        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
+            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null) || true
+    fi
+    if [ -z "$_changed" ]; then
+        _NEED_FRONTEND_BUILD=false
+    fi
+fi
+_NEED_FRONTEND_BUILD=true
+if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -146,12 +160,17 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
-cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end frontend dist check
+fi  # end frontend build check
+
+# ── oxc-validator runtime (needs npm -- skip if not available) ──
+if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
+    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+    run_quiet "npm install (oxc validator runtime)" npm install
+    cd "$SCRIPT_DIR"
+fi
 
 # ── 6. Python venv + deps ──
 
@@ -223,50 +242,76 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
-if [ "$IS_COLAB" = true ]; then
-    # Colab: install packages directly without venv
-    install_python_stack
-else
-    # Local: create venv under ~/.unsloth/studio/ (shared location, not in repo)
-    STUDIO_HOME="$HOME/.unsloth/studio"
-    VENV_DIR="$STUDIO_HOME/.venv"
-    VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
-    mkdir -p "$STUDIO_HOME"
+# Create venv under ~/.unsloth/studio/ (shared location, not in repo).
+# All platforms (including Colab) use the same isolated venv so that
+# studio dependencies are never installed into the system Python.
+STUDIO_HOME="$HOME/.unsloth/studio"
+VENV_DIR="$STUDIO_HOME/.venv"
+VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
+mkdir -p "$STUDIO_HOME"
 
-    # Clean up legacy in-repo venvs if they exist
-    [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
-    [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
-    [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+# Clean up legacy in-repo venvs if they exist
+[ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
+[ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
+[ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
 
-    rm -rf "$VENV_DIR"
-    rm -rf "$VENV_T5_DIR"
-    "$BEST_PY" -m venv "$VENV_DIR"
+rm -rf "$VENV_DIR"
+rm -rf "$VENV_T5_DIR"
+# Try creating venv with pip; fall back to --without-pip + bootstrap
+# (some environments like Colab have broken ensurepip)
+if ! "$BEST_PY" -m venv "$VENV_DIR" 2>/dev/null; then
+    "$BEST_PY" -m venv --without-pip "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
-    cd "$SCRIPT_DIR"
-    install_python_stack
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python > /dev/null
+else
+    source "$VENV_DIR/bin/activate"
+fi
 
-    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
-    # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
-    # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
-    echo ""
-    echo "   Pre-installing transformers 5.x for newer model support..."
-    mkdir -p "$VENV_T5_DIR"
-    run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
-    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+# ── Ensure uv is available (much faster than pip) ──
+USE_UV=false
+if command -v uv &>/dev/null; then
+    USE_UV=true
+elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
+    export PATH="$HOME/.local/bin:$PATH"
+    command -v uv &>/dev/null && USE_UV=true
+fi
 
-    # ── 7. WSL: pre-install GGUF build dependencies ──
-    # On WSL, sudo requires a password and can't be entered during GGUF export
-    # (runs in a non-interactive subprocess). Install build deps here instead.
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo ""
-        echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
-        echo "   You may be prompted for your password."
-        sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-        echo "✅ GGUF build dependencies installed"
+# Helper: install a package, preferring uv with pip fallback
+fast_install() {
+    if [ "$USE_UV" = true ]; then
+        uv pip install --python "$(command -v python)" "$@" && return 0
     fi
+    python -m pip install "$@"
+}
+
+cd "$SCRIPT_DIR"
+install_python_stack
+
+# ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
+# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
+# at runtime (slow, ~10-15s), we pre-install into a separate directory.
+# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
+echo ""
+echo "   Pre-installing transformers 5.x for newer model support..."
+mkdir -p "$VENV_T5_DIR"
+run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
+run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
+run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
+# tiktoken is needed by Qwen-family tokenizers. Install with deps since
+# regex/requests may be missing on Windows.
+run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
+echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+
+# ── 7. WSL: pre-install GGUF build dependencies ──
+# On WSL, sudo requires a password and can't be entered during GGUF export
+# (runs in a non-interactive subprocess). Install build deps here instead.
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    echo ""
+    echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
+    echo "   You may be prompted for your password."
+    sudo apt-get update -y
+    sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
+    echo "✅ GGUF build dependencies installed"
 fi
 
 # ── 8. Build llama.cpp binaries for GGUF inference + export ──
@@ -405,6 +450,9 @@ if [ "$IS_COLAB" = true ]; then
     echo "╠══════════════════════════════════════╣"
     echo "║ Unsloth Studio is ready to start     ║"
     echo "║ in your Colab notebook!              ║"
+    echo "║                                      ║"
+    echo "║ from colab import start              ║"
+    echo "║ start()                              ║"
     echo "╚══════════════════════════════════════╝"
 else
     echo "╔══════════════════════════════════════╗"

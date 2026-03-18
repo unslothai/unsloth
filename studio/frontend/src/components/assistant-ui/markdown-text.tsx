@@ -10,7 +10,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { DownloadIcon } from "lucide-react";
+import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
@@ -84,6 +84,11 @@ function isSvgFence(codeFence: CodeFence): boolean {
   return false;
 }
 
+function isHtmlFence(codeFence: CodeFence): boolean {
+  const lang = codeFence.language?.toLowerCase() ?? "";
+  return lang === "html" && !codeFence.source.trimStart().startsWith("<svg");
+}
+
 const UNSAFE_SVG_RE = /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
 function sanitizeSvg(source: string): string | null {
@@ -99,6 +104,96 @@ function SvgPreview({ source }: { source: string }) {
         src={dataUri}
         alt="SVG preview"
         style={{ maxWidth: "100%", maxHeight: 512 }}
+      />
+    </div>
+  );
+}
+
+const HTML_PREVIEW_DEFAULT_HEIGHT = 400;
+const HTML_PREVIEW_MAX_HEIGHT = 800;
+
+function HtmlPreview({ source }: { source: string }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(HTML_PREVIEW_DEFAULT_HEIGHT);
+  const [enlarged, setEnlarged] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      if (typeof e.data?.htmlPreviewHeight === "number") {
+        setHeight(Math.min(Math.max(e.data.htmlPreviewHeight, 100), HTML_PREVIEW_MAX_HEIGHT));
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  useEffect(() => {
+    if (!enlarged) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEnlarged(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [enlarged]);
+
+  const resizeScript = `<script>new ResizeObserver(()=>{
+parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*");
+}).observe(document.documentElement);</script>`;
+
+  const srcDoc = source + resizeScript;
+
+  if (enlarged) {
+    return (
+      <>
+        <div className="mt-2 overflow-hidden rounded-lg border border-border" style={{ height }}>
+          {/* Placeholder keeps layout stable while overlay is shown */}
+        </div>
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-background/80 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setEnlarged(false); }}
+        >
+          <div className="flex items-center justify-end gap-2 px-4 py-2">
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              onClick={() => setEnlarged(false)}
+              title="Exit fullscreen (Esc)"
+            >
+              <Minimize2Icon className="size-4" />
+              Exit fullscreen
+            </button>
+          </div>
+          <div className="mx-4 mb-4 flex-1 overflow-hidden rounded-lg border border-border bg-background">
+            <iframe
+              ref={iframeRef}
+              srcDoc={srcDoc}
+              sandbox="allow-scripts"
+              style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+              title="HTML preview"
+            />
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="group/html-preview relative mt-2 overflow-hidden rounded-lg border border-border">
+      <button
+        type="button"
+        className="absolute top-2 right-2 z-10 rounded-md border border-border bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover/html-preview:opacity-100 supports-[backdrop-filter]:backdrop-blur"
+        onClick={() => setEnlarged(true)}
+        title="Enlarge preview"
+      >
+        <Maximize2Icon className="size-4" />
+      </button>
+      <iframe
+        ref={iframeRef}
+        srcDoc={srcDoc}
+        sandbox="allow-scripts"
+        style={{ width: "100%", height, border: "none", display: "block" }}
+        title="HTML preview"
       />
     </div>
   );
@@ -238,6 +333,14 @@ function StreamdownBlock(props: BlockProps) {
     );
   }
 
+  if (props.isIncomplete && codeFence && isHtmlFence(codeFence)) {
+    return (
+      <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
+        Loading preview...
+      </div>
+    );
+  }
+
   if (mermaidSource) {
     return (
       <div className="relative isolate">
@@ -249,6 +352,7 @@ function StreamdownBlock(props: BlockProps) {
 
   if (codeFence) {
     const svgSource = !props.isIncomplete && isSvgFence(codeFence) ? sanitizeSvg(codeFence.source) : null;
+    const htmlSource = !props.isIncomplete && isHtmlFence(codeFence) ? codeFence.source : null;
     return (
       <>
         <div className="relative isolate">
@@ -260,6 +364,7 @@ function StreamdownBlock(props: BlockProps) {
           />
         </div>
         {svgSource && <SvgPreview source={svgSource} />}
+        {htmlSource && <HtmlPreview source={htmlSource} />}
       </>
     );
   }

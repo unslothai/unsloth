@@ -3,7 +3,6 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Spinner } from "@/components/ui/spinner";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -34,12 +33,10 @@ type SelectedModelInput = {
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "items-start gap-2.5 pr-8",
-  content: "gap-0.5",
+  toast: "items-start gap-2.5",
+  content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
-  description: "mt-0",
-  closeButton:
-    "!left-auto !right-1.5 !top-1.5 !translate-x-0 !translate-y-0 !border-transparent !bg-transparent !shadow-none hover:!bg-transparent hover:opacity-70",
+  description: "mt-0 w-full",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -200,12 +197,14 @@ export function useChatModelRuntime() {
 
   const renderLoadDescription = useCallback(
     (
+      title: string,
       message: string,
       progressPercent?: number | null,
       progressLabel?: string | null,
       onStop?: () => void,
     ) =>
       createElement(ModelLoadDescription, {
+        title,
         message,
         progressPercent,
         progressLabel,
@@ -448,18 +447,19 @@ export function useChatModelRuntime() {
           }
         }
 
+        const toastTitle = isDownloaded ? "Starting model…" : "Downloading model…";
         const toastId = toast(
-          isDownloaded ? "Starting model…" : "Downloading model…",
+          null,
           {
-            icon: createElement(Spinner, { className: "size-4" }),
             description: renderLoadDescription(
+              toastTitle,
               loadingDescription,
               isDownloaded ? null : 0,
               isDownloaded ? null : "Preparing download",
               cancelLoading,
             ),
             duration: Infinity,
-            closeButton: true,
+            closeButton: false,
             classNames: MODEL_LOAD_TOAST_CLASSNAMES,
             onDismiss: (dismissedToast) => {
               if (loadToastIdRef.current !== dismissedToast.id) {
@@ -505,18 +505,18 @@ export function useChatModelRuntime() {
                 });
                 if (loadToastDismissedRef.current) return;
                 toast(
-                  "Downloading model…",
+                  null,
                   {
                     id: toastId,
-                    icon: createElement(Spinner, { className: "size-4" }),
                     description: renderLoadDescription(
+                      "Downloading model…",
                       loadingDescription,
                       pct,
                       progressLabel,
                       cancelLoading,
                     ),
                     duration: Infinity,
-                    closeButton: true,
+                    closeButton: false,
                     classNames: MODEL_LOAD_TOAST_CLASSNAMES,
                     onDismiss: (dismissedToast) => {
                       if (loadToastIdRef.current !== dismissedToast.id) return;
@@ -542,17 +542,17 @@ export function useChatModelRuntime() {
                   if (progressInterval) clearInterval(progressInterval);
                   return;
                 }
-                toast("Starting model…", {
+                toast(null, {
                   id: toastId,
-                  icon: createElement(Spinner, { className: "size-4" }),
                   description: renderLoadDescription(
+                    "Starting model…",
                     "Download complete. Loading the model into memory.",
                     100,
                     "Download complete",
                     cancelLoading,
                   ),
                   duration: Infinity,
-                  closeButton: true,
+                  closeButton: false,
                   classNames: MODEL_LOAD_TOAST_CLASSNAMES,
                   onDismiss: (dismissedToast) => {
                     if (loadToastIdRef.current !== dismissedToast.id) return;

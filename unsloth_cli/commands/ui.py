@@ -25,7 +25,11 @@ def ui(
     ),
 ):
     """Launch the Unsloth web UI backend server (alias for 'unsloth studio')."""
-    from cli.commands.studio import _studio_venv_python, _find_run_py, STUDIO_HOME
+    from unsloth_cli.commands.studio import (
+        _studio_venv_python,
+        _find_run_py,
+        STUDIO_HOME,
+    )
 
     # Re-execute in studio venv if available and not already inside it
     studio_venv_dir = STUDIO_HOME / ".venv"
