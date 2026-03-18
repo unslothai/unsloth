@@ -886,17 +886,16 @@ Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-    pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" 2>&1 | Out-Null
+    Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
+    pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
     Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
     pip install "triton-windows<3.7" 2>&1 | Out-Null
+    Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
 } else {
     Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
-    pip install torch torchvision torchaudio 2>&1 | Out-Null
-}
-if ($HasNvidiaSmi) {
-    Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+    pip install torch torchvision torchaudio
 }
 
 # Ordered heavy dependency installation — shared cross-platform script
