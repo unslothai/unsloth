@@ -48,7 +48,7 @@ CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 _CHAT_KEY_SETS = (frozenset({"role", "content"}), frozenset({"from", "value"}))
 
 
-def _probe_conversation(dataset: Dataset, candidates=None):
+def _probe_conversation(dataset: Dataset, candidates = None):
     """
     Probe a dataset for its conversation column and turn structure.
 
@@ -105,6 +105,7 @@ def _probe_conversation(dataset: Dataset, candidates=None):
 # None-detection helpers
 # ---------------------------------------------------------------------------
 
+
 def is_none_or_empty(value) -> bool:
     """True if value is None, empty string, or whitespace-only."""
     if value is None:
@@ -130,6 +131,7 @@ def _classify_empty(value) -> str:
 # Alpaca detection
 # ---------------------------------------------------------------------------
 
+
 def find_none_alpaca(dataset: Dataset) -> dict:
     """
     Scan alpaca dataset for None/empty instruction or output fields.
@@ -140,7 +142,7 @@ def find_none_alpaca(dataset: Dataset) -> dict:
         "none_instruction": 0,
         "none_output": 0,
         "bad_row_indices": [],
-        "findings": [],            # [{row, field, value_type, raw_value}, ...]
+        "findings": [],  # [{row, field, value_type, raw_value}, ...]
     }
 
     for i, row in enumerate(dataset):
@@ -150,12 +152,14 @@ def find_none_alpaca(dataset: Dataset) -> dict:
             if is_none_or_empty(val):
                 stats[f"none_{field}"] = stats.get(f"none_{field}", 0) + 1
                 bad = True
-                stats["findings"].append({
-                    "row_index":  i,
-                    "field":      field,
-                    "value_type": _classify_empty(val),
-                    "raw_value":  repr(val),
-                })
+                stats["findings"].append(
+                    {
+                        "row_index": i,
+                        "field": field,
+                        "value_type": _classify_empty(val),
+                        "raw_value": repr(val),
+                    }
+                )
         if bad:
             stats["bad_row_indices"].append(i)
 
@@ -165,6 +169,7 @@ def find_none_alpaca(dataset: Dataset) -> dict:
 # ---------------------------------------------------------------------------
 # ChatML / conversational detection
 # ---------------------------------------------------------------------------
+
 
 def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
     """
@@ -201,11 +206,11 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
         "column": col,
         "rows_with_none_turns": 0,
         "total_none_turns": 0,
-        "none_by_role": {},          # role -> count of None turns
-        "none_by_type": {},          # "None" | "empty_string" | "whitespace_only" -> count
-        "rows_all_none": 0,          # rows where every turn is bad
-        "bad_row_indices": [],       # every row index that has at least one bad turn
-        "findings": [],              # detailed per-turn list
+        "none_by_role": {},  # role -> count of None turns
+        "none_by_type": {},  # "None" | "empty_string" | "whitespace_only" -> count
+        "rows_all_none": 0,  # rows where every turn is bad
+        "bad_row_indices": [],  # every row index that has at least one bad turn
+        "findings": [],  # detailed per-turn list
     }
 
     for i, row in enumerate(dataset):
@@ -217,14 +222,18 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
         for turn_idx, turn in enumerate(conversation):
             # Non-dict turn — record it rather than crash or silently skip.
             if not isinstance(turn, dict):
-                row_findings.append({
-                    "row_index":  i,
-                    "turn_index": turn_idx,
-                    "role":       "unknown",
-                    "value_type": "None" if turn is None else "invalid_type",
-                    "raw_value":  repr(turn),
-                })
-                stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+                row_findings.append(
+                    {
+                        "row_index": i,
+                        "turn_index": turn_idx,
+                        "role": "unknown",
+                        "value_type": "None" if turn is None else "invalid_type",
+                        "raw_value": repr(turn),
+                    }
+                )
+                stats["none_by_role"]["unknown"] = (
+                    stats["none_by_role"].get("unknown", 0) + 1
+                )
                 vtype = "None" if turn is None else "invalid_type"
                 stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
                 continue
@@ -235,13 +244,15 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             content = turn.get("content") if "content" in turn else turn.get("value")
             if is_none_or_empty(content):
                 vtype = _classify_empty(content)
-                row_findings.append({
-                    "row_index":  i,
-                    "turn_index": turn_idx,
-                    "role":       role,
-                    "value_type": vtype,
-                    "raw_value":  repr(content),
-                })
+                row_findings.append(
+                    {
+                        "row_index": i,
+                        "turn_index": turn_idx,
+                        "role": role,
+                        "value_type": vtype,
+                        "raw_value": repr(content),
+                    }
+                )
                 stats["none_by_role"][role] = stats["none_by_role"].get(role, 0) + 1
                 stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
 
@@ -261,32 +272,37 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
 # Convenience wrappers per format (all delegate to the same scan logic)
 # ---------------------------------------------------------------------------
 
+
 def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
     """ShareGPT uses 'from'/'value' keys — same scan logic handles both."""
     if col is None:
         # ShareGPT data conventionally lives in 'conversations'; try it first.
-        conv_info = _probe_conversation(dataset, candidates=("conversations", "messages", "texts"))
+        conv_info = _probe_conversation(
+            dataset, candidates = ("conversations", "messages", "texts")
+        )
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
                 "Expected a column with 'from'/'value' or 'role'/'content' turn keys."
             )
         col = conv_info["column"]
-    return find_none_chatml(dataset, col=col)
+    return find_none_chatml(dataset, col = col)
 
 
 def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
     """gptoss: role/content plus optional thinking/tool_calls. Only content checked."""
     if col is None:
         # gptoss data conventionally lives in 'messages'; try it first.
-        conv_info = _probe_conversation(dataset, candidates=("messages", "conversations"))
+        conv_info = _probe_conversation(
+            dataset, candidates = ("messages", "conversations")
+        )
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
                 "Expected a column with 'role'/'content' turn keys."
             )
         col = conv_info["column"]
-    return find_none_chatml(dataset, col=col)
+    return find_none_chatml(dataset, col = col)
 
 
 # ---------------------------------------------------------------------------
@@ -334,16 +350,14 @@ FORMAT_REGISTRY = [
     {
         "name": "sharegpt",
         "match": lambda ds, conv: (
-            conv is not None
-            and {"from", "value"} <= conv["turn_keys"]
+            conv is not None and {"from", "value"} <= conv["turn_keys"]
         ),
         "scan": find_none_sharegpt,
     },
     {
         "name": "chatml",
         "match": lambda ds, conv: (
-            conv is not None
-            and {"role", "content"} <= conv["turn_keys"]
+            conv is not None and {"role", "content"} <= conv["turn_keys"]
         ),
         "scan": find_none_chatml,
     },
@@ -399,7 +413,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # applies its own format-specific column priority (e.g. find_none_sharegpt
     # prefers 'conversations'; find_none_gptoss prefers 'messages').
     if was_auto and conv_info is not None and fmt != "alpaca":
-        stats = scanner(dataset, col=conv_info["column"])
+        stats = scanner(dataset, col = conv_info["column"])
     else:
         stats = scanner(dataset)
     stats["format"] = fmt
@@ -409,6 +423,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
 # ---------------------------------------------------------------------------
 # Report printing
 # ---------------------------------------------------------------------------
+
 
 def _print_summary_header(stats: dict, fmt: str) -> bool:
     """Print the top-level stats block (shared by all report modes). Returns True if findings exist."""
@@ -469,18 +484,23 @@ def print_report(stats: dict, fmt: str, summary_only: bool = False):
 
     for f in findings:
         if fmt == "alpaca":
-            print(f"  row {f['row_index']:>5d}  "
-                  f"field={f['field']:<12s}  "
-                  f"type={f['value_type']:<16s}  "
-                  f"raw={f['raw_value']}")
+            print(
+                f"  row {f['row_index']:>5d}  "
+                f"field={f['field']:<12s}  "
+                f"type={f['value_type']:<16s}  "
+                f"raw={f['raw_value']}"
+            )
         else:
-            print(f"  row {f['row_index']:>5d}  "
-                  f"turn {f['turn_index']}  "
-                  f"role={str(f['role']):<12s}  "
-                  f"type={f['value_type']:<16s}  "
-                  f"raw={f['raw_value']}")
+            print(
+                f"  row {f['row_index']:>5d}  "
+                f"turn {f['turn_index']}  "
+                f"role={str(f['role']):<12s}  "
+                f"type={f['value_type']:<16s}  "
+                f"raw={f['raw_value']}"
+            )
 
     print(f"{'=' * 64}")
+
 
 def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None):
     """Print the full contents of specific rows for inspection.
@@ -524,9 +544,12 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
             conversation = row[col]
             if isinstance(conversation, list):
                 none_count = sum(
-                    1 for t in conversation
+                    1
+                    for t in conversation
                     if not isinstance(t, dict)
-                    or is_none_or_empty(t.get("content") if "content" in t else t.get("value"))
+                    or is_none_or_empty(
+                        t.get("content") if "content" in t else t.get("value")
+                    )
                 )
                 print(f"  {col}: {len(conversation)} turns ({none_count} None)")
                 print(f"  {'-' * 60}")
@@ -537,7 +560,9 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                         print(f"  [{i:>3d}] {'unknown':<12s} [{label}]  << NONE")
                         continue
                     role = str(turn.get("role") or turn.get("from", "?"))
-                    content = turn.get("content") if "content" in turn else turn.get("value")
+                    content = (
+                        turn.get("content") if "content" in turn else turn.get("value")
+                    )
                     if is_none_or_empty(content):
                         status = "  << NONE"
                     else:
@@ -553,6 +578,3 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     print(f"  [{i:>3d}] {role:<12s} {preview}{status}")
 
         print(f"{'=' * 64}")
-
-
-
