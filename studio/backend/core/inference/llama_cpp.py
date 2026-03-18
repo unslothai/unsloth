@@ -1329,12 +1329,19 @@ class LlamaCppBackend:
         def _cancel_watcher():
             while not _cancel_closed.is_set():
                 if cancel_event is not None and cancel_event.wait(timeout = 0.3):
-                    r = _response_ref[0]
-                    if r is not None:
-                        try:
-                            r.close()
-                        except Exception:
-                            pass
+                    # Cancel requested. Keep polling until the response object
+                    # exists so we can close it, or until the main thread
+                    # finishes on its own (_cancel_closed is set in finally).
+                    while not _cancel_closed.is_set():
+                        r = _response_ref[0]
+                        if r is not None:
+                            try:
+                                r.close()
+                            except Exception:
+                                pass
+                            return
+                        # Response not created yet -- wait briefly and retry
+                        _cancel_closed.wait(timeout = 0.1)
                     return
 
         watcher = None
