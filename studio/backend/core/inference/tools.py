@@ -106,7 +106,11 @@ _TIMEOUT_UNSET = object()
 
 
 def execute_tool(
-    name: str, arguments: dict, cancel_event = None, timeout: int | None = _TIMEOUT_UNSET, session_id: str | None = None,
+    name: str,
+    arguments: dict,
+    cancel_event = None,
+    timeout: int | None = _TIMEOUT_UNSET,
+    session_id: str | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string.
 
@@ -114,14 +118,20 @@ def execute_tool(
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
     """
-    logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    logger.info(
+        f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
+    )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
         return _web_search(arguments.get("query", ""), timeout = effective_timeout)
     if name == "python":
-        return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout, session_id)
+        return _python_exec(
+            arguments.get("code", ""), cancel_event, effective_timeout, session_id
+        )
     if name == "terminal":
-        return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout, session_id)
+        return _bash_exec(
+            arguments.get("command", ""), cancel_event, effective_timeout, session_id
+        )
     return f"Unknown tool: {name}"
 
 
@@ -181,7 +191,12 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT, session_id: str | None = None) -> str:
+def _python_exec(
+    code: str,
+    cancel_event = None,
+    timeout: int = _EXEC_TIMEOUT,
+    session_id: str | None = None,
+) -> str:
     """Execute Python code in a subprocess sandbox."""
     if not code or not code.strip():
         return "No code provided."
@@ -237,7 +252,12 @@ def _python_exec(code: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT, s
                 pass
 
 
-def _bash_exec(command: str, cancel_event = None, timeout: int = _EXEC_TIMEOUT, session_id: str | None = None) -> str:
+def _bash_exec(
+    command: str,
+    cancel_event = None,
+    timeout: int = _EXEC_TIMEOUT,
+    session_id: str | None = None,
+) -> str:
     """Execute a bash command in a subprocess sandbox."""
     if not command or not command.strip():
         return "No command provided."
