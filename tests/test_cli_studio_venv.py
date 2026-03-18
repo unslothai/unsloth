@@ -35,7 +35,7 @@ def test_reexec_cli_in_studio_venv_execs_on_unix(monkeypatch):
     assert captured["args"] == [
         "/tmp/unsloth-studio/.venv/bin/python",
         "-m",
-        "cli",
+        "unsloth_cli",
         "train",
         "--help",
     ]
