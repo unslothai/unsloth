@@ -84,7 +84,8 @@ uv run unsloth studio -H 0.0.0.0 -p 8888
 ### Unsloth Core (code-based)
 #### Windows, Linux, WSL
 ```bash
-pip install --upgrade pip ; pip install uv
+pip install -U pip uv
+uv venv
 uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
