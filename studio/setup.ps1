@@ -643,11 +643,24 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                 Copy-Item "$cudaExtras\*" $vsCustomizations -Force -ErrorAction Stop
                 Write-Host "   [OK] CUDA VS integration files installed" -ForegroundColor Green
             } catch {
-                Write-Host "   [WARN] Could not copy CUDA VS integration files (may need admin)" -ForegroundColor Yellow
-                Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
-                Write-Host "            $cudaExtras" -ForegroundColor Cyan
-                Write-Host "          into:" -ForegroundColor Yellow
-                Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                # Direct copy failed (needs admin). Try elevated copy via Start-Process.
+                try {
+                    $copyCmd = "Copy-Item '$cudaExtras\*' '$vsCustomizations' -Force"
+                    Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
+                    $hasTargetsRetry = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
+                    if ($hasTargetsRetry) {
+                        Write-Host "   [OK] CUDA VS integration files installed (elevated)" -ForegroundColor Green
+                    } else {
+                        throw "Copy did not produce .targets files"
+                    }
+                } catch {
+                    Write-Host "   [WARN] Could not copy CUDA VS integration files" -ForegroundColor Yellow
+                    Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
+                    Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
+                    Write-Host "            $cudaExtras" -ForegroundColor Cyan
+                    Write-Host "          into:" -ForegroundColor Yellow
+                    Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                }
             }
         }
     }
@@ -1136,10 +1149,19 @@ if (Test-Path $LlamaServerBin) {
         }
         }
 
-        cmake @CmakeArgs 2>&1 | Out-Null
+        $cmakeOutput = cmake @CmakeArgs 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake configure"
+            Write-Host $cmakeOutput -ForegroundColor Red
+            if ($cmakeOutput -match 'No CUDA toolset found|CUDA_TOOLKIT_ROOT_DIR|nvcc') {
+                Write-Host ""
+                Write-Host "   Hint: CUDA VS integration may be missing. Try running as admin:" -ForegroundColor Yellow
+                Write-Host "   Copy contents of:" -ForegroundColor Yellow
+                Write-Host "     <CUDA_PATH>\extras\visual_studio_integration\MSBuildExtensions" -ForegroundColor Yellow
+                Write-Host "   into:" -ForegroundColor Yellow
+                Write-Host "     <VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" -ForegroundColor Yellow
+            }
         }
     }
 
