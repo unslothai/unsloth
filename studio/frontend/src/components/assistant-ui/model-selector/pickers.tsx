@@ -471,26 +471,24 @@ export function HubModelPicker({
   useEffect(() => { setRecommendedPage(1); }, [models, chatOnly]);
 
   const visibleRecommendedIds = useMemo(() => {
-    const gguf: string[] = [];
-    const hub: string[] = [];
-    for (const id of recommendedIds) {
-      if (isGgufRepo(id) && gguf.length < recommendedPage * 4) gguf.push(id);
-      else if (!isGgufRepo(id) && hub.length < recommendedPage * 4) hub.push(id);
-    }
+    const hubStartIndex = recommendedIds.findIndex((id) => !isGgufRepo(id));
+    const allGguf = hubStartIndex === -1 ? recommendedIds : recommendedIds.slice(0, hubStartIndex);
+    const allHub = hubStartIndex === -1 ? [] : recommendedIds.slice(hubStartIndex);
     // Interleave in chunks of 4: [4 gguf, 4 hub, 4 gguf, 4 hub, ...]
     const result: string[] = [];
-    const pages = Math.max(Math.ceil(gguf.length / 4), Math.ceil(hub.length / 4));
-    for (let p = 0; p < pages; p++) {
-      result.push(...gguf.slice(p * 4, p * 4 + 4));
-      result.push(...hub.slice(p * 4, p * 4 + 4));
+    for (let p = 0; p < recommendedPage; p++) {
+      result.push(...allGguf.slice(p * 4, (p + 1) * 4));
+      result.push(...allHub.slice(p * 4, (p + 1) * 4));
     }
     return result;
   }, [recommendedIds, recommendedPage]);
 
   const hasMoreRecommended = visibleRecommendedIds.length < recommendedIds.length;
 
+  // Fetch VRAM info for the full pool once (recommendedIds is stable across
+  // page increments) so we don't re-fetch on every scroll.
   const { paramCountById: recommendedParamCountById } =
-    useRecommendedModelVram(visibleRecommendedIds);
+    useRecommendedModelVram(recommendedIds);
 
   const showHfSection = debouncedQuery.trim().length > 0;
   const recommendedSet = useMemo(() => new Set(visibleRecommendedIds), [visibleRecommendedIds]);
