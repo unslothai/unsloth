@@ -26,6 +26,7 @@ import json
 import structlog
 from loggers import get_logger
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -58,7 +59,7 @@ _tokenizer_class_cache: dict[str, bool] = {}
 
 # Versions
 TRANSFORMERS_5_VERSION = "5.3.0"
-TRANSFORMERS_DEFAULT_VERSION = "4.57.1"
+TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
 _VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
@@ -216,15 +217,55 @@ def _purge_modules() -> int:
     return len(to_remove)
 
 
-def _ensure_venv_t5_exists() -> bool:
-    """Ensure .venv_t5/ exists. Install at runtime if missing."""
-    if os.path.isdir(_VENV_T5_DIR) and os.listdir(_VENV_T5_DIR):
-        return True
+_VENV_T5_PACKAGES = (
+    f"transformers=={TRANSFORMERS_5_VERSION}",
+    "huggingface_hub==1.7.1",
+    "hf_xet==1.4.2",
+)
 
-    logger.warning(".venv_t5 not found at %s — installing at runtime", _VENV_T5_DIR)
-    os.makedirs(_VENV_T5_DIR, exist_ok = True)
-    for pkg in (f"transformers=={TRANSFORMERS_5_VERSION}", "huggingface_hub==1.3.0"):
-        cmd = [
+
+def _venv_t5_is_valid() -> bool:
+    """Return True if .venv_t5/ has all required packages installed."""
+    if not os.path.isdir(_VENV_T5_DIR) or not os.listdir(_VENV_T5_DIR):
+        return False
+    # Check that the key package directories actually exist
+    for pkg_spec in _VENV_T5_PACKAGES:
+        pkg_name = pkg_spec.split("==")[0].replace("-", "_")
+        if not any(
+            (Path(_VENV_T5_DIR) / d).is_dir()
+            for d in (pkg_name, pkg_name.replace("_", "-"))
+        ):
+            return False
+    return True
+
+
+def _install_to_venv_t5(pkg: str) -> bool:
+    """Install a single package into .venv_t5/, preferring uv then pip."""
+    # Try uv first (faster) if already on PATH -- do NOT install uv at runtime
+    if shutil.which("uv"):
+        result = subprocess.run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                _VENV_T5_DIR,
+                "--no-deps",
+                pkg,
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+        )
+        if result.returncode == 0:
+            return True
+        logger.warning("uv install of %s failed, falling back to pip", pkg)
+
+    # Fallback to pip
+    result = subprocess.run(
+        [
             sys.executable,
             "-m",
             "pip",
@@ -233,12 +274,28 @@ def _ensure_venv_t5_exists() -> bool:
             _VENV_T5_DIR,
             "--no-deps",
             pkg,
-        ]
-        result = subprocess.run(
-            cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True
-        )
-        if result.returncode != 0:
-            logger.error("pip install failed:\n%s", result.stdout)
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
+    if result.returncode != 0:
+        logger.error("install failed:\n%s", result.stdout)
+        return False
+    return True
+
+
+def _ensure_venv_t5_exists() -> bool:
+    """Ensure .venv_t5/ exists with all required packages. Install if missing."""
+    if _venv_t5_is_valid():
+        return True
+
+    logger.warning(
+        ".venv_t5 not found or incomplete at %s -- installing at runtime", _VENV_T5_DIR
+    )
+    os.makedirs(_VENV_T5_DIR, exist_ok = True)
+    for pkg in _VENV_T5_PACKAGES:
+        if not _install_to_venv_t5(pkg):
             return False
     logger.info("Installed transformers 5.x to %s", _VENV_T5_DIR)
     return True

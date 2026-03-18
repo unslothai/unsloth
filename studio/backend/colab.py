@@ -7,7 +7,25 @@ Uses Colab's built-in proxy - no external tunneling needed!
 """
 
 from pathlib import Path
+import site
 import sys
+
+
+def _bootstrap_studio_venv() -> None:
+    """Expose the Studio venv's site-packages to the current interpreter.
+
+    On Colab, notebook cells run outside the venv subshell. Instead of
+    installing the full stack into system Python, we add the venv's
+    site-packages so that packages like structlog, fastapi, etc. are
+    importable from notebook cells.
+    """
+    venv_lib = Path.home() / ".unsloth" / "studio" / ".venv" / "lib"
+    for sp in venv_lib.glob("python*/site-packages"):
+        if str(sp) not in sys.path:
+            site.addsitedir(str(sp))
+
+
+_bootstrap_studio_venv()
 
 # Add backend to path early so local modules like loggers can be imported
 backend_path = str(Path(__file__).parent)

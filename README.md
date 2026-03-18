@@ -16,7 +16,8 @@ Run and train AI models with a unified local interface.
   <a href="https://unsloth.ai/docs">Documentation</a> •
   <a href="https://discord.com/invite/unsloth">Discord</a>
 </p>
-<img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;">
+ <a href="https://unsloth.ai/docs/new/studio">
+<img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
 Unsloth Studio lets you run and train models for text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) and more. Available on Windows, Linux and macOS.
 ## ⭐ Features
@@ -43,24 +44,27 @@ Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/d
 Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 
 * **CPU:** Supported for **chat inference only**
-* **NVIDIA GPUs:** Training works on RTX 30/40/50, Blackwell, DGX Spark, DGX Station and more
+* **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Currently supports chat only; **MLX training** is coming very soon
+* **AMD:** Chat works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is coming soon.
+* **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### Windows, MacOS Linux or WSL:
+#### Windows, MacOS, Linux or WSL:
 ```
-git clone https://github.com/unslothai/unsloth.git
-cd unsloth
-pip install -e .
+pip install --upgrade pip && pip install uv
+uv pip install unsloth --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
-#### Git from source
+
+You can also install directly from source:
 ```
-git clone https://github.com/unslothai/unsloth.git
+pip install --upgrade pip && pip install uv
+git clone --filter=blob:none https://github.com/unslothai/unsloth.git
 cd unsloth
-pip install -e .
+uv pip install -e . --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
@@ -68,13 +72,14 @@ unsloth studio -H 0.0.0.0 -p 8888
 ### Unsloth Core (code-based)
 #### Windows, Linux, WSL
 ```bash
-pip install unsloth
+pip install --upgrade pip && pip install uv
+uv pip install unsloth --torch-backend=auto
 ```
 For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
 You can use the same Docker image as Unsloth Studio.
 
 #### AMD, Intel
-For RTX 50x, B200, 6000 GPUs: `pip install unsloth`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
+For RTX 50x, B200, 6000 GPUs: `uv pip install unsloth --torch-backend=auto`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/get-started/install/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
 ## ✨ Free Notebooks
@@ -131,6 +136,11 @@ You can cite the Unsloth repo as follows:
 }
 ```
 If you trained a model with 🦥Unsloth, you can use this cool sticker!   <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
+
+### License
+Unsloth uses a dual-licensing model of Apache 2.0 and AGPL-3.0. The core Unsloth package remains licensed under **[Apache 2.0](https://github.com/unslothai/unsloth?tab=Apache-2.0-1-ov-file)**, while certain optional components, such as the Unsloth Studio UI are licensed under **[AGPL-3.0](https://github.com/unslothai/unsloth?tab=AGPL-3.0-2-ov-file)**.
+
+This structure helps support ongoing Unsloth development while keeping the project open source and enabling the broader ecosystem to continue growing.
 
 ### Thank You to
 - The [llama.cpp library](https://github.com/ggml-org/llama.cpp) that lets users run and save models with Unsloth
