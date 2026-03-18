@@ -109,13 +109,12 @@ unsloth studio reset-password
 unsloth ui -p 8000
 ```
 
-## Config File Format
+## References
 
-- `assets/lora-text-train.yaml` — LoRA text fine-tuning (most common)
-- `assets/full-finetune.yaml` — full fine-tuning (no LoRA, more VRAM)
-- `assets/vision-lora-train.yaml` — vision model LoRA
-
-See `references/config-reference.md` for every field with type, default, and description.
+- `references/config-reference.md` — every config field with type, default, and description
+- `assets/lora-text-train.yaml` — copy-paste config template for LoRA text fine-tuning (most common)
+- `assets/full-finetune.yaml` — copy-paste config template for full fine-tuning (no LoRA, more VRAM)
+- `assets/vision-lora-train.yaml` — copy-paste config template for vision model LoRA
 
 ## Key Gotchas
 
