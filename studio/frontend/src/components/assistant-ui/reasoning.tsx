@@ -19,10 +19,11 @@ import {
   useAuiState,
   useScrollLock,
 } from "@assistant-ui/react";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Idea01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon, CheckIcon } from "lucide-react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -263,6 +264,45 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
 
+const COPY_RESET_MS = 2000;
+
+function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+  const [copied, setCopied] = useState(false);
+  const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const reasoningText = useAuiState(({ message }) => {
+    return message.parts
+      .slice(startIndex, endIndex + 1)
+      .filter((p) => p.type === "reasoning")
+      .map((p) => ("text" in p ? (p as { text: string }).text : ""))
+      .join("\n");
+  });
+
+  const handleCopy = useCallback(() => {
+    if (copyToClipboard(reasoningText)) {
+      setCopied(true);
+      if (resetRef.current) clearTimeout(resetRef.current);
+      resetRef.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
+    }
+  }, [reasoningText]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
+      aria-label="Copy reasoning"
+    >
+      {copied ? (
+        <CheckIcon className="size-3" />
+      ) : (
+        <CopyIcon className="size-3" />
+      )}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 const ReasoningGroupImpl: ReasoningGroupComponent = ({
   children,
   startIndex,
@@ -328,10 +368,15 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <ReasoningTrigger
-        active={isReasoningStreaming}
-        duration={duration || persistedDuration}
-      />
+      <div className="flex items-center justify-between">
+        <ReasoningTrigger
+          active={isReasoningStreaming}
+          duration={duration || persistedDuration}
+        />
+        {isOpen && !isReasoningStreaming && (
+          <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
+        )}
+      </div>
       <ReasoningContent
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}

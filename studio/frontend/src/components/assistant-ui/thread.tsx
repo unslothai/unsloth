@@ -10,6 +10,7 @@ import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { ToolOutputsGroup } from "@/components/assistant-ui/tool-outputs";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
@@ -503,6 +504,7 @@ const AssistantMessage: FC = () => {
             tools: { Fallback: ToolFallback },
           }}
         />
+        <ToolOutputsGroup />
         <MessageError />
       </div>
 

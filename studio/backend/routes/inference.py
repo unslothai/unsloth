@@ -1093,6 +1093,10 @@ async def openai_chat_completions(
                             yield f"data: {status_data}\n\n"
                             continue
 
+                        if event["type"] in ("tool_start", "tool_end"):
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
                         # "content" type -- cumulative text
                         cumulative = event.get("text", "")
                         new_text = cumulative[len(prev_text) :]

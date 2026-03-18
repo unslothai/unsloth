@@ -22,6 +22,21 @@ _EXEC_TIMEOUT = 300  # 5 minutes
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
 
+# Persistent working directory shared across tool calls within the server
+# lifetime so files written by one call are visible to the next.
+# Uses ~/studio_sandbox/ so files are accessible to the user.
+_persistent_workdir: str | None = None
+
+def _get_workdir() -> str:
+    """Return (and lazily create) a persistent working directory for tool execution."""
+    global _persistent_workdir
+    if _persistent_workdir is None or not os.path.isdir(_persistent_workdir):
+        home = os.path.expanduser("~")
+        workdir = os.path.join(home, "studio_sandbox")
+        os.makedirs(workdir, exist_ok=True)
+        _persistent_workdir = workdir
+    return _persistent_workdir
+
 
 WEB_SEARCH_TOOL = {
     "type": "function",
@@ -168,7 +183,7 @@ def _python_exec(code: str, cancel_event = None) -> str:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            cwd = tempfile.gettempdir(),
+            cwd = _get_workdir(),
         )
 
         # Spawn cancel watcher if we have a cancel event
@@ -215,35 +230,35 @@ def _bash_exec(command: str, cancel_event = None) -> str:
         return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            proc = subprocess.Popen(
-                ["bash", "-c", command],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                text = True,
-                cwd = tmpdir,
+        workdir = _get_workdir()
+        proc = subprocess.Popen(
+            ["bash", "-c", command],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            cwd = workdir,
+        )
+
+        if cancel_event is not None:
+            watcher = threading.Thread(
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
+            watcher.start()
 
-            if cancel_event is not None:
-                watcher = threading.Thread(
-                    target = _cancel_watcher, args = (proc, cancel_event), daemon = True
-                )
-                watcher.start()
+        try:
+            output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return _truncate("Execution timed out after 5 minutes.")
 
-            try:
-                output, _ = proc.communicate(timeout = _EXEC_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                return _truncate("Execution timed out after 5 minutes.")
+        if cancel_event is not None and cancel_event.is_set():
+            return "Execution cancelled."
 
-            if cancel_event is not None and cancel_event.is_set():
-                return "Execution cancelled."
-
-            result = output or ""
-            if proc.returncode != 0:
-                result = f"Exit code {proc.returncode}:\n{result}"
-            return _truncate(result) if result.strip() else "(no output)"
+        result = output or ""
+        if proc.returncode != 0:
+            result = f"Exit code {proc.returncode}:\n{result}"
+        return _truncate(result) if result.strip() else "(no output)"
 
     except Exception as e:
         return f"Execution error: {e}"

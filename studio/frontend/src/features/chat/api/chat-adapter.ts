@@ -23,6 +23,13 @@ import {
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
+export interface ToolOutput {
+  toolName: string;
+  toolCallId: string;
+  input: Record<string, unknown>;
+  result: string;
+}
+
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
@@ -502,6 +509,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
+      const pendingTools = new Map<string, Partial<ToolOutput>>();
+      const toolOutputs: ToolOutput[] = [];
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -542,6 +551,32 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             continue;
           }
 
+          // Accumulate tool start/end events for the tool outputs panel
+          const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+          if (toolEvent !== undefined) {
+            if (toolEvent.type === "tool_start") {
+              const key = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+              pendingTools.set(key, {
+                toolName: toolEvent.tool_name as string,
+                toolCallId: key,
+                input: toolEvent.arguments as Record<string, unknown>,
+              });
+            } else if (toolEvent.type === "tool_end") {
+              const key = (toolEvent.tool_call_id as string) || [...pendingTools.keys()].pop() || "";
+              const pending = pendingTools.get(key);
+              if (pending) {
+                toolOutputs.push({
+                  toolName: pending.toolName ?? (toolEvent.tool_name as string),
+                  toolCallId: key,
+                  input: pending.input ?? {},
+                  result: toolEvent.result as string,
+                });
+                pendingTools.delete(key);
+              }
+            }
+            continue;
+          }
+
           totalChunks += 1;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (!delta) {
@@ -573,7 +608,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   totalChunks,
                   firstTokenTime,
                 ),
-                custom: { reasoningDuration },
+                custom: { reasoningDuration, toolOutputs: toolOutputs.length > 0 ? [...toolOutputs] : undefined },
               },
             };
           }
@@ -588,7 +623,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               Date.now() - streamStartTime,
               estimateTokenCount(cumulativeText),
             ),
-            custom: { reasoningDuration },
+            custom: { reasoningDuration, toolOutputs: toolOutputs.length > 0 ? [...toolOutputs] : undefined },
           },
         };
       } catch (err) {

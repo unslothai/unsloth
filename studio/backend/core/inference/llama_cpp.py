@@ -1173,50 +1173,109 @@ class LlamaCppBackend:
         Handles formats like:
           <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
           <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
-        Closing </tool_call> tag is optional (models sometimes omit it).
+        Closing tags (</tool_call>, </function>, </parameter>) are all optional
+        since models frequently omit them.
         """
         import re
 
         tool_calls = []
-        # Pattern 1: JSON inside <tool_call> tags (closing tag optional)
-        for match in re.finditer(
-            r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>)?", content, re.DOTALL
-        ):
-            try:
-                obj = json.loads(match.group(1))
-                tc = {
-                    "id": f"call_{len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": obj.get("name", ""),
-                        "arguments": obj.get("arguments", {}),
-                    },
-                }
-                if isinstance(tc["function"]["arguments"], dict):
-                    tc["function"]["arguments"] = json.dumps(
-                        tc["function"]["arguments"]
-                    )
-                tool_calls.append(tc)
-            except (json.JSONDecodeError, ValueError):
-                pass
+
+        # Pattern 1: JSON inside <tool_call> tags.
+        # Use balanced-brace extraction that skips braces inside JSON strings.
+        for m in re.finditer(r"<tool_call>\s*\{", content):
+            brace_start = m.end() - 1  # position of the opening {
+            depth, i = 0, brace_start
+            in_string = False
+            while i < len(content):
+                ch = content[i]
+                if in_string:
+                    if ch == "\\" and i + 1 < len(content):
+                        i += 2  # skip escaped character
+                        continue
+                    if ch == '"':
+                        in_string = False
+                elif ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            if depth == 0:
+                json_str = content[brace_start : i + 1]
+                try:
+                    obj = json.loads(json_str)
+                    tc = {
+                        "id": f"call_{len(tool_calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": obj.get("name", ""),
+                            "arguments": obj.get("arguments", {}),
+                        },
+                    }
+                    if isinstance(tc["function"]["arguments"], dict):
+                        tc["function"]["arguments"] = json.dumps(
+                            tc["function"]["arguments"]
+                        )
+                    tool_calls.append(tc)
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
         # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
-        # Closing </tool_call> optional
+        # All closing tags optional -- models frequently omit </parameter>,
+        # </function>, and/or </tool_call>.
         if not tool_calls:
-            for match in re.finditer(
-                r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*(?:</tool_call>)?",
-                content,
-                re.DOTALL,
-            ):
-                func_name = match.group(1)
-                params_text = match.group(2)
+            # Step 1: Find all <function=name> positions and extract their bodies.
+            # Body boundary: use only </tool_call> or next <function= as hard
+            # boundaries.  We avoid using </function> as a boundary because
+            # code parameter values can contain that literal string.
+            # After extracting, we trim a trailing </function> if present.
+            func_starts = list(
+                re.finditer(r"<function=(\w+)>\s*", content)
+            )
+            for idx, fm in enumerate(func_starts):
+                func_name = fm.group(1)
+                body_start = fm.end()
+                # Hard boundaries: next <function= tag or </tool_call>
+                next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+                end_tag = re.search(r"</tool_call>", content[body_start:])
+                if end_tag:
+                    body_end = body_start + end_tag.start()
+                else:
+                    body_end = len(content)
+                body_end = min(body_end, next_func)
+                body = content[body_start:body_end]
+                # Trim trailing </function> if present (it's the real closing tag)
+                body = re.sub(r"\s*</function>\s*$", "", body)
+
+                # Step 2: Extract parameters from body.
+                # For single-parameter functions (the common case: code, command,
+                # query), use body end as the only boundary to avoid false matches
+                # on </parameter> inside code strings.
                 arguments = {}
-                for param_match in re.finditer(
-                    r"<parameter=(\w+)>\s*(.*?)\s*</parameter>",
-                    params_text,
-                    re.DOTALL,
-                ):
-                    arguments[param_match.group(1)] = param_match.group(2)
+                param_starts = list(
+                    re.finditer(r"<parameter=(\w+)>\s*", body)
+                )
+                if len(param_starts) == 1:
+                    # Single parameter: value is everything from after the tag
+                    # to end of body, trimming any trailing </parameter>.
+                    pm = param_starts[0]
+                    val = body[pm.end():]
+                    val = re.sub(r"\s*</parameter>\s*$", "", val)
+                    arguments[pm.group(1)] = val.strip()
+                else:
+                    for pidx, pm in enumerate(param_starts):
+                        param_name = pm.group(1)
+                        val_start = pm.end()
+                        # Value ends at next <parameter= or end of body
+                        next_param = param_starts[pidx + 1].start() if pidx + 1 < len(param_starts) else len(body)
+                        val = body[val_start:next_param]
+                        # Trim trailing </parameter> if present
+                        val = re.sub(r"\s*</parameter>\s*$", "", val)
+                        arguments[param_name] = val.strip()
+
                 tc = {
                     "id": f"call_{len(tool_calls)}",
                     "type": "function",
@@ -1533,16 +1592,43 @@ class LlamaCppBackend:
             tool_calls = message.get("tool_calls")
 
             # Fallback: detect tool calls embedded as XML/text in content
-            # Some models output <tool_call> XML instead of structured tool_calls
+            # Some models output <tool_call> XML instead of structured tool_calls,
+            # or bare <function=...> tags without <tool_call> wrapper.
             content_text = message.get("content", "") or ""
-            if not tool_calls and "<tool_call>" in content_text:
+            if not tool_calls and (
+                "<tool_call>" in content_text or "<function=" in content_text
+            ):
                 tool_calls = self._parse_tool_calls_from_text(content_text)
                 if tool_calls:
-                    # Strip the tool call markup from content
+                    # Strip the tool call markup from content.
+                    # Use greedy match within <tool_call> blocks since they
+                    # can contain arbitrary content including code.
                     import re
 
+                    # Strip <tool_call>...</tool_call> blocks (greedy inside)
                     content_text = re.sub(
-                        r"<tool_call>.*?(?:</tool_call>|$)",
+                        r"<tool_call>.*?</tool_call>",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip unterminated <tool_call>... to end
+                    content_text = re.sub(
+                        r"<tool_call>.*$",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip bare <function=...>...</function> blocks
+                    content_text = re.sub(
+                        r"<function=\w+>.*?</function>",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip unterminated bare <function=...> to end
+                    content_text = re.sub(
+                        r"<function=\w+>.*$",
                         "",
                         content_text,
                         flags = re.DOTALL,
@@ -1596,10 +1682,26 @@ class LlamaCppBackend:
                         status_text = f"Calling: {tool_name}"
                     yield {"type": "status", "text": status_text}
 
+                    # Emit tool_start so the frontend can record inputs
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "arguments": arguments,
+                    }
+
                     # Execute the tool
                     result = execute_tool(
                         tool_name, arguments, cancel_event = cancel_event
                     )
+
+                    # Emit tool_end so the frontend can record outputs
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "result": result,
+                    }
 
                     # Append tool result to conversation
                     tool_msg = {
@@ -1651,6 +1753,18 @@ class LlamaCppBackend:
         if stop:
             stream_payload["stop"] = stop
 
+        import re as _re_final
+        _TOOL_CALL_PATTERNS = [
+            _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
+            _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
+            _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
+            _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
+        ]
+        def _strip_tool_markup(text: str) -> str:
+            for pat in _TOOL_CALL_PATTERNS:
+                text = pat.sub("", text)
+            return text.strip()
+
         cumulative = ""
         in_thinking = False
         has_content_tokens = False
@@ -1683,7 +1797,7 @@ class LlamaCppBackend:
                                 if in_thinking:
                                     if has_content_tokens:
                                         cumulative += "</think>"
-                                        yield {"type": "content", "text": cumulative}
+                                        yield {"type": "content", "text": _strip_tool_markup(cumulative)}
                                     else:
                                         cumulative = reasoning_text
                                         yield {"type": "content", "text": cumulative}
@@ -1713,7 +1827,8 @@ class LlamaCppBackend:
                                             cumulative += "</think>"
                                             in_thinking = False
                                         cumulative += token
-                                        yield {"type": "content", "text": cumulative}
+                                        cleaned = _strip_tool_markup(cumulative)
+                                        yield {"type": "content", "text": cleaned}
                             except json.JSONDecodeError:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
