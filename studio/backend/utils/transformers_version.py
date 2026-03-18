@@ -221,6 +221,7 @@ _VENV_T5_PACKAGES = (
     f"transformers=={TRANSFORMERS_5_VERSION}",
     "huggingface_hub==1.7.1",
     "hf_xet==1.4.2",
+    "tiktoken",
 )
 
 

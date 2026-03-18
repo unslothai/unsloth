@@ -1066,6 +1066,13 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4
         exit 1
     }
 }
+# tiktoken is needed by Qwen-family tokenizers -- install with deps since
+# regex/requests may be missing on Windows
+$output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[WARN] Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" -ForegroundColor Yellow
+}
+}
 $ErrorActionPreference = $prevEAP_t5
 Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
 

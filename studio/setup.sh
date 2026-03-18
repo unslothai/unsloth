@@ -296,6 +296,9 @@ mkdir -p "$VENV_T5_DIR"
 run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
 run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
 run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
+# tiktoken is needed by Qwen-family tokenizers. Install with deps since
+# regex/requests may be missing on Windows.
+run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
 echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
 # ── 7. WSL: pre-install GGUF build dependencies ──
