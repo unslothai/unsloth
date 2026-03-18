@@ -28,9 +28,7 @@ unsloth studio setup               # one-time runtime setup (~/.unsloth/studio/.
 ## All CLI Commands
 
 ```bash
-# ══════════════════════════════════════════════════════════════════════════════
-# TRAINING
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ TRAINING ═══
 
 # Config file approach (RECOMMENDED — handles lists, avoids shell quoting)
 unsloth train --config config.yaml
@@ -82,9 +80,7 @@ unsloth train \
 #   --enable-tensorboard / --no-enable-tensorboard
 #   --tensorboard-dir "runs"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# INFERENCE
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ INFERENCE ═══
 
 # Standard inference
 unsloth inference "unsloth/Qwen3-0.6B" "What is AI?"
@@ -111,9 +107,7 @@ unsloth inference "unsloth/Qwen3-0.6B" "Explain LoRA" \
   --max-seq-length 2048 \
   --load-in-4bit
 
-# ══════════════════════════════════════════════════════════════════════════════
-# EXPORT
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ EXPORT ═══
 
 # List available checkpoints
 unsloth list-checkpoints --outputs-dir ./outputs
@@ -136,9 +130,7 @@ unsloth export ./outputs/checkpoint-100 ./exported \
 #   --max-seq-length 2048
 #   --load-in-4bit / --no-load-in-4bit
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STUDIO SERVER
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ STUDIO SERVER ═══
 
 # one-time environment setup
 unsloth studio setup
