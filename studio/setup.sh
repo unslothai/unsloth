@@ -313,13 +313,16 @@ rm -rf "$LLAMA_CPP_DIR"
             NVCC_PATH=""
             if command -v nvcc &>/dev/null; then
                 NVCC_PATH="$(command -v nvcc)"
+                GPU_BACKEND="cuda"
             elif [ -x /usr/local/cuda/bin/nvcc ]; then
                 NVCC_PATH="/usr/local/cuda/bin/nvcc"
                 export PATH="/usr/local/cuda/bin:$PATH"
+                GPU_BACKEND="cuda"
             elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
                 # Pick the newest cuda-XX.X directory
                 NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
                 export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                GPU_BACKEND="cuda"
             fi
 
             # Check for ROCm (AMD)
