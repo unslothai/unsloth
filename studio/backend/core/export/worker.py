@@ -56,39 +56,32 @@ def _activate_transformers_version(model_name: str) -> None:
             import subprocess as sp
 
             os.makedirs(venv_t5, exist_ok = True)
-            r1 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "transformers==5.3.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
-            )
-            r2 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "huggingface_hub==1.3.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
-            )
-            if r1.returncode != 0 or r2.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to install transformers 5.x into {venv_t5}. "
-                    f"pip returncode: transformers={r1.returncode}, huggingface_hub={r2.returncode}"
+            _t5_packages = [
+                "transformers==5.3.0",
+                "huggingface_hub==1.3.0",
+                "sentencepiece>=0.2.0",
+                "tiktoken",
+            ]
+            for _pkg in _t5_packages:
+                _r = sp.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--target",
+                        venv_t5,
+                        "--no-deps",
+                        _pkg,
+                    ],
+                    stdout = sp.PIPE,
+                    stderr = sp.STDOUT,
                 )
+                if _r.returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to install {_pkg} into {venv_t5}. "
+                        f"pip returncode: {_r.returncode}"
+                    )
             sys.path.insert(0, venv_t5)
         # Propagate to child subprocesses (e.g. GGUF converter)
         _pp = os.environ.get("PYTHONPATH", "")

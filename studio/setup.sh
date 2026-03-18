@@ -254,6 +254,9 @@ else
     mkdir -p "$VENV_T5_DIR"
     run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
     run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
+    # Tokenizer backends — required by AutoTokenizer for many model families
+    run_quiet "pip install sentencepiece for t5" pip install --target "$VENV_T5_DIR" --no-deps "sentencepiece>=0.2.0"
+    run_quiet "pip install tiktoken for t5" pip install --target "$VENV_T5_DIR" --no-deps "tiktoken"
     echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
     # ── 7. WSL: pre-install GGUF build dependencies ──

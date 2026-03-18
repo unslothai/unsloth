@@ -188,11 +188,20 @@ class UnslothTrainer:
         else:
             from transformers import AutoTokenizer
 
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
-            )
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    model_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                )
+            except ValueError as exc:
+                if "sentencepiece" in str(exc) or "tiktoken" in str(exc):
+                    raise ValueError(
+                        f"Tokenizer for '{model_name}' requires sentencepiece or tiktoken. "
+                        f"Please run: pip install sentencepiece tiktoken\n"
+                        f"Original error: {exc}"
+                    ) from exc
+                raise
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
 

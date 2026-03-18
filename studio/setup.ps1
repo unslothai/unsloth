@@ -918,6 +918,19 @@ if ($LASTEXITCODE -ne 0) {
     $ErrorActionPreference = $prevEAP_t5
     exit 1
 }
+# Tokenizer backends — required by AutoTokenizer for many model families
+pip install --target $VenvT5Dir --no-deps "sentencepiece>=0.2.0" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Could not install sentencepiece into .venv_t5/" -ForegroundColor Red
+    $ErrorActionPreference = $prevEAP_t5
+    exit 1
+}
+pip install --target $VenvT5Dir --no-deps "tiktoken" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Could not install tiktoken into .venv_t5/" -ForegroundColor Red
+    $ErrorActionPreference = $prevEAP_t5
+    exit 1
+}
 $ErrorActionPreference = $prevEAP_t5
 Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
 
