@@ -444,12 +444,16 @@ def run_training_process(
         _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
         _tqdm_thread.start()
 
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        use_lora = training_type == "LoRA/QLoRA"
+
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
             model_name = model_name,
             max_seq_length = config["max_seq_length"],
             load_in_4bit = config["load_in_4bit"],
+            full_finetuning = not use_lora,
             hf_token = hf_token,
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
@@ -473,8 +477,6 @@ def run_training_process(
             return
 
         # ── 4d. Prepare model (LoRA or full finetuning) ──
-        training_type = config.get("training_type", "LoRA/QLoRA")
-        use_lora = training_type == "LoRA/QLoRA"
         if use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
