@@ -37,6 +37,7 @@ class _ShortTimeoutStream(httpx.SyncByteStream):
     restoring the fast cancel-checking that _iter_text_cancellable
     relies on.
     """
+
     def __init__(self, inner: httpx.SyncByteStream, timeout: float):
         self._inner = inner
         self._timeout = timeout
@@ -1445,7 +1446,6 @@ class LlamaCppBackend:
             raise
         finally:
             _cancel_closed.set()
-
 
     def generate_chat_completion(
         self,
