@@ -100,13 +100,18 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
+    AutoModelForSeq2SeqLM,
     BitsAndBytesConfig,
     AutoConfig,
 )
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
+from peft import (
+    PeftModelForCausalLM,
+    PeftModelForSequenceClassification,
+    PeftModelForSeq2SeqLM,
+)
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 import types
@@ -2803,8 +2808,13 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM) or isinstance(
-            model, PeftModelForSequenceClassification
+        if isinstance(
+            model,
+            (
+                PeftModelForCausalLM,
+                PeftModelForSequenceClassification,
+                PeftModelForSeq2SeqLM,
+            ),
         ):
             # Check if exactly the same and then pass through!
             assert hasattr(model, "peft_config")
@@ -3062,8 +3072,14 @@ class FastLlamaModel:
                     "Unsloth: Currently fast inference does not work with using biases for LoRA."
                 )
 
-        # Does not get lora yet, so get name from model, not base model
-        is_classification = "Classification" in str(type(model))
+        # Does not get lora yet, so get name from model, not base model.
+        model_type = type(model)
+        if model_type in AutoModelForSeq2SeqLM._model_mapping.values():
+            task_type = TaskType.SEQ_2_SEQ_LM
+        elif model_type in AutoModelForSequenceClassification._model_mapping.values():
+            task_type = TaskType.SEQ_CLS
+        else:
+            task_type = TaskType.CAUSAL_LM
 
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
@@ -3075,7 +3091,7 @@ class FastLlamaModel:
             target_modules = final_modules,
             lora_dropout = lora_dropout,
             bias = bias,
-            task_type = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
+            task_type = task_type,
             layers_to_transform = layers_to_transform,
             init_lora_weights = init_lora_weights,
             loftq_config = loftq_config,
@@ -3237,8 +3253,13 @@ class FastLlamaModel:
                 model = model,
                 use_gradient_checkpointing = use_gradient_checkpointing,
             )
-        if not isinstance(model, PeftModelForCausalLM) and not isinstance(
-            model, PeftModelForSequenceClassification
+        if not isinstance(
+            model,
+            (
+                PeftModelForCausalLM,
+                PeftModelForSequenceClassification,
+                PeftModelForSeq2SeqLM,
+            ),
         ):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
