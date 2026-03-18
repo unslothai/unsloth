@@ -4,7 +4,7 @@ tomli-w
 
 # ExecuTorch dependencies
 ruamel.yaml
-coremltools
+# coremltools                    # 10.2 MB - Apple CoreML, no imports in unsloth/zoo/studio
 expecttest
 flatbuffers
 hydra-core
@@ -15,7 +15,7 @@ pytest<9.0
 pytest-json-report
 pytest-rerunfailures==15.1
 pytest-xdist
-# Also needed by sentence_transformers
+# Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt)
 scikit-learn==1.7.1
 
 # Additional extras
@@ -26,8 +26,8 @@ omegaconf
 einx
 pyloudnorm
 openai-whisper
-uroman
-MeCab
+# uroman                         # 4.0 MB - romanization, no imports found
+# MeCab                          # 19.9 MB - Japanese tokenizer, no imports found
 loguru
 flatten_dict
 ffmpy
