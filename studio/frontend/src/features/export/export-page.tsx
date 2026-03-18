@@ -132,6 +132,13 @@ export function ExportPage() {
     setCheckpoint(null);
   }, [selectedModelIdx]);
 
+  // Auto-reset export method if incompatible with the selected model type
+  useEffect(() => {
+    if (!isAdapter && (exportMethod === "merged" || exportMethod === "lora")) {
+      setExportMethod(null);
+    }
+  }, [isAdapter, exportMethod]);
+
   const handleMethodChange = (method: ExportMethod) => {
     setExportMethod(method);
     if (method !== "gguf") {
@@ -465,7 +472,16 @@ export function ExportPage() {
                 </div>
               </div>
 
-              <MethodPicker value={exportMethod} onChange={handleMethodChange} />
+              <MethodPicker
+                value={exportMethod}
+                onChange={handleMethodChange}
+                disabledMethods={!isAdapter ? ["merged", "lora"] : []}
+                disabledReason={
+                  !isAdapter
+                    ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
+                    : undefined
+                }
+              />
 
               <AnimatePresence>
                 {exportMethod === "gguf" && (

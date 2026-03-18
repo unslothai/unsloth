@@ -1976,15 +1976,27 @@ def unsloth_save_pretrained_gguf(
         fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
     # Step 4: Save/merge model to 16-bit format
-    print(
-        f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...'
-    )
-    try:
-        # Call unsloth_generic_save directly (it's in the same file)
-        unsloth_generic_save(**arguments)
+    is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
-    except Exception as e:
-        raise RuntimeError(f"Failed to save/merge model: {e}")
+    if is_peft_model:
+        print(
+            f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...'
+        )
+        try:
+            # Call unsloth_generic_save directly (it's in the same file)
+            unsloth_generic_save(**arguments)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to save/merge model: {e}")
+    else:
+        # Non-PEFT model (already merged / full model) — save directly without merge
+        print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
+        try:
+            self.save_pretrained(save_directory)
+            if tokenizer is not None:
+                tokenizer.save_pretrained(save_directory)
+        except Exception as e:
+            raise RuntimeError(f"Failed to save model: {e}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
