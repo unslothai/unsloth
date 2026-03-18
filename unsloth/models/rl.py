@@ -103,6 +103,14 @@ def _maybe_prepare_vllm_for_resume(trainer):
     if llm is None:
         return
 
+    model_config = getattr(
+        getattr(getattr(llm, "llm_engine", None), "vllm_config", None),
+        "model_config",
+        None,
+    )
+    if not getattr(model_config, "enable_sleep_mode", False):
+        return
+
     llm.sleep(1)
 
     import gc
