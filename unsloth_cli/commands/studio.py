@@ -14,7 +14,7 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 STUDIO_HOME = Path.home() / ".unsloth" / "studio"
 
-# __file__ is cli/commands/studio.py — two parents up is the package root
+# __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
 # (either site-packages or the repo root for editable installs).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -33,7 +33,7 @@ def _find_run_py() -> Optional[Path]:
 
     No CWD dependency — works from any directory.
     Since studio/ is now a proper package (has __init__.py), it lives in
-    site-packages after pip install, right next to cli/.
+    site-packages after pip install, right next to unsloth_cli/.
     """
     # 1. Relative to __file__ (site-packages or editable repo root)
     run_py = _PACKAGE_ROOT / "studio" / "backend" / "run.py"
