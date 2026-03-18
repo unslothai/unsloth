@@ -53,7 +53,9 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 
 #### MacOS, Linux or WSL Setup (One time):
 ```bash
-pip install -U pip uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH" # To add uv to the path and make it available in the current session. Add this to your shell script (e.g. ~/.zshrc) for persistence
+# echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc (or ~/.bashrc depending on your shell)
 uv venv unsloth_studio
 source unsloth_studio/bin/activate
 uv pip install unsloth --torch-backend=auto
