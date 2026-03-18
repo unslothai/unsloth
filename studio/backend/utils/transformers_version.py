@@ -225,16 +225,37 @@ _VENV_T5_PACKAGES = (
 
 
 def _venv_t5_is_valid() -> bool:
-    """Return True if .venv_t5/ has all required packages installed."""
+    """Return True if .venv_t5/ has all required packages at the correct versions."""
     if not os.path.isdir(_VENV_T5_DIR) or not os.listdir(_VENV_T5_DIR):
         return False
-    # Check that the key package directories actually exist
+    # Check that the key package directories exist AND match the required version
     for pkg_spec in _VENV_T5_PACKAGES:
-        pkg_name = pkg_spec.split("==")[0].replace("-", "_")
+        pkg_name, pkg_version = pkg_spec.split("==")
+        pkg_name_norm = pkg_name.replace("-", "_")
+        # Check directory exists
         if not any(
             (Path(_VENV_T5_DIR) / d).is_dir()
-            for d in (pkg_name, pkg_name.replace("_", "-"))
+            for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
         ):
+            return False
+        # Check version via .dist-info metadata
+        dist_info_found = False
+        for di in Path(_VENV_T5_DIR).glob(f"{pkg_name_norm}-*.dist-info"):
+            metadata = di / "METADATA"
+            if metadata.is_file():
+                for line in metadata.read_text(errors="replace").splitlines():
+                    if line.startswith("Version:"):
+                        installed_ver = line.split(":", 1)[1].strip()
+                        if installed_ver != pkg_version:
+                            logger.info(
+                                ".venv_t5 has %s==%s but need %s",
+                                pkg_name, installed_ver, pkg_version,
+                            )
+                            return False
+                        dist_info_found = True
+                        break
+            break
+        if not dist_info_found:
             return False
     return True
 
@@ -253,6 +274,7 @@ def _install_to_venv_t5(pkg: str) -> bool:
                 "--target",
                 _VENV_T5_DIR,
                 "--no-deps",
+                "--upgrade",
                 pkg,
             ],
             stdout = subprocess.PIPE,
@@ -273,6 +295,7 @@ def _install_to_venv_t5(pkg: str) -> bool:
             "--target",
             _VENV_T5_DIR,
             "--no-deps",
+            "--upgrade",
             pkg,
         ],
         stdout = subprocess.PIPE,
