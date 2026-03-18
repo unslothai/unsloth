@@ -23,12 +23,10 @@ from .utils import (
     torch_gpu_device,
     is_cdna,
 )
-from transformers.models.llama.modeling_llama import logger
 from unsloth_zoo.utils import Version
 
 from unsloth_zoo.loss_utils import (
     patch_loss_functions as _patch_loss_functions,
-    post_patch_loss_function,
 )
 
 

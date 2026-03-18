@@ -1,6 +1,6 @@
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
 from transformers import DataCollatorForSeq2Seq, TrainingArguments
 from datasets import load_dataset
 import torch

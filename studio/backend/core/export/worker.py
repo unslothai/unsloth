@@ -17,7 +17,6 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
-import structlog
 from loggers import get_logger
 import os
 import sys

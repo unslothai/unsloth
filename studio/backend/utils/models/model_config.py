@@ -18,7 +18,6 @@ from utils.paths import (
     resolve_export_dir,
 )
 from utils.utils import without_hf_auth
-import structlog
 from loggers import get_logger
 import os
 import subprocess

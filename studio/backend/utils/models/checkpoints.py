@@ -6,7 +6,6 @@ Checkpoint scanning utilities for discovering training runs and their checkpoint
 """
 
 import json
-import structlog
 from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional, Tuple

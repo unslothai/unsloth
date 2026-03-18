@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from .llama import *
-from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -22,7 +21,6 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
-    SDPA,
 )
 from .gemma import (
     GemmaFixedRotaryEmbedding,
@@ -36,9 +34,6 @@ try:
         Gemma2DecoderLayer,
         Gemma2Model,
         Gemma2ForCausalLM,
-        Gemma2RotaryEmbedding,
-        apply_rotary_pos_emb,
-        repeat_kv,
     )
 except:
     transformers_version = Version(transformers_version)
@@ -65,7 +60,7 @@ except:
     Gemma2FlashAttention2 = Gemma2Attention
 
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
-    from flash_attn import flash_attn_func
+    pass
 
 
 # Logit softcapping

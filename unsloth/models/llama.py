@@ -26,7 +26,6 @@ from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
     is_bfloat16_supported,
-    get_quant_type,
 )
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..utils.packing import (
@@ -50,12 +49,9 @@ from unsloth_zoo.hf_utils import (
 )
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 from ..device_type import (
-    is_hip,
-    get_device_type,
     DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
 )
 
 transformers_version = Version(transformers_version)
@@ -97,7 +93,6 @@ except:
     LlamaFlashAttention2 = LlamaAttention
 
 from transformers import (
-    AutoTokenizer,
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
     BitsAndBytesConfig,
@@ -108,14 +103,16 @@ from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
 from ..save import patch_saving_functions
-import re, os, inspect, math, sys
+import re
+import os
+import inspect
 import types
 
 try:
-    from huggingface_hub.utils import get_token
+    pass
 except:
     # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    pass
 from triton import __version__ as triton_version
 
 HAS_XFORMERS = xformers is not None
@@ -2983,7 +2980,7 @@ class FastLlamaModel:
                 try:
                     assert module in accepted_modules
                     final_modules.append(module)
-                except AssertionError as e:
+                except AssertionError:
                     final_modules.append(module)
                     print(
                         "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"

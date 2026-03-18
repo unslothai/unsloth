@@ -75,7 +75,7 @@ class HideLoggingMessage(logging.Filter):
         self.text = text
 
     def filter(self, x):
-        return not (self.text in x.getMessage())
+        return self.text not in x.getMessage()
 
 
 class HidePrintMessage:
@@ -1310,7 +1310,7 @@ def disable_broken_wandb():
         return  # wandb not installed, nothing to do
 
     try:
-        import wandb
+        pass
     except Exception:
         # wandb is installed but broken - patch all checkers to skip it
         logger.info(

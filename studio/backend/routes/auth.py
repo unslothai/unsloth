@@ -18,7 +18,6 @@ from auth import storage, hashing
 from auth.authentication import (
     create_access_token,
     create_refresh_token,
-    get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
 )

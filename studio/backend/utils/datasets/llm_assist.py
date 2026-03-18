@@ -19,7 +19,6 @@ import os
 import re
 import textwrap
 import time
-from itertools import islice
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -105,7 +104,7 @@ def precache_helper_gguf():
     finally:
         try:
             enable_progress_bars()
-        except Exception as e:
+        except Exception:
             pass
 
 
