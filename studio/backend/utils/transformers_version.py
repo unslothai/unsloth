@@ -223,7 +223,11 @@ def _ensure_venv_t5_exists() -> bool:
 
     logger.warning(".venv_t5 not found at %s — installing at runtime", _VENV_T5_DIR)
     os.makedirs(_VENV_T5_DIR, exist_ok = True)
-    for pkg in (f"transformers=={TRANSFORMERS_5_VERSION}", "huggingface_hub==1.3.0", "tiktoken"):
+    for pkg in (
+        f"transformers=={TRANSFORMERS_5_VERSION}",
+        "huggingface_hub==1.3.0",
+        "tiktoken",
+    ):
         cmd = [
             sys.executable,
             "-m",
