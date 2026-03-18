@@ -251,13 +251,35 @@ Write-Host "+==============================================+" -ForegroundColor G
 # ==========================================================================
 
 # ============================================
-# 1a. GPU requirement check
+# 1a. GPU detection
 # ============================================
 $HasNvidiaSmi = $false
 try {
     nvidia-smi 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true }
 } catch {}
+# Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
+# Check the default install location and the Windows driver store.
+if (-not $HasNvidiaSmi) {
+    $nvSmiDefaults = @(
+        "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        "$env:SystemRoot\System32\nvidia-smi.exe"
+    )
+    foreach ($p in $nvSmiDefaults) {
+        if (Test-Path $p) {
+            try {
+                & $p 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $nvSmiDir = Split-Path $p -Parent
+                    $env:Path = "$nvSmiDir;$env:Path"
+                    $HasNvidiaSmi = $true
+                    Write-Host "   Found nvidia-smi at $nvSmiDir (added to PATH)" -ForegroundColor Gray
+                    break
+                }
+            } catch {}
+        }
+    }
+}
 if (-not $HasNvidiaSmi) {
     Write-Host ""
     Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
@@ -933,7 +955,11 @@ if ($HasNvidiaSmi) {
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
     Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
     pip install "triton-windows<3.7" 2>&1 | Out-Null
-    Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[WARN] Triton install failed -- torch.compile may not work" -ForegroundColor Yellow
+    } else {
+        Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+    }
 } else {
     Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
     pip install torch torchvision torchaudio
@@ -1038,7 +1064,24 @@ $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
 $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 
+# Check if existing llama-server matches current GPU mode. A CUDA-built binary
+# on a now-CPU-only machine (or vice versa) needs to be rebuilt.
+$NeedRebuild = $false
 if (Test-Path $LlamaServerBin) {
+    $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
+    if (Test-Path $CmakeCacheFile) {
+        $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+        if ($HasNvidiaSmi -and -not $cachedCuda) {
+            Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
+            $NeedRebuild = $true
+        } elseif (-not $HasNvidiaSmi -and $cachedCuda) {
+            Write-Host "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
+            $NeedRebuild = $true
+        }
+    }
+}
+
+if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     Write-Host ""
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
 } elseif (-not $HasCmakeForBuild) {
