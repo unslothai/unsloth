@@ -748,9 +748,39 @@ Write-Host ""
 # ==========================================================================
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
+$DistDir = Join-Path $FrontendDir "dist"
+# Skip build if dist/ exists and no tracked input is newer than dist/.
+# Checks src/, public/, package.json, config files -- not just src/.
+$NeedFrontendBuild = $true
 if ($IsPipInstall) {
+    $NeedFrontendBuild = $false
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
-} else {
+} elseif (Test-Path $DistDir) {
+    $DistTime = (Get-Item $DistDir).LastWriteTime
+    # Check src/ and public/ recursively using explicit paths
+    $TrackedDirs = @("src", "public") |
+        ForEach-Object { Join-Path $FrontendDir $_ } |
+        Where-Object { Test-Path $_ }
+    $NewerFile = $null
+    if ($TrackedDirs.Count -gt 0) {
+        $NewerFile = $TrackedDirs |
+            ForEach-Object { Get-ChildItem -Path $_ -Recurse -File -ErrorAction SilentlyContinue } |
+            Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
+    }
+    # Also check top-level config and entry files (package.json, vite.config.ts, index.html, etc.)
+    if (-not $NewerFile) {
+        $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '\.(json|ts|js|mjs|html)$' -and $_.LastWriteTime -gt $DistTime } |
+            Select-Object -First 1
+    }
+    if (-not $NewerFile) {
+        $NeedFrontendBuild = $false
+        Write-Host "[OK] Frontend already built and up to date -- skipping build" -ForegroundColor Green
+    } else {
+        Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
+    }
+}
+if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
     # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
@@ -758,9 +788,6 @@ if ($IsPipInstall) {
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    # Remove stale node_modules and package-lock.json to avoid version conflicts
-    if (Test-Path "node_modules") { Remove-Item -Recurse -Force "node_modules" }
-    if (Test-Path "package-lock.json") { Remove-Item -Force "package-lock.json" }
     npm install 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Pop-Location

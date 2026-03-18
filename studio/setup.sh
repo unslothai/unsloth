@@ -41,13 +41,27 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Only skip when BOTH conditions are true:
-#   1. We're inside site-packages (PyPI / pip install, not editable)
-#   2. dist/ already exists (pre-built in the wheel)
-# Otherwise always (re)build — handles upgrades, editable installs, and
-# pip-from-source where dist/ was never built.
-if [[ "$SCRIPT_DIR" == */site-packages/* ]] && [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    echo "✅ Frontend pre-built (PyPI) — skipping Node/npm check."
+# Skip if dist/ exists AND no tracked input is newer than dist/.
+# Checks top-level config/entry files and src/, public/ recursively.
+# This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
+# and upgrades/pulls (source newer than dist/ triggers rebuild).
+_NEED_FRONTEND_BUILD=true
+if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    # Check top-level config and entry files (package.json, vite.config.ts, index.html, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 \
+        \( -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.mjs" -o -name "*.html" \) \
+        -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+    # Check src/ and public/ recursively
+    if [ -z "$_changed" ]; then
+        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
+            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+    fi
+    if [ -z "$_changed" ]; then
+        _NEED_FRONTEND_BUILD=false
+    fi
+fi
+if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -146,12 +160,17 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
-cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end frontend dist check
+fi  # end frontend build check
+
+# ── oxc-validator runtime (always install, independent of frontend build) ──
+if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
+    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+    run_quiet "npm install (oxc validator runtime)" npm install
+    cd "$SCRIPT_DIR"
+fi
 
 # ── 6. Python venv + deps ──
 
