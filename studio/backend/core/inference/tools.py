@@ -96,13 +96,17 @@ TERMINAL_TOOL = {
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 
-def execute_tool(
-    name: str, arguments: dict, cancel_event = None, timeout: int | None = None
-) -> str:
-    """Execute a tool by name with the given arguments. Returns result as a string."""
-    effective_timeout = timeout if timeout is not None else _EXEC_TIMEOUT
+_TIMEOUT_UNSET = object()
+
+def execute_tool(name: str, arguments: dict, cancel_event = None, timeout: int | None = _TIMEOUT_UNSET) -> str:
+    """Execute a tool by name with the given arguments. Returns result as a string.
+
+    ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
+    unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
+    """
+    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
-        return _web_search(arguments.get("query", ""))
+        return _web_search(arguments.get("query", ""), timeout = effective_timeout)
     if name == "python":
         return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout)
     if name == "terminal":
@@ -110,14 +114,14 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
-def _web_search(query: str, max_results: int = 5) -> str:
+def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
     """Search the web using DuckDuckGo and return formatted results."""
     if not query.strip():
         return "No query provided."
     try:
         from ddgs import DDGS
 
-        results = DDGS().text(query, max_results = max_results)
+        results = DDGS(timeout = timeout).text(query, max_results = max_results)
         if not results:
             return "No results found."
         parts = []
