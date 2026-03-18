@@ -1672,42 +1672,45 @@ class LlamaCppBackend:
             ):
                 tool_calls = self._parse_tool_calls_from_text(content_text)
                 if tool_calls:
-                    # Strip the tool call markup from content.
-                    # Use greedy match within <tool_call> blocks since they
-                    # can contain arbitrary content including code.
-                    import re
-
-                    # Strip <tool_call>...</tool_call> blocks (greedy inside)
-                    content_text = re.sub(
-                        r"<tool_call>.*?</tool_call>",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    # Strip unterminated <tool_call>... to end
-                    content_text = re.sub(
-                        r"<tool_call>.*$",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    # Strip bare <function=...>...</function> blocks
-                    content_text = re.sub(
-                        r"<function=\w+>.*?</function>",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    # Strip unterminated bare <function=...> to end
-                    content_text = re.sub(
-                        r"<function=\w+>.*$",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    ).strip()
                     logger.info(
                         f"Parsed {len(tool_calls)} tool call(s) from content text"
                     )
+
+            # Always strip tool-call XML from content_text when any tool
+            # calls are present.  llama-server may return structured
+            # tool_calls AND also leave <tool_call> XML in the content
+            # field, which would leak into the chat UI and conversation.
+            if (
+                auto_heal_tool_calls
+                and tool_calls
+                and ("<tool_call>" in content_text or "<function=" in content_text)
+            ):
+                import re
+
+                content_text = re.sub(
+                    r"<tool_call>.*?</tool_call>",
+                    "",
+                    content_text,
+                    flags = re.DOTALL,
+                )
+                content_text = re.sub(
+                    r"<tool_call>.*$",
+                    "",
+                    content_text,
+                    flags = re.DOTALL,
+                )
+                content_text = re.sub(
+                    r"<function=\w+>.*?</function>",
+                    "",
+                    content_text,
+                    flags = re.DOTALL,
+                )
+                content_text = re.sub(
+                    r"<function=\w+>.*$",
+                    "",
+                    content_text,
+                    flags = re.DOTALL,
+                ).strip()
 
             if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
                 # Append the assistant message with tool_calls to conversation
@@ -1815,7 +1818,11 @@ class LlamaCppBackend:
         # Clear status
         yield {"type": "status", "text": ""}
 
-        # Final streaming pass with the full conversation context
+        # Final streaming pass with the full conversation context.
+        # Add stop sequences so the model cannot emit tool-call XML --
+        # the non-streaming loop above already handled all tool
+        # iterations.  If the model tries to call tools here it will
+        # simply stop, and we yield whatever text came before.
         stream_payload = {
             "messages": conversation,
             "stream": True,
@@ -1832,19 +1839,16 @@ class LlamaCppBackend:
             }
         if max_tokens is not None:
             stream_payload["max_tokens"] = max_tokens
-        if stop:
-            stream_payload["stop"] = stop
+        _stop = list(stop) if stop else []
+        if auto_heal_tool_calls:
+            _stop += ["<tool_call>", "<function="]
+        stream_payload["stop"] = _stop
 
         import re as _re_final
 
-        # Closed blocks only -- safe to strip mid-stream without shrinking later.
-        _TOOL_CLOSED_PATTERNS = [
+        _TOOL_PATTERNS = [
             _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
             _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
-        ]
-        # Open-ended patterns strip from an opening tag to end-of-string.
-        # Only applied on the final flush to avoid non-monotonic shrinking.
-        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
             _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
             _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
         ]
@@ -1852,8 +1856,7 @@ class LlamaCppBackend:
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
-            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
-            for pat in patterns:
+            for pat in _TOOL_PATTERNS:
                 text = pat.sub("", text)
             return text.strip() if final else text
 
