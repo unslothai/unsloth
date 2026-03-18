@@ -351,6 +351,11 @@ if (-not $HasCmake) {
         foreach ($d in $cmakeDefaults) {
             if (Test-Path (Join-Path $d "cmake.exe")) {
                 $env:Path = "$d;$env:Path"
+                # Persist to user PATH so Refresh-Environment does not drop it later
+                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+                if (-not $userPath -or $userPath -notlike "*$d*") {
+                    [Environment]::SetEnvironmentVariable('Path', "$d;$userPath", 'User')
+                }
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
                     Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
@@ -920,6 +925,10 @@ if ($HasNvidiaSmi) {
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
     Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
     pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch CUDA install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
     Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
@@ -928,6 +937,10 @@ if ($HasNvidiaSmi) {
 } else {
     Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
     pip install torch torchvision torchaudio
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Ordered heavy dependency installation — shared cross-platform script
@@ -1091,7 +1104,14 @@ if (Test-Path $LlamaServerBin) {
         }
     }
 
-    # -- Step B: cmake configure (CUDA + Unsloth flags) --
+    # -- Step B: cmake configure --
+    # Clean stale CMake cache to prevent previous CUDA settings from leaking
+    # into a CPU-only rebuild (or vice versa).
+    $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
+    if (Test-Path $CmakeCacheFile) {
+        Remove-Item -Recurse -Force $BuildDir
+    }
+
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake configure ---" -ForegroundColor Cyan
@@ -1120,33 +1140,35 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs += '-DLLAMA_CURL=OFF'
         }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
-        # CUDA flags (Unsloth-aligned) -- only if GPU available
+        # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
-        $CmakeArgs += '-DGGML_CUDA=ON'
-        $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-        $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-        $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
-        $CmakeArgs += '-DGGML_CUDA_FA_ALL_QUANTS=ON'
-        $CmakeArgs += '-DGGML_CUDA_F16=OFF'
-        $CmakeArgs += '-DGGML_CUDA_GRAPHS=OFF'
-        $CmakeArgs += '-DGGML_CUDA_FORCE_CUBLAS=OFF'
-        $CmakeArgs += '-DGGML_CUDA_PEER_MAX_BATCH_SIZE=8192'
-        if ($CudaArch) {
-            # Validate nvcc actually supports this architecture
-            if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
-            } else {
-                # GPU arch too new for this toolkit — fall back to highest supported.
-                # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
-                $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
-                if ($maxArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                    Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
-                    Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+            $CmakeArgs += '-DGGML_CUDA=ON'
+            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+            $CmakeArgs += '-DGGML_CUDA_FA_ALL_QUANTS=ON'
+            $CmakeArgs += '-DGGML_CUDA_F16=OFF'
+            $CmakeArgs += '-DGGML_CUDA_GRAPHS=OFF'
+            $CmakeArgs += '-DGGML_CUDA_FORCE_CUBLAS=OFF'
+            $CmakeArgs += '-DGGML_CUDA_PEER_MAX_BATCH_SIZE=8192'
+            if ($CudaArch) {
+                # Validate nvcc actually supports this architecture
+                if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                } else {
+                    # GPU arch too new for this toolkit -- fall back to highest supported.
+                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                    $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                    if ($maxArch) {
+                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                        Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
+                        Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+                    }
+                    # else: omit flag entirely, let cmake pick defaults
                 }
-                # else: omit flag entirely, let cmake pick defaults
             }
-        }
+        } else {
+            $CmakeArgs += '-DGGML_CUDA=OFF'
         }
 
         $cmakeOutput = cmake @CmakeArgs 2>&1 | Out-String
