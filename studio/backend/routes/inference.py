@@ -1028,7 +1028,7 @@ async def openai_chat_completions(
         if use_tools:
             from core.inference.tools import ALL_TOOLS
 
-            if payload.enabled_tools:
+            if payload.enabled_tools is not None:
                 tools_to_use = [
                     t
                     for t in ALL_TOOLS
