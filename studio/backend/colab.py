@@ -21,9 +21,10 @@ def _bootstrap_studio_venv() -> None:
     venv_lib = Path.home() / ".unsloth" / "studio" / ".venv" / "lib"
     if not venv_lib.exists():
         import warnings
+
         warnings.warn(
             f"Studio venv not found at {venv_lib.parent} -- run 'unsloth studio setup' first",
-            stacklevel=2,
+            stacklevel = 2,
         )
         return
     for sp in venv_lib.glob("python*/site-packages"):

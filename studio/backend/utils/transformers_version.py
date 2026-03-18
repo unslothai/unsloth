@@ -243,13 +243,15 @@ def _venv_t5_is_valid() -> bool:
         for di in Path(_VENV_T5_DIR).glob(f"{pkg_name_norm}-*.dist-info"):
             metadata = di / "METADATA"
             if metadata.is_file():
-                for line in metadata.read_text(errors="replace").splitlines():
+                for line in metadata.read_text(errors = "replace").splitlines():
                     if line.startswith("Version:"):
                         installed_ver = line.split(":", 1)[1].strip()
                         if installed_ver != pkg_version:
                             logger.info(
                                 ".venv_t5 has %s==%s but need %s",
-                                pkg_name, installed_ver, pkg_version,
+                                pkg_name,
+                                installed_ver,
+                                pkg_version,
                             )
                             return False
                         dist_info_found = True
