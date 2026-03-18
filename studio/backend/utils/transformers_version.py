@@ -245,10 +245,15 @@ def _install_to_venv_t5(pkg: str) -> bool:
     if shutil.which("uv"):
         result = subprocess.run(
             [
-                "uv", "pip", "install",
-                "--python", sys.executable,
-                "--target", _VENV_T5_DIR,
-                "--no-deps", pkg,
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                _VENV_T5_DIR,
+                "--no-deps",
+                pkg,
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -261,9 +266,14 @@ def _install_to_venv_t5(pkg: str) -> bool:
     # Fallback to pip
     result = subprocess.run(
         [
-            sys.executable, "-m", "pip", "install",
-            "--target", _VENV_T5_DIR,
-            "--no-deps", pkg,
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            _VENV_T5_DIR,
+            "--no-deps",
+            pkg,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
@@ -280,7 +290,9 @@ def _ensure_venv_t5_exists() -> bool:
     if _venv_t5_is_valid():
         return True
 
-    logger.warning(".venv_t5 not found or incomplete at %s -- installing at runtime", _VENV_T5_DIR)
+    logger.warning(
+        ".venv_t5 not found or incomplete at %s -- installing at runtime", _VENV_T5_DIR
+    )
     os.makedirs(_VENV_T5_DIR, exist_ok = True)
     for pkg in _VENV_T5_PACKAGES:
         if not _install_to_venv_t5(pkg):
