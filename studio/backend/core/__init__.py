@@ -10,6 +10,16 @@ like unsloth, transformers, or torch before the version activation
 code has a chance to run.
 """
 
+import sys
+from pathlib import Path
+
+# Ensure the backend directory is on sys.path so that bare "from utils.*"
+# imports used throughout the backend work when core is imported as a package
+# (e.g. from the CLI: "from studio.backend.core import ModelConfig").
+_backend_dir = str(Path(__file__).resolve().parent.parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
 __all__ = [
     # Inference
     "InferenceBackend",
