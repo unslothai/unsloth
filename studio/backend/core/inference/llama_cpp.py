@@ -1355,7 +1355,10 @@ class LlamaCppBackend:
             # prefill and streaming is handled by the watcher thread
             # which closes the response, unblocking any httpx read.
             prefill_timeout = httpx.Timeout(
-                connect = 30, read = 120.0, write = 10, pool = 10,
+                connect = 30,
+                read = 120.0,
+                write = 10,
+                pool = 10,
             )
             with client.stream(
                 "POST", url, json = payload, timeout = prefill_timeout
