@@ -75,6 +75,8 @@ export type RecipePayload = {
     // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_file_names?: string[];
     // biome-ignore lint/style/useNamingConvention: api schema
+    unstructured_file_sizes?: number[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_chunk_size?: string;
     // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_chunk_overlap?: string;

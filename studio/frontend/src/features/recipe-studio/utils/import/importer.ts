@@ -45,6 +45,7 @@ type UiInput = {
   local_file_name?: unknown;
   unstructured_file_ids?: unknown;
   unstructured_file_names?: unknown;
+  unstructured_file_sizes?: unknown;
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
   advanced_open_by_node?: unknown;
@@ -416,6 +417,9 @@ export function importRecipePayload(input: string): ImportResult {
   const uiUnstructuredFileNames: string[] = Array.isArray(ui?.unstructured_file_names)
     ? (ui.unstructured_file_names as string[]).filter((v): v is string => typeof v === "string")
     : [];
+  const uiUnstructuredFileSizes: number[] = Array.isArray(ui?.unstructured_file_sizes)
+    ? (ui.unstructured_file_sizes as number[]).filter((v): v is number => typeof v === "number")
+    : [];
   const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
@@ -457,6 +461,7 @@ export function importRecipePayload(input: string): ImportResult {
       local_file_name: uiLocalFileName,
       unstructuredFileIds: uiUnstructuredFileIds,
       unstructuredFileNames: uiUnstructuredFileNames,
+      unstructuredFileSizes: uiUnstructuredFileSizes,
       unstructured_chunk_size: uiUnstructuredChunkSize,
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
     });

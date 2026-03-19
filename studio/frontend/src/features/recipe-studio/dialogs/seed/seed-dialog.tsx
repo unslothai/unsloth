@@ -187,7 +187,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
       return config.unstructured_file_ids.map((id, i) => ({
         id,
         name: config.unstructured_file_names?.[i] ?? "Unknown",
-        size: 0,
+        size: config.unstructured_file_sizes?.[i] ?? 0,
         status: "ok" as const,
       }));
     }
@@ -197,11 +197,49 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
   const mode = config.seed_source_type ?? "hf";
   const previewEmpty = getPreviewEmptyStateCopy(mode);
 
+  const prevModeRef = useRef(mode);
   useEffect(() => {
+    const prevMode = prevModeRef.current;
+    prevModeRef.current = mode;
     setInspectError(null);
     setLocalFile(null);
-    setUnstructuredFiles([]);
-  }, [mode]);
+    // Only clear unstructured files when switching AWAY from unstructured mode
+    if (prevMode === "unstructured" && mode !== "unstructured") {
+      setUnstructuredFiles([]);
+    }
+    // Only clear unstructured files when switching INTO unstructured mode (fresh start)
+    if (prevMode !== "unstructured" && mode === "unstructured") {
+      // Restore from config if available
+      if (config.unstructured_file_ids?.length) {
+        setUnstructuredFiles(
+          config.unstructured_file_ids.map((id, i) => ({
+            id,
+            name: config.unstructured_file_names?.[i] ?? "Unknown",
+            size: config.unstructured_file_sizes?.[i] ?? 0,
+            status: "ok" as const,
+          })),
+        );
+      } else {
+        setUnstructuredFiles([]);
+      }
+    }
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync unstructured files from config when local state is empty
+  // (handles initial mount, recipe reload, dialog re-open)
+  useEffect(() => {
+    if (mode !== "unstructured") return;
+    if (unstructuredFiles.length > 0) return;
+    if (!config.unstructured_file_ids?.length) return;
+    setUnstructuredFiles(
+      config.unstructured_file_ids.map((id, i) => ({
+        id,
+        name: config.unstructured_file_names?.[i] ?? "Unknown",
+        size: config.unstructured_file_sizes?.[i] ?? 0,
+        status: "ok" as const,
+      })),
+    );
+  }); // Runs every render but bails early — ensures sync after any state reset
 
   useEffect(() => {
     setPreviewRows(config.seed_preview_rows ?? []);
@@ -271,6 +309,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           local_file_name: "",
           unstructured_file_ids: [],
           unstructured_file_names: [],
+          unstructured_file_sizes: [],
         });
         setPreviewRows(response.preview_rows ?? []);
         setLastLoadedKey(loadKey);
@@ -303,6 +342,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           local_file_name: localFile.name,
           unstructured_file_ids: [],
           unstructured_file_names: [],
+          unstructured_file_sizes: [],
         });
         setPreviewRows(response.preview_rows ?? []);
         setLastLoadedKey(loadKey);
@@ -341,6 +381,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
           seed_preview_rows: response.preview_rows,
           unstructured_file_ids: fileIds,
           unstructured_file_names: fileNames,
+          unstructured_file_sizes: unstructuredFiles
+            .filter((f) => f.status === "ok")
+            .map((f) => f.size),
         });
         setPreviewRows(response.preview_rows ?? []);
         setLastLoadedKey(loadKey);
@@ -378,6 +421,22 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     }
     void loadSeedMetadata({ silent: true });
   }, [getCurrentLoadKey, isInspecting, lastLoadedKey, loadSeedMetadata, open]);
+
+  // Auto-load when unstructured uploads finish (transition from uploading → done)
+  const wasUploadingRef = useRef(false);
+  useEffect(() => {
+    if (mode !== "unstructured") return;
+    const isUploading = unstructuredFiles.some((f) => f.status === "uploading");
+    if (isUploading) {
+      wasUploadingRef.current = true;
+    } else if (wasUploadingRef.current) {
+      wasUploadingRef.current = false;
+      const hasOk = unstructuredFiles.some((f) => f.status === "ok");
+      if (hasOk) {
+        void loadSeedMetadata({ silent: true });
+      }
+    }
+  }, [mode, unstructuredFiles, loadSeedMetadata]);
 
   const previewColumns = useMemo(() => {
     const loadedColumns = config.seed_columns ?? [];
@@ -519,7 +578,6 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               blockId={config.id}
               files={unstructuredFiles}
               onFilesChange={setUnstructuredFiles}
-              onAllUploaded={() => void loadSeedMetadata({ silent: true })}
               disabled={isInspecting}
             />
           )}

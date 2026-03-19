@@ -271,7 +271,10 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     if (seedSourceType === "hf" && !config.hf_repo_id.trim()) {
       errors.push("Choose a Hugging Face dataset.");
     }
-    if (!config.hf_path.trim()) {
+    const hasPath =
+      config.hf_path.trim() ||
+      (seedSourceType === "unstructured" && (config.resolved_paths?.length ?? 0) > 0);
+    if (!hasPath) {
       errors.push("Load the source-data preview first.");
     }
     if (

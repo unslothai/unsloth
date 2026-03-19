@@ -146,6 +146,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
       ui.local_file_name = "";
       ui.unstructured_file_ids = [];
       ui.unstructured_file_names = [];
+      ui.unstructured_file_sizes = [];
     }
   }
 
@@ -163,6 +164,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
       ui.local_file_name = "";
       ui.unstructured_file_ids = [];
       ui.unstructured_file_names = [];
+      ui.unstructured_file_sizes = [];
     }
   }
 

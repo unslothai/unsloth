@@ -21,7 +21,6 @@ type UnstructuredDropZoneProps = {
   blockId: string;
   files: FileEntry[];
   onFilesChange: (files: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => void;
-  onAllUploaded?: () => void;
   disabled?: boolean;
 };
 
@@ -40,7 +39,6 @@ export function UnstructuredDropZone({
   blockId,
   files,
   onFilesChange,
-  onAllUploaded,
   disabled,
 }: UnstructuredDropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -99,13 +97,8 @@ export function UnstructuredDropZone({
         onFilesChange((prev) => [...prev]);
       }
 
-      // Notify parent that all uploads are done
-      const hasSuccess = entries.some((e) => e.status === "ok");
-      if (hasSuccess && onAllUploaded) {
-        onAllUploaded();
-      }
     },
-    [blockId, onAllUploaded, onFilesChange, totalSize],
+    [blockId, onFilesChange, totalSize],
   );
 
   const handleRemove = useCallback(

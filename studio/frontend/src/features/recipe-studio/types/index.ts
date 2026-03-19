@@ -335,6 +335,7 @@ export type SeedConfig = {
   local_file_name?: string;
   unstructured_file_ids?: string[];
   unstructured_file_names?: string[];
+  unstructured_file_sizes?: number[];
   resolved_paths?: string[];
   // ui-only
   seed_preview_rows?: Record<string, unknown>[];

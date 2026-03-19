@@ -32,6 +32,7 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     local_file_name: "",
     unstructured_file_ids: [],
     unstructured_file_names: [],
+    unstructured_file_sizes: [],
     seed_preview_rows: [],
     unstructured_chunk_size: "1200",
     unstructured_chunk_overlap: "200",
@@ -75,6 +76,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let local_file_name = "";
   let unstructuredFileIds: string[] = [];
   let unstructuredFileNames: string[] = [];
+  let unstructuredFileSizes: number[] = [];
+  let resolved_paths: string[] = [];
   let unstructured_chunk_size = "1200";
   let unstructured_chunk_overlap = "200";
   const sourceRaw = seedConfigRaw.source;
@@ -93,7 +96,11 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
       local_file_name = sourcePath.split("/").pop() ?? sourcePath;
     } else if (seedType === "unstructured") {
       seed_source_type = "unstructured";
-      hf_path = sourcePath;
+      // Backend uses paths (list) for unstructured; take first path for hf_path
+      const paths = Array.isArray(sourceRaw.paths) ? sourceRaw.paths : [];
+      const stringPaths = paths.filter((p): p is string => typeof p === "string");
+      hf_path = stringPaths[0] ?? sourcePath;
+      resolved_paths = stringPaths;
       unstructuredFileIds = [];
       unstructuredFileNames = [];
       unstructured_chunk_size = readNumberString(sourceRaw.chunk_size) || "1200";
@@ -134,6 +141,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
     local_file_name,
     unstructured_file_ids: unstructuredFileIds,
     unstructured_file_names: unstructuredFileNames,
+    unstructured_file_sizes: unstructuredFileSizes,
+    resolved_paths,
     unstructured_chunk_size,
     unstructured_chunk_overlap,
     sampling_strategy,
@@ -156,6 +165,7 @@ export function parseSeedConfig(
     local_file_name?: string;
     unstructuredFileIds?: string[];
     unstructuredFileNames?: string[];
+    unstructuredFileSizes?: number[];
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
   },
@@ -191,6 +201,9 @@ export function parseSeedConfig(
       : {}),
     ...(options?.unstructuredFileNames !== undefined
       ? { unstructured_file_names: options.unstructuredFileNames }
+      : {}),
+    ...(options?.unstructuredFileSizes !== undefined
+      ? { unstructured_file_sizes: options.unstructuredFileSizes }
       : {}),
     ...(options?.unstructured_chunk_size !== undefined
       ? { unstructured_chunk_size: options.unstructured_chunk_size }

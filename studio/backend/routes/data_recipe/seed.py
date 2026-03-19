@@ -345,7 +345,7 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
         raw = file_path.read_text(encoding="utf-8", errors="ignore")
     elif ext == ".pdf":
         import pymupdf4llm
-        raw = pymupdf4llm.to_markdown(str(file_path))
+        raw = pymupdf4llm.to_markdown(str(file_path), write_images=False, show_progress=False)
     elif ext == ".docx":
         import mammoth
         with open(str(file_path), "rb") as f:
