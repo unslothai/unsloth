@@ -329,6 +329,7 @@ def install_python_stack() -> int:
 
     # 3c. Fix torchcodec on aarch64/ARM platforms (DGX Spark, Jetson, Mac ARM)
     # PyPI doesn't have aarch64 wheels, but PyTorch index does
+    # Step 3b already installed broken 0.0.0.dev0 placeholder, so we need --upgrade
     if IS_AARCH64:
         import importlib.util
         if importlib.util.find_spec("torch") is not None:
@@ -342,7 +343,7 @@ def install_python_stack() -> int:
                     print(f"   Installing torchcodec for aarch64 from PyTorch index (CUDA {cuda_version})...")
                 run(
                     "Installing torchcodec (aarch64)",
-                    [sys.executable, "-m", "pip", "install", "--no-deps",
+                    [sys.executable, "-m", "pip", "install", "--upgrade", "--no-deps",
                      "--index-url", index_url, "torchcodec"]
                 )
 
