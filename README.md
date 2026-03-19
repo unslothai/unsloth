@@ -27,7 +27,7 @@ Unsloth provides several key features for both inference and training:
 * **Search + download + run models** including GGUF, LoRA adapters, safetensors
 * **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
 * **Tool calling**: Support for [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling) and web search
-* **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs run code, data and verify results so answers are more accurate.
+* **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs test code in Claude artifacts and sandbox environments
 * [Auto-tune inference parameters](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
 * Upload images, audio, PDFs, code, DOCX and more file types to chat with.
 ### Training
@@ -44,9 +44,9 @@ Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/d
 ### Unsloth Studio (web UI)
 Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
-* **CPU:** Supported for **chat inference only**
+* **CPU:** Supported for Chat and Data Recipes currently
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
-* **macOS:** Currently supports chat only; **MLX training** is coming very soon
+* **macOS:** Currently supports chat and Data Recipes. **MLX training** is coming very soon
 * **AMD:** Chat works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is coming soon.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
