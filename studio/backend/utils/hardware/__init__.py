@@ -23,6 +23,7 @@ from .hardware import (
     safe_num_proc,
     safe_thread_num_proc,
     dataset_map_num_proc,
+    get_device_map,
 )
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     "safe_num_proc",
     "safe_thread_num_proc",
     "dataset_map_num_proc",
+    "get_device_map",
 ]

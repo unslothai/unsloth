@@ -18,7 +18,7 @@ from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
-from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
+from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory, get_device_map, get_visible_gpu_count
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -261,6 +261,9 @@ class InferenceBackend:
 
             self.loading_models.add(model_name)
 
+            device_map = get_device_map()
+            logger.info(f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)")
+
             self.models[model_name] = {
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
@@ -290,6 +293,7 @@ class InferenceBackend:
                         config.path,
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -325,6 +329,7 @@ class InferenceBackend:
                             config.path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -345,6 +350,7 @@ class InferenceBackend:
                             llm_path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -361,6 +367,7 @@ class InferenceBackend:
                         config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -378,6 +385,7 @@ class InferenceBackend:
                         whisper_language = "English",
                         whisper_task = "transcribe",
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -405,6 +413,7 @@ class InferenceBackend:
                         model_name = config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -441,6 +450,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -497,6 +507,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )

@@ -483,6 +483,19 @@ def get_visible_gpu_count() -> int:
     return _visible_gpu_count
 
 
+def get_device_map() -> str:
+    """
+    Return the best device_map for model loading.
+
+    Returns "balanced" when multiple CUDA GPUs are visible (spreads layers
+    across GPUs), otherwise "sequential" (single GPU, MLX, CPU).
+    """
+    device = get_device()
+    if device == DeviceType.CUDA and get_visible_gpu_count() > 1:
+        return "balanced"
+    return "sequential"
+
+
 def safe_num_proc(desired: Optional[int] = None) -> int:
     """
     Return a safe ``num_proc`` for ``dataset.map()`` calls.
