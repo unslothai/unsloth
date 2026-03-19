@@ -214,9 +214,13 @@ Output ONLY the JSON, nothing else."""
     ]
 
     print(f"  Grading {eval_id}...")
-    result = subprocess.run(
-        cmd, capture_output = True, text = True, timeout = 120, cwd = str(REPO_ROOT)
-    )
+    try:
+        result = subprocess.run(
+            cmd, capture_output = True, text = True, timeout = 120, cwd = str(REPO_ROOT)
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  Grading timed out for {eval_id}")
+        return {}
 
     try:
         data = json.loads(result.stdout)
@@ -256,7 +260,9 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
             g = grading.get(config, {})
             expectations = g.get("expectations", [])
             passed = 0 if is_error else sum(1 for e in expectations if e.get("passed"))
-            total = len(expectations) or (1 if is_error else 0)
+            total = len(expectations)
+            # None = not graded (skipped or parse failure), distinct from 0.0 (graded and failed)
+            pass_rate = None if (total == 0 and not is_error) else (0.0 if is_error else passed / total)
             runs.append(
                 {
                     "eval_id": eval_id,
@@ -264,7 +270,7 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
                     "configuration": config,
                     "run_number": 1,
                     "result": {
-                        "pass_rate": passed / total if total else 0,
+                        "pass_rate": pass_rate,
                         "passed": passed,
                         "failed": total - passed,
                         "total": total,
@@ -282,7 +288,7 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
     without_runs = [r for r in runs if r["configuration"] == "without_skill"]
 
     def stats(run_list, key):
-        vals = [r["result"][key] for r in run_list]
+        vals = [r["result"][key] for r in run_list if r["result"][key] is not None]
         if not vals:
             return {"mean": 0, "min": 0, "max": 0}
         return {

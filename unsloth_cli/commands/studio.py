@@ -122,14 +122,15 @@ def _reexec_cli_in_studio_venv(command_args: list[str], silent: bool = False) ->
         typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
         raise typer.Exit(1)
 
-    # Propagate studio/backend onto PYTHONPATH so the re-exec'd process can
-    # resolve bare imports (e.g. ``from loggers import get_logger``).
+    # Propagate the checkout root and studio/backend onto PYTHONPATH so the
+    # re-exec'd process uses the local checkout (not a stale venv wheel) and
+    # can resolve bare imports (e.g. ``from loggers import get_logger``).
     backend_dir = str(_PACKAGE_ROOT / "studio" / "backend")
+    checkout_root = str(_PACKAGE_ROOT)
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{backend_dir}{os.pathsep}{existing}" if existing else backend_dir
-    )
+    extra = f"{checkout_root}{os.pathsep}{backend_dir}"
+    env["PYTHONPATH"] = f"{extra}{os.pathsep}{existing}" if existing else extra
 
     args = [str(studio_python), "-m", "unsloth_cli", *command_args]
 
