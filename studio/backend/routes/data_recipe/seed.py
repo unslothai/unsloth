@@ -10,7 +10,6 @@ import binascii
 import json
 from itertools import islice
 from pathlib import Path
-from pathlib import Path as PathLib
 from typing import Any
 from uuid import uuid4
 
@@ -227,6 +226,33 @@ def _read_preview_rows_from_unstructured_file(
     return _serialize_preview_rows(rows)
 
 
+def _read_preview_rows_from_multi_files(
+    *,
+    block_id: str,
+    file_ids: list[str],
+    file_names: list[str],
+    preview_size: int,
+    chunk_size: int | None,
+    chunk_overlap: int | None,
+) -> list[dict[str, str]]:
+    from data_designer_unstructured_seed.chunking import build_multi_file_preview_rows
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    file_entries: list[tuple[Path, str]] = []
+    for fid, fname in zip(file_ids, file_names):
+        extracted = block_dir / f"{fid}.extracted.txt"
+        if not extracted.exists():
+            raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
+        file_entries.append((extracted, fname))
+
+    return build_multi_file_preview_rows(
+        file_entries=file_entries,
+        preview_size=preview_size,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+
+
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
@@ -313,7 +339,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     )
 
 
-def _extract_text_from_file(file_path: PathLib, ext: str) -> str:
+def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from uploaded file based on extension."""
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -333,7 +359,7 @@ def _extract_text_from_file(file_path: PathLib, ext: str) -> str:
     return normalize_unstructured_text(raw)
 
 
-def _get_block_total_size(block_dir: PathLib) -> int:
+def _get_block_total_size(block_dir: Path) -> int:
     """Sum file sizes in a block directory."""
     if not block_dir.exists():
         return 0
@@ -347,7 +373,7 @@ async def upload_unstructured_file(
 ) -> UnstructuredFileUploadResponse:
     # Validate extension
     original_filename = file.filename or "upload"
-    ext = PathLib(original_filename).suffix.lower()
+    ext = Path(original_filename).suffix.lower()
     if ext not in UNSTRUCTURED_ALLOWED_EXTS:
         raise HTTPException(400, f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}")
 
@@ -429,6 +455,29 @@ async def remove_unstructured_file(block_id: str, file_id: str):
 
 @router.post("/seed/inspect-upload", response_model = SeedInspectResponse)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
+    # Multi-file flow
+    if payload.file_ids is not None:
+        preview_rows = _read_preview_rows_from_multi_files(
+            block_id=payload.block_id,
+            file_ids=payload.file_ids,
+            file_names=payload.file_names,
+            preview_size=payload.preview_size,
+            chunk_size=payload.unstructured_chunk_size,
+            chunk_overlap=payload.unstructured_chunk_overlap,
+        )
+        columns = ["chunk_text", "source_file"] if preview_rows else []
+        resolved_paths = [
+            str(UNSTRUCTURED_UPLOAD_ROOT / payload.block_id / f"{fid}.extracted.txt")
+            for fid in payload.file_ids
+        ]
+        return SeedInspectResponse(
+            dataset_name="unstructured_seed",
+            resolved_path=resolved_paths[0] if resolved_paths else "",
+            resolved_paths=resolved_paths,
+            columns=columns,
+            preview_rows=_serialize_preview_rows(preview_rows),
+        )
+
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()

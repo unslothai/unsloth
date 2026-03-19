@@ -15,27 +15,28 @@ from .chunking import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, resolve_chunkin
 
 class UnstructuredSeedSource(SeedSource):
     seed_type: Literal["unstructured"] = "unstructured"
-    path: str = Field(..., min_length = 1)
+    paths: list[str] = Field(min_length=1)
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 
-    @field_validator("path", mode = "after")
+    @field_validator("paths")
     @classmethod
-    def _validate_path(cls, value: str) -> str:
-        path = Path(value).expanduser()
-        if not path.is_file():
-            raise ValueError(f"Unstructured seed path is not a file: {path}")
-        return value
+    def _validate_paths(cls, v: list[str]) -> list[str]:
+        for p in v:
+            expanded = Path(p).expanduser()
+            if not expanded.is_file():
+                raise ValueError(f"Seed file does not exist: {expanded}")
+        return v
 
-    @field_validator("chunk_size", mode = "after")
+    @field_validator("chunk_size")
     @classmethod
-    def _validate_chunk_size(cls, value: int) -> int:
-        size, _ = resolve_chunking(value, 0)
-        return size
+    def _resolve_chunk_size(cls, v: int) -> int:
+        cs, _ = resolve_chunking(v, 0)
+        return cs
 
-    @field_validator("chunk_overlap", mode = "after")
+    @field_validator("chunk_overlap")
     @classmethod
-    def _validate_chunk_overlap(cls, value: int, info) -> int:
-        size = info.data.get("chunk_size", cls.model_fields["chunk_size"].default)
-        _, overlap = resolve_chunking(size, value)
-        return overlap
+    def _resolve_chunk_overlap(cls, v: int, info) -> int:
+        cs = info.data.get("chunk_size", DEFAULT_CHUNK_SIZE)
+        _, co = resolve_chunking(cs, v)
+        return co
