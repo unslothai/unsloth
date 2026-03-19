@@ -530,7 +530,7 @@ class UnslothTrainer:
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
             _preserve = ["Unsloth*Trainer.py"] if sys.platform == "win32" else None
-            clear_unsloth_compiled_cache(preserve_patterns=_preserve)
+            clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
             self._audio_type = detect_audio_type(model_name, hf_token)
             # audio_vlm is detected as an audio_type now, handle it separately
@@ -3042,7 +3042,8 @@ class UnslothTrainer:
                     if compiled_cache not in pypath.split(os.pathsep):
                         os.environ["PYTHONPATH"] = (
                             os.pathsep.join((compiled_cache, pypath))
-                            if pypath else compiled_cache
+                            if pypath
+                            else compiled_cache
                         )
 
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
