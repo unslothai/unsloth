@@ -52,24 +52,10 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### MacOS, Linux, WSL:
-For MacOS, ensure you have `cmake` installed. If not, run `brew install cmake`.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 ```
-If you don't have `curl`, use `wget`:
-```bash
-wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
-```
-Or manually:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv unsloth_studio --python 3.13
-source unsloth_studio/bin/activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to launch every time:
+If you don't have `curl`, use `wget`. Launch every time:
 ```bash
 source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
@@ -79,7 +65,22 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```powershell
 irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
 ```
-Or manually:
+Then to launch every time:
+```powershell
+& .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
+```
+
+#### MacOS, Linux, WSL developer installs:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv unsloth_studio --python 3.13
+source unsloth_studio/bin/activate
+uv pip install unsloth --torch-backend=auto
+unsloth studio setup
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Windows PowerShell developer installs:
 ```powershell
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
@@ -87,11 +88,6 @@ uv venv unsloth_studio --python 3.13
 .\unsloth_studio\Scripts\activate
 uv pip install unsloth --torch-backend=auto
 unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to launch every time:
-```powershell
-.\unsloth_studio\Scripts\activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
