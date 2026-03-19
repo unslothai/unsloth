@@ -171,7 +171,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: ggufVariant ?? null,
     })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId }),
+  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
