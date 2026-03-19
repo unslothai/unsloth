@@ -154,6 +154,9 @@ function sanitizeSeedForShare(payload: unknown): unknown {
     if (source && "path" in source) {
       source.path = "";
     }
+    if (source && "paths" in source) {
+      source.paths = [];
+    }
     if (seedConfig) {
       seedConfig.resolved_paths = [];
     }

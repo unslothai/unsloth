@@ -225,12 +225,18 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
     }
   }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync unstructured files from config when local state is empty
-  // (handles initial mount, recipe reload, dialog re-open)
+  // Sync unstructured files from config on dialog re-open
+  const didSyncFilesRef = useRef(false);
   useEffect(() => {
+    if (!open) {
+      didSyncFilesRef.current = false;
+      return;
+    }
+    if (didSyncFilesRef.current) return;
     if (mode !== "unstructured") return;
     if (unstructuredFiles.length > 0) return;
     if (!config.unstructured_file_ids?.length) return;
+    didSyncFilesRef.current = true;
     setUnstructuredFiles(
       config.unstructured_file_ids.map((id, i) => ({
         id,
@@ -239,7 +245,7 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
         status: "ok" as const,
       })),
     );
-  }); // Runs every render but bails early — ensures sync after any state reset
+  }, [open, mode, unstructuredFiles.length, config.unstructured_file_ids, config.unstructured_file_names, config.unstructured_file_sizes]);
 
   useEffect(() => {
     setPreviewRows(config.seed_preview_rows ?? []);

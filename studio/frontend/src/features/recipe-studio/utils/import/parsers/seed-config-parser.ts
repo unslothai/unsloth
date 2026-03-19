@@ -99,6 +99,10 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
       // Backend uses paths (list) for unstructured; take first path for hf_path
       const paths = Array.isArray(sourceRaw.paths) ? sourceRaw.paths : [];
       const stringPaths = paths.filter((p): p is string => typeof p === "string");
+      // Promote legacy source.path into resolved_paths if paths array is empty
+      if (stringPaths.length === 0 && sourcePath) {
+        stringPaths.push(sourcePath);
+      }
       hf_path = stringPaths[0] ?? sourcePath;
       resolved_paths = stringPaths;
       unstructuredFileIds = [];
