@@ -71,6 +71,7 @@ _smart_apt_install() {
                 exit 1
                 ;;
             *)
+                echo "    To allow elevated permissions to install $_STILL_MISSING, please type your password:"
                 sudo apt-get update -y
                 sudo apt-get install -y $_STILL_MISSING
                 ;;
@@ -153,7 +154,10 @@ if [ -n "$MISSING" ]; then
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
-                echo "    Please install them with your package manager, then re-run."
+                echo "    apt-get is not available. Please install with your package manager:"
+                echo "    $MISSING"
+                echo "    Then re-run Unsloth Studio setup."
+                exit 1
             fi
             ;;
     esac

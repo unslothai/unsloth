@@ -29,20 +29,20 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Install Python 3.13 if no compatible Python found ──
-    # setup.ps1 accepts Python 3.11-3.13; we install 3.13 if nothing compatible is found
-    $NeedPython = $true
+    # ── Install Python if no compatible version (3.11-3.13) found ──
+    $DetectedPythonVersion = ""
     if (Get-Command python -ErrorAction SilentlyContinue) {
         $pyVer = python --version 2>&1
-        if ($pyVer -match "Python 3\.1[1-3]\.") {
+        if ($pyVer -match "Python (3\.1[1-3])\.\d+") {
             Write-Host "==> Python already installed: $pyVer"
-            $NeedPython = $false
+            $DetectedPythonVersion = $Matches[1]
         }
     }
-    if ($NeedPython) {
+    if (-not $DetectedPythonVersion) {
         Write-Host "==> Installing Python ${PythonVersion}..."
         winget install -e --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements
         Refresh-SessionPath
+        $DetectedPythonVersion = $PythonVersion
     }
 
     # ── Install uv if not present ──
@@ -68,8 +68,8 @@ function Install-UnslothStudio {
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
     if (-not (Test-Path $VenvPython)) {
         if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
-        Write-Host "==> Creating Python ${PythonVersion} virtual environment (${VenvName})..."
-        uv venv $VenvName --python $PythonVersion
+        Write-Host "==> Creating Python ${DetectedPythonVersion} virtual environment (${VenvName})..."
+        uv venv $VenvName --python $DetectedPythonVersion
     } else {
         Write-Host "==> Virtual environment ${VenvName} already exists, skipping creation."
     }
