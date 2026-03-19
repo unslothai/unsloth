@@ -1989,14 +1989,27 @@ def unsloth_save_pretrained_gguf(
         except Exception as e:
             raise RuntimeError(f"Failed to save/merge model: {e}")
     else:
-        # Non-PEFT model (already merged / full model) — save directly without merge
-        print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
-        try:
-            self.save_pretrained(save_directory)
+        # Non-PEFT model — checkpoint files already exist on disk.
+        # Point save_to_gguf at the original checkpoint path instead of
+        # re-saving to a temporary "model" subdirectory.
+        original_path = getattr(self.config, "_name_or_path", None)
+        if original_path and os.path.isdir(original_path):
+            print(f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}")
+            save_directory = original_path
+            # Persist tokenizer fixes (e.g. BOS token stripping) to disk
+            # so the GGUF converter picks up the corrected chat template.
             if tokenizer is not None:
                 tokenizer.save_pretrained(save_directory)
-        except Exception as e:
-            raise RuntimeError(f"Failed to save model: {e}")
+        else:
+            # Fallback: save the in-memory model to save_directory
+            print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
+            os.makedirs(save_directory, exist_ok=True)
+            try:
+                self.save_pretrained(save_directory)
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(save_directory)
+            except Exception as e:
+                raise RuntimeError(f"Failed to save model: {e}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer

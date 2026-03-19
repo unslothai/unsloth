@@ -122,6 +122,7 @@ export function ExportPage() {
   // Derive training info from selected model's API metadata
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
+  const isQuantized = !!selectedModelData?.is_quantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
   const trainingMethodLabel = selectedModelData?.peft_type
     ? "LoRA / QLoRA"
@@ -137,7 +138,11 @@ export function ExportPage() {
     if (!isAdapter && (exportMethod === "merged" || exportMethod === "lora")) {
       setExportMethod(null);
     }
-  }, [isAdapter, exportMethod]);
+    // Quantized non-PEFT models can't export to any format
+    if (!isAdapter && isQuantized && exportMethod !== null) {
+      setExportMethod(null);
+    }
+  }, [isAdapter, isQuantized, exportMethod]);
 
   const handleMethodChange = (method: ExportMethod) => {
     setExportMethod(method);
@@ -475,11 +480,19 @@ export function ExportPage() {
               <MethodPicker
                 value={exportMethod}
                 onChange={handleMethodChange}
-                disabledMethods={!isAdapter ? ["merged", "lora"] : []}
+                disabledMethods={
+                  !isAdapter && isQuantized
+                    ? ["merged", "lora", "gguf"]
+                    : !isAdapter
+                      ? ["merged", "lora"]
+                      : []
+                }
                 disabledReason={
-                  !isAdapter
-                    ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
-                    : undefined
+                  !isAdapter && isQuantized
+                    ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                    : !isAdapter
+                      ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
+                      : undefined
                 }
               />
 

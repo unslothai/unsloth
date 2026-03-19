@@ -569,6 +569,21 @@ class ExportBackend:
                     shutil.rmtree(str(sub), ignore_errors = True)
                     logger.info(f"Cleaned up subdirectory: {sub.name}")
 
+                # For non-PEFT models, save_pretrained_gguf redirects to the
+                # checkpoint path, leaving a *_gguf directory in outputs/.
+                # Relocate any GGUFs from there and clean it up.
+                if self.current_checkpoint:
+                    ckpt = Path(self.current_checkpoint)
+                    gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
+                    if gguf_dir.is_dir():
+                        for src in gguf_dir.glob("*.gguf"):
+                            dest = os.path.join(abs_save_dir, src.name)
+                            if not os.path.exists(dest):
+                                shutil.move(str(src), dest)
+                                logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
+                        shutil.rmtree(str(gguf_dir), ignore_errors = True)
+                        logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
+
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(abs_save_dir)
 
