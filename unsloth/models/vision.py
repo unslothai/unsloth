@@ -782,6 +782,13 @@ class FastBaseModel:
             setattr(auto_config, "attn_implementation", config_attn_impl)
         model_config = auto_config
 
+        # Handle sequence classification parameters (num_labels, id2label, label2id)
+        # These need to be set in the config before model instantiation
+        for param in ("num_labels", "id2label", "label2id"):
+            value = kwargs.pop(param, None)
+            if value is not None:
+                setattr(model_config, param, value)
+
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
