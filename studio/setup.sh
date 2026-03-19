@@ -59,7 +59,6 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
         _NEED_FRONTEND_BUILD=false
     fi
 fi
-_NEED_FRONTEND_BUILD=true
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
@@ -160,6 +159,14 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+
+# Validate CSS output -- catch truncated Tailwind builds
+_MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+if [ -n "$_MAX_CSS" ] && [ "$_MAX_CSS" -lt 100000 ]; then
+    echo "⚠️  WARNING: Largest CSS file is only $((_MAX_CSS / 1024))KB (expected >100KB)."
+    echo "   Tailwind may not have scanned all source files. Check for .gitignore interference."
+fi
+
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 

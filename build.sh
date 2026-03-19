@@ -4,8 +4,47 @@ set -euo pipefail
 
 # 1. Build frontend (Vite outputs to dist/)
 cd studio/frontend
+
+# Clean stale dist to force a full rebuild
+rm -rf dist
+
+# Tailwind v4's oxide scanner respects .gitignore in parent directories.
+# Python venvs create a .gitignore with "*" (ignore everything), which
+# prevents Tailwind from scanning .tsx source files for class names.
+# Temporarily hide any such .gitignore during the build, then restore it.
+_HIDDEN_GITIGNORES=()
+_dir="$(pwd)"
+while [ "$_dir" != "/" ]; do
+    _dir="$(dirname "$_dir")"
+    if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+        mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+        _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+    fi
+done
+
+_restore_gitignores() {
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+    done
+}
+trap _restore_gitignores EXIT
+
 npm install
 npm run build       # outputs to studio/frontend/dist/
+
+_restore_gitignores
+trap - EXIT
+
+# Validate CSS output -- catch truncated Tailwind builds before packaging
+MAX_CSS_SIZE=$(find dist/assets -name '*.css' -exec wc -c {} + | sort -n | tail -1 | awk '{print $1}')
+if [ "$MAX_CSS_SIZE" -lt 100000 ]; then
+    echo "❌ ERROR: Largest CSS file is only $((MAX_CSS_SIZE / 1024))KB (expected >100KB)."
+    echo "   Tailwind may not have scanned all source files."
+    echo "   Check for .gitignore files blocking the Tailwind oxide scanner."
+    exit 1
+fi
+echo "✅ Frontend CSS validated (${MAX_CSS_SIZE} bytes)"
+
 cd ../..
 
 # 2. Clean old artifacts
