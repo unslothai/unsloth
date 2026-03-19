@@ -7,51 +7,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-REQUESTED_VENV=""
-SUPPRESS_LAUNCH_HINT=false
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --venv-path)
-            if [ $# -lt 2 ]; then
-                echo "❌ ERROR: --venv-path requires a value"
-                exit 1
-            fi
-            REQUESTED_VENV="$2"
-            shift 2
-            ;;
-        --venv-path=*)
-            REQUESTED_VENV="${1#*=}"
-            shift
-            ;;
-        --suppress-launch-hint)
-            SUPPRESS_LAUNCH_HINT=true
-            shift
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--venv-path /path/to/venv] [--suppress-launch-hint]"
-            exit 0
-            ;;
-        *)
-            echo "❌ ERROR: Unknown argument: $1"
-            echo "Usage: $0 [--venv-path /path/to/venv] [--suppress-launch-hint]"
-            exit 1
-            ;;
-    esac
-done
-
-if [ -n "$REQUESTED_VENV" ]; then
-    if [ ! -d "$REQUESTED_VENV" ]; then
-        echo "❌ ERROR: Provided venv path does not exist: $REQUESTED_VENV"
-        exit 1
-    fi
-    REQUESTED_VENV="$(cd "$REQUESTED_VENV" && pwd)"
-    if [ ! -x "$REQUESTED_VENV/bin/python" ]; then
-        echo "❌ ERROR: Provided venv does not contain bin/python: $REQUESTED_VENV"
-        exit 1
-    fi
-fi
-
 # ── Helper: run command quietly, show output only on failure ──
 run_quiet() {
     local label="$1"
@@ -227,6 +182,8 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── 6. Python venv + deps ──
+REQUESTED_PYTHON="${UNSLOTH_STUDIO_SETUP_PYTHON:-}"
+SUPPRESS_LAUNCH_HINT="${UNSLOTH_STUDIO_SUPPRESS_LAUNCH_HINT:-0}"
 
 # ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
@@ -235,32 +192,38 @@ BEST_PY=""
 BEST_MAJOR=0
 BEST_MINOR=0
 
-if [ -n "$REQUESTED_VENV" ]; then
-    BEST_PY="$REQUESTED_VENV/bin/python"
+if [ -n "$REQUESTED_PYTHON" ]; then
+    if [ ! -x "$REQUESTED_PYTHON" ]; then
+        echo "❌ ERROR: UNSLOTH_STUDIO_SETUP_PYTHON is not executable: $REQUESTED_PYTHON"
+        exit 1
+    fi
+
+    BEST_PY="$REQUESTED_PYTHON"
     BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
     BEST_MAJOR=$(echo "$BEST_VER" | cut -d. -f1)
     BEST_MINOR=$(echo "$BEST_VER" | cut -d. -f2)
 
     if [ "$BEST_MAJOR" -ne 3 ] 2>/dev/null; then
-        echo "❌ ERROR: Provided venv python is not Python 3: $BEST_PY ($BEST_VER)"
+        echo "❌ ERROR: Requested setup python is not Python 3: $BEST_PY ($BEST_VER)"
         exit 1
     fi
     if [ "$BEST_MINOR" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
-        echo "❌ ERROR: Provided venv python is too old: $BEST_PY ($BEST_VER)"
+        echo "❌ ERROR: Requested setup python is too old: $BEST_PY ($BEST_VER)"
         exit 1
     fi
     if [ "$BEST_MINOR" -gt "$MAX_PY_MINOR" ] 2>/dev/null; then
-        echo "❌ ERROR: Provided venv python is too new: $BEST_PY ($BEST_VER)"
+        echo "❌ ERROR: Requested setup python is too new: $BEST_PY ($BEST_VER)"
         exit 1
     fi
 
-    echo "✅ Using provided venv python: $BEST_PY ($BEST_VER)"
+    echo "✅ Using requested setup python: $BEST_PY ($BEST_VER)"
 else
     # Collect candidate python3 binaries (python3, python3.9, python3.10, …)
     for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
         if ! command -v "$candidate" &>/dev/null; then
             continue
         fi
+
         # Get version string, e.g. "Python 3.12.5"
         ver_str=$("$candidate" --version 2>&1) || continue
         ver_str=$(echo "$ver_str" | awk '{print $2}')
@@ -272,12 +235,12 @@ else
             continue
         fi
 
-        # Skip versions below 3.12 (require > 3.11)
+        # Skip versions below 3.11
         if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
             continue
         fi
 
-        # Skip versions above 3.13 (require < 3.14)
+        # Skip versions above 3.13
         if [ "$py_minor" -gt "$MAX_PY_MINOR" ] 2>/dev/null; then
             continue
         fi
@@ -289,7 +252,9 @@ else
             BEST_MINOR="$py_minor"
         fi
     done
+
     echo "finished finding best python"
+
     if [ -z "$BEST_PY" ]; then
         echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
         echo "   Detected Python 3 installations:"
@@ -300,7 +265,7 @@ else
         done
         echo ""
         echo "   Please install Python 3.${MIN_PY_MINOR} or 3.${MAX_PY_MINOR}."
-        echo "   For example:  sudo apt install python3.12 python3.12-venv"
+        echo "   For example: sudo apt install python3.12 python3.12-venv"
         exit 1
     fi
 

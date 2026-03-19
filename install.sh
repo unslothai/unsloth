@@ -283,7 +283,9 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth studio setup..."
-"$VENV_ABS_BIN/unsloth" studio setup --venv_path "$VENV_ABS" --suppress-launch-hint </dev/null
+UNSLOTH_STUDIO_SETUP_PYTHON="$VENV_ABS_BIN/python" \
+UNSLOTH_STUDIO_SUPPRESS_LAUNCH_HINT=1 \
+"$VENV_ABS_BIN/unsloth" studio setup </dev/null
 
 echo ""
 echo "========================================="
