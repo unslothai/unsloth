@@ -529,7 +529,8 @@ class UnslothTrainer:
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-            clear_unsloth_compiled_cache()
+            _preserve = ["Unsloth*Trainer.py"] if sys.platform == "win32" else None
+            clear_unsloth_compiled_cache(preserve_patterns=_preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
             self._audio_type = detect_audio_type(model_name, hf_token)
             # audio_vlm is detected as an audio_type now, handle it separately
@@ -3026,6 +3027,23 @@ class UnslothTrainer:
 
                 if _tf.__version__.startswith("5."):
                     config_args["dataloader_num_workers"] = 0
+
+                # Register the compiled module cache so spawned workers
+                # from datasets.Dataset.map() can import dynamically compiled
+                # modules (like UnslothSFTTrainer) via PYTHONPATH.
+                compiled_cache = os.path.abspath(
+                    os.path.join(os.getcwd(), "unsloth_compiled_cache")
+                )
+                if os.path.isdir(compiled_cache):
+                    if compiled_cache not in sys.path:
+                        sys.path.insert(0, compiled_cache)
+
+                    pypath = os.environ.get("PYTHONPATH", "")
+                    if compiled_cache not in pypath.split(os.pathsep):
+                        os.environ["PYTHONPATH"] = (
+                            os.pathsep.join((compiled_cache, pypath))
+                            if pypath else compiled_cache
+                        )
 
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
             if warmup_ratio_val is not None:
