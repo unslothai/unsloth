@@ -431,6 +431,21 @@ rm -rf "$LLAMA_CPP_DIR"
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
+                # Minimum CUDA version check for llama.cpp (requires >= 12.4)
+                _nvcc_ver=$("$NVCC_PATH" --version 2>/dev/null \
+                    | grep -oP 'release \K[\d]+\.[\d]+' || true)
+                if [ -n "$_nvcc_ver" ]; then
+                    _nvcc_maj=$(echo "$_nvcc_ver" | cut -d. -f1)
+                    _nvcc_min=$(echo "$_nvcc_ver" | cut -d. -f2)
+                    if [ "$_nvcc_maj" -lt 12 ] || \
+                       { [ "$_nvcc_maj" -eq 12 ] && [ "$_nvcc_min" -lt 4 ]; }; then
+                        echo ""
+                        echo "❌ ERROR: CUDA Toolkit $_nvcc_ver is too old for llama.cpp (requires >= 12.4)."
+                        echo "   Install CUDA >= 12.4: https://developer.nvidia.com/cuda-toolkit-archive"
+                        exit 1
+                    fi
+                fi
+
                 # Detect GPU compute capability and limit CUDA architectures
                 # Without this, cmake builds for ALL default archs (very slow)
                 CUDA_ARCHS=""

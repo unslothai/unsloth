@@ -628,6 +628,22 @@ if (-not $NvccPath) {
     exit 1
 }
 
+# -- Minimum CUDA version check for llama.cpp (requires >= 12.4) --
+$MIN_CUDA_MAJOR = 12; $MIN_CUDA_MINOR = 4
+$nvccVerOut = & $NvccPath --version 2>&1 | Out-String
+if ($nvccVerOut -match 'release\s+(\d+)\.(\d+)') {
+    $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
+    if ($tkMaj -lt $MIN_CUDA_MAJOR -or ($tkMaj -eq $MIN_CUDA_MAJOR -and $tkMin -lt $MIN_CUDA_MINOR)) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "================================================================" -ForegroundColor Red
+        Write-Host "[ERROR] CUDA Toolkit $tkMaj.$tkMin is too old for llama.cpp." -ForegroundColor Red
+        Write-Host "        llama.cpp requires CUDA >= $MIN_CUDA_MAJOR.$MIN_CUDA_MINOR." -ForegroundColor Red
+        Write-Host "  Install: https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
+        Write-Host "================================================================" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
 $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # CUDA_PATH: used by cmake's find_package(CUDAToolkit)
@@ -694,12 +710,14 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                         throw "Copy did not produce .targets files"
                     }
                 } catch {
-                    Write-Host "   [WARN] Could not copy CUDA VS integration files" -ForegroundColor Yellow
-                    Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
-                    Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
-                    Write-Host "            $cudaExtras" -ForegroundColor Cyan
-                    Write-Host "          into:" -ForegroundColor Yellow
-                    Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                    Write-Host "" -ForegroundColor Red
+                    Write-Host "================================================================" -ForegroundColor Red
+                    Write-Host "[ERROR] Could not copy CUDA VS integration files (admin required)." -ForegroundColor Red
+                    Write-Host "        cmake cannot find the CUDA toolset without these files." -ForegroundColor Red
+                    Write-Host "  Re-install CUDA Toolkit (or Visual Studio Build Tools, then CUDA):" -ForegroundColor Yellow
+                    Write-Host "  https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Cyan
+                    Write-Host "================================================================" -ForegroundColor Red
+                    exit 1
                 }
             }
         }
