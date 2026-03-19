@@ -37,8 +37,8 @@ _smart_apt_install() {
     _PKGS="$*"
 
     # Step 1: Try installing without sudo (works when already root)
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y $_PKGS >/dev/null 2>&1 || true
+    apt-get update -y </dev/null >/dev/null 2>&1 || true
+    apt-get install -y $_PKGS </dev/null >/dev/null 2>&1 || true
 
     # Step 2: Check which packages are still missing
     _STILL_MISSING=""
@@ -76,8 +76,8 @@ _smart_apt_install() {
                 exit 1
                 ;;
             *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
+                sudo apt-get update -y </dev/null
+                sudo apt-get install -y $_STILL_MISSING </dev/null
                 ;;
         esac
     else
@@ -119,7 +119,7 @@ case "$OS" in
             echo ""
             echo "==> Xcode Command Line Tools are required."
             echo "    Installing (a system dialog will appear)..."
-            xcode-select --install 2>/dev/null || true
+            xcode-select --install </dev/null 2>/dev/null || true
             echo "    After the installation completes, please re-run this script."
             exit 1
         fi
@@ -152,7 +152,7 @@ if [ -n "$MISSING" ]; then
                 echo "    Install Homebrew from https://brew.sh then re-run this script."
                 exit 1
             fi
-            brew install $MISSING
+            brew install $MISSING </dev/null
             ;;
         linux|wsl)
             if command -v apt-get >/dev/null 2>&1; then
@@ -175,7 +175,7 @@ if ! command -v uv >/dev/null 2>&1; then
     echo "==> Installing uv package manager..."
     _uv_tmp=$(mktemp)
     download "https://astral.sh/uv/install.sh" "$_uv_tmp"
-    sh "$_uv_tmp"
+    sh "$_uv_tmp" </dev/null
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
@@ -197,6 +197,13 @@ echo "==> Installing unsloth (this may take a few minutes)..."
 uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
 
 # ── Run studio setup ──
+# Ensure the venv's Python is on PATH for setup.sh's Python discovery.
+# On macOS the system Python may be outside the 3.11-3.13 range that
+# setup.sh requires, but uv already installed a compatible interpreter
+# inside the venv.
+VENV_ABS_BIN="$(cd "$VENV_NAME/bin" && pwd)"
+export PATH="$VENV_ABS_BIN:$PATH"
+
 echo "==> Running unsloth studio setup..."
 "$VENV_NAME/bin/unsloth" studio setup </dev/null
 
