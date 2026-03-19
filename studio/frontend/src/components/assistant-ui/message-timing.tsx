@@ -1,6 +1,6 @@
 "use client";
 
-import { useMessageTiming } from "@assistant-ui/react";
+import { useMessageTiming, useMessage } from "@assistant-ui/react";
 import {
   Tooltip,
   TooltipContent,
@@ -15,31 +15,33 @@ const formatTimingMs = (ms: number | undefined): string => {
   return `${(ms / 1000).toFixed(2)}s`;
 };
 
+const formatNumber = (n: number): string => {
+  return n.toLocaleString();
+};
+
 /**
- * Shows streaming stats (TTFT, total time, chunks) as a badge with a
- * hover/focus tooltip. Renders nothing until the stream completes.
- *
- * Place it inside `ActionBarPrimitive.Root` in your `thread.tsx` so it
- * inherits the action bar's autohide behaviour:
- *
- * ```tsx
- * import { MessageTiming } from "@/components/assistant-ui/message-timing";
- *
- * <ActionBarPrimitive.Root >
- *   <ActionBarPrimitive.Copy />
- *   <ActionBarPrimitive.Reload />
- *   <MessageTiming />  // <-- add this
- * </ActionBarPrimitive.Root>
- * ```
- *
- * @param side - Side of the tooltip relative to the badge trigger. Defaults to `"right"`.
+ * Shows streaming stats as a badge with hover tooltip.
+ * When server timings are available (GGUF), shows prompt eval, generation,
+ * speed, tokens, and cache hits. Falls back to client-side metrics otherwise.
  */
 export const MessageTiming: FC<{
   className?: string;
   side?: "top" | "right" | "bottom" | "left";
 }> = ({ className, side = "right" }) => {
   const timing = useMessageTiming();
+  const message = useMessage();
+
   if (timing?.totalStreamTime === undefined) return null;
+
+  const serverTimings = (
+    message.metadata as Record<string, unknown> | undefined
+  )?.custom as { serverTimings?: Record<string, number> } | undefined;
+  const st = serverTimings?.serverTimings;
+
+  // Badge text: show tok/s if available, otherwise total time
+  const badgeText = st?.predicted_per_second
+    ? `${st.predicted_per_second.toFixed(1)} tok/s`
+    : formatTimingMs(timing.totalStreamTime);
 
   return (
     <Tooltip>
@@ -53,7 +55,7 @@ export const MessageTiming: FC<{
             className,
           )}
         >
-          {formatTimingMs(timing.totalStreamTime)}
+          {badgeText}
         </button>
       </TooltipTrigger>
       <TooltipContent
@@ -62,25 +64,91 @@ export const MessageTiming: FC<{
         data-slot="message-timing-popover"
         className="[&_span>svg]:hidden! rounded-lg border bg-popover px-3 py-2 text-popover-foreground shadow-md"
       >
-        <div className="grid min-w-35 gap-1.5 text-xs">
-          {timing.firstTokenTime !== undefined && (
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">First token</span>
-              <span className="font-mono tabular-nums">
-                {formatTimingMs(timing.firstTokenTime)}
-              </span>
-            </div>
+        <div className="grid min-w-40 gap-1.5 text-xs">
+          {st ? (
+            <>
+              {/* Server-side metrics (GGUF) */}
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Prompt eval</span>
+                <span className="font-mono tabular-nums">
+                  {formatTimingMs(st.prompt_ms)}
+                </span>
+              </div>
+              {st.prompt_n > 1 && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Prompt speed</span>
+                  <span className="font-mono tabular-nums">
+                    {st.prompt_per_second?.toFixed(1)} tok/s
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Generation</span>
+                <span className="font-mono tabular-nums">
+                  {formatTimingMs(st.predicted_ms)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Speed</span>
+                <span className="font-mono tabular-nums">
+                  {st.predicted_per_second?.toFixed(1)} tok/s
+                </span>
+              </div>
+              {timing.tokenCount !== undefined && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Tokens</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(timing.tokenCount)}
+                  </span>
+                </div>
+              )}
+              {st.cache_n > 0 && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Cache hits</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(st.cache_n)}
+                  </span>
+                </div>
+              )}
+              <div className="my-0.5 border-t border-border/40" />
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Total</span>
+                <span className="font-mono tabular-nums">
+                  {formatTimingMs(timing.totalStreamTime)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Chunks</span>
+                <span className="font-mono tabular-nums">
+                  {timing.totalChunks}
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Client-side metrics (safetensors fallback) */}
+              {timing.firstTokenTime !== undefined && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">First token</span>
+                  <span className="font-mono tabular-nums">
+                    {formatTimingMs(timing.firstTokenTime)}
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Total</span>
+                <span className="font-mono tabular-nums">
+                  {formatTimingMs(timing.totalStreamTime)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-muted-foreground">Chunks</span>
+                <span className="font-mono tabular-nums">
+                  {timing.totalChunks}
+                </span>
+              </div>
+            </>
           )}
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">Total</span>
-            <span className="font-mono tabular-nums">
-              {formatTimingMs(timing.totalStreamTime)}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">Chunks</span>
-            <span className="font-mono tabular-nums">{timing.totalChunks}</span>
-          </div>
         </div>
       </TooltipContent>
     </Tooltip>

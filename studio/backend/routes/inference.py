@@ -1107,6 +1107,10 @@ async def openai_chat_completions(
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
+                        if event["type"] == "metadata":
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
                         # "content" type -- cumulative text
                         cumulative = event.get("text", "")
                         new_text = cumulative[len(prev_text) :]
@@ -1214,6 +1218,15 @@ async def openai_chat_completions(
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
                             break
+                        # Forward server metadata as custom SSE event
+                        if isinstance(cumulative, dict) and cumulative.get("__metadata__"):
+                            metadata_event = json.dumps({
+                                "type": "metadata",
+                                "usage": cumulative.get("usage"),
+                                "timings": cumulative.get("timings"),
+                            })
+                            yield f"data: {metadata_event}\n\n"
+                            continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
@@ -1272,6 +1285,8 @@ async def openai_chat_completions(
             try:
                 full_text = ""
                 for token in gguf_generate():
+                    if isinstance(token, dict):
+                        continue  # skip metadata dict in non-streaming path
                     full_text = token
 
                 response = ChatCompletion(

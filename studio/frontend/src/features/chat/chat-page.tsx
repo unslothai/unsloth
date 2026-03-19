@@ -38,6 +38,7 @@ import {
 import { toast } from "sonner";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
@@ -423,6 +424,8 @@ export function ChatPage(): ReactElement {
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore((state) => state.activeGgufVariant);
+  const ggufContextLength = useChatRuntimeStore((state) => state.ggufContextLength);
+  const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
@@ -744,6 +747,15 @@ export function ChatPage(): ReactElement {
               </div>
             )}
             <div className="flex-1" />
+            {ggufContextLength && contextUsage ? (
+              <ContextUsageBar
+                used={contextUsage.totalTokens}
+                total={ggufContextLength}
+                cached={contextUsage.cachedTokens}
+                promptTokens={contextUsage.promptTokens}
+                completionTokens={contextUsage.completionTokens}
+              />
+            ) : null}
             <button
               type="button"
               onClick={() => setSettingsOpen((o) => !o)}

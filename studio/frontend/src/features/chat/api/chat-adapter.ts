@@ -20,6 +20,33 @@ import {
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 
+/** Server-side usage data from llama-server (via stream_options.include_usage). */
+interface ServerUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/** Server-side timing data from llama-server's timings object. */
+interface ServerTimings {
+  prompt_n: number;
+  cache_n: number;
+  prompt_ms: number;
+  prompt_per_token_ms: number;
+  prompt_per_second: number;
+  predicted_n: number;
+  predicted_ms: number;
+  predicted_per_token_ms: number;
+  predicted_per_second: number;
+}
+
+/** Custom SSE event carrying server metadata. */
+interface ServerMetadataEvent {
+  type: "metadata";
+  usage?: ServerUsage;
+  timings?: ServerTimings;
+}
+
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
@@ -63,6 +90,7 @@ function buildTiming(
   totalStreamTime?: number,
   tokenCount?: number,
   toolCallCount = 0,
+  tokensPerSecondOverride?: number,
 ): MessageTiming {
   return {
     streamStartTime,
@@ -70,11 +98,12 @@ function buildTiming(
     totalStreamTime,
     tokenCount,
     tokensPerSecond:
-      typeof totalStreamTime === "number" &&
+      tokensPerSecondOverride ??
+      (typeof totalStreamTime === "number" &&
       totalStreamTime > 0 &&
       typeof tokenCount === "number"
         ? tokenCount / (totalStreamTime / 1000)
-        : undefined,
+        : undefined),
     totalChunks,
     toolCallCount,
   };
@@ -528,6 +557,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -610,6 +640,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             continue;
           }
 
+          // Handle server metadata events (timings/usage from llama-server)
+          const meta = (chunk as unknown as { _metadata?: ServerMetadataEvent })._metadata;
+          if (meta !== undefined) {
+            serverMetadata = { usage: meta.usage, timings: meta.timings };
+            continue;
+          }
+
           totalChunks += 1;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (!delta) {
@@ -654,6 +691,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
         });
 
+        const meta = serverMetadata;
+        const finalTokenCount = meta?.usage?.completion_tokens
+          ?? estimateTokenCount(cumulativeText);
+        const finalTokPerSec = meta?.timings?.predicted_per_second;
+        const serverPromptEvalTime = meta?.timings?.prompt_ms;
+
+        // Update context usage in store if we got server data
+        if (meta?.usage) {
+          useChatRuntimeStore.getState().setContextUsage({
+            promptTokens: meta.usage.prompt_tokens,
+            completionTokens: meta.usage.completion_tokens,
+            totalTokens: meta.usage.total_tokens,
+            cachedTokens: meta.timings?.cache_n ?? 0,
+          });
+        }
+
         yield {
           content: [
             ...toolCallParts,
@@ -664,12 +717,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             timing: buildTiming(
               streamStartTime,
               totalChunks,
-              firstTokenTime,
+              serverPromptEvalTime ?? firstTokenTime,
               Date.now() - streamStartTime,
-              estimateTokenCount(cumulativeText),
+              finalTokenCount,
               toolCallParts.length,
+              finalTokPerSec,
             ),
-            custom: { reasoningDuration },
+            custom: {
+              reasoningDuration,
+              serverTimings: meta?.timings ?? undefined,
+            },
           },
         };
       } catch (err) {

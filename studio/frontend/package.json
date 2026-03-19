@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.19",
+    "@assistant-ui/react-ai-sdk": "^1.3.14",
     "@assistant-ui/react-markdown": "^0.12.3",
     "@assistant-ui/react-streamdown": "^0.1.2",
     "@base-ui/react": "^1.2.0",

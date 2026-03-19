@@ -240,6 +240,12 @@ export async function* streamChatCompletions(
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
+      // Server metadata events (timings, usage from llama-server)
+      if ("type" in parsed && parsed.type === "metadata") {
+        yield { _metadata: parsed } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
+      }
       yield parsed as OpenAIChatChunk;
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
