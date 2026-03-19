@@ -156,6 +156,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
+        load_start = time.monotonic()
         success = backend.load_model(
             config = mc,
             max_seq_length = config.get("max_seq_length", 2048),
@@ -163,6 +164,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             hf_token = hf_token,
             trust_remote_code = config.get("trust_remote_code", False),
         )
+        load_elapsed = time.monotonic() - load_start
+        logger.info("Inference model load took %.1fs (success=%s)", load_elapsed, success)
 
         if success:
             # Build model_info for the parent to mirror

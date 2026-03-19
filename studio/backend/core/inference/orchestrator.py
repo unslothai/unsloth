@@ -262,28 +262,56 @@ class InferenceOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 120.0) -> dict:
+    def _wait_response(self, expected_type: str, timeout: Optional[float] = None) -> dict:
         """Block until a response of the expected type arrives.
 
         Also handles 'status' and 'error' events during the wait.
         Returns the matching response dict.
-        Raises RuntimeError on timeout or subprocess crash.
+        Raises RuntimeError on subprocess crash.
+        If timeout is None, waits indefinitely (logs progress every 30s).
         """
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        last_log = start
 
-        while time.monotonic() < deadline:
-            remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 1.0))
+        while True:
+            if timeout is not None:
+                remaining = timeout - (time.monotonic() - start)
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Timeout waiting for '{expected_type}' response after {timeout}s"
+                    )
+                poll_timeout = min(remaining, 1.0)
+            else:
+                poll_timeout = 1.0
+
+            resp = self._read_resp(timeout = poll_timeout)
 
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError("Inference subprocess crashed during wait")
+                    elapsed = time.monotonic() - start
+                    raise RuntimeError(
+                        f"Inference subprocess crashed during wait after {elapsed:.1f}s"
+                    )
+                # Periodic progress logging
+                now = time.monotonic()
+                if now - last_log >= 30.0:
+                    elapsed = now - start
+                    logger.info(
+                        "Waiting for '%s' response... %.0fs elapsed",
+                        expected_type,
+                        elapsed,
+                    )
+                    last_log = now
                 continue
 
             rtype = resp.get("type", "")
 
             if rtype == expected_type:
+                elapsed = time.monotonic() - start
+                logger.info(
+                    "Received '%s' response after %.1fs", expected_type, elapsed
+                )
                 return resp
 
             if rtype == "error":
@@ -300,10 +328,6 @@ class InferenceOrchestrator:
                 rtype,
                 expected_type,
             )
-
-        raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
-        )
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
@@ -614,7 +638,7 @@ class InferenceOrchestrator:
                 needed_major,
             )
             self._spawn_subprocess(sub_config)
-            resp = self._wait_response("loaded", timeout = 180)
+            resp = self._wait_response("loaded")
 
             # Update local state from response
             if resp.get("success"):

@@ -1010,8 +1010,8 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
-            # Wait for llama-server to become healthy
-            if not self._wait_for_health(timeout = 120.0):
+            # Wait for llama-server to become healthy (no timeout — let it take as long as needed)
+            if not self._wait_for_health():
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "
@@ -1129,39 +1129,49 @@ class LlamaCppBackend:
         """atexit handler to ensure llama-server is terminated."""
         self._kill_process()
 
-    def _wait_for_health(self, timeout: float = 120.0, interval: float = 0.5) -> bool:
+    def _wait_for_health(self, interval: float = 0.5) -> bool:
         """
         Poll llama-server's /health endpoint until it responds 200.
 
+        No timeout — waits indefinitely so large models on slow hardware
+        (e.g. HF Spaces) have time to load. Logs elapsed time every 30s.
         Also monitors subprocess for early exit/crash.
         """
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        last_log = start
         url = f"http://127.0.0.1:{self._port}/health"
 
-        while time.monotonic() < deadline:
+        while True:
             # Check if process crashed
             if self._process.poll() is not None:
                 # Give the drain thread a moment to collect final output
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
                 output = "\n".join(self._stdout_lines[-50:])
+                elapsed = time.monotonic() - start
                 logger.error(
-                    f"llama-server exited with code {self._process.returncode}. "
-                    f"Output: {output[:2000]}"
+                    f"llama-server exited with code {self._process.returncode} "
+                    f"after {elapsed:.1f}s. Output: {output[:2000]}"
                 )
                 return False
 
             try:
                 resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
+                    elapsed = time.monotonic() - start
+                    logger.info(f"llama-server healthy after {elapsed:.1f}s")
                     return True
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass
 
-            time.sleep(interval)
+            # Periodic progress logging
+            now = time.monotonic()
+            if now - last_log >= 30.0:
+                elapsed = now - start
+                logger.info(f"Waiting for llama-server health check... {elapsed:.0f}s elapsed")
+                last_log = now
 
-        logger.error(f"llama-server health check timed out after {timeout}s")
-        return False
+            time.sleep(interval)
 
     # ── Message building (OpenAI format) ──────────────────────────
 

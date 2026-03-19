@@ -415,6 +415,7 @@ def run_training_process(
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
+        load_start = time.monotonic()
         success = trainer.load_model(
             model_name = model_name,
             max_seq_length = config["max_seq_length"],
@@ -425,6 +426,8 @@ def run_training_process(
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
         )
+        load_elapsed = time.monotonic() - load_start
+        logger.info("Training model load took %.1fs (success=%s)", load_elapsed, success)
         if not success or trainer.should_stop:
             if trainer.should_stop:
                 event_queue.put(
