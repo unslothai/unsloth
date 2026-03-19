@@ -747,7 +747,7 @@ export function ChatPage(): ReactElement {
               </div>
             )}
             <div className="flex-1" />
-            {ggufContextLength && contextUsage ? (
+            {view.mode === "single" && ggufContextLength && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
                 total={ggufContextLength}
