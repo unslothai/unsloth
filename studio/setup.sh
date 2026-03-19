@@ -502,7 +502,6 @@ fi
 #         fi
 #     fi
 # }
->>>>>>> 0f9e2ccd (chore: comment out llama.cpp build in setup.sh)
 
 echo ""
 if [ "$IS_COLAB" = true ]; then
