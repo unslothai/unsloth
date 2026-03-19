@@ -19,7 +19,7 @@ Run and train AI models with a unified local interface.
  <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
-Unsloth Studio lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+Unsloth Studio (BETA) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ## ⭐ Features
 Unsloth provides several key features for both inference and training:
@@ -42,7 +42,7 @@ Unsloth provides several key features for both inference and training:
 Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
 
 ### Unsloth Studio (web UI)
-Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
+Unsloth Studio (BETA) works on **Windows, Linux, WSL** and **macOS**.
 
 * **CPU:** Supported for **chat inference only**
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
