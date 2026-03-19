@@ -40,21 +40,28 @@ CONTEXT about the environment:
 def _detect_platform() -> str:
     """Detect OS and architecture."""
     import platform as plat
+
     return f"{plat.system()} {plat.machine()}"
 
 
 def _detect_gpu() -> str:
     """Detect GPU availability."""
     import shutil
+
     if shutil.which("nvidia-smi"):
         try:
-            out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                                 capture_output=True, text=True, timeout=5)
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
             if out.returncode == 0 and out.stdout.strip():
                 return out.stdout.strip().split("\n")[0]
         except Exception:
             pass
     return "none detected — GGUF inference via llama.cpp may still work"
+
 
 # Extra context for evals where unsloth is already installed
 ENV_CONTEXT_INSTALLED = """
@@ -74,12 +81,15 @@ def run_claude(
     # Clear previous outputs to avoid stale results on retry
     if output_dir.exists():
         import shutil
+
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents = True, exist_ok = True)
 
     ctx = ENV_CONTEXT.format(
-        repo_root=REPO_ROOT, output_dir=output_dir,
-        platform=_detect_platform(), gpu=_detect_gpu(),
+        repo_root = REPO_ROOT,
+        output_dir = output_dir,
+        platform = _detect_platform(),
+        gpu = _detect_gpu(),
     )
     # Don't tell fresh-install evals that unsloth is already set up
     if eval_id != "setup-fresh":
