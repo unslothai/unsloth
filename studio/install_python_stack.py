@@ -70,9 +70,13 @@ def _ensure_rocm_torch() -> None:
     # Checking both prevents accidentally overwriting CUDA torch on hosts where
     # /opt/rocm also exists (e.g. mixed CUDA+ROCm development machines).
     probe = subprocess.run(
-        [sys.executable, "-c",
-         "import torch; print(torch.version.hip or torch.version.cuda or '')"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        [
+            sys.executable,
+            "-c",
+            "import torch; print(torch.version.hip or torch.version.cuda or '')",
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
     )
     if probe.returncode == 0 and probe.stdout.decode().strip():
         return  # torch already GPU-enabled (HIP or CUDA) — nothing to reinstall
@@ -90,19 +94,27 @@ def _ensure_rocm_torch() -> None:
     print(f"   ROCm {ver[0]}.{ver[1]} — installing torch from {index_url}")
     result = subprocess.run(
         [
-            sys.executable, "-m", "pip", "install",
-            "--force-reinstall", "--no-cache-dir",
-            "torch", "torchvision", "torchaudio",
-            "--index-url", index_url,
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "--index-url",
+            index_url,
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
     )
     if result.returncode == 0:
         print("   ROCm torch installed")
     else:
         print("   ROCm torch reinstall failed — training may run on CPU")
         if VERBOSE:
-            print(result.stdout.decode(errors="replace"))
+            print(result.stdout.decode(errors = "replace"))
 
 
 # ── Verbosity control ──────────────────────────────────────────────────────────
