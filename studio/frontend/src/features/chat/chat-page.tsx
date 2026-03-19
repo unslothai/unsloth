@@ -768,6 +768,7 @@ export function ChatPage(): ReactElement {
 
         <ChatSettingsPanel
           open={settingsOpen}
+          onOpenChange={setSettingsOpen}
           params={inferenceParams}
           onParamsChange={setInferenceParams}
           autoTitle={autoTitle}
