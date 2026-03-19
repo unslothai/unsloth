@@ -41,26 +41,13 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Skip if dist/ exists AND no tracked input is newer than dist/.
-# Checks top-level config/entry files and src/, public/ recursively.
-# This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
-# and upgrades/pulls (source newer than dist/ triggers rebuild).
-_NEED_FRONTEND_BUILD=true
-if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
-    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
-        -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
-    # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
-    if [ -z "$_changed" ]; then
-        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
-            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null) || true
-    fi
-    if [ -z "$_changed" ]; then
-        _NEED_FRONTEND_BUILD=false
-    fi
-fi
-if [ "$_NEED_FRONTEND_BUILD" = false ]; then
-    echo "✅ Frontend already built and up to date -- skipping Node/npm check."
+# Only skip when BOTH conditions are true:
+#   1. We're inside site-packages (PyPI / pip install, not editable)
+#   2. dist/ already exists (pre-built in the wheel)
+# Otherwise always (re)build — handles upgrades, editable installs, and
+# pip-from-source where dist/ was never built.
+if [[ "$SCRIPT_DIR" == */site-packages/* ]] && [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    echo "✅ Frontend pre-built (PyPI) — skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -159,27 +146,12 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
-
-# Validate CSS output -- catch truncated Tailwind builds
-_MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
-if [ -z "$_MAX_CSS" ]; then
-    echo "⚠️  WARNING: No CSS files were emitted. The frontend build may have failed."
-elif [ "$_MAX_CSS" -lt 100000 ]; then
-    echo "⚠️  WARNING: Largest CSS file is only $((_MAX_CSS / 1024))KB (expected >100KB)."
-    echo "   Tailwind may not have scanned all source files. Check for .gitignore interference."
-fi
-
+cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+run_quiet "npm install (oxc validator runtime)" npm install
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end frontend build check
-
-# ── oxc-validator runtime (needs npm -- skip if not available) ──
-if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
-    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    run_quiet "npm install (oxc validator runtime)" npm install
-    cd "$SCRIPT_DIR"
-fi
+fi  # end frontend dist check
 
 # ── 6. Python venv + deps ──
 
@@ -251,276 +223,188 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
-# Create venv under ~/.unsloth/studio/ (shared location, not in repo).
-# All platforms (including Colab) use the same isolated venv so that
-# studio dependencies are never installed into the system Python.
-STUDIO_HOME="$HOME/.unsloth/studio"
-VENV_DIR="$STUDIO_HOME/.venv"
-VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
-mkdir -p "$STUDIO_HOME"
-
-# Clean up legacy in-repo venvs if they exist
-[ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
-[ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
-[ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
-
-rm -rf "$VENV_DIR"
-rm -rf "$VENV_T5_DIR"
-# Try creating venv with pip; fall back to --without-pip + bootstrap
-# (some environments like Colab have broken ensurepip)
-if ! "$BEST_PY" -m venv "$VENV_DIR" 2>/dev/null; then
-    "$BEST_PY" -m venv --without-pip "$VENV_DIR"
-    source "$VENV_DIR/bin/activate"
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python > /dev/null
+if [ "$IS_COLAB" = true ]; then
+    # Colab: install packages directly without venv
+    install_python_stack
 else
+    # Local: create venv under studio home (shared location, not in repo)
+    # Configurable via UNSLOTH_STUDIO_HOME; defaults to ~/.unsloth/studio
+    STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+    echo "   Studio home: $STUDIO_HOME"
+    # Persist for future `unsloth studio` runs (survives shell restarts)
+    mkdir -p "$HOME/.unsloth"
+    echo "$STUDIO_HOME" > "$HOME/.unsloth/studio_home"
+    VENV_DIR="$STUDIO_HOME/.venv"
+    VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
+    mkdir -p "$STUDIO_HOME"
+
+    # Clean up legacy in-repo venvs if they exist
+    [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
+    [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
+    [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+
+    rm -rf "$VENV_DIR"
+    rm -rf "$VENV_T5_DIR"
+    "$BEST_PY" -m venv "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
-fi
+    cd "$SCRIPT_DIR"
+    install_python_stack
 
-# ── Ensure uv is available (much faster than pip) ──
-USE_UV=false
-if command -v uv &>/dev/null; then
-    USE_UV=true
-elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
-    export PATH="$HOME/.local/bin:$PATH"
-    command -v uv &>/dev/null && USE_UV=true
-fi
-
-# Helper: install a package, preferring uv with pip fallback
-fast_install() {
-    if [ "$USE_UV" = true ]; then
-        uv pip install --python "$(command -v python)" "$@" && return 0
-    fi
-    python -m pip install "$@"
-}
-
-cd "$SCRIPT_DIR"
-install_python_stack
-
-# ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
-# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-# at runtime (slow, ~10-15s), we pre-install into a separate directory.
-# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-echo ""
-echo "   Pre-installing transformers 5.x for newer model support..."
-mkdir -p "$VENV_T5_DIR"
-run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
-run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
-run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
-# tiktoken is needed by Qwen-family tokenizers. Install with deps since
-# regex/requests may be missing on Windows.
-run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
-echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
-
-# ── 7. WSL: pre-install GGUF build dependencies ──
-# On WSL, sudo requires a password and can't be entered during GGUF export
-# (runs in a non-interactive subprocess). Install build deps here instead.
-if grep -qi microsoft /proc/version 2>/dev/null; then
+    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
+    # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
+    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
+    # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
     echo ""
-    echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
-    _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
+    echo "   Pre-installing transformers 5.x for newer model support..."
+    mkdir -p "$VENV_T5_DIR"
+    run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
+    run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
+    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
-    # Try without sudo first (works when already root)
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y $_GGUF_DEPS >/dev/null 2>&1 || true
-
-    # Check which packages are still missing
-    _STILL_MISSING=""
-    for _pkg in $_GGUF_DEPS; do
-        case "$_pkg" in
-            build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-        esac
-    done
-    _STILL_MISSING=$(echo "$_STILL_MISSING" | sed 's/^ *//')
-
-    if [ -z "$_STILL_MISSING" ]; then
+    # ── 7. WSL: pre-install GGUF build dependencies ──
+    # On WSL, sudo requires a password and can't be entered during GGUF export
+    # (runs in a non-interactive subprocess). Install build deps here instead.
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        echo ""
+        echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
+        echo "   You may be prompted for your password."
+        sudo apt-get update -y
+        sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
         echo "✅ GGUF build dependencies installed"
-    elif command -v sudo >/dev/null 2>&1; then
-        echo ""
-        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo "   WARNING: We require sudo elevated permissions to install:"
-        echo "   $_STILL_MISSING"
-        echo "   If you accept, we'll run sudo now, and it'll prompt your password."
-        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo ""
-        printf "   Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
-        else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
-                echo ""
-                echo "   Please install these packages first, then re-run Unsloth Studio setup:"
-                echo "   sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
-                _SKIP_GGUF_BUILD=true
-                ;;
-            *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
-                echo "✅ GGUF build dependencies installed"
-                ;;
-        esac
-    else
-        echo "   sudo is not available on this system."
-        echo "   Please install as root, then re-run setup:"
-        echo "   apt-get install -y $_STILL_MISSING"
-        _SKIP_GGUF_BUILD=true
     fi
 fi
 
 # ── 8. Build llama.cpp binaries for GGUF inference + export ──
-# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
-# home directory. This is used by both the inference server and the GGUF
-# export pipeline (unsloth-zoo).
-#   - llama-server: for GGUF model inference
-#   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
-UNSLOTH_HOME="$HOME/.unsloth"
-mkdir -p "$UNSLOTH_HOME"
-LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
-LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
-if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
-    echo ""
-    echo "Skipping llama-server build (missing dependencies)"
-    echo "   Install the missing packages and re-run setup to enable GGUF inference."
-else
-rm -rf "$LLAMA_CPP_DIR"
-{
-    # Check prerequisites
-    if ! command -v cmake &>/dev/null; then
-        echo ""
-        echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
-        echo "   Install cmake and re-run setup.sh to enable GGUF inference."
-    elif ! command -v git &>/dev/null; then
-        echo ""
-        echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
-    else
-        echo ""
-        echo "Building llama-server for GGUF inference..."
-
-        BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
-
-        if [ "$BUILD_OK" = true ]; then
-            # Skip tests/examples we don't need (faster build)
-            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
-
-            # Use ccache if available (dramatically faster rebuilds)
-            if command -v ccache &>/dev/null; then
-                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
-                echo "   Using ccache for faster compilation"
-            fi
-
-            # Detect CUDA: check nvcc on PATH, then common install locations
-            NVCC_PATH=""
-            if command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
-            elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                export PATH="/usr/local/cuda/bin:$PATH"
-            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                # Pick the newest cuda-XX.X directory
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
-            fi
-
-            if [ -n "$NVCC_PATH" ]; then
-                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
-                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                # Detect GPU compute capability and limit CUDA architectures
-                # Without this, cmake builds for ALL default archs (very slow)
-                # CUDA_ARCHS can be pre-set via env var (e.g. Docker ARG) to
-                # include targets not detectable at build time (no GPU access).
-                # We always include 86 (A10) and merge with detected GPUs.
-                _add_arch() {
-                    local _a="$1"
-                    case ";$CUDA_ARCHS;" in
-                        *";$_a;"*) ;;
-                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_a" ;;
-                    esac
-                }
-                CUDA_ARCHS=""
-                # Merge any pre-set CUDA_ARCHS from environment
-                if [ -n "${CUDA_ARCHS_EXTRA:-}" ]; then
-                    IFS=';' read -ra _env_archs <<< "$CUDA_ARCHS_EXTRA"
-                    for _ea in "${_env_archs[@]}"; do
-                        _ea=$(echo "$_ea" | tr -d '[:space:]')
-                        [ -n "$_ea" ] && _add_arch "$_ea"
-                    done
-                fi
-                # Always include sm_86 (A10)
-                _add_arch "86"
-                if command -v nvidia-smi &>/dev/null; then
-                    # Read all GPUs, deduplicate (handles mixed-GPU hosts)
-                    _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                    while IFS= read -r _cap; do
-                        _cap=$(echo "$_cap" | tr -d '[:space:]')
-                        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                            _add_arch "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                        fi
-                    done <<< "$_raw_caps"
-                fi
-
-                if [ -n "$CUDA_ARCHS" ]; then
-                    echo "   GPU compute capabilities: ${CUDA_ARCHS//;/, } -- limiting build to detected archs"
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
-                else
-                    echo "   Could not detect GPU arch -- building for all default CUDA architectures (slower)"
-                fi
-
-                # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
-                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
-                echo "   CUDA driver detected but nvcc not found — building CPU-only"
-                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
-            else
-                echo "   Building CPU-only (no CUDA detected)..."
-            fi
-
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-
-            # Use Ninja if available (faster parallel builds than Make)
-            CMAKE_GENERATOR_ARGS=""
-            if command -v ninja &>/dev/null; then
-                CMAKE_GENERATOR_ARGS="-G Ninja"
-            fi
-
-            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
-        fi
-
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
-        fi
-
-        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
-            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
-            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
-            if [ -f "$QUANTIZE_BIN" ]; then
-                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-            fi
-        fi
-
-        if [ "$BUILD_OK" = true ]; then
-            if [ -f "$LLAMA_SERVER_BIN" ]; then
-                echo "✅ llama-server built at $LLAMA_SERVER_BIN"
-            else
-                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
-            fi
-            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
-                echo "✅ llama-quantize available for GGUF export"
-            fi
-        else
-            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
-        fi
-    fi
-}
-fi  # end _SKIP_GGUF_BUILD check
+# Disabled: llama.cpp build is commented out for now.
+# UNCOMMENT the block below to re-enable.
+#
+# # Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# # home directory. This is used by both the inference server and the GGUF
+# # export pipeline (unsloth-zoo).
+# #   - llama-server: for GGUF model inference
+# #   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
+# UNSLOTH_HOME="$HOME/.unsloth"
+# mkdir -p "$UNSLOTH_HOME"
+# LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
+# LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+# rm -rf "$LLAMA_CPP_DIR"
+# {
+#     # Check prerequisites
+#     if ! command -v cmake &>/dev/null; then
+#         echo ""
+#         echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
+#         echo "   Install cmake and re-run setup.sh to enable GGUF inference."
+#     elif ! command -v git &>/dev/null; then
+#         echo ""
+#         echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
+#     else
+#         echo ""
+#         echo "Building llama-server for GGUF inference..."
+#
+#         BUILD_OK=true
+#         run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+#
+#         if [ "$BUILD_OK" = true ]; then
+#             # Skip tests/examples we don't need (faster build)
+#             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+#
+#             # Use ccache if available (dramatically faster rebuilds)
+#             if command -v ccache &>/dev/null; then
+#                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
+#                 echo "   Using ccache for faster compilation"
+#             fi
+#
+#             # Detect CUDA: check nvcc on PATH, then common install locations
+#             NVCC_PATH=""
+#             if command -v nvcc &>/dev/null; then
+#                 NVCC_PATH="$(command -v nvcc)"
+#             elif [ -x /usr/local/cuda/bin/nvcc ]; then
+#                 NVCC_PATH="/usr/local/cuda/bin/nvcc"
+#                 export PATH="/usr/local/cuda/bin:$PATH"
+#             elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+#                 # Pick the newest cuda-XX.X directory
+#                 NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+#                 export PATH="$(dirname "$NVCC_PATH"):$PATH"
+#             fi
+#
+#             if [ -n "$NVCC_PATH" ]; then
+#                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
+#                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+#
+#                 # Detect GPU compute capability and limit CUDA architectures
+#                 # Without this, cmake builds for ALL default archs (very slow)
+#                 CUDA_ARCHS=""
+#                 if command -v nvidia-smi &>/dev/null; then
+#                     # Read all GPUs, deduplicate (handles mixed-GPU hosts)
+#                     _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+#                     while IFS= read -r _cap; do
+#                         _cap=$(echo "$_cap" | tr -d '[:space:]')
+#                         if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+#                             _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+#                             # Append if not already present
+#                             case ";$CUDA_ARCHS;" in
+#                                 *";$_arch;"*) ;;
+#                                 *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+#                             esac
+#                         fi
+#                     done <<< "$_raw_caps"
+#                 fi
+#
+#                 if [ -n "$CUDA_ARCHS" ]; then
+#                     echo "   GPU compute capabilities: ${CUDA_ARCHS//;/, } -- limiting build to detected archs"
+#                     CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+#                 else
+#                     echo "   Could not detect GPU arch -- building for all default CUDA architectures (slower)"
+#                 fi
+#
+#                 # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
+#                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+#             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+#                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
+#                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+#             else
+#                 echo "   Building CPU-only (no CUDA detected)..."
+#             fi
+#
+#             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+#
+#             # Use Ninja if available (faster parallel builds than Make)
+#             CMAKE_GENERATOR_ARGS=""
+#             if command -v ninja &>/dev/null; then
+#                 CMAKE_GENERATOR_ARGS="-G Ninja"
+#             fi
+#
+#             run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+#         fi
+#
+#         if [ "$BUILD_OK" = true ]; then
+#             run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+#         fi
+#
+#         # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
+#         if [ "$BUILD_OK" = true ]; then
+#             run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+#             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+#             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+#             if [ -f "$QUANTIZE_BIN" ]; then
+#                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+#             fi
+#         fi
+#
+#         if [ "$BUILD_OK" = true ]; then
+#             if [ -f "$LLAMA_SERVER_BIN" ]; then
+#                 echo "✅ llama-server built at $LLAMA_SERVER_BIN"
+#             else
+#                 echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+#             fi
+#             if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
+#                 echo "✅ llama-quantize available for GGUF export"
+#             fi
+#         else
+#             echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+#         fi
+#     fi
+# }
 
 echo ""
 if [ "$IS_COLAB" = true ]; then
@@ -529,9 +413,6 @@ if [ "$IS_COLAB" = true ]; then
     echo "╠══════════════════════════════════════╣"
     echo "║ Unsloth Studio is ready to start     ║"
     echo "║ in your Colab notebook!              ║"
-    echo "║                                      ║"
-    echo "║ from colab import start              ║"
-    echo "║ start()                              ║"
     echo "╚══════════════════════════════════════╝"
 else
     echo "╔══════════════════════════════════════╗"
@@ -539,6 +420,6 @@ else
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
-    echo "║ unsloth studio -H 0.0.0.0 -p 8888    ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8000    ║"
     echo "╚══════════════════════════════════════╝"
 fi
