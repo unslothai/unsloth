@@ -89,6 +89,89 @@ _smart_apt_install() {
     fi
 }
 
+# ── macOS helpers ──
+_have_clt() {
+    xcode-select -p >/dev/null 2>&1
+}
+
+_find_brew_bin() {
+    if command -v brew >/dev/null 2>&1; then
+        command -v brew
+        return 0
+    fi
+    if [ -x /opt/homebrew/bin/brew ]; then
+        echo /opt/homebrew/bin/brew
+        return 0
+    fi
+    if [ -x /usr/local/bin/brew ]; then
+        echo /usr/local/bin/brew
+        return 0
+    fi
+    return 1
+}
+
+_load_brew_into_current_shell() {
+    _brew_bin=$(_find_brew_bin 2>/dev/null || true)
+    if [ -n "$_brew_bin" ]; then
+        # shellcheck disable=SC2046
+        eval "$("$_brew_bin" shellenv)"
+        return 0
+    fi
+    return 1
+}
+
+_require_macos_clt_or_exit() {
+    if _have_clt; then
+        return 0
+    fi
+
+    echo ""
+    echo "==> Xcode Command Line Tools are required before continuing."
+    echo "   We are requesting the Apple installer now..."
+    echo ""
+
+    echo "   If the installer dialog appeared:"
+    echo "     1) Complete the Command Line Tools installation"
+    echo "     2) Then re-run this installer:"
+    echo "        curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh"
+    echo ""
+    echo "   If no dialog appeared, open it manually with:"
+    echo "     xcode-select --install"
+    echo ""
+    echo "   We are stopping here because Homebrew and native builds depend on CLT."
+    echo ""
+
+    xcode-select --install </dev/null 2>/dev/null || true
+
+    exit 1
+}
+
+_ensure_brew_or_exit() {
+    if _load_brew_into_current_shell; then
+        return 0
+    fi
+
+    echo ""
+    echo "==> Homebrew not found. Installing Homebrew..."
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+    if _load_brew_into_current_shell; then
+        echo "==> Homebrew installed and loaded into this shell."
+        return 0
+    fi
+
+    echo ""
+    echo "❌ Homebrew appears to have installed, but 'brew' is still not available in this shell."
+    echo ""
+    echo "   Please run one of these, depending on your Mac:"
+    echo "     eval \"\$(/opt/homebrew/bin/brew shellenv)\""
+    echo "   or"
+    echo "     eval \"\$(/usr/local/bin/brew shellenv)\""
+    echo ""
+    echo "   Then re-run this installer."
+    exit 1
+}
+
 echo ""
 echo "========================================="
 echo "   Unsloth Studio Installer"
@@ -114,15 +197,8 @@ command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
 
 case "$OS" in
     macos)
-        # Xcode Command Line Tools provide the C/C++ compiler
-        if ! xcode-select -p >/dev/null 2>&1; then
-            echo ""
-            echo "==> Xcode Command Line Tools are required."
-            echo "    Installing (a system dialog will appear)..."
-            xcode-select --install </dev/null 2>/dev/null || true
-            echo "    After the installation completes, please re-run this script."
-            exit 1
-        fi
+        _require_macos_clt_or_exit
+        _ensure_brew_or_exit
         ;;
     linux|wsl)
         # curl or wget is needed for downloads; check both
@@ -207,7 +283,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth studio setup..."
-"$VENV_NAME/bin/unsloth" studio setup </dev/null
+"$VENV_ABS_BIN/unsloth" studio setup --venv_path "$VENV_ABS" --suppress-launch-hint </dev/null
 
 echo ""
 echo "========================================="
