@@ -39,7 +39,7 @@ export const MessageTiming: FC<{
   const st = serverTimings?.serverTimings;
 
   // Badge text: show tok/s if available, otherwise total time
-  const badgeText = st?.predicted_per_second
+  const badgeText = st?.predicted_per_second != null
     ? `${st.predicted_per_second.toFixed(1)} tok/s`
     : formatTimingMs(timing.totalStreamTime);
 
@@ -68,32 +68,38 @@ export const MessageTiming: FC<{
           {st ? (
             <>
               {/* Server-side metrics (GGUF) */}
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Prompt eval</span>
-                <span className="font-mono tabular-nums">
-                  {formatTimingMs(st.prompt_ms)}
-                </span>
-              </div>
-              {st.prompt_n > 1 && (
+              {st?.prompt_ms != null && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Prompt speed</span>
+                  <span className="text-muted-foreground">Prompt eval</span>
                   <span className="font-mono tabular-nums">
-                    {st.prompt_per_second?.toFixed(1)} tok/s
+                    {formatTimingMs(st.prompt_ms)}
                   </span>
                 </div>
               )}
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Generation</span>
-                <span className="font-mono tabular-nums">
-                  {formatTimingMs(st.predicted_ms)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-muted-foreground">Speed</span>
-                <span className="font-mono tabular-nums">
-                  {st.predicted_per_second?.toFixed(1)} tok/s
-                </span>
-              </div>
+              {(st?.prompt_n ?? 0) > 1 && st?.prompt_per_second != null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Prompt speed</span>
+                  <span className="font-mono tabular-nums">
+                    {st.prompt_per_second.toFixed(1)} tok/s
+                  </span>
+                </div>
+              )}
+              {st?.predicted_ms != null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Generation</span>
+                  <span className="font-mono tabular-nums">
+                    {formatTimingMs(st.predicted_ms)}
+                  </span>
+                </div>
+              )}
+              {st?.predicted_per_second != null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Speed</span>
+                  <span className="font-mono tabular-nums">
+                    {st.predicted_per_second.toFixed(1)} tok/s
+                  </span>
+                </div>
+              )}
               {timing.tokenCount !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Tokens</span>
@@ -102,11 +108,11 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {st.cache_n > 0 && (
+              {(st?.cache_n ?? 0) > 0 && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Cache hits</span>
                   <span className="font-mono tabular-nums">
-                    {formatNumber(st.cache_n)}
+                    {formatNumber(st!.cache_n)}
                   </span>
                 </div>
               )}

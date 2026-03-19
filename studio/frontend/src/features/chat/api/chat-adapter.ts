@@ -561,6 +561,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
+      // Reset stale context usage from previous message
+      useChatRuntimeStore.getState().setContextUsage(null);
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -700,8 +702,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Update context usage in store if we got server data
-        if (meta?.usage) {
+        // Update context usage in store if we got valid server data
+        if (
+          meta?.usage &&
+          typeof meta.usage.prompt_tokens === "number" &&
+          typeof meta.usage.completion_tokens === "number" &&
+          typeof meta.usage.total_tokens === "number"
+        ) {
           useChatRuntimeStore.getState().setContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
