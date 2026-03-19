@@ -41,6 +41,32 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    
+    # Fallback: Check if NVIDIA GPU exists via nvidia-smi (helps with DGX Spark GB10, etc.)
+    # This handles cases where torch.cuda.is_available() returns False due to
+    # PyTorch/CUDA version mismatches, but the GPU hardware is actually present
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import warnings
+            gpu_name = result.stdout.strip().split('\n')[0]
+            warnings.warn(
+                f"Unsloth: NVIDIA GPU detected via nvidia-smi ({gpu_name}), but torch.cuda.is_available() returned False.\n"
+                f"This usually indicates a PyTorch/CUDA version mismatch. Attempting to proceed with CUDA backend.\n"
+                f"If you encounter errors, please ensure your PyTorch installation matches your CUDA driver version.\n"
+                f"Current CUDA driver supports: CUDA {torch.version.cuda if hasattr(torch.version, 'cuda') else 'unknown'}",
+                stacklevel=2
+            )
+            return "cuda"
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        pass  # nvidia-smi not found or failed, continue to other checks
+    
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
