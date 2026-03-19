@@ -71,7 +71,9 @@ def build_multi_file_preview_rows(
     cs = _to_int(chunk_size, DEFAULT_CHUNK_SIZE)
     co = _to_int(chunk_overlap, DEFAULT_CHUNK_OVERLAP)
     _, rows = materialize_multi_file_unstructured_seed(
-        file_entries=file_entries, chunk_size=cs, chunk_overlap=co,
+        file_entries = file_entries,
+        chunk_size = cs,
+        chunk_overlap = co,
     )
     return _round_robin_preview(rows, preview_size)
 
@@ -86,6 +88,7 @@ def _round_robin_preview(
 
     # Group rows by source_file, preserving order of first appearance
     from collections import OrderedDict
+
     grouped: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
     for row in rows:
         key = row.get("source_file", "")
@@ -167,14 +170,16 @@ def materialize_multi_file_unstructured_seed(
     cached = _CACHE_DIR / f"{cache_key}.parquet"
     if cached.exists():
         df = pd.read_parquet(cached)
-        rows = df.to_dict(orient="records")
+        rows = df.to_dict(orient = "records")
         return cached, rows
 
     all_rows: list[dict[str, str]] = []
     for txt_path, orig_name in file_entries:
         text = load_unstructured_text_file(txt_path)
         chunks = split_text_into_chunks(
-            text=text, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            text = text,
+            chunk_size = chunk_size,
+            chunk_overlap = chunk_overlap,
         )
         for chunk in chunks:
             all_rows.append({"chunk_text": chunk, "source_file": orig_name})
@@ -185,7 +190,7 @@ def materialize_multi_file_unstructured_seed(
     df = pd.DataFrame(all_rows)
     ensure_dir(_CACHE_DIR)
     tmp = _CACHE_DIR / f"{cache_key}.tmp.parquet"
-    df.to_parquet(tmp, index=False)
+    df.to_parquet(tmp, index = False)
     tmp.rename(cached)
     return cached, all_rows
 
@@ -288,7 +293,7 @@ def _compute_multi_file_cache_key(
     chunk_overlap: int,
 ) -> str:
     parts: list[str] = []
-    for path, name in sorted(file_entries, key=lambda e: e[1]):
+    for path, name in sorted(file_entries, key = lambda e: e[1]):
         st = path.stat()
         parts.append(f"{path}|{st.st_size}|{st.st_mtime_ns}|{name}")
     parts.append(f"cs={chunk_size}|co={chunk_overlap}")

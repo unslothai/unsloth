@@ -15,7 +15,7 @@ from .chunking import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, resolve_chunkin
 
 class UnstructuredSeedSource(SeedSource):
     seed_type: Literal["unstructured"] = "unstructured"
-    paths: list[str] = Field(min_length=1)
+    paths: list[str] = Field(min_length = 1)
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 

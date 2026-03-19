@@ -46,7 +46,9 @@ _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 def _validate_safe_id(value: str, label: str) -> str:
     if not value or not _SAFE_ID_RE.match(value):
-        raise HTTPException(400, f"Invalid {label}: must be alphanumeric/dash/underscore only")
+        raise HTTPException(
+            400, f"Invalid {label}: must be alphanumeric/dash/underscore only"
+        )
     return value
 
 
@@ -252,14 +254,16 @@ def _read_preview_rows_from_multi_files(
     for fid, fname in zip(file_ids, file_names):
         extracted = block_dir / f"{fid}.extracted.txt"
         if not extracted.exists():
-            raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
+            raise HTTPException(
+                404, f"Extracted text not found for file: {fname} (id: {fid})"
+            )
         file_entries.append((extracted, fname))
 
     return build_multi_file_preview_rows(
-        file_entries=file_entries,
-        preview_size=preview_size,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        file_entries = file_entries,
+        preview_size = preview_size,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
     )
 
 
@@ -352,12 +356,16 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from uploaded file based on extension, converting to markdown where possible."""
     if ext in {".txt", ".md"}:
-        raw = file_path.read_text(encoding="utf-8", errors="ignore")
+        raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
     elif ext == ".pdf":
         import pymupdf4llm
-        raw = pymupdf4llm.to_markdown(str(file_path), write_images=False, show_progress=False)
+
+        raw = pymupdf4llm.to_markdown(
+            str(file_path), write_images = False, show_progress = False
+        )
     elif ext == ".docx":
         import mammoth
+
         with open(str(file_path), "rb") as f:
             result = mammoth.convert_to_markdown(f)
             raw = result.value
@@ -385,7 +393,10 @@ async def upload_unstructured_file(
     original_filename = file.filename or "upload"
     ext = Path(original_filename).suffix.lower()
     if ext not in UNSTRUCTURED_ALLOWED_EXTS:
-        raise HTTPException(400, f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}")
+        raise HTTPException(
+            400,
+            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
+        )
 
     # Read file content
     content = await file.read()
@@ -396,7 +407,9 @@ async def upload_unstructured_file(
 
     # Validate per-file size
     if size_bytes > MAX_FILE_SIZE:
-        raise HTTPException(413, f"File too large ({size_bytes} bytes). Maximum is 50MB.")
+        raise HTTPException(
+            413, f"File too large ({size_bytes} bytes). Maximum is 50MB."
+        )
 
     # Validate total size for this block
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
@@ -416,41 +429,43 @@ async def upload_unstructured_file(
     try:
         extracted_text = _extract_text_from_file(raw_path, ext)
         extracted_path = block_dir / f"{file_id}.extracted.txt"
-        extracted_path.write_text(extracted_text, encoding="utf-8")
+        extracted_path.write_text(extracted_text, encoding = "utf-8")
     except Exception as e:
         # Cleanup raw file on extraction failure
-        raw_path.unlink(missing_ok=True)
+        raw_path.unlink(missing_ok = True)
         return UnstructuredFileUploadResponse(
-            file_id=file_id,
-            filename=original_filename,
-            size_bytes=size_bytes,
-            status="error",
-            error=f"Text extraction failed: {type(e).__name__}: {e}",
+            file_id = file_id,
+            filename = original_filename,
+            size_bytes = size_bytes,
+            status = "error",
+            error = f"Text extraction failed: {type(e).__name__}: {e}",
         )
 
     # Save metadata
     try:
         meta_path = block_dir / f"{file_id}.meta.json"
         meta_path.write_text(
-            json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
-            encoding="utf-8",
+            json.dumps(
+                {"original_filename": original_filename, "size_bytes": size_bytes}
+            ),
+            encoding = "utf-8",
         )
     except OSError:
-        raw_path.unlink(missing_ok=True)
-        extracted_path.unlink(missing_ok=True)
+        raw_path.unlink(missing_ok = True)
+        extracted_path.unlink(missing_ok = True)
         return UnstructuredFileUploadResponse(
-            file_id=file_id,
-            filename=original_filename,
-            size_bytes=size_bytes,
-            status="error",
-            error="Failed to save file metadata",
+            file_id = file_id,
+            filename = original_filename,
+            size_bytes = size_bytes,
+            status = "error",
+            error = "Failed to save file metadata",
         )
 
     return UnstructuredFileUploadResponse(
-        file_id=file_id,
-        filename=original_filename,
-        size_bytes=size_bytes,
-        status="ok",
+        file_id = file_id,
+        filename = original_filename,
+        size_bytes = size_bytes,
+        status = "ok",
     )
 
 
@@ -492,12 +507,12 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         for fid in payload.file_ids:
             _validate_safe_id(fid, "file_id")
         preview_rows = _read_preview_rows_from_multi_files(
-            block_id=payload.block_id,
-            file_ids=payload.file_ids,
-            file_names=payload.file_names,
-            preview_size=payload.preview_size,
-            chunk_size=payload.unstructured_chunk_size,
-            chunk_overlap=payload.unstructured_chunk_overlap,
+            block_id = payload.block_id,
+            file_ids = payload.file_ids,
+            file_names = payload.file_names,
+            preview_size = payload.preview_size,
+            chunk_size = payload.unstructured_chunk_size,
+            chunk_overlap = payload.unstructured_chunk_overlap,
         )
         columns = ["chunk_text", "source_file"] if preview_rows else []
         resolved_paths = [
@@ -505,11 +520,11 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             for fid in payload.file_ids
         ]
         return SeedInspectResponse(
-            dataset_name="unstructured_seed",
-            resolved_path=resolved_paths[0] if resolved_paths else "",
-            resolved_paths=resolved_paths,
-            columns=columns,
-            preview_rows=_serialize_preview_rows(preview_rows),
+            dataset_name = "unstructured_seed",
+            resolved_path = resolved_paths[0] if resolved_paths else "",
+            resolved_paths = resolved_paths,
+            columns = columns,
+            preview_rows = _serialize_preview_rows(preview_rows),
         )
 
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"

@@ -84,12 +84,12 @@ class SeedInspectUploadRequest(BaseModel):
     file_ids: list[str] | None = None
     file_names: list[str] | None = None
     # Shared fields
-    preview_size: int = Field(default=10, ge=1, le=50)
+    preview_size: int = Field(default = 10, ge = 1, le = 50)
     seed_source_type: str | None = None
-    unstructured_chunk_size: int | None = Field(default=None, ge=1, le=20000)
-    unstructured_chunk_overlap: int | None = Field(default=None, ge=0, le=20000)
+    unstructured_chunk_size: int | None = Field(default = None, ge = 1, le = 20000)
+    unstructured_chunk_overlap: int | None = Field(default = None, ge = 0, le = 20000)
 
-    @model_validator(mode="after")
+    @model_validator(mode = "after")
     def _check_mutual_exclusivity(self) -> "SeedInspectUploadRequest":
         has_legacy = self.content_base64 is not None
         has_multi = self.file_ids is not None
@@ -101,7 +101,9 @@ class SeedInspectUploadRequest(BaseModel):
             if not self.block_id:
                 raise ValueError("block_id is required when using file_ids")
             if self.file_names is None or len(self.file_ids) != len(self.file_names):
-                raise ValueError("file_names must be provided and same length as file_ids")
+                raise ValueError(
+                    "file_names must be provided and same length as file_ids"
+                )
         if has_legacy:
             if not self.filename:
                 raise ValueError("filename is required when using content_base64")
