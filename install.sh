@@ -202,7 +202,9 @@ uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
 # setup.sh requires, but uv already installed a compatible interpreter
 # inside the venv.
 VENV_ABS_BIN="$(cd "$VENV_NAME/bin" && pwd)"
-export PATH="$VENV_ABS_BIN:$PATH"
+if [ -n "$VENV_ABS_BIN" ]; then
+    export PATH="$VENV_ABS_BIN:$PATH"
+fi
 
 echo "==> Running unsloth studio setup..."
 "$VENV_NAME/bin/unsloth" studio setup </dev/null
