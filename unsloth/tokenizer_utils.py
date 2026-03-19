@@ -678,9 +678,8 @@ def _fix_chat_template(chat_template):
         # Extract the model-specific separator after role (e.g. '\n' for
         # Hermes, '<|im_sep|>' for Phi-4) to avoid hard-coding.
         import re
-        sep_match = re.search(
-            r"message\['role'\]\s*\+\s*'([^']*)'", chat_template
-        )
+
+        sep_match = re.search(r"message\['role'\]\s*\+\s*'([^']*)'", chat_template)
         separator = sep_match.group(1) if sep_match else "\\n"
         assistant_prefix = "<|im_start|>assistant" + separator
         generation_block = (
@@ -688,9 +687,7 @@ def _fix_chat_template(chat_template):
             "{{ '" + assistant_prefix + "' }}"
             "{%" + dash + " endif %}"
         )
-        chat_template = (
-            chat_template[: where + len(chosen_end)] + generation_block
-        )
+        chat_template = chat_template[: where + len(chosen_end)] + generation_block
 
     return chat_template
 
