@@ -262,7 +262,11 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
             passed = 0 if is_error else sum(1 for e in expectations if e.get("passed"))
             total = len(expectations)
             # None = not graded (skipped or parse failure), distinct from 0.0 (graded and failed)
-            pass_rate = None if (total == 0 and not is_error) else (0.0 if is_error else passed / total)
+            pass_rate = (
+                None
+                if (total == 0 and not is_error)
+                else (0.0 if is_error else passed / total)
+            )
             runs.append(
                 {
                     "eval_id": eval_id,
