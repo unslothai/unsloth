@@ -43,7 +43,10 @@ ENV_CONTEXT_INSTALLED = """
 
 
 def run_claude(
-    prompt: str, with_skill: bool, output_dir: Path, model: str = "opus",
+    prompt: str,
+    with_skill: bool,
+    output_dir: Path,
+    model: str = "opus",
     eval_id: str = "",
 ) -> dict:
     """Run a single eval via claude -p and return the JSON result."""
@@ -404,7 +407,10 @@ def main():
         # With skill
         with_dir = iteration_dir / eval_id / "with_skill" / "outputs"
         with_result = run_claude(
-            prompt, with_skill = True, output_dir = with_dir, model = args.model,
+            prompt,
+            with_skill = True,
+            output_dir = with_dir,
+            model = args.model,
             eval_id = eval_id,
         )
 
@@ -413,7 +419,10 @@ def main():
         if not args.skip_baseline:
             without_dir = iteration_dir / eval_id / "without_skill" / "outputs"
             without_result = run_claude(
-                prompt, with_skill = False, output_dir = without_dir, model = args.model,
+                prompt,
+                with_skill = False,
+                output_dir = without_dir,
+                model = args.model,
                 eval_id = eval_id,
             )
 
@@ -447,12 +456,18 @@ def main():
     print(f"{'='*60}")
     print(f"{'Metric':<20} {'With Skill':<15} {'Without Skill':<15} {'Delta':<10}")
     print(f"{'-'*60}")
-    print(f"{'Pass rate':<20} {fmt(summary.get('with_skill'), 'pass_rate', '.1%'):<15} "
-          f"{fmt(summary.get('without_skill'), 'pass_rate', '.1%'):<15} {delta.get('pass_rate', 'N/A')}")
-    print(f"{'Tokens':<20} {fmt(summary.get('with_skill'), 'tokens', '.0f'):<15} "
-          f"{fmt(summary.get('without_skill'), 'tokens', '.0f'):<15} {delta.get('tokens', 'N/A')}")
-    print(f"{'Time (s)':<20} {fmt(summary.get('with_skill'), 'time_seconds', '.1f'):<15} "
-          f"{fmt(summary.get('without_skill'), 'time_seconds', '.1f'):<15} {delta.get('time_seconds', 'N/A')}")
+    print(
+        f"{'Pass rate':<20} {fmt(summary.get('with_skill'), 'pass_rate', '.1%'):<15} "
+        f"{fmt(summary.get('without_skill'), 'pass_rate', '.1%'):<15} {delta.get('pass_rate', 'N/A')}"
+    )
+    print(
+        f"{'Tokens':<20} {fmt(summary.get('with_skill'), 'tokens', '.0f'):<15} "
+        f"{fmt(summary.get('without_skill'), 'tokens', '.0f'):<15} {delta.get('tokens', 'N/A')}"
+    )
+    print(
+        f"{'Time (s)':<20} {fmt(summary.get('with_skill'), 'time_seconds', '.1f'):<15} "
+        f"{fmt(summary.get('without_skill'), 'time_seconds', '.1f'):<15} {delta.get('time_seconds', 'N/A')}"
+    )
 
     # Try to launch viewer
     viewer_script = (
