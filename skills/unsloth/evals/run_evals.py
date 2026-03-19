@@ -30,22 +30,30 @@ ENV_CONTEXT = """
 CONTEXT about the environment:
 - Working directory: {repo_root}
 - Mac M4, no NVIDIA GPU. Full Unsloth training does not work here, but dry-run flows do. GGUF inference does work on this machine.
-- unsloth CLI is installed at /opt/homebrew/bin/unsloth (version 2026.3.5)
-- Studio venv exists at ~/.unsloth/studio/.venv (Python 3.11)
 - Use pip3, not pip.
-- `unsloth studio setup` is already done in this environment. Only run it if the task explicitly requires verifying setup behavior.
 - If a command fails, note it and keep going.
 - Save all output/files you create into: {output_dir}
 """.strip()
 
+# Extra context for evals where unsloth is already installed
+ENV_CONTEXT_INSTALLED = """
+- unsloth CLI is already installed. Studio venv exists at ~/.unsloth/studio/.venv (Python 3.11).
+- `unsloth studio setup` is already done.
+""".strip()
+
 
 def run_claude(
-    prompt: str, with_skill: bool, output_dir: Path, model: str = "opus"
+    prompt: str, with_skill: bool, output_dir: Path, model: str = "opus",
+    eval_id: str = "",
 ) -> dict:
     """Run a single eval via claude -p and return the JSON result."""
     output_dir.mkdir(parents = True, exist_ok = True)
 
-    full_prompt = f"{prompt}\n\n{ENV_CONTEXT.format(repo_root = REPO_ROOT, output_dir = output_dir)}"
+    ctx = ENV_CONTEXT.format(repo_root = REPO_ROOT, output_dir = output_dir)
+    # Don't tell fresh-install evals that unsloth is already set up
+    if eval_id != "setup-fresh":
+        ctx += "\n" + ENV_CONTEXT_INSTALLED
+    full_prompt = f"{prompt}\n\n{ctx}"
 
     cmd = [
         "claude",
@@ -294,7 +302,7 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
     def stats(run_list, key):
         vals = [r["result"][key] for r in run_list if r["result"][key] is not None]
         if not vals:
-            return {"mean": 0, "min": 0, "max": 0}
+            return None
         return {
             "mean": round(sum(vals) / len(vals), 3),
             "min": min(vals),
@@ -324,18 +332,17 @@ def build_benchmark(iteration_dir: Path, results: list, evals: list) -> dict:
         },
     }
 
-    # Delta
-    w_pr = benchmark["run_summary"]["with_skill"]["pass_rate"]["mean"]
-    wo_pr = benchmark["run_summary"]["without_skill"]["pass_rate"]["mean"]
-    w_tok = benchmark["run_summary"]["with_skill"]["tokens"]["mean"]
-    wo_tok = benchmark["run_summary"]["without_skill"]["tokens"]["mean"]
-    w_time = benchmark["run_summary"]["with_skill"]["time_seconds"]["mean"]
-    wo_time = benchmark["run_summary"]["without_skill"]["time_seconds"]["mean"]
-    benchmark["run_summary"]["delta"] = {
-        "pass_rate": f"{w_pr - wo_pr:+.3f}",
-        "time_seconds": f"{w_time - wo_time:+.1f}",
-        "tokens": f"{int(w_tok - wo_tok):+d}",
-    }
+    # Delta — only compute when both sides have data
+    w_summary = benchmark["run_summary"]["with_skill"]
+    wo_summary = benchmark["run_summary"]["without_skill"]
+    if w_summary["pass_rate"] and wo_summary["pass_rate"]:
+        benchmark["run_summary"]["delta"] = {
+            "pass_rate": f"{w_summary['pass_rate']['mean'] - wo_summary['pass_rate']['mean']:+.3f}",
+            "time_seconds": f"{w_summary['time_seconds']['mean'] - wo_summary['time_seconds']['mean']:+.1f}",
+            "tokens": f"{int(w_summary['tokens']['mean'] - wo_summary['tokens']['mean']):+d}",
+        }
+    else:
+        benchmark["run_summary"]["delta"] = None
 
     return benchmark
 
@@ -397,7 +404,8 @@ def main():
         # With skill
         with_dir = iteration_dir / eval_id / "with_skill" / "outputs"
         with_result = run_claude(
-            prompt, with_skill = True, output_dir = with_dir, model = args.model
+            prompt, with_skill = True, output_dir = with_dir, model = args.model,
+            eval_id = eval_id,
         )
 
         # Without skill (baseline)
@@ -405,7 +413,8 @@ def main():
         if not args.skip_baseline:
             without_dir = iteration_dir / eval_id / "without_skill" / "outputs"
             without_result = run_claude(
-                prompt, with_skill = False, output_dir = without_dir, model = args.model
+                prompt, with_skill = False, output_dir = without_dir, model = args.model,
+                eval_id = eval_id,
             )
 
         results.append((eval_entry, with_result, without_result))
@@ -427,24 +436,23 @@ def main():
 
     # Print summary
     summary = benchmark["run_summary"]
-    delta = summary.get("delta", {})
+    delta = summary.get("delta") or {}
+
+    def fmt(stat, key, fmt_spec):
+        s = stat.get(key) if stat else None
+        return f"{s['mean']:{fmt_spec}}" if s else "N/A"
+
     print(f"\n{'='*60}")
     print(f"RESULTS — Iteration {iteration}")
     print(f"{'='*60}")
     print(f"{'Metric':<20} {'With Skill':<15} {'Without Skill':<15} {'Delta':<10}")
     print(f"{'-'*60}")
-    print(
-        f"{'Pass rate':<20} {summary['with_skill']['pass_rate']['mean']:<15.1%} "
-        f"{summary['without_skill']['pass_rate']['mean']:<15.1%} {delta.get('pass_rate', 'N/A')}"
-    )
-    print(
-        f"{'Tokens':<20} {summary['with_skill']['tokens']['mean']:<15.0f} "
-        f"{summary['without_skill']['tokens']['mean']:<15.0f} {delta.get('tokens', 'N/A')}"
-    )
-    print(
-        f"{'Time (s)':<20} {summary['with_skill']['time_seconds']['mean']:<15.1f} "
-        f"{summary['without_skill']['time_seconds']['mean']:<15.1f} {delta.get('time_seconds', 'N/A')}"
-    )
+    print(f"{'Pass rate':<20} {fmt(summary.get('with_skill'), 'pass_rate', '.1%'):<15} "
+          f"{fmt(summary.get('without_skill'), 'pass_rate', '.1%'):<15} {delta.get('pass_rate', 'N/A')}")
+    print(f"{'Tokens':<20} {fmt(summary.get('with_skill'), 'tokens', '.0f'):<15} "
+          f"{fmt(summary.get('without_skill'), 'tokens', '.0f'):<15} {delta.get('tokens', 'N/A')}")
+    print(f"{'Time (s)':<20} {fmt(summary.get('with_skill'), 'time_seconds', '.1f'):<15} "
+          f"{fmt(summary.get('without_skill'), 'time_seconds', '.1f'):<15} {delta.get('time_seconds', 'N/A')}")
 
     # Try to launch viewer
     viewer_script = (
