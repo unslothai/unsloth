@@ -382,12 +382,12 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
-rm -rf "$LLAMA_CPP_DIR"
 if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
     echo ""
     echo "Skipping llama-server build (missing dependencies)"
     echo "   Install the missing packages and re-run setup to enable GGUF inference."
 else
+rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
