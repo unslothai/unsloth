@@ -22,14 +22,14 @@
       "id": "setup-fresh",
       "prompt": "Install Unsloth from scratch and set up the Studio environment. This is a clean machine with nothing installed.",
       "expectations": [
-        "Runs pip install unsloth (or pip install -e . if in repo)",
+        "Installs unsloth (pip install unsloth, pip install -e ., or uv pip install unsloth)",
         "Runs unsloth studio setup",
         "Install comes before studio setup",
         "Verifies the CLI works after install (e.g. unsloth --help)",
         "No unnecessary exploration before installing"
       ],
       "assertions": {
-        "pip_install_ran": true,
+        "install_ran": true,
         "studio_setup_ran": true,
         "correct_order": true,
         "cli_verified_after": true
