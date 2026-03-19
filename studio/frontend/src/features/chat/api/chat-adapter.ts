@@ -736,6 +736,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             custom: {
               reasoningDuration,
               serverTimings: meta?.timings ?? undefined,
+              contextUsage: meta?.usage ? {
+                promptTokens: meta.usage.prompt_tokens,
+                completionTokens: meta.usage.completion_tokens,
+                totalTokens: meta.usage.total_tokens,
+                cachedTokens: meta.timings?.cache_n ?? 0,
+              } : undefined,
             },
           },
         };

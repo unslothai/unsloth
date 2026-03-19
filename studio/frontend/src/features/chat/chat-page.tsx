@@ -534,6 +534,7 @@ export function ChatPage(): ReactElement {
   const enterCompare = useCallback(() => {
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    useChatRuntimeStore.getState().setContextUsage(null);
   }, [view]);
 
   const exitCompare = useCallback(() => {

@@ -1219,17 +1219,16 @@ async def openai_chat_completions(
                         if cumulative is _gguf_sentinel:
                             break
                         # Forward server metadata as custom SSE event
-                        if isinstance(cumulative, dict) and cumulative.get(
-                            "__metadata__"
-                        ):
-                            metadata_event = json.dumps(
-                                {
-                                    "type": "metadata",
-                                    "usage": cumulative.get("usage"),
-                                    "timings": cumulative.get("timings"),
-                                }
-                            )
-                            yield f"data: {metadata_event}\n\n"
+                        if isinstance(cumulative, dict):
+                            if cumulative.get("__metadata__"):
+                                metadata_event = json.dumps(
+                                    {
+                                        "type": "metadata",
+                                        "usage": cumulative.get("usage"),
+                                        "timings": cumulative.get("timings"),
+                                    }
+                                )
+                                yield f"data: {metadata_event}\n\n"
                             continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
