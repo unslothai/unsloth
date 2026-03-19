@@ -51,21 +51,21 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### MacOS, Linux, WSL:
+#### MacOS, Linux, WSL Setup:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 ```
-If you don't have `curl`, use `wget`. Launch every time:
+If you don't have `curl`, use `wget`. Then to launch after setup:
 ```bash
 source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Windows PowerShell (One time):
+#### Windows PowerShell Setup:
 ```powershell
 irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
 ```
-Then to launch every time:
+Then to launch after setup:
 ```powershell
 & .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
 ```
