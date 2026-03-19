@@ -338,8 +338,13 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     if [ -z "$_STILL_MISSING" ]; then
         echo "✅ GGUF build dependencies installed"
     elif command -v sudo >/dev/null 2>&1; then
-        echo "   Could not install without elevated permissions: $_STILL_MISSING"
-        echo "   You may be prompted for your password."
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   WARNING: We require sudo elevated permissions to install:"
+        echo "   $_STILL_MISSING"
+        echo "   If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
         sudo apt-get update -y
         sudo apt-get install -y $_STILL_MISSING
         echo "✅ GGUF build dependencies installed"

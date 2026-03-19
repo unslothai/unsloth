@@ -54,10 +54,15 @@ _smart_apt_install() {
     fi
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
-    echo "    Could not install without elevated permissions: $_STILL_MISSING"
-
     if command -v sudo >/dev/null 2>&1; then
-        printf "    Use sudo to install them? [Y/n] "
+        echo ""
+        echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "    WARNING: We require sudo elevated permissions to install:"
+        echo "    $_STILL_MISSING"
+        echo "    If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+        printf "    Accept? [Y/n] "
         if [ -r /dev/tty ]; then
             read -r REPLY </dev/tty || REPLY="y"
         else
@@ -71,7 +76,6 @@ _smart_apt_install() {
                 exit 1
                 ;;
             *)
-                echo "    To allow elevated permissions to install $_STILL_MISSING, please type your password:"
                 sudo apt-get update -y
                 sudo apt-get install -y $_STILL_MISSING
                 ;;
