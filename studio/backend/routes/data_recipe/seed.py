@@ -194,7 +194,15 @@ def _read_preview_rows_from_local_file(
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            df = pd.read_csv(path, nrows = preview_size)
+            df = pd.read_csv(path, nrows = preview_size, encoding = "utf-8-sig")
+            df.columns = df.columns.str.strip()
+            unnamed = [c for c in df.columns if c == "" or c.startswith("Unnamed:")]
+            if unnamed:
+                df = df.drop(columns = unnamed)
+                full_df = pd.read_csv(path, encoding = "utf-8-sig")
+                full_df.columns = full_df.columns.str.strip()
+                full_df = full_df.drop(columns = unnamed)
+                full_df.to_csv(path, index = False, encoding = "utf-8")
         elif ext == ".jsonl":
             df = pd.read_json(path, lines = True).head(preview_size)
         elif ext == ".json":
@@ -428,6 +436,15 @@ async def upload_unstructured_file(
     # Extract text and save
     try:
         extracted_text = _extract_text_from_file(raw_path, ext)
+        if not extracted_text or not extracted_text.strip():
+            raw_path.unlink(missing_ok = True)
+            return UnstructuredFileUploadResponse(
+                file_id = file_id,
+                filename = original_filename,
+                size_bytes = size_bytes,
+                status = "error",
+                error = "No extractable text found in file",
+            )
         extracted_path = block_dir / f"{file_id}.extracted.txt"
         extracted_path.write_text(extracted_text, encoding = "utf-8")
     except Exception as e:

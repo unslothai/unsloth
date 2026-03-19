@@ -54,7 +54,7 @@ def tmp_root() -> Path:
 
 
 def seed_uploads_root() -> Path:
-    return tmp_root() / "seed-uploads"
+    return datasets_root() / "seed-uploads"
 
 
 def unstructured_seed_cache_root() -> Path:
