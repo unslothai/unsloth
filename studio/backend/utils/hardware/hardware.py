@@ -281,7 +281,7 @@ def get_package_versions() -> Dict[str, Optional[str]]:
         import torch
 
         versions["cuda"] = getattr(torch.version, "cuda", None)
-        versions["rocm"] = getattr(torch.version, "hip",  None)
+        versions["rocm"] = getattr(torch.version, "hip", None)
     except Exception:
         versions["cuda"] = None
         versions["rocm"] = None
@@ -444,7 +444,9 @@ def get_physical_gpu_count() -> int:
     try:
         result = subprocess.run(
             ["nvidia-smi", "-L"],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0 and result.stdout.strip():
             _physical_gpu_count = len(result.stdout.strip().splitlines())
@@ -456,7 +458,9 @@ def get_physical_gpu_count() -> int:
     try:
         result = subprocess.run(
             ["rocm-smi", "--showserial"],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0 and result.stdout.strip():
             count = sum(1 for l in result.stdout.splitlines() if l.startswith("GPU["))
@@ -469,6 +473,7 @@ def get_physical_gpu_count() -> int:
     # --- Fallback ---
     try:
         import torch
+
         _physical_gpu_count = max(torch.cuda.device_count(), 1)
     except Exception:
         _physical_gpu_count = 1
