@@ -53,6 +53,10 @@ Unsloth Studio (BETA) works on **Windows, Linux, WSL** and **macOS**.
 
 #### MacOS, Linux or WSL Setup (One time):
 ```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+```
+Or manually:
+```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv unsloth_studio --python 3.13
 source unsloth_studio/bin/activate
@@ -67,7 +71,11 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Windows PowerShell (One time):
-```bash
+```powershell
+irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
+```
+Or manually:
+```powershell
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
 uv venv unsloth_studio --python 3.13
@@ -77,7 +85,7 @@ unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
-```bash
+```powershell
 .\unsloth_studio\Scripts\activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
