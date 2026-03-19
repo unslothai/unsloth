@@ -131,6 +131,7 @@ from unsloth_zoo.device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 
+
 # Patch get_device_type to add nvidia-smi fallback for DGX Spark GB10
 # This must happen before DEVICE_TYPE is used, since unsloth_zoo.device_type
 # may fail on DGX Spark where torch.cuda.is_available() incorrectly returns False
@@ -138,7 +139,7 @@ def _patched_get_device_type():
     """Enhanced version of get_device_type with nvidia-smi fallback for DGX Spark GB10"""
     import torch
     import functools
-    
+
     # Try standard detection first
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
@@ -146,35 +147,40 @@ def _patched_get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    
+
     # Fallback: Check if NVIDIA GPU exists via nvidia-smi (helps with DGX Spark GB10, etc.)
     # This handles cases where torch.cuda.is_available() returns False due to
     # PyTorch/CUDA version mismatches, but the GPU hardware is actually present
     import subprocess
+
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=2
+            capture_output = True,
+            text = True,
+            timeout = 2,
         )
         if result.returncode == 0 and result.stdout.strip():
             import warnings
-            gpu_name = result.stdout.strip().split('\n')[0]
+
+            gpu_name = result.stdout.strip().split("\n")[0]
             warnings.warn(
                 f"Unsloth: NVIDIA GPU detected via nvidia-smi ({gpu_name}), but torch.cuda.is_available() returned False.\n"
                 f"This usually indicates a PyTorch/CUDA version mismatch. Attempting to proceed with CUDA backend.\n"
                 f"If you encounter errors, please ensure your PyTorch installation matches your CUDA driver version.\n"
                 f"PyTorch was compiled with: CUDA {torch.version.cuda if hasattr(torch.version, 'cuda') else 'unknown'}",
-                stacklevel=2
+                stacklevel = 2,
             )
             return "cuda"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass  # nvidia-smi not found or timed out, continue to other checks
     except Exception as e:
         import warnings
-        warnings.warn(f"Unsloth: nvidia-smi fallback check failed unexpectedly: {e}", stacklevel=2)
-    
+
+        warnings.warn(
+            f"Unsloth: nvidia-smi fallback check failed unexpectedly: {e}", stacklevel = 2
+        )
+
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -192,6 +198,7 @@ def _patched_get_device_type():
         "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
     )
 
+
 # Only apply patch if we're not on a working CUDA/XPU setup
 # (avoid overhead on systems that work fine)
 try:
@@ -199,6 +206,7 @@ try:
 except:
     # If DEVICE_TYPE failed to initialize, apply our patch
     import functools
+
     get_device_type = functools.cache(_patched_get_device_type)
     DEVICE_TYPE = get_device_type()
     # Recalculate dependent variables

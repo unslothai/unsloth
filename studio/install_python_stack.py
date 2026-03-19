@@ -332,19 +332,32 @@ def install_python_stack() -> int:
     # Step 3b already installed broken 0.0.0.dev0 placeholder, so we need --upgrade
     if IS_AARCH64:
         import importlib.util
+
         if importlib.util.find_spec("torch") is not None:
             import torch
+
             cuda_version = getattr(torch.version, "cuda", None)
             if cuda_version:
                 # Extract major+minor: "130" from "13.0.1" or "13.0"
                 cuda_short = "".join(cuda_version.split(".")[:2])
                 index_url = f"https://download.pytorch.org/whl/cu{cuda_short}"
                 if VERBOSE:
-                    print(f"   Installing torchcodec for aarch64 from PyTorch index (CUDA {cuda_version})...")
+                    print(
+                        f"   Installing torchcodec for aarch64 from PyTorch index (CUDA {cuda_version})..."
+                    )
                 run(
                     "Installing torchcodec (aarch64)",
-                    [sys.executable, "-m", "pip", "install", "--upgrade", "--no-deps",
-                     "--index-url", index_url, "torchcodec"]
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--upgrade",
+                        "--no-deps",
+                        "--index-url",
+                        index_url,
+                        "torchcodec",
+                    ],
                 )
 
     # 4. Overrides (torchao, transformers) — force-reinstall
