@@ -107,11 +107,24 @@ function Install-UnslothStudio {
     Write-Host ""
     Write-Host "========================================="
     Write-Host "   Unsloth Studio installed!"
-    Write-Host "   Launching Unsloth Studio..."
     Write-Host "========================================="
     Write-Host ""
-    $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
-    & $UnslothExe studio -H 0.0.0.0 -p 8888
+
+    # Launch studio automatically in interactive terminals;
+    # in non-interactive environments (CI, Docker) just print instructions.
+    $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    if ($IsInteractive) {
+        Write-Host "==> Launching Unsloth Studio..."
+        Write-Host ""
+        $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
+        & $UnslothExe studio -H 0.0.0.0 -p 8888
+    } else {
+        Write-Host "  To launch, run:"
+        Write-Host ""
+        Write-Host "    .\${VenvName}\Scripts\activate"
+        Write-Host "    unsloth studio -H 0.0.0.0 -p 8888"
+        Write-Host ""
+    }
 }
 
 Install-UnslothStudio

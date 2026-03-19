@@ -212,7 +212,19 @@ echo "==> Running unsloth studio setup..."
 echo ""
 echo "========================================="
 echo "   Unsloth Studio installed!"
-echo "   Launching Unsloth Studio..."
 echo "========================================="
 echo ""
-exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
+
+# Launch studio automatically in interactive terminals;
+# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
+if [ -t 0 ]; then
+    echo "==> Launching Unsloth Studio..."
+    echo ""
+    exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
+else
+    echo "  To launch, run:"
+    echo ""
+    echo "    source ${VENV_NAME}/bin/activate"
+    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo ""
+fi
