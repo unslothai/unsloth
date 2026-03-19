@@ -17,3 +17,5 @@ ruff<1,>=0.14.10
 scipy<2,>=1.11.0
 sqlfluff<4,>=3.2.0
 tiktoken<1,>=0.8.0
+pymupdf>=1.24.0
+python-docx>=1.0.0

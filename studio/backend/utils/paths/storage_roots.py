@@ -61,6 +61,10 @@ def unstructured_seed_cache_root() -> Path:
     return tmp_root() / "unstructured-seed-cache"
 
 
+def unstructured_uploads_root() -> Path:
+    return datasets_root() / "unstructured-uploads"
+
+
 def oxc_validator_tmp_root() -> Path:
     return tmp_root() / "oxc-validator"
 
@@ -104,6 +108,7 @@ def ensure_studio_directories() -> None:
         datasets_root,
         dataset_uploads_root,
         recipe_datasets_root,
+        unstructured_uploads_root,
         outputs_root,
         exports_root,
         auth_root,
