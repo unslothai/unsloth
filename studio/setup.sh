@@ -59,7 +59,6 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
         _NEED_FRONTEND_BUILD=false
     fi
 fi
-_NEED_FRONTEND_BUILD=true
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
@@ -160,6 +159,16 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+
+# Validate CSS output -- catch truncated Tailwind builds
+_MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+if [ -z "$_MAX_CSS" ]; then
+    echo "⚠️  WARNING: No CSS files were emitted. The frontend build may have failed."
+elif [ "$_MAX_CSS" -lt 100000 ]; then
+    echo "⚠️  WARNING: Largest CSS file is only $((_MAX_CSS / 1024))KB (expected >100KB)."
+    echo "   Tailwind may not have scanned all source files. Check for .gitignore interference."
+fi
+
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
@@ -308,10 +317,59 @@ echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 if grep -qi microsoft /proc/version 2>/dev/null; then
     echo ""
     echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
-    echo "   You may be prompted for your password."
-    sudo apt-get update -y
-    sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-    echo "✅ GGUF build dependencies installed"
+    _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
+
+    # Try without sudo first (works when already root)
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y $_GGUF_DEPS >/dev/null 2>&1 || true
+
+    # Check which packages are still missing
+    _STILL_MISSING=""
+    for _pkg in $_GGUF_DEPS; do
+        case "$_pkg" in
+            build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+        esac
+    done
+    _STILL_MISSING=$(echo "$_STILL_MISSING" | sed 's/^ *//')
+
+    if [ -z "$_STILL_MISSING" ]; then
+        echo "✅ GGUF build dependencies installed"
+    elif command -v sudo >/dev/null 2>&1; then
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   WARNING: We require sudo elevated permissions to install:"
+        echo "   $_STILL_MISSING"
+        echo "   If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+        printf "   Accept? [Y/n] "
+        if [ -r /dev/tty ]; then
+            read -r REPLY </dev/tty || REPLY="y"
+        else
+            REPLY="y"
+        fi
+        case "$REPLY" in
+            [nN]*)
+                echo ""
+                echo "   Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "   sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                _SKIP_GGUF_BUILD=true
+                ;;
+            *)
+                sudo apt-get update -y
+                sudo apt-get install -y $_STILL_MISSING
+                echo "✅ GGUF build dependencies installed"
+                ;;
+        esac
+    else
+        echo "   sudo is not available on this system."
+        echo "   Please install as root, then re-run setup:"
+        echo "   apt-get install -y $_STILL_MISSING"
+        _SKIP_GGUF_BUILD=true
+    fi
 fi
 
 # ── 8. Build llama.cpp binaries for GGUF inference + export ──
@@ -324,6 +382,11 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
+    echo ""
+    echo "Skipping llama-server build (missing dependencies)"
+    echo "   Install the missing packages and re-run setup to enable GGUF inference."
+else
 rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
@@ -442,6 +505,7 @@ rm -rf "$LLAMA_CPP_DIR"
         fi
     fi
 }
+fi  # end _SKIP_GGUF_BUILD check
 
 echo ""
 if [ "$IS_COLAB" = true ]; then
@@ -460,6 +524,6 @@ else
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
-    echo "║ unsloth studio -H 0.0.0.0 -p 8000    ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8888    ║"
     echo "╚══════════════════════════════════════╝"
 fi

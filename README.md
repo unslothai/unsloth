@@ -19,7 +19,7 @@ Run and train AI models with a unified local interface.
  <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
-Unsloth Studio lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ## ⭐ Features
 Unsloth provides several key features for both inference and training:
@@ -42,7 +42,7 @@ Unsloth provides several key features for both inference and training:
 Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
 
 ### Unsloth Studio (web UI)
-Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
+Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
 * **CPU:** Supported for **chat inference only**
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
@@ -51,7 +51,26 @@ Unsloth Studio works on **Windows, Linux, WSL** and **macOS**.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### MacOS, Linux or WSL Setup (One time):
+#### MacOS, Linux, WSL Setup:
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+```
+If you don't have `curl`, use `wget`. Then to launch after setup:
+```bash
+source unsloth_studio/bin/activate
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Windows PowerShell Setup:
+```powershell
+irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
+```
+Then to launch after setup:
+```powershell
+& .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
+```
+
+#### MacOS, Linux, WSL developer installs:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv unsloth_studio --python 3.13
@@ -60,14 +79,9 @@ uv pip install unsloth --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch every time:
-```bash
-source unsloth_studio/bin/activate
-unsloth studio -H 0.0.0.0 -p 8888
-```
 
-#### Windows PowerShell (One time):
-```bash
+#### Windows PowerShell developer installs:
+```powershell
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
 uv venv unsloth_studio --python 3.13
@@ -76,15 +90,18 @@ uv pip install unsloth --torch-backend=auto
 unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-Then to launch every time:
+
+#### Docker
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
 ```bash
-.\unsloth_studio\Scripts\activate
-unsloth studio -H 0.0.0.0 -p 8888
-```
+docker run -d -e JUPYTER_PASSWORD="mypassword" \
+  -p 8888:8888 -p 8000:8000 -p 2222:22 \
+  -v $(pwd)/work:/workspace/work \
+  --gpus all \
+  unsloth/unsloth
+  ```
 
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
-
-#### Nightly Installation - MacOS, Linux or WSL Setup (One time):
+#### Nightly Install - MacOS, Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
@@ -102,7 +119,8 @@ source .venv/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Nightly Installation - Windows Powershell (One time):
+#### Nightly Install - Windows:
+Run in Windows Powershell:
 ```bash
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e

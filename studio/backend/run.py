@@ -155,7 +155,7 @@ _shutdown_event = None
 
 def run_server(
     host: str = "0.0.0.0",
-    port: int = 8000,
+    port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
 ):
@@ -226,11 +226,15 @@ def run_server(
 
         print("")
         print("=" * 50)
+        print(f"🦥 Open your web browser, and enter http://localhost:{port}")
+        print("=" * 50)
+        print("")
+        print("=" * 50)
         print(f"🦥 Unsloth Studio is running on port {port}")
-        print(f"   Local:    http://localhost:{port}")
-        print(f"   External: http://{display_host}:{port}")
-        print(f"   API:      http://{display_host}:{port}/api")
-        print(f"   Health:   http://{display_host}:{port}/api/health")
+        print(f"   Local Access:          http://localhost:{port}")
+        print(f"   Worldwide Web Address: http://{display_host}:{port}")
+        print(f"   API:                   http://{display_host}:{port}/api")
+        print(f"   Health:                http://{display_host}:{port}/api/health")
         print("=" * 50)
 
     return app
@@ -243,7 +247,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
-    parser.add_argument("--port", type = int, default = 8000, help = "Port to bind to")
+    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
         type = str,
