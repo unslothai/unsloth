@@ -167,7 +167,7 @@ def setup(
         False,
         "--verbose",
         "-v",
-        help=(
+        help = (
             "Full pip output during Python install; print command logs when "
             "optional steps fail (e.g. llama.cpp cmake)."
         ),

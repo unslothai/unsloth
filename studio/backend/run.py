@@ -225,9 +225,9 @@ def run_server(
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         print_studio_access_banner(
-            port=port,
-            bind_host=host,
-            display_host=display_host,
+            port = port,
+            bind_host = host,
+            display_host = display_host,
         )
 
     return app

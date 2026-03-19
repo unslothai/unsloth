@@ -316,8 +316,6 @@ def install_python_stack() -> int:
     _STEP = 0
     _TOTAL = 10 if IS_WINDOWS else 11
 
-    
-
     # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
     _progress("pip upgrade")
     run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])

@@ -31,9 +31,7 @@ from startup_banner import (  # noqa: E402
 
 
 MSG_REEXEC = "Launching with studio venv..."
-MSG_START = (
-    "Starting Unsloth Studio (connection links print in a few seconds)..."
-)
+MSG_START = "Starting Unsloth Studio (connection links print in a few seconds)..."
 MSG_FRONTEND_OK = "✅ Frontend loaded from /path/to/frontend/dist"
 
 
