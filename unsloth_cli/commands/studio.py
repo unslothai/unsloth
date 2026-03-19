@@ -162,19 +162,32 @@ def studio_default(
 
 
 @studio_app.command()
-def setup():
+def setup(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help=(
+            "Full pip output during Python install; print command logs when "
+            "optional steps fail (e.g. llama.cpp cmake)."
+        ),
+    ),
+):
     """Run one-time Studio environment setup."""
     script = _find_setup_script()
     if not script:
         typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
         raise typer.Exit(1)
 
+    env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
+
     if platform.system() == "Windows":
         result = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            env = env,
         )
     else:
-        result = subprocess.run(["bash", str(script)])
+        result = subprocess.run(["bash", str(script)], env = env)
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
