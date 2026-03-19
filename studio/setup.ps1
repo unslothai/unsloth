@@ -246,11 +246,34 @@ function Find-VsBuildTools {
 }
 
 # ─────────────────────────────────────────────
+# Output style helpers (matches setup.sh visual tone)
+# ─────────────────────────────────────────────
+$Rule = "────────────────────────────────────────────────────"
+
+function Write-Step {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [string]$Color = "Green"
+    )
+    Write-Host ("  {0,-15}" -f $Label) -NoNewline -ForegroundColor DarkGray
+    Write-Host $Value -ForegroundColor $Color
+}
+
+function Write-Substep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Color = "DarkGray"
+    )
+    Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $Color
+}
+
+# ─────────────────────────────────────────────
 # Banner
 # ─────────────────────────────────────────────
-Write-Host "+==============================================+" -ForegroundColor Green
-Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
-Write-Host "+==============================================+" -ForegroundColor Green
+Write-Host ""
+Write-Host "  🦥 Unsloth Studio Setup" -ForegroundColor Green
+Write-Host "  $Rule" -ForegroundColor DarkGray
 
 # ==========================================================================
 #  PHASE 1: System-level prerequisites (winget installs, env vars)
@@ -1383,21 +1406,21 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     # -- Summary --
     Write-Host ""
     if ($BuildOk -and (Test-Path $LlamaServerBin)) {
-        Write-Host "[OK] llama-server built at $LlamaServerBin" -ForegroundColor Green
+        Write-Step "llama.cpp" "built at $LlamaServerBin"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
         if (Test-Path $QuantizeBin) {
-            Write-Host "[OK] llama-quantize available for GGUF export" -ForegroundColor Green
+            Write-Step "llama-quantize" "built"
         }
-        Write-Host "   Build time: ${totalMin}m ${totalSec}s" -ForegroundColor Cyan
+        Write-Step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         # Check alternate paths (some cmake generators don't use Release subdir)
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
         if ($BuildOk -and (Test-Path $altBin)) {
-            Write-Host "[OK] llama-server built at $altBin" -ForegroundColor Green
-            Write-Host "   Build time: ${totalMin}m ${totalSec}s" -ForegroundColor Cyan
+            Write-Step "llama.cpp" "built at $altBin"
+            Write-Step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
-            Write-Host "[FAILED] llama.cpp build failed at step: $FailedStep (${totalMin}m ${totalSec}s)" -ForegroundColor Red
-            Write-Host "         To retry: delete $LlamaCppDir and re-run setup." -ForegroundColor Yellow
+            Write-Step "llama.cpp" "build failed at step: $FailedStep (${totalMin}m ${totalSec}s)" "Red"
+            Write-Substep "To retry: delete $LlamaCppDir and re-run setup." "Yellow"
             exit 1
         }
     }
@@ -1407,10 +1430,6 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
 # Done
 # ============================================
 Write-Host ""
-Write-Host "+===============================================+" -ForegroundColor Green
-Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
-Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  Launch with:                                 |" -ForegroundColor Green
-Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
-Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "+===============================================+" -ForegroundColor Green
+Write-Host "  $Rule" -ForegroundColor DarkGray
+Write-Host "  Unsloth Studio Installed" -ForegroundColor Green
+Write-Step "launch" "unsloth studio -H 0.0.0.0 -p 8888"

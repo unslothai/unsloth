@@ -25,6 +25,7 @@ IS_WINDOWS = sys.platform == "win32"
 # ── Verbosity control ──────────────────────────────────────────────────────────
 # By default the installer shows a minimal progress bar (one line, in-place).
 # Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
+#   CLI:        unsloth studio setup --verbose
 #   Linux/Mac:  UNSLOTH_VERBOSE=1 ./studio/setup.sh
 #   Windows:    $env:UNSLOTH_VERBOSE="1" ; .\studio\setup.ps1
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
@@ -45,14 +46,17 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 )
 
 # ── Color support ──────────────────────────────────────────────────────
+# Same logic as startup_banner: NO_COLOR disables, FORCE_COLOR or TTY enables.
 
 
-def _enable_colors() -> bool:
-    """Try to enable ANSI color support. Returns True if available."""
-    if not hasattr(sys.stdout, "fileno"):
+def _stdout_supports_color() -> bool:
+    """True if we should emit ANSI colors (matches startup_banner)."""
+    if os.environ.get("NO_COLOR", "").strip():
         return False
+    if os.environ.get("FORCE_COLOR", "").strip():
+        return True
     try:
-        if not os.isatty(sys.stdout.fileno()):
+        if not sys.stdout.isatty():
             return False
     except Exception:
         return False
@@ -61,24 +65,26 @@ def _enable_colors() -> bool:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
-            # Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) on stdout
-            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            handle = kernel32.GetStdHandle(-11)
             mode = ctypes.c_ulong()
             kernel32.GetConsoleMode(handle, ctypes.byref(mode))
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)
-            return True
         except Exception:
             return False
-    return True  # Unix terminals support ANSI by default
+    return True
 
 
-# Colors disabled — Colab and most CI runners render ANSI fine, but plain output
-# is cleaner in the notebook cell. Re-enable by setting _HAS_COLOR = _enable_colors()
-_HAS_COLOR = False
+_HAS_COLOR = _stdout_supports_color()
+
+
+# Column layout — matches setup.sh step() helper:
+#   2-space indent, 15-char label (dim), then value.
+_LABEL = "deps"
+_COL = 15
 
 
 def _green(msg: str) -> str:
-    return f"\033[92m{msg}\033[0m" if _HAS_COLOR else msg
+    return f"\033[38;5;108m{msg}\033[0m" if _HAS_COLOR else msg
 
 
 def _cyan(msg: str) -> str:
@@ -89,21 +95,38 @@ def _red(msg: str) -> str:
     return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
 
 
-def _progress(label: str) -> None:
-    """Print an in-place progress bar for the current install step.
+def _dim(msg: str) -> str:
+    return f"\033[38;5;245m{msg}\033[0m" if _HAS_COLOR else msg
 
-    Uses only stdlib (sys.stdout) — no extra packages required.
-    In VERBOSE mode this is a no-op; per-step labels are printed by run() instead.
-    """
+
+def _title(msg: str) -> str:
+    return f"\033[38;5;150m{msg}\033[0m" if _HAS_COLOR else msg
+
+
+_RULE = "\u2500" * 52
+
+
+def _step(label: str, value: str, color_fn = None) -> None:
+    """Print a single step line in the column format."""
+    if color_fn is None:
+        color_fn = _green
+    print(f"  {_dim(label)}{' ' * (_COL - len(label))}{color_fn(value)}")
+
+
+def _progress(label: str) -> None:
+    """Print an in-place progress bar aligned to the step column layout."""
     global _STEP
     _STEP += 1
     if VERBOSE:
-        return  # verbose mode: run() already printed the label
+        return
     width = 20
     filled = int(width * _STEP / _TOTAL)
     bar = "=" * filled + "-" * (width - filled)
-    end = "\n" if _STEP >= _TOTAL else ""  # newline only on the final step
-    sys.stdout.write(f"\r[{bar}] {_STEP:2}/{_TOTAL}  {label:<40}{end}")
+    pad = " " * (_COL - len(_LABEL))
+    end = "\n" if _STEP >= _TOTAL else ""
+    sys.stdout.write(
+        f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
+    )
     sys.stdout.flush()
 
 
@@ -112,14 +135,14 @@ def run(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a command; on failure print output and exit."""
     if VERBOSE:
-        print(f"   {label}...")
+        _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
     )
     if result.returncode != 0:
-        print(_red(f"❌ {label} failed (exit code {result.returncode}):"))
+        _step("error", f"{label} failed (exit code {result.returncode})", _red)
         if result.stdout:
             print(result.stdout.decode(errors = "replace"))
         sys.exit(result.returncode)
@@ -267,7 +290,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         text = True,
     )
     if result.returncode != 0:
-        print(_red(f"   ⚠️  Could not find package {package_name}, skipping patch"))
+        _step(_LABEL, f"package {package_name} not found, skipping patch", _dim)
         return
 
     location = None
@@ -277,11 +300,11 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
             break
 
     if not location:
-        print(_red(f"   ⚠️  Could not determine location of {package_name}"))
+        _step(_LABEL, f"could not locate {package_name}", _dim)
         return
 
     dest = Path(location) / relative_path
-    print(_cyan(f"   Patching {dest.name} in {package_name}..."))
+    _step(_LABEL, f"patching {dest.name} in {package_name}...", _dim)
     download_file(url, dest)
 
 
@@ -292,6 +315,8 @@ def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL
     _STEP = 0
     _TOTAL = 10 if IS_WINDOWS else 11
+
+    
 
     # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
     _progress("pip upgrade")
@@ -422,7 +447,7 @@ def install_python_stack() -> int:
         stderr = subprocess.DEVNULL,
     )
 
-    print(_green("✅ Python dependencies installed"))
+    _step(_LABEL, "installed")
     return 0
 
 
