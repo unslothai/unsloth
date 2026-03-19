@@ -128,6 +128,12 @@ class TrainingStartRequest(BaseModel):
     enable_tensorboard: bool = Field(False, description = "Enable TensorBoard logging")
     tensorboard_dir: Optional[str] = Field(None, description = "TensorBoard directory")
 
+    # GPU selection
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "List of GPU indices to use (e.g. [0, 1]). If None, uses all visible GPUs.",
+    )
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""

@@ -41,6 +41,10 @@ class LoadRequest(BaseModel):
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "List of GPU indices to use (e.g. [0, 1]). If None, uses all visible GPUs.",
+    )
 
 
 class UnloadRequest(BaseModel):

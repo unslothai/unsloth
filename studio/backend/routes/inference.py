@@ -344,6 +344,7 @@ async def load_model(
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
+            gpu_ids = request.gpu_ids,
         )
 
         if not success:

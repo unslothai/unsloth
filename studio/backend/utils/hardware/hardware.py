@@ -483,6 +483,34 @@ def get_visible_gpu_count() -> int:
     return _visible_gpu_count
 
 
+def apply_gpu_ids(gpu_ids) -> None:
+    """
+    Restrict this process to the given GPU IDs by setting CUDA_VISIBLE_DEVICES.
+
+    Must be called **before** any ML imports (torch, unsloth, etc.) in a
+    fresh subprocess.  Busts the cached ``_visible_gpu_count`` so that
+    ``get_visible_gpu_count()`` / ``get_device_map()`` see the new value.
+
+    Args:
+        gpu_ids: List of GPU indices (e.g. [0, 2, 3]), a comma-separated
+                 string ("0,2,3"), or None (no-op).
+    """
+    if gpu_ids is None:
+        return
+
+    global _visible_gpu_count
+    import os
+
+    if isinstance(gpu_ids, (list, tuple)):
+        value = ",".join(str(g) for g in gpu_ids)
+    else:
+        value = str(gpu_ids)
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = value
+    _visible_gpu_count = None  # bust cache
+    logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
+
+
 def get_device_map() -> str:
     """
     Return the best device_map for model loading.

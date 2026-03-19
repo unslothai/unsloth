@@ -185,6 +185,7 @@ class TrainingBackend:
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
+            "gpu_ids": kwargs.get("gpu_ids"),
         }
 
         # Derive load_in_4bit from training_type

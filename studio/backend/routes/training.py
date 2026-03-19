@@ -202,6 +202,7 @@ async def start_training(
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
             "trust_remote_code": request.trust_remote_code,
+            "gpu_ids": request.gpu_ids,
         }
 
         # Training page has no trust_remote_code toggle — the value comes from

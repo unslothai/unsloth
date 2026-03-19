@@ -24,6 +24,7 @@ from .hardware import (
     safe_thread_num_proc,
     dataset_map_num_proc,
     get_device_map,
+    apply_gpu_ids,
 )
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     "safe_thread_num_proc",
     "dataset_map_num_proc",
     "get_device_map",
+    "apply_gpu_ids",
 ]

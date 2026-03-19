@@ -571,6 +571,7 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -594,6 +595,7 @@ class InferenceOrchestrator:
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
+                "gpu_ids": gpu_ids,
             }
 
             # Always kill existing subprocess and spawn fresh.

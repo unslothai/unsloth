@@ -88,6 +88,12 @@ def run_training_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
+    # ── 0. Apply GPU selection BEFORE any ML imports ──
+    gpu_ids = config.get("gpu_ids")
+    if gpu_ids is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
+        logger.info("Subprocess GPU restriction: CUDA_VISIBLE_DEVICES='%s'", os.environ["CUDA_VISIBLE_DEVICES"])
+
     model_name = config["model_name"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
