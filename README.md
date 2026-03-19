@@ -19,7 +19,7 @@ Run and train AI models with a unified local interface.
  <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
 
-Unsloth Studio (BETA) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
+Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ## ⭐ Features
 Unsloth provides several key features for both inference and training:
@@ -42,7 +42,7 @@ Unsloth provides several key features for both inference and training:
 Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
 
 ### Unsloth Studio (web UI)
-Unsloth Studio (BETA) works on **Windows, Linux, WSL** and **macOS**.
+Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
 * **CPU:** Supported for **chat inference only**
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
@@ -51,7 +51,8 @@ Unsloth Studio (BETA) works on **Windows, Linux, WSL** and **macOS**.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### MacOS, Linux or WSL Setup (One time):
+#### MacOS, Linux, WSL:
+For MacOS, ensure you have `cmake` installed. If not, run `brew install cmake`.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 ```
@@ -94,9 +95,17 @@ Then to launch every time:
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
+#### Docker
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
+```bash
+docker run -d -e JUPYTER_PASSWORD="mypassword" \
+  -p 8888:8888 -p 8000:8000 -p 2222:22 \
+  -v $(pwd)/work:/workspace/work \
+  --gpus all \
+  unsloth/unsloth
+  ```
 
-#### Nightly Installation - MacOS, Linux or WSL Setup (One time):
+#### Nightly Install - MacOS, Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
@@ -114,7 +123,8 @@ source .venv/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Nightly Installation - Windows Powershell (One time):
+#### Nightly Install - Windows:
+Run in Windows Powershell:
 ```bash
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
