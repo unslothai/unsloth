@@ -987,6 +987,27 @@ Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundC
 # Always create a .venv for isolation -- even for pip installs.
 # Created in the repo root (parent of studio/).
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
+
+# Stale-venv detection: if the venv exists but its torch CUDA tag no longer
+# matches the current driver, wipe it so we get a clean install.
+# This happens when the driver is updated (e.g. cu124 -> cu130) and setup
+# would otherwise silently reuse the old environment and break the UI.
+if (Test-Path $VenvDir) {
+    $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    $installedCuTag = $null
+    if (Test-Path $VenvPyExe) {
+        try {
+            $torchVer = & $VenvPyExe -c "import torch; print(torch.__version__)" 2>$null
+            if ($torchVer -match '\+(cu\d+)') { $installedCuTag = $Matches[1] }
+        } catch { }
+    }
+    $expectedCuTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+    if ($installedCuTag -and $installedCuTag -ne $expectedCuTag) {
+        Write-Host "   [INFO] Stale venv detected (torch $installedCuTag != required $expectedCuTag) -- rebuilding..." -ForegroundColor Yellow
+        Remove-Item $VenvDir -Recurse -Force
+    }
+}
+
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
