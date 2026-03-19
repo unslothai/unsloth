@@ -7,23 +7,27 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 from itertools import islice
 from pathlib import Path
+from pathlib import Path as PathLib
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
 from data_designer_unstructured_seed.chunking import (
     build_unstructured_preview_rows,
+    normalize_unstructured_text,
     resolve_chunking,
 )
 from core.data_recipe.jsonable import to_preview_jsonable
-from utils.paths import ensure_dir, seed_uploads_root
+from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 
 from models.data_recipe import (
     SeedInspectRequest,
     SeedInspectResponse,
     SeedInspectUploadRequest,
+    UnstructuredFileUploadResponse,
 )
 
 router = APIRouter()
@@ -31,8 +35,11 @@ router = APIRouter()
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
-UNSTRUCTURED_UPLOAD_EXTS = {".txt", ".md"}
+UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
+UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB
 
 
 def _serialize_preview_value(value: Any) -> Any:
@@ -306,14 +313,128 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     )
 
 
+def _extract_text_from_file(file_path: PathLib, ext: str) -> str:
+    """Extract text from uploaded file based on extension."""
+    if ext in {".txt", ".md"}:
+        raw = file_path.read_text(encoding="utf-8", errors="ignore")
+    elif ext == ".pdf":
+        import fitz  # pymupdf
+        doc = fitz.open(str(file_path))
+        pages = [page.get_text() for page in doc]
+        doc.close()
+        raw = "\n\n".join(pages)
+    elif ext == ".docx":
+        from docx import Document
+        doc = Document(str(file_path))
+        raw = "\n\n".join(p.text for p in doc.paragraphs)
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+
+    return normalize_unstructured_text(raw)
+
+
+def _get_block_total_size(block_dir: PathLib) -> int:
+    """Sum file sizes in a block directory."""
+    if not block_dir.exists():
+        return 0
+    return sum(f.stat().st_size for f in block_dir.iterdir() if f.is_file())
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile = FastAPIFile(...),
+    block_id: str = Form(...),
+) -> UnstructuredFileUploadResponse:
+    # Validate extension
+    original_filename = file.filename or "upload"
+    ext = PathLib(original_filename).suffix.lower()
+    if ext not in UNSTRUCTURED_ALLOWED_EXTS:
+        raise HTTPException(400, f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}")
+
+    # Read file content
+    content = await file.read()
+    size_bytes = len(content)
+
+    # Validate per-file size
+    if size_bytes > MAX_FILE_SIZE:
+        raise HTTPException(413, f"File too large ({size_bytes} bytes). Maximum is 50MB.")
+
+    # Validate total size for this block
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    ensure_dir(block_dir)
+    current_total = _get_block_total_size(block_dir)
+    if current_total + size_bytes > MAX_TOTAL_SIZE:
+        raise HTTPException(413, "Total upload limit (500MB) exceeded")
+
+    # Generate file ID and store
+    file_id = uuid4().hex
+
+    # Save raw file
+    raw_path = block_dir / f"{file_id}{ext}"
+    raw_path.write_bytes(content)
+
+    # Extract text and save
+    try:
+        extracted_text = _extract_text_from_file(raw_path, ext)
+        extracted_path = block_dir / f"{file_id}.extracted.txt"
+        extracted_path.write_text(extracted_text, encoding="utf-8")
+    except Exception as e:
+        # Cleanup raw file on extraction failure
+        raw_path.unlink(missing_ok=True)
+        return UnstructuredFileUploadResponse(
+            file_id=file_id,
+            filename=original_filename,
+            size_bytes=size_bytes,
+            status="error",
+            error=f"Text extraction failed: {e}",
+        )
+
+    # Save metadata
+    meta_path = block_dir / f"{file_id}.meta.json"
+    meta_path.write_text(
+        json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
+        encoding="utf-8",
+    )
+
+    return UnstructuredFileUploadResponse(
+        file_id=file_id,
+        filename=original_filename,
+        size_bytes=size_bytes,
+        status="ok",
+    )
+
+
+@router.delete("/seed/unstructured-file/{block_id}/{file_id}")
+async def remove_unstructured_file(block_id: str, file_id: str):
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    if not block_dir.exists():
+        raise HTTPException(404, "Block not found")
+
+    # Find and delete all files matching this file_id
+    deleted = False
+    for f in block_dir.iterdir():
+        if f.name.startswith(file_id):
+            f.unlink()
+            deleted = True
+
+    if not deleted:
+        raise HTTPException(404, "File not found")
+
+    # If block dir is now empty, remove it
+    if not any(block_dir.iterdir()):
+        block_dir.rmdir()
+
+    return {"status": "ok"}
+
+
 @router.post("/seed/inspect-upload", response_model = SeedInspectResponse)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
     if seed_source_type == "unstructured":
-        if ext not in UNSTRUCTURED_UPLOAD_EXTS:
-            allowed = ", ".join(sorted(UNSTRUCTURED_UPLOAD_EXTS))
+        if ext not in UNSTRUCTURED_ALLOWED_EXTS:
+            allowed = ", ".join(sorted(UNSTRUCTURED_ALLOWED_EXTS))
             raise HTTPException(
                 status_code = 400,
                 detail = f"unsupported file type: {ext}. allowed: {allowed}",
