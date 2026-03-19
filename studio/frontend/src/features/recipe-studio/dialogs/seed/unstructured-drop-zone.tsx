@@ -56,9 +56,18 @@ export function UnstructuredDropZone({
 
       if (valid.length === 0) return;
 
-      // Check total size
-      const newTotal = totalSize + valid.reduce((s, f) => s + f.size, 0);
-      if (newTotal > MAX_TOTAL_SIZE) return;
+      // Check total size using functional update to get latest state
+      const addedSize = valid.reduce((s, f) => s + f.size, 0);
+      let overLimit = false;
+      onFilesChange((prev) => {
+        const currentTotal = prev.reduce((sum, f) => sum + f.size, 0);
+        if (currentTotal + addedSize > MAX_TOTAL_SIZE) {
+          overLimit = true;
+          return prev;
+        }
+        return prev;
+      });
+      if (overLimit) return;
 
       const entries: FileEntry[] = valid.map((f) => ({
         id: "",
@@ -68,52 +77,60 @@ export function UnstructuredDropZone({
         abortController: new AbortController(),
       }));
 
-      // Use functional update to avoid stale closure
       onFilesChange((prev) => [...prev, ...entries]);
 
-      // Upload each file
+      // Upload each file — update via immutable state
       for (let i = 0; i < valid.length; i++) {
         const file = valid[i];
         const entry = entries[i];
+        let updatedId = "";
+        let updatedStatus: FileEntry["status"] = "error";
+        let updatedError: string | undefined;
         try {
           const result = await uploadUnstructuredFile(
             file,
             blockId,
             entry.abortController?.signal,
           );
-          entry.id = result.file_id;
-          entry.status = result.status === "ok" ? "ok" : "error";
-          entry.error = result.error;
+          updatedId = result.file_id;
+          updatedStatus = result.status === "ok" ? "ok" : "error";
+          updatedError = result.error;
         } catch (e) {
           if (e instanceof DOMException && e.name === "AbortError") {
-            entry.status = "error";
-            entry.error = "Cancelled";
+            updatedError = "Cancelled";
           } else {
-            entry.status = "error";
-            entry.error = e instanceof Error ? e.message : "Upload failed";
+            updatedError = e instanceof Error ? e.message : "Upload failed";
           }
         }
-        // Functional update to get latest state
-        onFilesChange((prev) => [...prev]);
+        // Immutable update — create new entry objects so React detects changes
+        onFilesChange((prev) =>
+          prev.map((f) =>
+            f === entry
+              ? { ...f, id: updatedId, status: updatedStatus, error: updatedError }
+              : f,
+          ),
+        );
       }
 
     },
-    [blockId, onFilesChange, totalSize],
+    [blockId, onFilesChange],
   );
 
   const handleRemove = useCallback(
-    async (index: number) => {
-      const entry = files[index];
-      if (entry.status === "uploading" && entry.abortController) {
-        entry.abortController.abort();
-      }
-      if (entry.id && entry.status === "ok") {
-        await removeUnstructuredFile(blockId, entry.id).catch(() => {});
-      }
-      const next = files.filter((_, i) => i !== index);
-      onFilesChange(next);
+    (index: number) => {
+      onFilesChange((prev) => {
+        const entry = prev[index];
+        if (!entry) return prev;
+        if (entry.status === "uploading" && entry.abortController) {
+          entry.abortController.abort();
+        }
+        if (entry.id && entry.status === "ok") {
+          void removeUnstructuredFile(blockId, entry.id).catch(() => {});
+        }
+        return prev.filter((_, i) => i !== index);
+      });
     },
-    [blockId, files, onFilesChange],
+    [blockId, onFilesChange],
   );
 
   const handleDrop = useCallback(

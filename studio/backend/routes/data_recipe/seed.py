@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,14 @@ SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB
+
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _validate_safe_id(value: str, label: str) -> str:
+    if not value or not _SAFE_ID_RE.match(value):
+        raise HTTPException(400, f"Invalid {label}: must be alphanumeric/dash/underscore only")
+    return value
 
 
 def _serialize_preview_value(value: Any) -> Any:
@@ -237,6 +246,7 @@ def _read_preview_rows_from_multi_files(
 ) -> list[dict[str, str]]:
     from data_designer_unstructured_seed.chunking import build_multi_file_preview_rows
 
+    _validate_safe_id(block_id, "block_id")
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     file_entries: list[tuple[Path, str]] = []
     for fid, fname in zip(file_ids, file_names):
@@ -369,6 +379,8 @@ async def upload_unstructured_file(
     file: UploadFile = FastAPIFile(...),
     block_id: str = Form(...),
 ) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
     # Validate extension
     original_filename = file.filename or "upload"
     ext = Path(original_filename).suffix.lower()
@@ -378,6 +390,9 @@ async def upload_unstructured_file(
     # Read file content
     content = await file.read()
     size_bytes = len(content)
+
+    if size_bytes == 0:
+        raise HTTPException(400, "Empty file not allowed")
 
     # Validate per-file size
     if size_bytes > MAX_FILE_SIZE:
@@ -410,15 +425,26 @@ async def upload_unstructured_file(
             filename=original_filename,
             size_bytes=size_bytes,
             status="error",
-            error=f"Text extraction failed: {e}",
+            error=f"Text extraction failed: {type(e).__name__}: {e}",
         )
 
     # Save metadata
-    meta_path = block_dir / f"{file_id}.meta.json"
-    meta_path.write_text(
-        json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
-        encoding="utf-8",
-    )
+    try:
+        meta_path = block_dir / f"{file_id}.meta.json"
+        meta_path.write_text(
+            json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
+            encoding="utf-8",
+        )
+    except OSError:
+        raw_path.unlink(missing_ok=True)
+        extracted_path.unlink(missing_ok=True)
+        return UnstructuredFileUploadResponse(
+            file_id=file_id,
+            filename=original_filename,
+            size_bytes=size_bytes,
+            status="error",
+            error="Failed to save file metadata",
+        )
 
     return UnstructuredFileUploadResponse(
         file_id=file_id,
@@ -430,14 +456,18 @@ async def upload_unstructured_file(
 
 @router.delete("/seed/unstructured-file/{block_id}/{file_id}")
 async def remove_unstructured_file(block_id: str, file_id: str):
+    _validate_safe_id(block_id, "block_id")
+    _validate_safe_id(file_id, "file_id")
+
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     if not block_dir.exists():
         raise HTTPException(404, "Block not found")
 
-    # Find and delete all files matching this file_id
+    # Delete all files belonging to this file_id (raw, extracted, meta)
     deleted = False
     for f in block_dir.iterdir():
-        if f.name.startswith(file_id):
+        stem = f.name.split(".")[0]
+        if stem == file_id:
             f.unlink()
             deleted = True
 
@@ -445,8 +475,11 @@ async def remove_unstructured_file(block_id: str, file_id: str):
         raise HTTPException(404, "File not found")
 
     # If block dir is now empty, remove it
-    if not any(block_dir.iterdir()):
-        block_dir.rmdir()
+    try:
+        if not any(block_dir.iterdir()):
+            block_dir.rmdir()
+    except OSError:
+        pass
 
     return {"status": "ok"}
 
@@ -455,6 +488,9 @@ async def remove_unstructured_file(block_id: str, file_id: str):
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
     # Multi-file flow
     if payload.file_ids is not None:
+        _validate_safe_id(payload.block_id, "block_id")
+        for fid in payload.file_ids:
+            _validate_safe_id(fid, "file_id")
         preview_rows = _read_preview_rows_from_multi_files(
             block_id=payload.block_id,
             file_ids=payload.file_ids,
@@ -497,8 +533,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
-    max_size_bytes = 50 * 1024 * 1024
-    if len(file_bytes) > max_size_bytes:
+    if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(status_code = 413, detail = "file too large (max 50MB)")
 
     ensure_dir(SEED_UPLOAD_DIR)
