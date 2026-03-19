@@ -340,19 +340,17 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
 
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
-    """Extract text from uploaded file based on extension."""
+    """Extract text from uploaded file based on extension, converting to markdown where possible."""
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding="utf-8", errors="ignore")
     elif ext == ".pdf":
-        import fitz  # pymupdf
-        doc = fitz.open(str(file_path))
-        pages = [page.get_text() for page in doc]
-        doc.close()
-        raw = "\n\n".join(pages)
+        import pymupdf4llm
+        raw = pymupdf4llm.to_markdown(str(file_path))
     elif ext == ".docx":
-        from docx import Document
-        doc = Document(str(file_path))
-        raw = "\n\n".join(p.text for p in doc.paragraphs)
+        import mammoth
+        with open(str(file_path), "rb") as f:
+            result = mammoth.convert_to_markdown(f)
+            raw = result.value
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 

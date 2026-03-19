@@ -14,7 +14,8 @@ dependencies = [
   "data-designer-engine>=0.5.1,<0.6",
   "pandas>=2,<3",
   "pymupdf>=1.24.0",
-  "python-docx>=1.0.0",
+  "pymupdf4llm>=0.0.17",
+  "mammoth>=1.8.0",
 ]
 
 [project.entry-points."data_designer.plugins"]

@@ -409,9 +409,13 @@ export function importRecipePayload(input: string): ImportResult {
         .map((row) => ({ ...row }))
     : undefined;
   const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
-  // Always clear file IDs/names on import (files are user-specific)
-  const uiUnstructuredFileIds: string[] = [];
-  const uiUnstructuredFileNames: string[] = [];
+  // Preserve file IDs/names from saved recipes (cleared at share time by sanitizeSeedForShare)
+  const uiUnstructuredFileIds: string[] = Array.isArray(ui?.unstructured_file_ids)
+    ? (ui.unstructured_file_ids as string[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const uiUnstructuredFileNames: string[] = Array.isArray(ui?.unstructured_file_names)
+    ? (ui.unstructured_file_names as string[]).filter((v): v is string => typeof v === "string")
+    : [];
   const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,

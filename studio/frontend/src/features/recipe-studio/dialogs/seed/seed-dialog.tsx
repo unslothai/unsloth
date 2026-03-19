@@ -519,22 +519,9 @@ export function SeedDialog({ config, onUpdate, open }: SeedDialogProps): ReactEl
               blockId={config.id}
               files={unstructuredFiles}
               onFilesChange={setUnstructuredFiles}
+              onAllUploaded={() => void loadSeedMetadata({ silent: true })}
               disabled={isInspecting}
             />
-          )}
-
-          {mode === "unstructured" && (
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                className="nodrag shrink-0"
-                onClick={() => void loadSeedMetadata()}
-                disabled={isInspecting || unstructuredFiles.filter((f) => f.status === "ok").length === 0}
-              >
-                {isInspecting ? "Loading..." : "Load"}
-              </Button>
-            </div>
           )}
 
           {inspectError && <p className="text-xs text-red-600">{inspectError}</p>}
