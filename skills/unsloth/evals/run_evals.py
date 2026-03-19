@@ -29,11 +29,32 @@ REPO_ROOT = SKILL_DIR.parent.parent  # skills/unsloth -> skills -> repo root
 ENV_CONTEXT = """
 CONTEXT about the environment:
 - Working directory: {repo_root}
-- Mac M4, no NVIDIA GPU. Full Unsloth training does not work here, but dry-run flows do. GGUF inference does work on this machine.
+- Platform: {platform}
+- GPU: {gpu}
 - Use pip3, not pip.
 - If a command fails, note it and keep going.
 - Save all output/files you create into: {output_dir}
 """.strip()
+
+
+def _detect_platform() -> str:
+    """Detect OS and architecture."""
+    import platform as plat
+    return f"{plat.system()} {plat.machine()}"
+
+
+def _detect_gpu() -> str:
+    """Detect GPU availability."""
+    import shutil
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                                 capture_output=True, text=True, timeout=5)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip().split("\n")[0]
+        except Exception:
+            pass
+    return "none detected — GGUF inference via llama.cpp may still work"
 
 # Extra context for evals where unsloth is already installed
 ENV_CONTEXT_INSTALLED = """
@@ -50,9 +71,16 @@ def run_claude(
     eval_id: str = "",
 ) -> dict:
     """Run a single eval via claude -p and return the JSON result."""
+    # Clear previous outputs to avoid stale results on retry
+    if output_dir.exists():
+        import shutil
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents = True, exist_ok = True)
 
-    ctx = ENV_CONTEXT.format(repo_root = REPO_ROOT, output_dir = output_dir)
+    ctx = ENV_CONTEXT.format(
+        repo_root=REPO_ROOT, output_dir=output_dir,
+        platform=_detect_platform(), gpu=_detect_gpu(),
+    )
     # Don't tell fresh-install evals that unsloth is already set up
     if eval_id != "setup-fresh":
         ctx += "\n" + ENV_CONTEXT_INSTALLED
