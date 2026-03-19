@@ -93,6 +93,128 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 
 
+def _maybe_prepare_vllm_for_resume(trainer):
+    if not torch.cuda.is_available():
+        return
+
+    llm = getattr(trainer, "llm", None)
+    if llm is None:
+        llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
+
+    sleep_fn = getattr(llm, "sleep", None)
+    slept = False
+    if callable(sleep_fn):
+        try:
+            sleep_mode = int(os.environ.get("VLLM_SLEEP_MODE", "1"))
+        except ValueError:
+            sleep_mode = 1
+
+        try:
+            signature = inspect.signature(sleep_fn)
+        except (TypeError, ValueError):
+            signature = None
+
+        try:
+            if signature is not None and len(signature.parameters) == 0:
+                sleep_fn()
+                slept = True
+            else:
+                sleep_fn(sleep_mode)
+                slept = True
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: vLLM sleep() failed during resume cleanup: {error}"
+            )
+
+    import gc
+
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    if slept:
+        trainer._unsloth_resume_wake_vllm = True
+
+
+def _patch_resume_from_checkpoint_memory(trainer_class):
+    original_train = getattr(trainer_class, "train", None)
+    if original_train is None:
+        return
+    if getattr(original_train, "_unsloth_resume_guard", False):
+        return
+
+    def _unsloth_train_with_resume_guard(self, *args, **kwargs):
+        resume_from_checkpoint = kwargs.get("resume_from_checkpoint", None)
+        if resume_from_checkpoint is None and len(args) != 0:
+            resume_from_checkpoint = args[0]
+
+        if resume_from_checkpoint:
+            _maybe_prepare_vllm_for_resume(self)
+        return original_train(self, *args, **kwargs)
+
+    _unsloth_train_with_resume_guard._unsloth_resume_guard = True
+    trainer_class.train = _unsloth_train_with_resume_guard
+
+
+def _maybe_prepare_vllm_for_resume(trainer):
+    if not torch.cuda.is_available():
+        return
+
+    llm = getattr(trainer, "llm", None)
+    if llm is None:
+        llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
+
+    slept = False
+    sleep_fn = getattr(llm, "sleep", None)
+    if callable(sleep_fn):
+        try:
+            sleep_mode = int(os.environ.get("VLLM_SLEEP_MODE", "1"))
+            sleep_fn(sleep_mode)
+            slept = True
+        except TypeError:
+            try:
+                sleep_fn()
+                slept = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    if slept:
+        trainer._unsloth_resume_wake_vllm = True
+
+    import gc
+
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+
+
+def _patch_resume_from_checkpoint_memory(trainer_class):
+    original_train = getattr(trainer_class, "train", None)
+    if original_train is None:
+        return
+    if getattr(original_train, "_unsloth_resume_guard", False):
+        return
+
+    def _unsloth_train_with_resume_guard(self, *args, **kwargs):
+        resume_from_checkpoint = kwargs.get("resume_from_checkpoint", None)
+        if resume_from_checkpoint is None and len(args) != 0:
+            resume_from_checkpoint = args[0]
+
+        if resume_from_checkpoint:
+            _maybe_prepare_vllm_for_resume(self)
+        return original_train(self, *args, **kwargs)
+
+
+    _unsloth_train_with_resume_guard._unsloth_resume_guard = True
+    trainer_class.train = _unsloth_train_with_resume_guard
+
+
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -1490,7 +1612,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         imports,
         overwrite = False,
     )
-
+    patched_trainer = getattr(created_module, f"Unsloth{RLTrainer_name}")
+    if trainer_file == "grpo_trainer":
+        _patch_resume_from_checkpoint_memory(patched_trainer)
     # Patch Trainer
     exec(
         f"trl.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}",
@@ -1720,7 +1844,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 new_vllm_part,
                 flags = re.DOTALL,  # Ensure . matches newlines [[5]]
             )
-
+        else:
+            new_vllm_part = (
+                f"\n{' '*8}if {args}.use_vllm:\n"
+                f"{' '*12}self.llm = model.vllm_engine\n"
+                f"{' '*12}self.guided_decoding_regex = getattr(args, 'vllm_guided_decoding_regex', None)\n"
+                f"{' '*12}self._last_loaded_step = 0\n"
+                f"{' '*12}self.accelerator.wait_for_everyone()\n"
+                f"\n{' '*8}else:\n"
+            )
         init = init.replace(vllm_part, new_vllm_part)
 
     # Search for vLLM calling in all child functions

@@ -257,6 +257,10 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
+            if isinstance(training_args, config_class):
+                kwargs["args"] = training_args
+                original_init(self, *args, **kwargs)
+                return
 
             # Get parameters that Trainer.__init__ actually expects
             trainer_params.remove("self")
@@ -303,7 +307,13 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
             # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
             # So we only create config class if the previous init was not TrainingArguments
-            if not isinstance(training_args, TrainingArguments):
+            if isinstance(training_args, config_class):
+                import copy
+
+                config = copy.deepcopy(training_args)
+                for key, value in additional_config_kwargs.items():
+                    setattr(config, key, value)
+            elif not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
                 config = training_args

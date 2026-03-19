@@ -734,7 +734,7 @@ try:
     # Some Config files use layer_type_validation
     # for eg Gemma-2, so we must import it to stop errors.
     from transformers.configuration_utils import layer_type_validation
-except:
+except ImportError:
     pass
 
 try:
