@@ -45,7 +45,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-def get_colab_url(port: int = 8000) -> str:
+def get_colab_url(port: int = 8888) -> str:
     """
     Get the actual Colab proxy URL for a port.
     """
@@ -60,7 +60,7 @@ def get_colab_url(port: int = 8000) -> str:
         return f"http://localhost:{port}"
 
 
-def show_link(port: int = 8000):
+def show_link(port: int = 8888):
     """Display a styled clickable link to the UI."""
     from IPython.display import display, HTML
 
@@ -68,8 +68,8 @@ def show_link(port: int = 8000):
     url = get_colab_url(port)
 
     short_url = (
-        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
-        if "8000-" in url
+        url[: url.index("-", url.index(f"{port}-") + len(str(port)) + 1) + 1] + "..."
+        if f"{port}-" in url
         else url
     )
     html = f"""
@@ -96,7 +96,7 @@ def show_link(port: int = 8000):
     display(HTML(html))
 
 
-def start(port: int = 8000):
+def start(port: int = 8888):
     """
     Start Unsloth Studio server in Colab and display the URL.
 

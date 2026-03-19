@@ -19,6 +19,71 @@ download() {
     fi
 }
 
+# ── Helper: check if a single package is available on the system ──
+_is_pkg_installed() {
+    case "$1" in
+        build-essential) command -v gcc >/dev/null 2>&1 ;;
+        libcurl4-openssl-dev)
+            command -v dpkg >/dev/null 2>&1 && dpkg -s "$1" >/dev/null 2>&1 ;;
+        pciutils)
+            command -v lspci >/dev/null 2>&1 ;;
+        *) command -v "$1" >/dev/null 2>&1 ;;
+    esac
+}
+
+# ── Helper: install packages via apt, escalating to sudo only if needed ──
+# Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
+_smart_apt_install() {
+    _PKGS="$*"
+
+    # Step 1: Try installing without sudo (works when already root)
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y $_PKGS >/dev/null 2>&1 || true
+
+    # Step 2: Check which packages are still missing
+    _STILL_MISSING=""
+    for _pkg in $_PKGS; do
+        if ! _is_pkg_installed "$_pkg"; then
+            _STILL_MISSING="$_STILL_MISSING $_pkg"
+        fi
+    done
+    _STILL_MISSING=$(echo "$_STILL_MISSING" | sed 's/^ *//')
+
+    if [ -z "$_STILL_MISSING" ]; then
+        return 0
+    fi
+
+    # Step 3: Escalate -- need elevated permissions for remaining packages
+    echo "    Could not install without elevated permissions: $_STILL_MISSING"
+
+    if command -v sudo >/dev/null 2>&1; then
+        printf "    Use sudo to install them? [Y/n] "
+        if [ -r /dev/tty ]; then
+            read -r REPLY </dev/tty || REPLY="y"
+        else
+            REPLY="y"
+        fi
+        case "$REPLY" in
+            [nN]*)
+                echo ""
+                echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                exit 1
+                ;;
+            *)
+                sudo apt-get update -y
+                sudo apt-get install -y $_STILL_MISSING
+                ;;
+        esac
+    else
+        echo ""
+        echo "    sudo is not available on this system."
+        echo "    Please install these packages as root, then re-run Unsloth Studio setup:"
+        echo "    apt-get update -y && apt-get install -y $_STILL_MISSING"
+        exit 1
+    fi
+}
+
 echo ""
 echo "========================================="
 echo "   Unsloth Studio Installer"
@@ -82,25 +147,11 @@ if [ -n "$MISSING" ]; then
                 echo "    Install Homebrew from https://brew.sh then re-run this script."
                 exit 1
             fi
-            printf "    Install via Homebrew? [Y/n] "
-            read -r REPLY </dev/tty 2>/dev/null || REPLY="y"
-            case "$REPLY" in
-                [nN]*) echo "    Skipping -- GGUF inference may not be available." ;;
-                *)     brew install $MISSING ;;
-            esac
+            brew install $MISSING
             ;;
         linux|wsl)
             if command -v apt-get >/dev/null 2>&1; then
-                echo "    We need elevated permissions (sudo) to install them."
-                printf "    Allow? [Y/n] "
-                read -r REPLY </dev/tty 2>/dev/null || REPLY="y"
-                case "$REPLY" in
-                    [nN]*) echo "    Skipping -- GGUF inference may not be available." ;;
-                    *)
-                        sudo apt-get update -y
-                        sudo apt-get install -y $MISSING
-                        ;;
-                esac
+                _smart_apt_install $MISSING
             else
                 echo "    Please install them with your package manager, then re-run."
             fi
@@ -124,8 +175,9 @@ if ! command -v uv >/dev/null 2>&1; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# ── Create venv (skip if it already exists) ──
-if [ ! -d "$VENV_NAME" ]; then
+# ── Create venv (skip if it already exists and has a valid interpreter) ──
+if [ ! -x "$VENV_NAME/bin/python" ]; then
+    [ -e "$VENV_NAME" ] && rm -rf "$VENV_NAME"
     echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_NAME})..."
     uv venv "$VENV_NAME" --python "$PYTHON_VERSION"
 else

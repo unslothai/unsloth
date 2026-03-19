@@ -64,9 +64,10 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Create venv (skip if it already exists) ──
+    # ── Create venv (skip if it already exists and has a valid interpreter) ──
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
-    if (-not (Test-Path $VenvName)) {
+    if (-not (Test-Path $VenvPython)) {
+        if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
         Write-Host "==> Creating Python ${PythonVersion} virtual environment (${VenvName})..."
         uv venv $VenvName --python $PythonVersion
     } else {
@@ -83,6 +84,10 @@ function Install-UnslothStudio {
     Write-Host "==> Running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
     & $UnslothExe studio setup
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        return
+    }
 
     Write-Host ""
     Write-Host "========================================="

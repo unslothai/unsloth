@@ -12,7 +12,7 @@ import typer
 
 def ui(
     port: int = typer.Option(
-        8000, "--port", "-p", help = "Port to run the UI server on."
+        8888, "--port", "-p", help = "Port to run the UI server on."
     ),
     host: str = typer.Option(
         "0.0.0.0", "--host", "-H", help = "Host address to bind to."
@@ -40,7 +40,7 @@ def ui(
         run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
-                typer.echo("Launching with studio venv...")
+                typer.echo("Launching Unsloth Studio... Please wait...")
             args = [
                 str(studio_python),
                 str(run_py),

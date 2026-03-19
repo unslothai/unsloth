@@ -1411,6 +1411,6 @@ Write-Host "+===============================================+" -ForegroundColor 
 Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "|  Launch with:                                 |" -ForegroundColor Green
-Write-Host "|    unsloth studio -H 0.0.0.0 -p 8000          |" -ForegroundColor Green
+Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "+===============================================+" -ForegroundColor Green

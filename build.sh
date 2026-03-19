@@ -36,7 +36,12 @@ _restore_gitignores
 trap - EXIT
 
 # Validate CSS output -- catch truncated Tailwind builds before packaging
-MAX_CSS_SIZE=$(find dist/assets -name '*.css' -exec wc -c {} + | sort -n | tail -1 | awk '{print $1}')
+MAX_CSS_SIZE=$(find dist/assets -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+if [ -z "$MAX_CSS_SIZE" ]; then
+    echo "❌ ERROR: No CSS files were emitted into dist/assets."
+    echo "   The frontend build may have failed silently."
+    exit 1
+fi
 if [ "$MAX_CSS_SIZE" -lt 100000 ]; then
     echo "❌ ERROR: Largest CSS file is only $((MAX_CSS_SIZE / 1024))KB (expected >100KB)."
     echo "   Tailwind may not have scanned all source files."

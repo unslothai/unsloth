@@ -162,7 +162,9 @@ trap - EXIT
 
 # Validate CSS output -- catch truncated Tailwind builds
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
-if [ -n "$_MAX_CSS" ] && [ "$_MAX_CSS" -lt 100000 ]; then
+if [ -z "$_MAX_CSS" ]; then
+    echo "⚠️  WARNING: No CSS files were emitted. The frontend build may have failed."
+elif [ "$_MAX_CSS" -lt 100000 ]; then
     echo "⚠️  WARNING: Largest CSS file is only $((_MAX_CSS / 1024))KB (expected >100KB)."
     echo "   Tailwind may not have scanned all source files. Check for .gitignore interference."
 fi
@@ -315,10 +317,37 @@ echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 if grep -qi microsoft /proc/version 2>/dev/null; then
     echo ""
     echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
-    echo "   You may be prompted for your password."
-    sudo apt-get update -y
-    sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-    echo "✅ GGUF build dependencies installed"
+    _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
+
+    # Try without sudo first (works when already root)
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y $_GGUF_DEPS >/dev/null 2>&1 || true
+
+    # Check which packages are still missing
+    _STILL_MISSING=""
+    for _pkg in $_GGUF_DEPS; do
+        case "$_pkg" in
+            build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+        esac
+    done
+    _STILL_MISSING=$(echo "$_STILL_MISSING" | sed 's/^ *//')
+
+    if [ -z "$_STILL_MISSING" ]; then
+        echo "✅ GGUF build dependencies installed"
+    elif command -v sudo >/dev/null 2>&1; then
+        echo "   Could not install without elevated permissions: $_STILL_MISSING"
+        echo "   You may be prompted for your password."
+        sudo apt-get update -y
+        sudo apt-get install -y $_STILL_MISSING
+        echo "✅ GGUF build dependencies installed"
+    else
+        echo "   Warning: could not install: $_STILL_MISSING"
+        echo "   Please install as root, then re-run setup:"
+        echo "   apt-get install -y $_STILL_MISSING"
+    fi
 fi
 
 # ── 8. Build llama.cpp binaries for GGUF inference + export ──
@@ -467,6 +496,6 @@ else
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
-    echo "║ unsloth studio -H 0.0.0.0 -p 8000    ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8888    ║"
     echo "╚══════════════════════════════════════╝"
 fi
