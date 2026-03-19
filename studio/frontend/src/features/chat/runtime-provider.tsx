@@ -345,6 +345,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       metadata: { custom: {} },
     };
   }
+  const custom = (m.metadata as Record<string, unknown>) ?? {};
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -352,7 +353,8 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
-      custom: (m.metadata as Record<string, unknown>) ?? {},
+      custom,
+      ...(custom.timing ? { timing: custom.timing } : {}),
       steps: [],
       unstable_annotations: [],
       unstable_data: [],
@@ -534,6 +536,16 @@ function ThreadHistoryProvider({
           if (aOrder !== bOrder) return aOrder - bOrder;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
+
+        // Restore context usage from last assistant message if model matches
+        const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
+        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)?.contextUsage as
+          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number }
+          | undefined;
+        const store = useChatRuntimeStore.getState();
+        if (savedUsage && store.ggufContextLength && savedUsage.totalTokens <= store.ggufContextLength) {
+          store.setContextUsage(savedUsage);
+        }
 
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },

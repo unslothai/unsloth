@@ -40,13 +40,6 @@ interface ServerTimings {
   predicted_per_second: number;
 }
 
-/** Custom SSE event carrying server metadata. */
-interface ServerMetadataEvent {
-  type: "metadata";
-  usage?: ServerUsage;
-  timings?: ServerTimings;
-}
-
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
@@ -645,10 +638,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             continue;
           }
 
-          // Handle server metadata events (timings/usage from llama-server)
-          const meta = (chunk as unknown as { _metadata?: ServerMetadataEvent })._metadata;
-          if (meta !== undefined) {
-            serverMetadata = { usage: meta.usage, timings: meta.timings };
+          // OpenAI-standard usage chunk: choices=[], usage populated
+          if (chunk.choices?.length === 0 && chunk.usage) {
+            serverMetadata = {
+              usage: chunk.usage,
+              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+            };
             continue;
           }
 
@@ -717,6 +712,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           });
         }
 
+        const finalTiming = buildTiming(
+          streamStartTime,
+          totalChunks,
+          serverPromptEvalTime ?? firstTokenTime,
+          Date.now() - streamStartTime,
+          finalTokenCount,
+          toolCallParts.length,
+          finalTokPerSec,
+        );
+
         yield {
           content: [
             ...toolCallParts,
@@ -724,15 +729,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...sourceParts,
           ],
           metadata: {
-            timing: buildTiming(
-              streamStartTime,
-              totalChunks,
-              serverPromptEvalTime ?? firstTokenTime,
-              Date.now() - streamStartTime,
-              finalTokenCount,
-              toolCallParts.length,
-              finalTokPerSec,
-            ),
+            timing: finalTiming,
             custom: {
               reasoningDuration,
               serverTimings: meta?.timings ?? undefined,
@@ -742,6 +739,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 totalTokens: meta.usage.total_tokens,
                 cachedTokens: meta.timings?.cache_n ?? 0,
               } : undefined,
+              timing: finalTiming,
             },
           },
         };

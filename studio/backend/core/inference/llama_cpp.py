@@ -1638,6 +1638,8 @@ class LlamaCppBackend:
         _accumulated_prompt_ms = 0.0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
+        _accumulated_prompt_n = 0
+        _accumulated_cache_n = 0
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -1678,6 +1680,8 @@ class LlamaCppBackend:
                     _accumulated_prompt_ms += _iter_timings.get("prompt_ms", 0)
                     _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
                     _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
+                    _accumulated_prompt_n += _iter_timings.get("prompt_n", 0)
+                    _accumulated_cache_n += _iter_timings.get("cache_n", 0)
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
 
@@ -2004,10 +2008,22 @@ class LlamaCppBackend:
                                 _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
                             )
                             _merged_timings["predicted_n"] = _total_predicted_n
-                            _total_ms = _merged_timings["predicted_ms"]
-                            if _total_ms > 0:
+                            _total_prompt_n = (
+                                _merged_timings.get("prompt_n", 0) + _accumulated_prompt_n
+                            )
+                            _merged_timings["prompt_n"] = _total_prompt_n
+                            _merged_timings["cache_n"] = (
+                                _merged_timings.get("cache_n", 0) + _accumulated_cache_n
+                            )
+                            _total_predicted_ms = _merged_timings["predicted_ms"]
+                            if _total_predicted_ms > 0:
                                 _merged_timings["predicted_per_second"] = (
-                                    _total_predicted_n / (_total_ms / 1000.0)
+                                    _total_predicted_n / (_total_predicted_ms / 1000.0)
+                                )
+                            _total_prompt_ms = _merged_timings["prompt_ms"]
+                            if _total_prompt_ms > 0:
+                                _merged_timings["prompt_per_second"] = (
+                                    _total_prompt_n / (_total_prompt_ms / 1000.0)
                                 )
                         yield {
                             "type": "metadata",
