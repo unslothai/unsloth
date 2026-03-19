@@ -93,7 +93,7 @@ export function Navbar() {
             const disabledByTraining =
               isTrainingRunning && item.href !== "/studio";
             const disabledByDevice =
-              chatOnly && item.href !== "/chat";
+              chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
             if (!item.enabled || disabledByTraining || disabledByDevice) {
               return (
                 <span
@@ -240,7 +240,7 @@ export function Navbar() {
                   const disabledByTraining =
                     isTrainingRunning && item.href !== "/studio";
                   const disabledByDevice =
-                    chatOnly && item.href !== "/chat";
+                    chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
                   if (disabledByTraining || disabledByDevice) {
                     return (
                       <span
