@@ -71,6 +71,24 @@ function Install-UnslothStudio {
         return
     }
 
+    # ── Check for NVIDIA GPU (required for Unsloth Studio training) ──
+    $hasNvidiaGpu = $false
+    $nvidiaSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($nvidiaSmiCmd) {
+        $gpuName = & $nvidiaSmiCmd.Source --query-gpu=name --format=csv,noheader 2>$null
+        if ($gpuName) { $hasNvidiaGpu = $true }
+    }
+    if (-not $hasNvidiaGpu) {
+        Write-Host ""
+        Write-Host "[ERROR] No NVIDIA GPU detected." -ForegroundColor Red
+        Write-Host "        Unsloth Studio requires an NVIDIA GPU (compute capability 7.0+)." -ForegroundColor Yellow
+        Write-Host "        AMD and Intel GPUs are not currently supported." -ForegroundColor Yellow
+        Write-Host "        CPU-only inference via GGUF is available but requires a manual install." -ForegroundColor Yellow
+        Write-Host "        See: https://github.com/unslothai/unsloth?tab=readme-ov-file#-installation" -ForegroundColor Yellow
+        Write-Host ""
+        return
+    }
+
     # ── Create venv (skip if it already exists and has a valid interpreter) ──
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
     if (-not (Test-Path $VenvPython)) {
@@ -98,6 +116,12 @@ function Install-UnslothStudio {
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
     Write-Host "==> Running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
+    if (-not (Test-Path $UnslothExe)) {
+        Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
+        Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
+        Write-Host "        Try re-running the installer or check that your NVIDIA GPU and CUDA drivers are installed." -ForegroundColor Yellow
+        return
+    }
     & $UnslothExe studio setup
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
