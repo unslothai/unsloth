@@ -27,7 +27,7 @@ einx
 pyloudnorm
 openai-whisper
 uroman                           # 4.0 MB - used for Outetts.
-MeCab                          # 19.9 MB - used for Outetts.
+MeCab                            # 19.9 MB - used for Outetts.
 inflect                          # number-to-words, required by OuteTTS
 loguru
 flatten_dict
