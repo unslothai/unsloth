@@ -55,6 +55,10 @@ Unsloth Studio (BETA) works on **Windows, Linux, WSL** and **macOS**.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 ```
+If you don't have `curl`, use `wget`:
+```bash
+wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+```
 Or manually:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
