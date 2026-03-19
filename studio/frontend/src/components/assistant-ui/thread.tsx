@@ -9,7 +9,7 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
-import { Sources } from "@/components/assistant-ui/sources";
+import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -517,6 +517,7 @@ const AssistantMessage: FC = () => {
             },
           }}
         />
+        <SourcesGroup />
         <MessageError />
       </div>
 

@@ -54,21 +54,24 @@ type RunMessage = RunMessages[number];
 export const sentAudioNames = new Map<string, string>();
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] {
+function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
   if (!raw) return [];
   const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] = [];
+  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] = [];
   for (const block of blocks) {
     const titleMatch = block.match(/Title:\s*(.+)/);
     const urlMatch = block.match(/URL:\s*(.+)/);
+    const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
       const url = urlMatch[1].trim();
+      const snippet = snippetMatch?.[1]?.trim();
       sources.push({
         type: "source" as const,
         sourceType: "url" as const,
         id: url,
         url,
         title: titleMatch[1].trim(),
+        ...(snippet ? { metadata: { description: snippet } } : {}),
       });
     }
   }
