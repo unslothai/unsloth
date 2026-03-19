@@ -147,7 +147,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             "Helper model request: enable_thinking=False (per-request override)"
         )
         cumulative = ""
-        for text in backend.generate_chat_completion(
+        for chunk in backend.generate_chat_completion(
             messages = messages,
             temperature = 0.1,
             top_p = 0.9,
@@ -156,7 +156,9 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             repetition_penalty = 1.0,
             enable_thinking = False,  # Always disable thinking for AI Assist
         ):
-            cumulative = text  # cumulative — last value is full text
+            if isinstance(chunk, dict):
+                continue  # skip metadata events
+            cumulative = chunk  # cumulative — last value is full text
 
         result = cumulative.strip()
         result = _strip_think_tags(result)
@@ -422,7 +424,7 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
     """Run one chat completion on an already-loaded backend. Returns raw text."""
     logger.info("Advisor request: enable_thinking=False (per-request override)")
     cumulative = ""
-    for text in backend.generate_chat_completion(
+    for chunk in backend.generate_chat_completion(
         messages = messages,
         temperature = 0.1,
         top_p = 0.9,
@@ -431,7 +433,9 @@ def _generate_with_backend(backend, messages: list[dict], max_tokens: int = 512)
         repetition_penalty = 1.0,
         enable_thinking = False,  # Always disable thinking for AI Assist
     ):
-        cumulative = text
+        if isinstance(chunk, dict):
+            continue  # skip metadata events
+        cumulative = chunk
     result = cumulative.strip()
     result = _strip_think_tags(result)
     return result
