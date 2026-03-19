@@ -1668,7 +1668,9 @@ class LlamaCppBackend:
                             f"llama-server returned {resp.status_code}: {resp.text}"
                         )
                     data = resp.json()
-                    _accumulated_completion_tokens += data.get("usage", {}).get("completion_tokens", 0)
+                    _accumulated_completion_tokens += data.get("usage", {}).get(
+                        "completion_tokens", 0
+                    )
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
 
@@ -1978,9 +1980,13 @@ class LlamaCppBackend:
                                 )
                         if _stream_done:
                             break  # exit outer for
-                    _final_completion = (_metadata_usage or {}).get("completion_tokens", 0)
+                    _final_completion = (_metadata_usage or {}).get(
+                        "completion_tokens", 0
+                    )
                     _final_prompt = (_metadata_usage or {}).get("prompt_tokens", 0)
-                    _total_completion = _accumulated_completion_tokens + _final_completion
+                    _total_completion = (
+                        _accumulated_completion_tokens + _final_completion
+                    )
                     if _metadata_usage or _metadata_timings:
                         yield {
                             "type": "metadata",
