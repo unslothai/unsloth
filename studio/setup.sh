@@ -345,11 +345,26 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
         echo "   If you accept, we'll run sudo now, and it'll prompt your password."
         echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        sudo apt-get update -y
-        sudo apt-get install -y $_STILL_MISSING
-        echo "✅ GGUF build dependencies installed"
+        printf "   Accept? [Y/n] "
+        if [ -r /dev/tty ]; then
+            read -r REPLY </dev/tty || REPLY="y"
+        else
+            REPLY="y"
+        fi
+        case "$REPLY" in
+            [nN]*)
+                echo ""
+                echo "   Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "   sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                ;;
+            *)
+                sudo apt-get update -y
+                sudo apt-get install -y $_STILL_MISSING
+                echo "✅ GGUF build dependencies installed"
+                ;;
+        esac
     else
-        echo "   Warning: could not install: $_STILL_MISSING"
+        echo "   sudo is not available on this system."
         echo "   Please install as root, then re-run setup:"
         echo "   apt-get install -y $_STILL_MISSING"
     fi
