@@ -107,13 +107,11 @@ function Install-UnslothStudio {
     Write-Host ""
     Write-Host "========================================="
     Write-Host "   Unsloth Studio installed!"
+    Write-Host "   Launching Unsloth Studio..."
     Write-Host "========================================="
     Write-Host ""
-    Write-Host "  To launch, run:"
-    Write-Host ""
-    Write-Host "    .\${VenvName}\Scripts\activate"
-    Write-Host "    unsloth studio -H 0.0.0.0 -p 8888"
-    Write-Host ""
+    $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
+    & $UnslothExe studio -H 0.0.0.0 -p 8888
 }
 
 Install-UnslothStudio
