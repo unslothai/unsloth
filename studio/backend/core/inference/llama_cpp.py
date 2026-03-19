@@ -1984,16 +1984,13 @@ class LlamaCppBackend:
                         "completion_tokens", 0
                     )
                     _final_prompt = (_metadata_usage or {}).get("prompt_tokens", 0)
-                    _total_completion = (
-                        _accumulated_completion_tokens + _final_completion
-                    )
                     if _metadata_usage or _metadata_timings:
                         yield {
                             "type": "metadata",
                             "usage": {
                                 "prompt_tokens": _final_prompt,
-                                "completion_tokens": _total_completion,
-                                "total_tokens": _final_prompt + _total_completion,
+                                "completion_tokens": _final_completion,
+                                "total_tokens": _final_prompt + _final_completion,
                             },
                             "timings": _metadata_timings,
                         }
