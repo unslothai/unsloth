@@ -430,8 +430,9 @@ export function buildRecipePayload(
             local_file_name: firstSeed.local_file_name,
           }),
         ...(firstSeed &&
-          firstSeed.unstructured_file_name !== undefined && {
-            unstructured_file_name: firstSeed.unstructured_file_name,
+          firstSeed.unstructured_file_ids !== undefined && {
+            unstructured_file_ids: firstSeed.unstructured_file_ids,
+            unstructured_file_names: firstSeed.unstructured_file_names,
           }),
         ...(firstSeed &&
           firstSeed.unstructured_chunk_size !== undefined && {

@@ -70,8 +70,13 @@ export type RecipePayload = {
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
-    unstructured_file_name?: string;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    unstructured_file_ids?: string[];
+    // biome-ignore lint/style/useNamingConvention: api schema
+    unstructured_file_names?: string[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_chunk_size?: string;
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_chunk_overlap?: string;
     // ui-only: per-node advanced accordion state
     advanced_open_by_node?: Record<string, boolean>;

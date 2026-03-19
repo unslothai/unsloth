@@ -103,13 +103,22 @@ export type SeedInspectRequest = {
 };
 
 export type SeedInspectUploadRequest = {
-  filename: string;
-  // base64 payload without data URL prefix
-  content_base64: string;
+  // Legacy single-file
+  filename?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  content_base64?: string;
+  // Multi-file
+  // biome-ignore lint/style/useNamingConvention: api schema
+  block_id?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  file_ids?: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  file_names?: string[];
+  // Shared
   // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
   // biome-ignore lint/style/useNamingConvention: api schema
-  seed_source_type?: "local" | "unstructured";
+  seed_source_type?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   unstructured_chunk_size?: number;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -126,6 +135,8 @@ export type SeedInspectResponse = {
   preview_rows: Record<string, unknown>[];
   split?: string | null;
   subset?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  resolved_paths?: string[] | null;
 };
 
 export type ValidateError = {
@@ -372,3 +383,60 @@ export async function streamRecipeJobEvents(options: {
 }
 
 // NOTE: preview endpoints removed from harness.
+
+type UnstructuredFileUploadResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  file_id: string;
+  filename: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  size_bytes: number;
+  status: "ok" | "error";
+  error?: string;
+};
+
+export async function uploadUnstructuredFile(
+  file: File,
+  blockId: string,
+  signal?: AbortSignal,
+): Promise<UnstructuredFileUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("block_id", blockId);
+
+  const res = await authFetch(`${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`, {
+    method: "POST",
+    body: formData,
+    signal,
+  });
+
+  if (res.status === 413) {
+    const detail = await res.json().catch(() => ({ detail: "File too large" }));
+    return {
+      file_id: "",
+      filename: file.name,
+      size_bytes: file.size,
+      status: "error",
+      error: typeof detail.detail === "string" ? detail.detail : "File too large",
+    };
+  }
+
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: "Upload failed" }));
+    throw new Error(typeof detail.detail === "string" ? detail.detail : "Upload failed");
+  }
+
+  return res.json();
+}
+
+export async function removeUnstructuredFile(
+  blockId: string,
+  fileId: string,
+): Promise<void> {
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/unstructured-file/${encodeURIComponent(blockId)}/${encodeURIComponent(fileId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Failed to remove file");
+  }
+}

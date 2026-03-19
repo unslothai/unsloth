@@ -30,7 +30,8 @@ function makeDefaultSeedConfig(id: string): SeedConfig {
     hf_token: "",
     hf_endpoint: "https://huggingface.co",
     local_file_name: "",
-    unstructured_file_name: "",
+    unstructured_file_ids: [],
+    unstructured_file_names: [],
     seed_preview_rows: [],
     unstructured_chunk_size: "1200",
     unstructured_chunk_overlap: "200",
@@ -72,7 +73,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let hf_endpoint = "https://huggingface.co";
   let hf_repo_id = "";
   let local_file_name = "";
-  let unstructured_file_name = "";
+  let unstructuredFileIds: string[] = [];
+  let unstructuredFileNames: string[] = [];
   let unstructured_chunk_size = "1200";
   let unstructured_chunk_overlap = "200";
   const sourceRaw = seedConfigRaw.source;
@@ -92,7 +94,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
     } else if (seedType === "unstructured") {
       seed_source_type = "unstructured";
       hf_path = sourcePath;
-      unstructured_file_name = sourcePath.split("/").pop() ?? sourcePath;
+      unstructuredFileIds = [];
+      unstructuredFileNames = [];
       unstructured_chunk_size = readNumberString(sourceRaw.chunk_size) || "1200";
       unstructured_chunk_overlap = readNumberString(sourceRaw.chunk_overlap) || "200";
     }
@@ -129,7 +132,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
     hf_token,
     hf_endpoint,
     local_file_name,
-    unstructured_file_name,
+    unstructured_file_ids: unstructuredFileIds,
+    unstructured_file_names: unstructuredFileNames,
     unstructured_chunk_size,
     unstructured_chunk_overlap,
     sampling_strategy,
@@ -150,7 +154,8 @@ export function parseSeedConfig(
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
-    unstructured_file_name?: string;
+    unstructuredFileIds?: string[];
+    unstructuredFileNames?: string[];
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
   },
@@ -181,8 +186,11 @@ export function parseSeedConfig(
     ...(options?.local_file_name !== undefined
       ? { local_file_name: options.local_file_name }
       : {}),
-    ...(options?.unstructured_file_name !== undefined
-      ? { unstructured_file_name: options.unstructured_file_name }
+    ...(options?.unstructuredFileIds !== undefined
+      ? { unstructured_file_ids: options.unstructuredFileIds }
+      : {}),
+    ...(options?.unstructuredFileNames !== undefined
+      ? { unstructured_file_names: options.unstructuredFileNames }
       : {}),
     ...(options?.unstructured_chunk_size !== undefined
       ? { unstructured_chunk_size: options.unstructured_chunk_size }

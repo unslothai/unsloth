@@ -43,7 +43,8 @@ type UiInput = {
   seed_drop_columns?: unknown;
   seed_preview_rows?: unknown;
   local_file_name?: unknown;
-  unstructured_file_name?: unknown;
+  unstructured_file_ids?: unknown;
+  unstructured_file_names?: unknown;
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
   advanced_open_by_node?: unknown;
@@ -408,8 +409,9 @@ export function importRecipePayload(input: string): ImportResult {
         .map((row) => ({ ...row }))
     : undefined;
   const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
-  const uiUnstructuredFileName =
-    readString(ui?.unstructured_file_name) ?? undefined;
+  // Always clear file IDs/names on import (files are user-specific)
+  const uiUnstructuredFileIds: string[] = [];
+  const uiUnstructuredFileNames: string[] = [];
   const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
@@ -449,7 +451,8 @@ export function importRecipePayload(input: string): ImportResult {
           : payloadSeedDropColumns,
       seed_preview_rows: uiSeedPreviewRows,
       local_file_name: uiLocalFileName,
-      unstructured_file_name: uiUnstructuredFileName,
+      unstructuredFileIds: uiUnstructuredFileIds,
+      unstructuredFileNames: uiUnstructuredFileNames,
       unstructured_chunk_size: uiUnstructuredChunkSize,
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
     });
