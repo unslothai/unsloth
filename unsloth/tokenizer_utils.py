@@ -675,10 +675,17 @@ def _fix_chat_template(chat_template):
     elif after_endfor.strip() == "" and "<|im_start|>" in chat_template:
         # GH#4150: ChatML-style templates (Hermes, etc.) that end with
         # {% endfor %} and have no add_generation_prompt block.
-        # Append the standard ChatML generation prompt.
+        # Extract the model-specific separator after role (e.g. '\n' for
+        # Hermes, '<|im_sep|>' for Phi-4) to avoid hard-coding.
+        import re
+        sep_match = re.search(
+            r"message\['role'\]\s*\+\s*'([^']*)'", chat_template
+        )
+        separator = sep_match.group(1) if sep_match else "\\n"
+        assistant_prefix = "<|im_start|>assistant" + separator
         generation_block = (
             "{%" + dash + " if add_generation_prompt %}"
-            "{{ '<|im_start|>assistant\n' }}"
+            "{{ '" + assistant_prefix + "' }}"
             "{%" + dash + " endif %}"
         )
         chat_template = (
