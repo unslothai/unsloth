@@ -356,6 +356,7 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
                 echo ""
                 echo "   Please install these packages first, then re-run Unsloth Studio setup:"
                 echo "   sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                _SKIP_GGUF_BUILD=true
                 ;;
             *)
                 sudo apt-get update -y
@@ -367,6 +368,7 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
         echo "   sudo is not available on this system."
         echo "   Please install as root, then re-run setup:"
         echo "   apt-get install -y $_STILL_MISSING"
+        _SKIP_GGUF_BUILD=true
     fi
 fi
 
@@ -381,6 +383,11 @@ mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 rm -rf "$LLAMA_CPP_DIR"
+if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
+    echo ""
+    echo "Skipping llama-server build (missing dependencies)"
+    echo "   Install the missing packages and re-run setup to enable GGUF inference."
+else
 {
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
@@ -498,6 +505,7 @@ rm -rf "$LLAMA_CPP_DIR"
         fi
     fi
 }
+fi  # end _SKIP_GGUF_BUILD check
 
 echo ""
 if [ "$IS_COLAB" = true ]; then

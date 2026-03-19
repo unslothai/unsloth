@@ -42,6 +42,13 @@ function Install-UnslothStudio {
         Write-Host "==> Installing Python ${PythonVersion}..."
         winget install -e --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements
         Refresh-SessionPath
+        if ($LASTEXITCODE -ne 0) {
+            # winget returns non-zero for "already installed" -- only fail if python is truly missing
+            if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+                Write-Host "[ERROR] Python installation failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+                return
+            }
+        }
         $DetectedPythonVersion = $PythonVersion
     }
 
@@ -70,6 +77,10 @@ function Install-UnslothStudio {
         if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
         Write-Host "==> Creating Python ${DetectedPythonVersion} virtual environment (${VenvName})..."
         uv venv $VenvName --python $DetectedPythonVersion
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
+            return
+        }
     } else {
         Write-Host "==> Virtual environment ${VenvName} already exists, skipping creation."
     }
@@ -77,6 +88,10 @@ function Install-UnslothStudio {
     # ── Install unsloth directly into the venv (no activation needed) ──
     Write-Host "==> Installing unsloth (this may take a few minutes)..."
     uv pip install --python $VenvPython unsloth --torch-backend=auto
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
+        return
+    }
 
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
