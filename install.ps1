@@ -81,9 +81,9 @@ function Install-UnslothStudio {
     if (-not $hasNvidiaGpu) {
         Write-Host ""
         Write-Host "[ERROR] No NVIDIA GPU detected." -ForegroundColor Red
-        Write-Host "        Unsloth Studio requires an NVIDIA GPU (compute capability 7.0+)." -ForegroundColor Yellow
-        Write-Host "        AMD and Intel GPUs are not currently supported." -ForegroundColor Yellow
-        Write-Host "        CPU-only inference via GGUF is available but requires a manual install." -ForegroundColor Yellow
+        Write-Host "        This Windows installer requires an NVIDIA GPU (compute capability 7.0+)." -ForegroundColor Yellow
+        Write-Host "        AMD GPUs are supported on Linux via ROCm, but ROCm has no Windows support." -ForegroundColor Yellow
+        Write-Host "        Intel GPUs are supported on Linux and Windows -- see the manual install docs." -ForegroundColor Yellow
         Write-Host "        See: https://github.com/unslothai/unsloth?tab=readme-ov-file#-installation" -ForegroundColor Yellow
         Write-Host ""
         return
