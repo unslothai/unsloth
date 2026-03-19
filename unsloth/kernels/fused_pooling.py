@@ -21,16 +21,16 @@ from .utils import calculate_settings, torch_gpu_device
 
 @triton.jit
 def _fused_layernorm_mean_pool_backward(
-    dY,              # grad w.r.t. X_flat, written in-place, (n_rows, hidden_dim)
+    dY,  # grad w.r.t. X_flat, written in-place, (n_rows, hidden_dim)
     dY_row_stride,
-    X,               # saved X_flat, (n_rows, hidden_dim)
+    X,  # saved X_flat, (n_rows, hidden_dim)
     X_row_stride,
-    W,               # LayerNorm weight, (hidden_dim,)
-    r,               # saved inv_var, (n_rows,)
-    mu,              # saved mean, (n_rows,)
-    grad_pooled,     # upstream gradient, (batch_size, hidden_dim)
+    W,  # LayerNorm weight, (hidden_dim,)
+    r,  # saved inv_var, (n_rows,)
+    mu,  # saved mean, (n_rows,)
+    grad_pooled,  # upstream gradient, (batch_size, hidden_dim)
     grad_pooled_stride,
-    seq_lengths,     # (batch_size,)
+    seq_lengths,  # (batch_size,)
     padded_seq_len,  # int
     n_cols: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -46,16 +46,23 @@ def _fused_layernorm_mean_pool_backward(
 
     # Skip padding rows
     if tok_offset >= seq_len:
-        tl.store(dY + row_idx * dY_row_stride + col_offsets,
-                 tl.zeros([BLOCK_SIZE], dtype = tl.float32), mask = mask)
+        tl.store(
+            dY + row_idx * dY_row_stride + col_offsets,
+            tl.zeros([BLOCK_SIZE], dtype = tl.float32),
+            mask = mask,
+        )
         return
 
     # grad from mean pooling: grad_pooled[sentence] / seq_len
-    dY_row = tl.load(grad_pooled + sentence_idx * grad_pooled_stride + col_offsets,
-                     mask = mask, other = 0).to(tl.float32) / seq_len.to(tl.float32)
+    dY_row = tl.load(
+        grad_pooled + sentence_idx * grad_pooled_stride + col_offsets,
+        mask = mask,
+        other = 0,
+    ).to(tl.float32) / seq_len.to(tl.float32)
 
-    X_row = tl.load(X + row_idx * X_row_stride + col_offsets,
-                    mask = mask, other = 0).to(tl.float32)
+    X_row = tl.load(X + row_idx * X_row_stride + col_offsets, mask = mask, other = 0).to(
+        tl.float32
+    )
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     inv_var = tl.load(r + row_idx).to(tl.float32)
@@ -83,7 +90,7 @@ def _fused_layernorm_mean_pool_forward(
     b,
     inv_var,
     mu,
-    seq_lengths,   # actual lengths per sentence, shape (batch_size,)
+    seq_lengths,  # actual lengths per sentence, shape (batch_size,)
     padded_seq_len,  # padded sequence length (int)
     n_cols: tl.constexpr,
     eps: tl.constexpr,
@@ -115,7 +122,9 @@ def _fused_layernorm_mean_pool_forward(
             tok = base_row + tok_offset
 
             # Load this token's hidden states
-            X_row = tl.load(X + tok * X_row_stride + col_offsets, mask = mask, other = 0).to(tl.float32)
+            X_row = tl.load(
+                X + tok * X_row_stride + col_offsets, mask = mask, other = 0
+            ).to(tl.float32)
 
             # Compute mean
             mean_X = tl.sum(X_row, axis = 0) / n_cols
@@ -225,8 +234,13 @@ class FusedLayerNormMeanPool(torch.autograd.Function):
 
         # Build per-token grad: grad_pooled[sentence_of_token] / seq_len_of_token
         # sentence_idx for each row in padded layout
-        sentence_idx = torch.arange(batch_size, device = device).repeat_interleave(seq_len)
-        per_token_grad = grad_pooled[sentence_idx].float() / seq_lengths[sentence_idx].unsqueeze(1).float()
+        sentence_idx = torch.arange(batch_size, device = device).repeat_interleave(
+            seq_len
+        )
+        per_token_grad = (
+            grad_pooled[sentence_idx].float()
+            / seq_lengths[sentence_idx].unsqueeze(1).float()
+        )
 
         # Mask out padding rows
         tok_offsets = torch.arange(seq_len, device = device).repeat(batch_size)

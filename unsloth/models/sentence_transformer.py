@@ -38,42 +38,51 @@ from transformers import AutoModel, AutoConfig
 from transformers.models.auto.auto_factory import _get_model_class
 import tempfile
 from huggingface_hub import HfApi, get_token
-from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf, unsloth_push_to_hub_gguf
+from ..save import (
+    unsloth_save_pretrained_torchao,
+    unsloth_save_pretrained_gguf,
+    unsloth_push_to_hub_gguf,
+)
 import contextlib
 import shutil
 
 try:
     from ..kernels.layernorm import fast_layernorm
+
     _HAS_FAST_LAYERNORM = True
 except ImportError:
     _HAS_FAST_LAYERNORM = False
 
 try:
     from ..kernels.fused_pooling import fused_layernorm_mean_pool
+
     _HAS_FUSED_POOLING = True
 except ImportError:
     _HAS_FUSED_POOLING = False
 
+
 class EncoderSeqInfo(NamedTuple):
-    seq_lengths: torch.Tensor   # (B,)
-    cu_seqlens: torch.Tensor    # (B+1,)
+    seq_lengths: torch.Tensor  # (B,)
+    cu_seqlens: torch.Tensor  # (B+1,)
     max_seqlen: int
-    indices: torch.Tensor       # (total_tokens,)
+    indices: torch.Tensor  # (total_tokens,)
 
 
 def get_encoder_seq_info(attention_mask):
     """Build packed-sequence metadata from a (B, S) attention mask."""
     device = attention_mask.device
-    seq_lengths = attention_mask.sum(dim=1).to(dtype=torch.int32, device=device)
+    seq_lengths = attention_mask.sum(dim = 1).to(dtype = torch.int32, device = device)
 
     cu_seqlens = torch.empty(
-        seq_lengths.numel() + 1, dtype=torch.int32, device=device,
+        seq_lengths.numel() + 1,
+        dtype = torch.int32,
+        device = device,
     )
     cu_seqlens[0] = 0
-    torch.cumsum(seq_lengths, dim=0, dtype=torch.int32, out=cu_seqlens[1:])
+    torch.cumsum(seq_lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
 
     max_seqlen = seq_lengths.max()
-    indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).squeeze(-1)
+    indices = torch.nonzero(attention_mask.flatten(), as_tuple = False).squeeze(-1)
 
     return EncoderSeqInfo(seq_lengths, cu_seqlens, max_seqlen, indices)
 
@@ -91,8 +100,10 @@ def pad_output(unpadded_output, seq_info, batch_size, max_seq_len):
     """Re-pad (total_tokens, D) back to (B, S, D)."""
     hidden_dim = unpadded_output.shape[-1]
     output = torch.zeros(
-        batch_size * max_seq_len, hidden_dim,
-        dtype=unpadded_output.dtype, device=unpadded_output.device,
+        batch_size * max_seq_len,
+        hidden_dim,
+        dtype = unpadded_output.dtype,
+        device = unpadded_output.device,
     )
     output[seq_info.indices] = unpadded_output
     return output.view(batch_size, max_seq_len, hidden_dim)
@@ -194,7 +205,9 @@ class GuidedProjectionPooling(nn.Module):
             json.dump(config, f, indent = 2)
 
     @classmethod
-    def load(cls, input_path: str, pooling_module: nn.Module) -> "GuidedProjectionPooling":
+    def load(
+        cls, input_path: str, pooling_module: nn.Module
+    ) -> "GuidedProjectionPooling":
         config_path = os.path.join(input_path, cls.PROJECTION_CONFIG_NAME)
         weights_path = os.path.join(input_path, cls.PROJECTION_WEIGHTS_NAME)
 
@@ -202,11 +215,11 @@ class GuidedProjectionPooling(nn.Module):
             config = json.load(f)
 
         projection = GuidedProjection(
-            dim        = config["dim"],
+            dim = config["dim"],
             output_dim = config["output_dim"],
-            use_bias   = config["use_bias"],
+            use_bias = config["use_bias"],
             use_residual = config["use_residual"],
-            init       = config["init"],
+            init = config["init"],
         )
         projection.load_state_dict(
             torch.load(weights_path, map_location = "cpu", weights_only = True)
@@ -256,6 +269,7 @@ def attach_guided_projection(st_model, dim = None, **kwargs):
         st_model._modules[pooling_idx] = wrapper
     else:
         import warnings
+
         warnings.warn(
             "Unsloth: No Pooling module found. GuidedProjection appended to module list.",
             stacklevel = 2,
@@ -265,9 +279,11 @@ def attach_guided_projection(st_model, dim = None, **kwargs):
 
     return projection
 
+
 _VARLEN_ATTN_AVAILABLE = False
 try:
     from torch.nn.attention.varlen import varlen_attn as _torch_varlen_attn
+
     # Requires Ampere+ (SM80); guard to avoid T4 error
     if torch.cuda.is_available():
         _major, _ = torch.cuda.get_device_capability()
@@ -281,6 +297,7 @@ except ImportError:
 _FLASH_ATTN_VARLEN_AVAILABLE = False
 try:
     from flash_attn import flash_attn_varlen_func as _flash_attn_varlen_func
+
     # Requires Ampere+
     if torch.cuda.is_available():
         _major, _ = torch.cuda.get_device_capability()
@@ -293,8 +310,13 @@ except ImportError:
 _XFORMERS_ATTN_AVAILABLE = False
 _XFORMERS_DROPOUT_SAFE = True
 try:
-    from xformers.ops import memory_efficient_attention as _xformers_memory_efficient_attention
-    from xformers.ops.fmha.attn_bias import BlockDiagonalMask as _XFormersBlockDiagonalMask
+    from xformers.ops import (
+        memory_efficient_attention as _xformers_memory_efficient_attention,
+    )
+    from xformers.ops.fmha.attn_bias import (
+        BlockDiagonalMask as _XFormersBlockDiagonalMask,
+    )
+
     _XFORMERS_ATTN_AVAILABLE = True
     # xformers dropout unsafe on pre-Ampere; use F.dropout instead
     if torch.cuda.is_available():
@@ -314,15 +336,17 @@ def _patch_encoder_layernorms(model):
         return 0
 
     import torch.nn as nn
+
     count = 0
     for name, module in model.named_modules():
         if isinstance(module, nn.LayerNorm) and module.elementwise_affine:
-            if not hasattr(module, '_original_forward'):
+            if not hasattr(module, "_original_forward"):
                 module._original_forward = module.forward
 
             def make_fast_forward(ln_module):
                 def _fast_forward(X):
                     return fast_layernorm(ln_module, X)
+
                 return _fast_forward
 
             module.forward = make_fast_forward(module)
@@ -340,9 +364,9 @@ def _patch_encoder_attention_lora(model):
         return 0
 
     QKV_ATTRS = [
-        ("query", "key", "value"),      # BERT, RoBERTa, XLM-RoBERTa, ALBERT, ELECTRA
-        ("q", "k", "v"),                # MPNet
-        ("q_lin", "k_lin", "v_lin"),    # DistilBERT
+        ("query", "key", "value"),  # BERT, RoBERTa, XLM-RoBERTa, ALBERT, ELECTRA
+        ("q", "k", "v"),  # MPNet
+        ("q_lin", "k_lin", "v_lin"),  # DistilBERT
     ]
 
     count = 0
@@ -382,9 +406,21 @@ def _patch_encoder_attention_lora(model):
 
                 Q, K, V = LoRA_QKV.apply(
                     x,
-                    QW, QW_quant, QA, QB, QS,
-                    KW, KW_quant, KA, KB, KS,
-                    VW, VW_quant, VA, VB, VS,
+                    QW,
+                    QW_quant,
+                    QA,
+                    QB,
+                    QS,
+                    KW,
+                    KW_quant,
+                    KA,
+                    KB,
+                    KS,
+                    VW,
+                    VW_quant,
+                    VA,
+                    VB,
+                    VS,
                     False,
                 )
 
@@ -445,11 +481,14 @@ def _check_sparsity_support():
         return (False, f"No sparse tensor cores on sm_{sm} (requires sm_80+).")
 
     if major >= 12:
-        return (False, f"Not beneficial on sm_{sm} (cuSPARSELt overhead at encoder dims).")
+        return (
+            False,
+            f"Not beneficial on sm_{sm} (cuSPARSELt overhead at encoder dims).",
+        )
 
     try:
         SparseSemiStructuredTensor._FORCE_CUTLASS = True
-        test_w = torch.zeros(32, 32, device="cuda", dtype=torch.float16)
+        test_w = torch.zeros(32, 32, device = "cuda", dtype = torch.float16)
         test_w[:, 0::4] = 1.0
         test_w[:, 1::4] = 1.0
         _ = to_sparse_semi_structured(test_w)
@@ -459,14 +498,25 @@ def _check_sparsity_support():
     return (True, f"sm_{sm}, CUTLASS backend")
 
 
-def _apply_sparsity_to_base_weights(peft_model, target_modules=None):
+def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
     """Apply 2:4 magnitude pruning to frozen base weights (not LoRA adapters)."""
     from torch.sparse import SparseSemiStructuredTensor, to_sparse_semi_structured
+
     SparseSemiStructuredTensor._FORCE_CUTLASS = True
 
     if target_modules is None:
-        target_modules = {"query", "key", "value", "dense", "q", "k", "v",
-                          "q_lin", "k_lin", "v_lin"}
+        target_modules = {
+            "query",
+            "key",
+            "value",
+            "dense",
+            "q",
+            "k",
+            "v",
+            "q_lin",
+            "k_lin",
+            "v_lin",
+        }
 
     count = 0
     for name, module in peft_model.named_modules():
@@ -484,8 +534,8 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules=None):
 
         # Keep top-2 per group of 4
         w_abs = w.detach().abs().view(w.shape[0], -1, 4)
-        _, topk = w_abs.topk(2, dim=-1)
-        mask = torch.zeros_like(w_abs, dtype=torch.bool)
+        _, topk = w_abs.topk(2, dim = -1)
+        mask = torch.zeros_like(w_abs, dtype = torch.bool)
         mask.scatter_(-1, topk, True)
         mask = mask.view(w.shape)
         w.mul_(mask)
@@ -565,7 +615,11 @@ def _patch_fused_pooling(st_model):
         token_embeddings = features["token_embeddings"]
         attention_mask = features.get(
             "attention_mask",
-            torch.ones(token_embeddings.shape[:-1], device=token_embeddings.device, dtype=torch.int64),
+            torch.ones(
+                token_embeddings.shape[:-1],
+                device = token_embeddings.device,
+                dtype = torch.int64,
+            ),
         )
 
         pooled = fused_layernorm_mean_pool(stored_ln, token_embeddings, attention_mask)
@@ -577,7 +631,14 @@ def _patch_fused_pooling(st_model):
 
 
 # modernbert excluded — has native unpadding (indices, cu_seqlens args)
-_UNPAD_SUPPORTED_TYPES = {"bert", "roberta", "xlm-roberta", "albert", "electra", "mpnet"}
+_UNPAD_SUPPORTED_TYPES = {
+    "bert",
+    "roberta",
+    "xlm-roberta",
+    "albert",
+    "electra",
+    "mpnet",
+}
 _UNPAD_MIN_PADDING_RATIO = 0.15
 
 
@@ -592,18 +653,34 @@ def _register_varlen_attention():
         return True
 
     def _unsloth_varlen_attention(
-        module, query, key, value, attention_mask,
-        dropout=0.0, scaling=None, is_causal=None, **kwargs,
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
     ):
         # Varlen metadata stored on config (PEFT wrappers reject unknown kwargs)
         _config = getattr(module, "config", None)
         cu_seqlens = getattr(_config, "_unsloth_cu_seqlens", None)
         if cu_seqlens is None:
-            is_causal = is_causal if is_causal is not None else getattr(module, "is_causal", False)
+            is_causal = (
+                is_causal
+                if is_causal is not None
+                else getattr(module, "is_causal", False)
+            )
             is_causal = query.shape[2] > 1 and attention_mask is None and is_causal
             attn_output = torch.nn.functional.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask,
-                dropout_p=dropout, scale=scaling, is_causal=is_causal,
+                query,
+                key,
+                value,
+                attn_mask = attention_mask,
+                dropout_p = dropout,
+                scale = scaling,
+                is_causal = is_causal,
             )
             return attn_output.transpose(1, 2).contiguous(), None
 
@@ -615,10 +692,16 @@ def _register_varlen_attention():
             k = key.squeeze(0).transpose(0, 1).contiguous()
             v = value.squeeze(0).transpose(0, 1).contiguous()
             out = _flash_attn_varlen_func(
-                q, k, v,
-                cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens,
-                max_seqlen_q=max_seqlen, max_seqlen_k=max_seqlen,
-                causal=False, dropout_p=dropout, softmax_scale=scaling,
+                q,
+                k,
+                v,
+                cu_seqlens_q = cu_seqlens,
+                cu_seqlens_k = cu_seqlens,
+                max_seqlen_q = max_seqlen,
+                max_seqlen_k = max_seqlen,
+                causal = False,
+                dropout_p = dropout,
+                softmax_scale = scaling,
             )
             attn_output = out.transpose(0, 1).unsqueeze(0)
         elif _XFORMERS_ATTN_AVAILABLE:
@@ -628,41 +711,61 @@ def _register_varlen_attention():
             attn_bias = _XFormersBlockDiagonalMask.from_seqlens(seq_lengths.tolist())
             if _XFORMERS_DROPOUT_SAFE:
                 out_x = _xformers_memory_efficient_attention(
-                    q_x, k_x, v_x, attn_bias=attn_bias, p=dropout, scale=scaling,
+                    q_x,
+                    k_x,
+                    v_x,
+                    attn_bias = attn_bias,
+                    p = dropout,
+                    scale = scaling,
                 )
             else:
                 out_x = _xformers_memory_efficient_attention(
-                    q_x, k_x, v_x, attn_bias=attn_bias, p=0.0, scale=scaling,
+                    q_x,
+                    k_x,
+                    v_x,
+                    attn_bias = attn_bias,
+                    p = 0.0,
+                    scale = scaling,
                 )
                 if dropout > 0.0:
-                    out_x = F.dropout(out_x, p=dropout, training=True)
+                    out_x = F.dropout(out_x, p = dropout, training = True)
             attn_output = out_x.transpose(1, 2)
         elif _VARLEN_ATTN_AVAILABLE:
             q = query.squeeze(0).transpose(0, 1).contiguous()
             k = key.squeeze(0).transpose(0, 1).contiguous()
             v = value.squeeze(0).transpose(0, 1).contiguous()
             out = _torch_varlen_attn(
-                q, k, v,
-                cu_seq_q=cu_seqlens, cu_seq_k=cu_seqlens,
-                max_q=max_seqlen, max_k=max_seqlen, is_causal=False,
+                q,
+                k,
+                v,
+                cu_seq_q = cu_seqlens,
+                cu_seq_k = cu_seqlens,
+                max_q = max_seqlen,
+                max_k = max_seqlen,
+                is_causal = False,
             )
             attn_output = out.transpose(0, 1).unsqueeze(0)
         else:
             # Bool mask fallback
             segment_ids = torch.repeat_interleave(
-                torch.arange(seq_lengths.shape[0], device=query.device),
+                torch.arange(seq_lengths.shape[0], device = query.device),
                 seq_lengths.long(),
             )
-            bool_mask = (segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1))
+            bool_mask = segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1)
             bool_mask = bool_mask.unsqueeze(0).unsqueeze(0)
             # GQA: repeat KV heads
             if key.shape[1] != query.shape[1]:
                 n_rep = query.shape[1] // key.shape[1]
-                key = key.repeat_interleave(n_rep, dim=1)
-                value = value.repeat_interleave(n_rep, dim=1)
+                key = key.repeat_interleave(n_rep, dim = 1)
+                value = value.repeat_interleave(n_rep, dim = 1)
             attn_output = torch.nn.functional.scaled_dot_product_attention(
-                query, key, value, attn_mask=bool_mask,
-                dropout_p=dropout, scale=scaling, is_causal=False,
+                query,
+                key,
+                value,
+                attn_mask = bool_mask,
+                dropout_p = dropout,
+                scale = scaling,
+                is_causal = False,
             )
 
         return attn_output.transpose(1, 2).contiguous(), None
@@ -698,7 +801,9 @@ def _patch_unpadded_encoder(st_model, model_type):
     # XLM-RoBERTa position_ids start at padding_idx + 1
     _position_offset = 0
     for mod in inner.modules():
-        if hasattr(mod, "position_embeddings") and hasattr(mod.position_embeddings, "padding_idx"):
+        if hasattr(mod, "position_embeddings") and hasattr(
+            mod.position_embeddings, "padding_idx"
+        ):
             _pad_idx = mod.position_embeddings.padding_idx
             if _pad_idx is not None:
                 _position_offset = _pad_idx + 1
@@ -717,13 +822,26 @@ def _patch_unpadded_encoder(st_model, model_type):
         )
         _original_sdpa = torch.nn.functional.scaled_dot_product_attention
 
-        def _varlen_sdpa(query, key, value, attn_mask=None, dropout_p=0.0,
-                         is_causal=False, scale=None, **extra_kwargs):
+        def _varlen_sdpa(
+            query,
+            key,
+            value,
+            attn_mask = None,
+            dropout_p = 0.0,
+            is_causal = False,
+            scale = None,
+            **extra_kwargs,
+        ):
             cu_seqlens = getattr(config, "_unsloth_cu_seqlens", None)
             if cu_seqlens is None:
                 return _original_sdpa(
-                    query, key, value, attn_mask=attn_mask,
-                    dropout_p=dropout_p, is_causal=is_causal, scale=scale,
+                    query,
+                    key,
+                    value,
+                    attn_mask = attn_mask,
+                    dropout_p = dropout_p,
+                    is_causal = is_causal,
+                    scale = scale,
                     **extra_kwargs,
                 )
             max_seqlen = config._unsloth_max_seqlen
@@ -732,10 +850,16 @@ def _patch_unpadded_encoder(st_model, model_type):
             v = value.squeeze(0).transpose(0, 1).contiguous()
             if _FLASH_ATTN_VARLEN_AVAILABLE:
                 out = _flash_attn_varlen_func(
-                    q, k, v,
-                    cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens,
-                    max_seqlen_q=max_seqlen, max_seqlen_k=max_seqlen,
-                    causal=is_causal, dropout_p=dropout_p, softmax_scale=scale,
+                    q,
+                    k,
+                    v,
+                    cu_seqlens_q = cu_seqlens,
+                    cu_seqlens_k = cu_seqlens,
+                    max_seqlen_q = max_seqlen,
+                    max_seqlen_k = max_seqlen,
+                    causal = is_causal,
+                    dropout_p = dropout_p,
+                    softmax_scale = scale,
                 )
                 return out.transpose(0, 1).unsqueeze(0)
             elif _XFORMERS_ATTN_AVAILABLE:
@@ -743,43 +867,83 @@ def _patch_unpadded_encoder(st_model, model_type):
                 q_x = query.transpose(1, 2)
                 k_x = key.transpose(1, 2)
                 v_x = value.transpose(1, 2)
-                attn_bias = _XFormersBlockDiagonalMask.from_seqlens(seq_lengths.tolist())
+                attn_bias = _XFormersBlockDiagonalMask.from_seqlens(
+                    seq_lengths.tolist()
+                )
                 if _XFORMERS_DROPOUT_SAFE:
                     out_x = _xformers_memory_efficient_attention(
-                        q_x, k_x, v_x, attn_bias=attn_bias, p=dropout_p, scale=scale,
+                        q_x,
+                        k_x,
+                        v_x,
+                        attn_bias = attn_bias,
+                        p = dropout_p,
+                        scale = scale,
                     )
                 else:
                     out_x = _xformers_memory_efficient_attention(
-                        q_x, k_x, v_x, attn_bias=attn_bias, p=0.0, scale=scale,
+                        q_x,
+                        k_x,
+                        v_x,
+                        attn_bias = attn_bias,
+                        p = 0.0,
+                        scale = scale,
                     )
                     if dropout_p > 0.0:
-                        out_x = F.dropout(out_x, p=dropout_p, training=True)
+                        out_x = F.dropout(out_x, p = dropout_p, training = True)
                 return out_x.transpose(1, 2)
             elif _VARLEN_ATTN_AVAILABLE:
                 out = _torch_varlen_attn(
-                    q, k, v,
-                    cu_seq_q=cu_seqlens, cu_seq_k=cu_seqlens,
-                    max_q=max_seqlen, max_k=max_seqlen, is_causal=is_causal,
+                    q,
+                    k,
+                    v,
+                    cu_seq_q = cu_seqlens,
+                    cu_seq_k = cu_seqlens,
+                    max_q = max_seqlen,
+                    max_k = max_seqlen,
+                    is_causal = is_causal,
                 )
                 return out.transpose(0, 1).unsqueeze(0)
             return _original_sdpa(
-                query, key, value, attn_mask=attn_mask,
-                dropout_p=dropout_p, is_causal=is_causal, scale=scale,
+                query,
+                key,
+                value,
+                attn_mask = attn_mask,
+                dropout_p = dropout_p,
+                is_causal = is_causal,
+                scale = scale,
                 **extra_kwargs,
             )
 
-        def _bool_mask_sdpa(query, key, value, attn_mask=None, dropout_p=0.0,
-                            is_causal=False, scale=None, **extra_kwargs):
+        def _bool_mask_sdpa(
+            query,
+            key,
+            value,
+            attn_mask = None,
+            dropout_p = 0.0,
+            is_causal = False,
+            scale = None,
+            **extra_kwargs,
+        ):
             bool_mask = getattr(config, "_unsloth_bool_mask", None)
             if bool_mask is None:
                 return _original_sdpa(
-                    query, key, value, attn_mask=attn_mask,
-                    dropout_p=dropout_p, is_causal=is_causal, scale=scale,
+                    query,
+                    key,
+                    value,
+                    attn_mask = attn_mask,
+                    dropout_p = dropout_p,
+                    is_causal = is_causal,
+                    scale = scale,
                     **extra_kwargs,
                 )
             return _original_sdpa(
-                query, key, value, attn_mask=bool_mask,
-                dropout_p=dropout_p, is_causal=False, scale=scale,
+                query,
+                key,
+                value,
+                attn_mask = bool_mask,
+                dropout_p = dropout_p,
+                is_causal = False,
+                scale = scale,
             )
 
         config._unsloth_cu_seqlens = None
@@ -792,7 +956,9 @@ def _patch_unpadded_encoder(st_model, model_type):
             return _original_forward(features, **kwargs)
 
         auto_model = transformer_mod.auto_model
-        actual_model = auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
+        actual_model = (
+            auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
+        )
         if not actual_model.training:
             return _original_forward(features, **kwargs)
 
@@ -815,8 +981,12 @@ def _patch_unpadded_encoder(st_model, model_type):
         input_ids = features["input_ids"]
         packed_ids = input_ids.flatten()[seq_info.indices].unsqueeze(0)
 
-        _offsets = torch.repeat_interleave(seq_info.cu_seqlens[:-1], seq_info.seq_lengths.long())
-        position_ids = (torch.arange(total_tokens, device=device) - _offsets + _position_offset).unsqueeze(0)
+        _offsets = torch.repeat_interleave(
+            seq_info.cu_seqlens[:-1], seq_info.seq_lengths.long()
+        )
+        position_ids = (
+            torch.arange(total_tokens, device = device) - _offsets + _position_offset
+        ).unsqueeze(0)
 
         packed_features = {
             "input_ids": packed_ids,
@@ -829,7 +999,8 @@ def _patch_unpadded_encoder(st_model, model_type):
             )
 
         trans_features = {
-            k: v for k, v in packed_features.items()
+            k: v
+            for k, v in packed_features.items()
             if k in transformer_mod.model_forward_params
         }
 
@@ -841,7 +1012,9 @@ def _patch_unpadded_encoder(st_model, model_type):
             config._unsloth_seq_lengths = seq_info.seq_lengths
             try:
                 outputs = auto_model(
-                    **trans_features, return_dict=True, **kwargs,
+                    **trans_features,
+                    return_dict = True,
+                    **kwargs,
                 )
             finally:
                 config._attn_implementation = _orig_attn_impl
@@ -856,7 +1029,7 @@ def _patch_unpadded_encoder(st_model, model_type):
             config._unsloth_seq_lengths = seq_info.seq_lengths
             torch.nn.functional.scaled_dot_product_attention = _varlen_sdpa
             try:
-                outputs = auto_model(**trans_features, return_dict=True, **kwargs)
+                outputs = auto_model(**trans_features, return_dict = True, **kwargs)
             finally:
                 torch.nn.functional.scaled_dot_product_attention = _original_sdpa
                 config._attn_implementation = _orig_attn_impl
@@ -867,14 +1040,14 @@ def _patch_unpadded_encoder(st_model, model_type):
             # Transformers 4.x Tier 2: bool mask SDPA fallback
             config._attn_implementation = "sdpa"
             segment_ids = torch.repeat_interleave(
-                torch.arange(seq_info.seq_lengths.shape[0], device=device),
+                torch.arange(seq_info.seq_lengths.shape[0], device = device),
                 seq_info.seq_lengths.long(),
             )
-            bool_mask = (segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1))
+            bool_mask = segment_ids.unsqueeze(0) == segment_ids.unsqueeze(1)
             config._unsloth_bool_mask = bool_mask.unsqueeze(0).unsqueeze(0)
             torch.nn.functional.scaled_dot_product_attention = _bool_mask_sdpa
             try:
-                outputs = auto_model(**trans_features, return_dict=True, **kwargs)
+                outputs = auto_model(**trans_features, return_dict = True, **kwargs)
             finally:
                 torch.nn.functional.scaled_dot_product_attention = _original_sdpa
                 config._attn_implementation = _orig_attn_impl
@@ -928,7 +1101,9 @@ def _patch_unpadded_decoder(st_model):
             return _original_forward(features, **kwargs)
 
         auto_model = transformer_mod.auto_model
-        actual_model = auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
+        actual_model = (
+            auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
+        )
         if not actual_model.training:
             return _original_forward(features, **kwargs)
 
@@ -944,8 +1119,12 @@ def _patch_unpadded_decoder(st_model):
         input_ids = features["input_ids"]
         packed_ids = input_ids.flatten()[seq_info.indices].unsqueeze(0)
 
-        _offsets = torch.repeat_interleave(seq_info.cu_seqlens[:-1], seq_info.seq_lengths.long())
-        position_ids = (torch.arange(total_tokens, device=device) - _offsets).unsqueeze(0)
+        _offsets = torch.repeat_interleave(
+            seq_info.cu_seqlens[:-1], seq_info.seq_lengths.long()
+        )
+        position_ids = (torch.arange(total_tokens, device = device) - _offsets).unsqueeze(
+            0
+        )
 
         packed_features = {
             "input_ids": packed_ids,
@@ -959,11 +1138,12 @@ def _patch_unpadded_decoder(st_model):
             )
 
         trans_features = {
-            k: v for k, v in packed_features.items()
+            k: v
+            for k, v in packed_features.items()
             if k in transformer_mod.model_forward_params
         }
 
-        outputs = auto_model(**trans_features, return_dict=True, **kwargs)
+        outputs = auto_model(**trans_features, return_dict = True, **kwargs)
         packed_embeddings = outputs[0].squeeze(0)  # (total_tokens, D)
 
         token_embeddings = pad_output(packed_embeddings, seq_info, B, S)
@@ -979,6 +1159,7 @@ def _patch_unpadded_decoder(st_model):
 
 
 _POOLING_PATCHED = False
+
 
 def _patch_efficient_pooling():
     """Monkey-patch Pooling to skip redundant expand()."""
@@ -998,8 +1179,8 @@ def _patch_efficient_pooling():
                 "attention_mask",
                 torch.ones(
                     token_embeddings.shape[:-1],
-                    device=token_embeddings.device,
-                    dtype=torch.int64,
+                    device = token_embeddings.device,
+                    dtype = torch.int64,
                 ),
             )
 
@@ -1013,31 +1194,33 @@ def _patch_efficient_pooling():
             output_vectors = []
 
             if self.pooling_mode_cls_token:
-                cls_token = features.get(
-                    "cls_token_embeddings", token_embeddings[:, 0]
-                )
+                cls_token = features.get("cls_token_embeddings", token_embeddings[:, 0])
                 output_vectors.append(cls_token)
 
             if self.pooling_mode_max_tokens:
-                input_mask_expanded = attention_mask.unsqueeze(-1).expand(
-                    token_embeddings.size()
-                ).to(token_embeddings.dtype)
+                input_mask_expanded = (
+                    attention_mask.unsqueeze(-1)
+                    .expand(token_embeddings.size())
+                    .to(token_embeddings.dtype)
+                )
                 token_embeddings[input_mask_expanded == 0] = -1e9
                 max_over_time = torch.max(token_embeddings, 1)[0]
                 output_vectors.append(max_over_time)
 
             if self.pooling_mode_mean_tokens or self.pooling_mode_mean_sqrt_len_tokens:
                 mask = attention_mask.unsqueeze(-1).to(token_embeddings.dtype)
-                sum_embeddings = (token_embeddings * mask).sum(dim=1)
+                sum_embeddings = (token_embeddings * mask).sum(dim = 1)
 
                 if "token_weights_sum" in features:
-                    sum_mask = features["token_weights_sum"].unsqueeze(-1).expand(
-                        sum_embeddings.size()
+                    sum_mask = (
+                        features["token_weights_sum"]
+                        .unsqueeze(-1)
+                        .expand(sum_embeddings.size())
                     )
                 else:
-                    sum_mask = mask.sum(dim=1)
+                    sum_mask = mask.sum(dim = 1)
 
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
+                sum_mask = torch.clamp(sum_mask, min = 1e-9)
 
                 if self.pooling_mode_mean_tokens:
                     output_vectors.append(sum_embeddings / sum_mask)
@@ -1061,6 +1244,7 @@ def _patch_efficient_pooling():
 
 _MNRL_PATCHED = False
 
+
 def _patch_mnrl_loss():
     """Monkey-patch MNRL with fused chunked contrastive loss."""
     global _MNRL_PATCHED
@@ -1074,32 +1258,33 @@ def _patch_mnrl_loss():
 
         _original_forward = MultipleNegativesRankingLoss.forward
 
-        def _fused_forward(self, sentence_features, labels=None):
+        def _fused_forward(self, sentence_features, labels = None):
             first_ids = sentence_features[0].get("input_ids")
             if first_ids is not None and first_ids.shape[0] < 512:
                 return _original_forward(self, sentence_features, labels)
 
-            reps = [
-                self.model(sf)["sentence_embedding"] for sf in sentence_features
-            ]
+            reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
             embeddings_a = reps[0]
-            embeddings_b = torch.cat(reps[1:], dim=0)
+            embeddings_b = torch.cat(reps[1:], dim = 0)
 
             try:
                 from sentence_transformers.util import cos_sim
-                is_cosine = (self.similarity_fct is cos_sim)
+
+                is_cosine = self.similarity_fct is cos_sim
             except ImportError:
                 is_cosine = True
 
             if is_cosine:
-                embeddings_a = torch.nn.functional.normalize(embeddings_a, p=2, dim=1)
-                embeddings_b = torch.nn.functional.normalize(embeddings_b, p=2, dim=1)
+                embeddings_a = torch.nn.functional.normalize(embeddings_a, p = 2, dim = 1)
+                embeddings_b = torch.nn.functional.normalize(embeddings_b, p = 2, dim = 1)
 
             return FusedContrastiveLoss.apply(embeddings_a, embeddings_b, self.scale)
 
         MultipleNegativesRankingLoss.forward = _fused_forward
         MultipleNegativesRankingLoss._original_forward = _original_forward
-        print("Unsloth: Patched MultipleNegativesRankingLoss with fused contrastive loss")
+        print(
+            "Unsloth: Patched MultipleNegativesRankingLoss with fused contrastive loss"
+        )
     except:
         pass
 
@@ -1452,6 +1637,7 @@ class FastSentenceTransformer(FastModel):
         Patch DistilBert forward to use positional args (for PEFT compatibility).
         Transformers 4 version.
         """
+
         def forward(
             self,
             input_ids: Optional[torch.Tensor] = None,
@@ -2076,7 +2262,9 @@ class FastSentenceTransformer(FastModel):
                         config, kwargs.get("auto_model", AutoModel)._model_mapping
                     )
                     supports_sdpa = getattr(model_class, "_supports_sdpa", False)
-                    supports_flash_attn_2 = getattr(model_class, "_supports_flash_attn_2", False)
+                    supports_flash_attn_2 = getattr(
+                        model_class, "_supports_flash_attn_2", False
+                    )
                 except:
                     pass
 
@@ -2090,12 +2278,17 @@ class FastSentenceTransformer(FastModel):
             if not supports_flash_attn_2 and model_type in _UNPAD_SUPPORTED_TYPES:
                 try:
                     import flash_attn  # noqa: F401
+
                     supports_flash_attn_2 = True
                 except ImportError:
                     pass
 
-            _use_new_dtype_kwarg = Version(transformers.__version__) >= Version("4.48.0")
-            model_kwargs = {"dtype": dtype} if _use_new_dtype_kwarg else {"torch_dtype": dtype}
+            _use_new_dtype_kwarg = Version(transformers.__version__) >= Version(
+                "4.48.0"
+            )
+            model_kwargs = (
+                {"dtype": dtype} if _use_new_dtype_kwarg else {"torch_dtype": dtype}
+            )
 
             _force_eager = False
             for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
@@ -2175,17 +2368,23 @@ class FastSentenceTransformer(FastModel):
                 inner_model = st_model[0].auto_model
                 ln_count = _patch_encoder_layernorms(inner_model)
                 if ln_count > 0:
-                    print(f"Unsloth: Patched {ln_count} LayerNorm modules with Triton kernel")
+                    print(
+                        f"Unsloth: Patched {ln_count} LayerNorm modules with Triton kernel"
+                    )
 
             if compile_mode is None and _HAS_FUSED_POOLING:
                 if _patch_fused_pooling(st_model):
-                    print("Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel")
+                    print(
+                        "Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel"
+                    )
 
             _unpad_env = os.environ.get("UNSLOTH_UNPADDING", "1")
             if _unpad_env == "1":
                 if _patch_unpadded_encoder(st_model, model_type):
                     backend = getattr(st_model[0], "_unpadding_backend", "unknown")
-                    print(f"Unsloth: Enabled variable-length batching (unpadding) via {backend}")
+                    print(
+                        f"Unsloth: Enabled variable-length batching (unpadding) via {backend}"
+                    )
 
             if use_guided_projection:
                 if _use_gc and _use_gc != False:
@@ -2237,7 +2436,9 @@ class FastSentenceTransformer(FastModel):
                 unsloth_save_pretrained_gguf, st_model
             )
 
-            st_model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, st_model)
+            st_model.push_to_hub_gguf = types.MethodType(
+                unsloth_push_to_hub_gguf, st_model
+            )
 
             def _push_to_hub_merged(self, repo_id, **push_kwargs):
                 hub_token = push_kwargs.get("token", None) or get_token()
@@ -2377,7 +2578,10 @@ class FastSentenceTransformer(FastModel):
                 _am_unwrap = _am._orig_mod if hasattr(_am, "_orig_mod") else _am
                 _cfg = getattr(_am_unwrap, "config", None)
                 _is_bidirectional = getattr(_cfg, "use_bidirectional_attention", False)
-                if _cfg is not None and getattr(_cfg, "_attn_implementation", None) == "flex_attention":
+                if (
+                    _cfg is not None
+                    and getattr(_cfg, "_attn_implementation", None) == "flex_attention"
+                ):
                     if _is_bidirectional:
                         # Short seqs don't need sliding window BlockMask; SDPA is faster
                         _sw = getattr(_cfg, "sliding_window", None) or float("inf")
@@ -2398,32 +2602,43 @@ class FastSentenceTransformer(FastModel):
                         _has_fa2 = False
                         try:
                             import flash_attn  # noqa: F401
-                            _has_fa2 = getattr(_am_unwrap.__class__, "_supports_flash_attn_2", False)
+
+                            _has_fa2 = getattr(
+                                _am_unwrap.__class__, "_supports_flash_attn_2", False
+                            )
                         except ImportError:
                             pass
                         _best_attn = "flash_attention_2" if _has_fa2 else "sdpa"
                         _cfg._attn_implementation = _best_attn
                         if hasattr(_cfg, "attn_implementation"):
                             _cfg.attn_implementation = _best_attn
-                        print(f"Unsloth: Overriding flex_attention → {_best_attn} for sentence transformer training")
+                        print(
+                            f"Unsloth: Overriding flex_attention → {_best_attn} for sentence transformer training"
+                        )
                 _inner = _am_unwrap
                 break
 
         if _inner is not None and _HAS_FAST_LAYERNORM:
             _ln_count = _patch_encoder_layernorms(_inner)
             if _ln_count > 0:
-                print(f"Unsloth: Patched {_ln_count} LayerNorm modules with Triton kernel")
+                print(
+                    f"Unsloth: Patched {_ln_count} LayerNorm modules with Triton kernel"
+                )
 
         if _HAS_FUSED_POOLING:
             if _patch_fused_pooling(st_model):
-                print("Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel")
+                print(
+                    "Unsloth: Fused final LayerNorm + Mean Pooling into single Triton kernel"
+                )
 
         # Skip bidirectional decoders — Unsloth patch closure prevents varlen injection
         _unpad_env = os.environ.get("UNSLOTH_UNPADDING", "1")
         if _unpad_env == "1" and not _is_bidirectional:
             if _patch_unpadded_decoder(st_model):
                 _backend = getattr(st_model[0], "_unpadding_backend", "unknown")
-                print(f"Unsloth: Enabled variable-length batching (unpadding) via {_backend}")
+                print(
+                    f"Unsloth: Enabled variable-length batching (unpadding) via {_backend}"
+                )
 
         def _save_pretrained_merged(self, save_directory, **kwargs):
             # check which adapter files exist before save_pretrained
@@ -2669,9 +2884,13 @@ class FastSentenceTransformer(FastModel):
                         sparse_count = _apply_sparsity_to_base_weights(peft_model)
                         if sparse_count > 0:
                             model._sparsity_applied = True
-                            print(f"Unsloth: Applied 2:4 sparsity to {sparse_count} base layer(s) ({sparsity_msg})")
+                            print(
+                                f"Unsloth: Applied 2:4 sparsity to {sparse_count} base layer(s) ({sparsity_msg})"
+                            )
                     elif sparsity_env.lower() == "1":
-                        print(f"Unsloth Warning: UNSLOTH_SPARSITY=1 but not supported: {sparsity_msg}")
+                        print(
+                            f"Unsloth Warning: UNSLOTH_SPARSITY=1 but not supported: {sparsity_msg}"
+                        )
 
                 if compile_mode is not None:
                     model._compile_mode = compile_mode

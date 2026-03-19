@@ -1914,6 +1914,7 @@ def unsloth_save_pretrained_gguf(
         if os.path.exists(modules_path):
             try:
                 import json
+
                 with open(modules_path, "r") as f:
                     modules = json.load(f)
                 for m in modules:
@@ -1923,35 +1924,36 @@ def unsloth_save_pretrained_gguf(
             except:
                 pass
 
-        transformer_dir = os.path.abspath(os.path.join(save_directory, transformer_path))
+        transformer_dir = os.path.abspath(
+            os.path.join(save_directory, transformer_path)
+        )
 
         result = unsloth_save_pretrained_gguf(
             inner_model,
-            save_directory       = transformer_dir,
-            tokenizer            = tokenizer,
-            quantization_method  = quantization_method,
-            first_conversion     = first_conversion,
-            push_to_hub          = False,
-            token                = token,
-            max_shard_size       = max_shard_size,
-            temporary_location   = temporary_location,
+            save_directory = transformer_dir,
+            tokenizer = tokenizer,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            push_to_hub = False,
+            token = token,
+            max_shard_size = max_shard_size,
+            temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
         )
 
         gguf_files = result.get("gguf_files", [])
         new_gguf_locations = []
         for gguf_file in gguf_files:
-            if not os.path.exists(gguf_file): continue
+            if not os.path.exists(gguf_file):
+                continue
             filename = os.path.basename(gguf_file)
             dest_path = os.path.join(save_directory, filename)
             abs_gguf = os.path.abspath(gguf_file)
             if os.path.abspath(dest_path) != abs_gguf:
                 shutil.move(gguf_file, dest_path)
             new_gguf_locations.append(dest_path)
-        pass
         result["gguf_files"] = new_gguf_locations
         return result
-    pass
 
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
@@ -2247,7 +2249,6 @@ def unsloth_push_to_hub_gguf(
         if tags is None:
             tags = []
         tags.append("sentence-transformers")
-    pass
 
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")

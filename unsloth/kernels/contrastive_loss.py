@@ -41,28 +41,32 @@ class FusedContrastiveLoss(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, embeddings_a, embeddings_b, scale=20.0):
+    def forward(ctx, embeddings_a, embeddings_b, scale = 20.0):
         B_a, _dim = embeddings_a.shape
         B_b = embeddings_b.shape[0]
         CHUNK = min(64, B_b)
 
         row_max = torch.full(
-            (B_a,), float("-inf"),
-            device=embeddings_a.device, dtype=embeddings_a.dtype,
+            (B_a,),
+            float("-inf"),
+            device = embeddings_a.device,
+            dtype = embeddings_a.dtype,
         )
         for j0 in range(0, B_b, CHUNK):
             j1 = min(j0 + CHUNK, B_b)
             sim = embeddings_a @ embeddings_b[j0:j1].t() * scale
-            row_max = torch.max(row_max, sim.max(dim=1).values)
+            row_max = torch.max(row_max, sim.max(dim = 1).values)
 
-        row_lse = torch.zeros(B_a, device=embeddings_a.device, dtype=embeddings_a.dtype)
-        pos_logits = torch.zeros(B_a, device=embeddings_a.device, dtype=embeddings_a.dtype)
+        row_lse = torch.zeros(B_a, device = embeddings_a.device, dtype = embeddings_a.dtype)
+        pos_logits = torch.zeros(
+            B_a, device = embeddings_a.device, dtype = embeddings_a.dtype
+        )
 
         for j0 in range(0, B_b, CHUNK):
             j1 = min(j0 + CHUNK, B_b)
             sim = embeddings_a @ embeddings_b[j0:j1].t() * scale
             sim_shifted = sim - row_max.unsqueeze(1)
-            row_lse += sim_shifted.exp().sum(dim=1)
+            row_lse += sim_shifted.exp().sum(dim = 1)
 
             # Positive logits sit on the diagonal (row i, col i) for i < B_a
             diag_lo = max(0, j0)
@@ -122,25 +126,24 @@ class FastMultipleNegativesRankingLoss(torch.nn.Module):
     that uses :class:`FusedContrastiveLoss` under the hood.
     """
 
-    def __init__(self, model, scale=20.0, similarity_fct=None):
+    def __init__(self, model, scale = 20.0, similarity_fct = None):
         super().__init__()
         if similarity_fct is not None:
             import warnings
+
             warnings.warn(
                 "Unsloth: similarity_fct is ignored by FusedContrastiveLoss (cosine similarity is hardcoded).",
-                stacklevel=2,
+                stacklevel = 2,
             )
         self.model = model
         self.scale = scale
 
-    def forward(self, sentence_features, labels=None):
-        reps = [
-            self.model(sf)["sentence_embedding"] for sf in sentence_features
-        ]
+    def forward(self, sentence_features, labels = None):
+        reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
         embeddings_a = reps[0]
-        embeddings_b = torch.cat(reps[1:], dim=0)
+        embeddings_b = torch.cat(reps[1:], dim = 0)
 
-        embeddings_a = F.normalize(embeddings_a, p=2, dim=1)
-        embeddings_b = F.normalize(embeddings_b, p=2, dim=1)
+        embeddings_a = F.normalize(embeddings_a, p = 2, dim = 1)
+        embeddings_b = F.normalize(embeddings_b, p = 2, dim = 1)
 
         return FusedContrastiveLoss.apply(embeddings_a, embeddings_b, self.scale)
