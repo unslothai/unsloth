@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
+from utils.hardware import resolve_requested_gpu_ids
 
 logger = get_logger(__name__)
 
@@ -193,6 +194,12 @@ class TrainingBackend:
             config["load_in_4bit"] = False
 
         # Spawn subprocess — use locals so state is untouched on failure
+        resolved_gpu_ids = resolve_requested_gpu_ids(kwargs.get("gpu_ids"))
+        config["resolved_gpu_ids"] = (
+            resolved_gpu_ids if kwargs.get("gpu_ids") is not None else None
+        )
+
+        # Spawn subprocess
         from .worker import run_training_process
 
         event_queue = _CTX.Queue()

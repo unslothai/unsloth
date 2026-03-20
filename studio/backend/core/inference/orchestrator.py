@@ -27,6 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
+from utils.hardware import resolve_requested_gpu_ids
 
 logger = get_logger(__name__)
 
@@ -597,6 +598,10 @@ class InferenceOrchestrator:
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": gpu_ids,
             }
+            resolved_gpu_ids = resolve_requested_gpu_ids(gpu_ids)
+            sub_config["resolved_gpu_ids"] = (
+                resolved_gpu_ids if gpu_ids is not None else None
+            )
 
             # Always kill existing subprocess and spawn fresh.
             # Reusing a subprocess after unsloth patches torch internals

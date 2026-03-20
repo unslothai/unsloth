@@ -396,6 +396,9 @@ async def load_model(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        logger.warning("Rejected inference GPU selection: %s", e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = str(e)

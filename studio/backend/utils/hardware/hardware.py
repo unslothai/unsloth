@@ -16,6 +16,7 @@ Usage:
         ...
 """
 
+import os
 import platform
 import structlog
 from loggers import get_logger
@@ -415,6 +416,63 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
 _physical_gpu_count: Optional[int] = None
 _visible_gpu_count: Optional[int] = None
+
+
+def get_parent_visible_gpu_ids() -> list[int]:
+    """Return the physical GPU IDs visible to the current process."""
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible is not None:
+        cuda_visible = cuda_visible.strip()
+        if cuda_visible == "" or cuda_visible == "-1":
+            return []
+        return [int(value.strip()) for value in cuda_visible.split(",") if value.strip()]
+
+    return list(range(get_physical_gpu_count()))
+
+
+def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
+    """Resolve and validate requested physical GPU IDs."""
+    parent_visible_ids = get_parent_visible_gpu_ids()
+    physical_gpu_count = get_physical_gpu_count()
+
+    if gpu_ids is None:
+        return parent_visible_ids
+
+    requested_ids = list(gpu_ids)
+    if len(requested_ids) == 0:
+        raise ValueError(
+            "Invalid gpu_ids []: gpu_ids must be a non-empty list. "
+            f"Parent-visible GPUs: {parent_visible_ids}"
+        )
+
+    if len(set(requested_ids)) != len(requested_ids):
+        raise ValueError(
+            f"Invalid gpu_ids {requested_ids}: duplicate GPU IDs are not allowed. "
+            f"Parent-visible GPUs: {parent_visible_ids}"
+        )
+
+    invalid_ids = [
+        gpu_id
+        for gpu_id in requested_ids
+        if gpu_id < 0 or gpu_id >= physical_gpu_count
+    ]
+    if invalid_ids:
+        raise ValueError(
+            f"Invalid gpu_ids {requested_ids}: IDs must be unique physical GPU IDs "
+            f"between 0 and {max(physical_gpu_count - 1, 0)}. "
+            f"Rejected IDs: {invalid_ids}. Parent-visible GPUs: {parent_visible_ids}"
+        )
+
+    disallowed_ids = [
+        gpu_id for gpu_id in requested_ids if gpu_id not in parent_visible_ids
+    ]
+    if disallowed_ids:
+        raise ValueError(
+            f"Invalid gpu_ids {requested_ids}: requested GPUs {disallowed_ids} are "
+            f"outside the parent-visible set {parent_visible_ids}"
+        )
+
+    return requested_ids
 
 
 def get_physical_gpu_count() -> int:

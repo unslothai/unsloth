@@ -18,7 +18,7 @@ from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
-from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory, get_device_map, get_visible_gpu_count
+from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory, get_device_map
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -260,9 +260,7 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
-
             device_map = get_device_map()
-            logger.info(f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)")
 
             self.models[model_name] = {
                 "is_vision": config.is_vision,

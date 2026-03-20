@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+from utils.hardware import apply_gpu_ids
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -485,11 +486,7 @@ def run_inference_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    # ── 0. Apply GPU selection BEFORE any ML imports ──
-    gpu_ids = config.get("gpu_ids")
-    if gpu_ids is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
-        logger.info("Subprocess GPU restriction: CUDA_VISIBLE_DEVICES='%s'", os.environ["CUDA_VISIBLE_DEVICES"])
+    apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     model_name = config["model_name"]
 
