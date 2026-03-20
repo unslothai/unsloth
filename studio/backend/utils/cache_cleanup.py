@@ -48,7 +48,9 @@ def register_compiled_cache_on_path() -> None:
     pypath = os.environ.get("PYTHONPATH", "")
     pypath_entries = [p for p in pypath.split(os.pathsep) if p]
 
-    for cache_dir in get_existing_cache_dirs():
+    # Iterate in reverse so that earlier _CACHE_DIRS entries (higher priority)
+    # are inserted last and therefore end up first in sys.path / PYTHONPATH.
+    for cache_dir in reversed(get_existing_cache_dirs()):
         resolved = str(cache_dir.resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)
