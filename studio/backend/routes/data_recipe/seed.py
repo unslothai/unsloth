@@ -433,9 +433,11 @@ async def upload_unstructured_file(
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir, file_ids=tracked_ids)
+    current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
     if current_total + size_bytes > MAX_TOTAL_SIZE:
-        raise HTTPException(413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded")
+        raise HTTPException(
+            413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
+        )
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
