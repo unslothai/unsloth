@@ -550,7 +550,7 @@ if [ "$IS_COLAB" = true ]; then
     echo "║ from colab import start              ║"
     echo "║ start()                              ║"
     echo "╚══════════════════════════════════════╝"
-elif [ "$SUPPRESS_LAUNCH_HINT" = false ]; then
+elif [ "$SUPPRESS_LAUNCH_HINT" = "0" ]; then
     echo "╔══════════════════════════════════════╗"
     echo "║           Setup Complete!            ║"
     echo "╚══════════════════════════════════════╝"
