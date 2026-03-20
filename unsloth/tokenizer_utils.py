@@ -655,19 +655,29 @@ def _fix_chat_template(chat_template):
     where = chat_template.find(chosen_end)
 
     after_endfor = chat_template[where + len(chosen_end) :]
+    after_stripped = after_endfor.strip()
 
     dash = "-" if chosen_end.startswith("{%-") else ""
 
     if (
-        "{%" + dash + " if" not in after_endfor
-        and "{%" + dash + " set " not in after_endfor
-        and after_endfor.startswith("{{")
-        and after_endfor.endswith("}}")
-        and after_endfor.count("{{") == 1
-        and after_endfor.count("}}") == 1
+        "{%" + dash + " if" not in after_stripped
+        and "{%" + dash + " set " not in after_stripped
+        and after_stripped.startswith("{{")
+        and after_stripped.endswith("}}")
+        and after_stripped.count("{{") == 1
+        and after_stripped.count("}}") == 1
     ):
+        prefix = after_endfor[: len(after_endfor) - len(after_endfor.lstrip())]
+        suffix = after_endfor[len(after_endfor.rstrip()) :]
+        inner = after_stripped
         after_endfor = (
-            "{%" + dash + " if add_generation_prompt %}" + after_endfor + endif
+            prefix
+            + "{%"
+            + dash
+            + " if add_generation_prompt %}"
+            + inner
+            + endif
+            + suffix
         )
 
         chat_template = chat_template[: where + len(chosen_end)] + after_endfor
