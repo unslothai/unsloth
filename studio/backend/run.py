@@ -228,7 +228,7 @@ def run_server(
         # Reconfigure stdout to UTF-8 so the startup message does not crash the server.
         if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
             try:
-                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+                sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
             except Exception:
                 pass
 
