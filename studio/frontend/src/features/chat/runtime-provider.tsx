@@ -346,6 +346,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     };
   }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
+  const savedTiming = custom.timing as import("@assistant-ui/react").MessageTiming | undefined;
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -354,7 +355,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
       custom,
-      ...(custom.timing ? { timing: custom.timing } : {}),
+      ...(savedTiming ? { timing: savedTiming } : {}),
       steps: [],
       unstable_annotations: [],
       unstable_data: [],
@@ -540,10 +541,15 @@ function ThreadHistoryProvider({
         // Restore context usage from last assistant message if model matches
         const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
         const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)?.contextUsage as
-          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number }
+          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number; modelId?: string }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        if (savedUsage && store.ggufContextLength && savedUsage.totalTokens <= store.ggufContextLength) {
+        if (
+          savedUsage &&
+          store.ggufContextLength &&
+          savedUsage.totalTokens <= store.ggufContextLength &&
+          (!savedUsage.modelId || savedUsage.modelId === store.params.checkpoint)
+        ) {
           store.setContextUsage(savedUsage);
         }
 

@@ -1586,7 +1586,7 @@ class LlamaCppBackend:
                             break  # exit outer for
                     if _metadata_usage or _metadata_timings:
                         yield {
-                            "__metadata__": True,
+                            "type": "metadata",
                             "usage": _metadata_usage,
                             "timings": _metadata_timings,
                         }
@@ -1635,11 +1635,8 @@ class LlamaCppBackend:
         conversation = list(messages)
         url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0
-        _accumulated_prompt_ms = 0.0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
-        _accumulated_prompt_n = 0
-        _accumulated_cache_n = 0
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -1677,11 +1674,8 @@ class LlamaCppBackend:
                         "completion_tokens", 0
                     )
                     _iter_timings = data.get("timings", {})
-                    _accumulated_prompt_ms += _iter_timings.get("prompt_ms", 0)
                     _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
                     _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
-                    _accumulated_prompt_n += _iter_timings.get("prompt_n", 0)
-                    _accumulated_cache_n += _iter_timings.get("cache_n", 0)
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
 
@@ -1991,16 +1985,13 @@ class LlamaCppBackend:
                                 )
                         if _stream_done:
                             break  # exit outer for
-                    _final_completion = (_metadata_usage or {}).get(
-                        "completion_tokens", 0
-                    )
-                    _final_prompt = (_metadata_usage or {}).get("prompt_tokens", 0)
+                    _final_usage = _metadata_usage or {}
+                    _final_completion = _final_usage.get("completion_tokens", 0)
+                    _final_prompt = _final_usage.get("prompt_tokens", 0)
+                    _total_completion = _final_completion + _accumulated_completion_tokens
                     if _metadata_usage or _metadata_timings:
                         _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
-                        if _accumulated_prompt_ms or _accumulated_predicted_ms:
-                            _merged_timings["prompt_ms"] = (
-                                _merged_timings.get("prompt_ms", 0) + _accumulated_prompt_ms
-                            )
+                        if _accumulated_predicted_ms or _accumulated_predicted_n:
                             _merged_timings["predicted_ms"] = (
                                 _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
                             )
@@ -2008,29 +1999,17 @@ class LlamaCppBackend:
                                 _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
                             )
                             _merged_timings["predicted_n"] = _total_predicted_n
-                            _total_prompt_n = (
-                                _merged_timings.get("prompt_n", 0) + _accumulated_prompt_n
-                            )
-                            _merged_timings["prompt_n"] = _total_prompt_n
-                            _merged_timings["cache_n"] = (
-                                _merged_timings.get("cache_n", 0) + _accumulated_cache_n
-                            )
                             _total_predicted_ms = _merged_timings["predicted_ms"]
                             if _total_predicted_ms > 0:
                                 _merged_timings["predicted_per_second"] = (
                                     _total_predicted_n / (_total_predicted_ms / 1000.0)
                                 )
-                            _total_prompt_ms = _merged_timings["prompt_ms"]
-                            if _total_prompt_ms > 0:
-                                _merged_timings["prompt_per_second"] = (
-                                    _total_prompt_n / (_total_prompt_ms / 1000.0)
-                                )
                         yield {
                             "type": "metadata",
                             "usage": {
                                 "prompt_tokens": _final_prompt,
-                                "completion_tokens": _final_completion,
-                                "total_tokens": _final_prompt + _final_completion,
+                                "completion_tokens": _total_completion,
+                                "total_tokens": _final_prompt + _total_completion,
                             },
                             "timings": _merged_timings,
                         }

@@ -1242,9 +1242,14 @@ async def openai_chat_completions(
                             break
                         # Capture server metadata for final usage chunk
                         if isinstance(cumulative, dict):
-                            if cumulative.get("__metadata__"):
+                            if cumulative.get("type") == "metadata":
                                 _stream_usage = cumulative.get("usage")
                                 _stream_timings = cumulative.get("timings")
+                            else:
+                                logger.warning(
+                                    "gguf_stream_chunks: unexpected dict event: %s",
+                                    {k: v for k, v in cumulative.items() if k != "timings"},
+                                )
                             continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative

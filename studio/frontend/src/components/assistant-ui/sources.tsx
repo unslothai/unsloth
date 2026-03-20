@@ -242,8 +242,7 @@ const SourcesGroup: FC = () => {
       <div
         ref={containerRef}
         aria-hidden
-        className="flex flex-wrap gap-1 invisible absolute pointer-events-none"
-        style={{ width: containerRef.current?.parentElement?.clientWidth }}
+        className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
       >
         {sources.map((source) => (
           <span key={source.url} className="inline-block">
