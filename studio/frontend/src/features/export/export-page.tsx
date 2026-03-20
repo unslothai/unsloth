@@ -674,7 +674,13 @@ export function ExportPage() {
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Model
                             </label>
-                            <div ref={hfComboboxAnchorRef}>
+                            <div ref={hfComboboxAnchorRef} onBlur={() => {
+                              // Accept typed repo IDs (e.g. private/gated models not in search)
+                              const trimmed = modelInput.trim();
+                              if (trimmed && !selectedSourceModel && trimmed.includes("/")) {
+                                setSelectedSourceModel(trimmed);
+                              }
+                            }}>
                               <Combobox
                                 items={hfResultIds}
                                 filteredItems={hfResultIds}
