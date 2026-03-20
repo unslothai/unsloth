@@ -40,6 +40,7 @@ from utils.transformers_version import (
 # _resolve_base_model — config.json fallback
 # ---------------------------------------------------------------------------
 
+
 class TestResolveBaseModel:
     """Tests for _resolve_base_model() local config fallbacks."""
 
@@ -104,6 +105,7 @@ class TestResolveBaseModel:
 # _check_tokenizer_config_needs_v5 — local file check
 # ---------------------------------------------------------------------------
 
+
 class TestCheckTokenizerConfigNeedsV5:
     """Tests for local tokenizer_config.json fallback."""
 
@@ -151,6 +153,7 @@ class TestCheckTokenizerConfigNeedsV5:
 # needs_transformers_5 — integration-level
 # ---------------------------------------------------------------------------
 
+
 class TestNeedsTransformers5:
     """Integration tests for the top-level needs_transformers_5() function."""
 
@@ -171,7 +174,7 @@ class TestNeedsTransformers5:
         # Patch network call to avoid real fetch
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5",
-            return_value=False,
+            return_value = False,
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
 

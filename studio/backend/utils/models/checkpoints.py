@@ -82,11 +82,12 @@ def scan_checkpoints(
                     if "cfg" not in dir():
                         cfg = json.loads(config_file.read_text())
                     quant_cfg = cfg.get("quantization_config")
-                    if isinstance(quant_cfg, dict) and quant_cfg.get("quant_method") == "bitsandbytes":
+                    if (
+                        isinstance(quant_cfg, dict)
+                        and quant_cfg.get("quant_method") == "bitsandbytes"
+                    ):
                         metadata["is_quantized"] = True
-                        logger.info(
-                            "Detected BNB-quantized model: %s", item.name
-                        )
+                        logger.info("Detected BNB-quantized model: %s", item.name)
             except Exception:
                 pass
 

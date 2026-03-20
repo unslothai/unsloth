@@ -1976,7 +1976,9 @@ def unsloth_save_pretrained_gguf(
         fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
     # Step 4: Save/merge model to 16-bit format
-    is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
+    is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(
+        self, PeftModel
+    )
 
     if is_peft_model:
         print(
@@ -1994,7 +1996,9 @@ def unsloth_save_pretrained_gguf(
         # re-saving to a temporary "model" subdirectory.
         original_path = getattr(self.config, "_name_or_path", None)
         if original_path and os.path.isdir(original_path):
-            print(f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}")
+            print(
+                f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
+            )
             save_directory = original_path
             # Persist tokenizer fixes (e.g. BOS token stripping) to disk
             # so the GGUF converter picks up the corrected chat template.
@@ -2002,8 +2006,10 @@ def unsloth_save_pretrained_gguf(
                 tokenizer.save_pretrained(save_directory)
         else:
             # Fallback: save the in-memory model to save_directory
-            print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
-            os.makedirs(save_directory, exist_ok=True)
+            print(
+                "Unsloth: Model is not a PEFT model. Saving directly without LoRA merge..."
+            )
+            os.makedirs(save_directory, exist_ok = True)
             try:
                 self.save_pretrained(save_directory)
                 if tokenizer is not None:
