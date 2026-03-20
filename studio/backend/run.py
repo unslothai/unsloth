@@ -9,6 +9,18 @@ Works independently and can be moved to any directory.
 import os
 import sys
 
+# Fix for Anaconda Python: its sys.version contains "| packaged by Anaconda, Inc. |"
+# which breaks platform._sys_version() regex parsing. This affects attrs -> rich ->
+# structlog import chain. CPython won't fix this (issue #102396), so we patch here
+# before any library imports. See: https://github.com/python/cpython/issues/102396
+if "|" in sys.version:
+    import re
+    import platform
+    _clean = re.sub(r'\s*\|[^|]*\|\s*', ' ', sys.version).strip()
+    _result = platform._sys_version(_clean)
+    platform._sys_version_cache[sys.version] = _result
+    del _clean, _result
+
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
 
