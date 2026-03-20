@@ -27,7 +27,7 @@ Unsloth provides several key features for both inference and training:
 * **Search + download + run models** including GGUF, LoRA adapters, safetensors
 * **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
 * **Tool calling**: Support for [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling) and web search
-* **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs run code, data and verify results so answers are more accurate.
+* **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs test code in Claude artifacts and sandbox environments
 * [Auto-tune inference parameters](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
 * Upload images, audio, PDFs, code, DOCX and more file types to chat with.
 ### Training
@@ -44,33 +44,43 @@ Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/d
 ### Unsloth Studio (web UI)
 Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
-* **CPU:** Supported for **chat inference only**
+* **CPU:** Supported for Chat and Data Recipes currently
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
-* **macOS:** Currently supports chat only; **MLX training** is coming very soon
+* **macOS:** Currently supports chat and Data Recipes. **MLX training** is coming very soon
 * **AMD:** Chat works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is coming soon.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
-#### MacOS, Linux, WSL Setup:
+#### macOS, Linux, WSL:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+curl -fsSL https://unsloth.ai/install.sh | sh
 ```
-If you don't have `curl`, use `wget`. Then to launch after setup:
+If you don't have `curl`, use `wget`. Launch after setup via:
 ```bash
 source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Windows PowerShell Setup:
+#### Windows:
 ```powershell
-irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
+irm https://unsloth.ai/install.ps1 | iex
 ```
-Then to launch after setup:
+Launch after setup via:
 ```powershell
 & .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
 ```
 
-#### MacOS, Linux, WSL developer installs:
+#### Docker
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
+```bash
+docker run -d -e JUPYTER_PASSWORD="mypassword" \
+  -p 8888:8888 -p 8000:8000 -p 2222:22 \
+  -v $(pwd)/work:/workspace/work \
+  --gpus all \
+  unsloth/unsloth
+  ```
+
+#### macOS, Linux, WSL developer installs:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv unsloth_studio --python 3.13
@@ -91,17 +101,7 @@ unsloth studio setup
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
-```bash
-docker run -d -e JUPYTER_PASSWORD="mypassword" \
-  -p 8888:8888 -p 8000:8000 -p 2222:22 \
-  -v $(pwd)/work:/workspace/work \
-  --gpus all \
-  unsloth/unsloth
-  ```
-
-#### Nightly Install - MacOS, Linux, WSL:
+#### Nightly - MacOS, Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
@@ -119,7 +119,7 @@ source .venv/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Nightly Install - Windows:
+#### Nightly - Windows:
 Run in Windows Powershell:
 ```bash
 winget install -e --id Python.Python.3.13
@@ -140,25 +140,25 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 ### Unsloth Core (code-based)
-#### Linux, WSL
+#### Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv unsloth_env --python 3.13
 source unsloth_env/bin/activate
 uv pip install unsloth --torch-backend=auto
 ```
-#### Windows Powershell
-```bash
+#### Windows:
+```powershell
 winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
 uv venv unsloth_env --python 3.13
 .\unsloth_env\Scripts\activate
 uv pip install unsloth --torch-backend=auto
 ```
-For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
+For Windows, `pip install unsloth` works only if you have PyTorch installed. Read our [Windows Guide](https://unsloth.ai/docs/get-started/install/windows-installation).
 You can use the same Docker image as Unsloth Studio.
 
-#### AMD, Intel
+#### AMD, Intel:
 For RTX 50x, B200, 6000 GPUs: `uv pip install unsloth --torch-backend=auto`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/get-started/install/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
@@ -226,4 +226,5 @@ This structure helps support ongoing Unsloth development while keeping the proje
 - The [llama.cpp library](https://github.com/ggml-org/llama.cpp) that lets users run and save models with Unsloth
 - The Hugging Face team and their libraries: [transformers](https://github.com/huggingface/transformers) and [TRL](https://github.com/huggingface/trl)
 - The Pytorch and [Torch AO](https://github.com/unslothai/unsloth/pull/3391) team for their contributions
+- NVIDIA for their [NeMo DataDesigner](github.com/NVIDIA-NeMo/DataDesigner) library and their contributions
 - And of course for every single person who has contributed or has used Unsloth!

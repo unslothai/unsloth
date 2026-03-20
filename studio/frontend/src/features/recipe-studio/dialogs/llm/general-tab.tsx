@@ -215,7 +215,7 @@ export function LlmGeneralTab({
           </p>
         </div>
       ) : null}
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Model preset"
           htmlFor={modelAliasId}
@@ -262,7 +262,7 @@ export function LlmGeneralTab({
         </p>
       )}
       {(hasToolProfiles || Boolean(config.tool_alias?.trim())) && (
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Tool access (optional)"
             htmlFor={toolAliasId}
@@ -304,7 +304,7 @@ export function LlmGeneralTab({
         </div>
       )}
       {config.llm_type === "code" && (
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Code language"
             htmlFor={codeLangId}
@@ -327,7 +327,7 @@ export function LlmGeneralTab({
           </Select>
         </div>
       )}
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Prompt"
           htmlFor={promptId}
@@ -377,7 +377,7 @@ export function LlmGeneralTab({
             />
           </div>
           {imageContext.enabled && (
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <FieldLabel
                 label="Image field"
                 htmlFor={imageContextColumnId}
@@ -414,7 +414,7 @@ export function LlmGeneralTab({
         </div>
       )}
       {config.llm_type === "structured" && (
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Response format"
             htmlFor={outputFormatId}
@@ -441,7 +441,7 @@ export function LlmGeneralTab({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Instructions (optional)"
               htmlFor={systemPromptId}
@@ -465,7 +465,7 @@ export function LlmGeneralTab({
               </p>
             )}
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Save trace details"
               htmlFor={traceModeId}
