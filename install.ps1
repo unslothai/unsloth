@@ -98,6 +98,13 @@ function Install-UnslothStudio {
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
     Write-Host "==> Running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
+    if (-not (Test-Path $UnslothExe)) {
+        Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
+        Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
+        Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
+        Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
+        return
+    }
     & $UnslothExe studio setup
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
