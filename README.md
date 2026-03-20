@@ -53,7 +53,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
 #### macOS, Linux, WSL:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 If you don't have `curl`, use `wget`. Launch after setup via:
 ```bash
@@ -63,7 +63,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 
 #### Windows:
 ```powershell
-irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
+irm https://unsloth.ai/install.ps1 | iex
 ```
 Launch after setup via:
 ```powershell
