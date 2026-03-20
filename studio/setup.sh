@@ -190,6 +190,13 @@ BEST_PY=""
 BEST_MAJOR=0
 BEST_MINOR=0
 
+# If the caller (e.g. install.sh) already chose a Python, use it directly.
+if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
+    BEST_PY="$REQUESTED_PYTHON_VERSION"
+    echo "✅ Using requested Python version: $BEST_PY"
+fi
+
+if [ -z "$BEST_PY" ]; then
 # Collect candidate python3 binaries (python3, python3.9, python3.10, …)
 for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
     if ! command -v "$candidate" &>/dev/null; then
@@ -223,6 +230,8 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         BEST_MINOR="$py_minor"
     fi
 done
+fi
+
 echo "finished finding best python"
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."

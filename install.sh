@@ -171,7 +171,16 @@ else
 fi
 
 # ── Install uv ──
-if ! command -v uv >/dev/null 2>&1; then
+UV_MIN_VERSION="0.7.14"
+
+_uv_version_ok() {
+    _ver=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
+    [ -n "$_ver" ] || return 1
+    _oldest=$(printf '%s\n%s\n' "$UV_MIN_VERSION" "$_ver" | sort -V | head -n1)
+    [ "$_oldest" = "$UV_MIN_VERSION" ]
+}
+
+if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     echo "==> Installing uv package manager..."
     _uv_tmp=$(mktemp)
     download "https://astral.sh/uv/install.sh" "$_uv_tmp"
@@ -207,6 +216,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth studio setup..."
+REQUESTED_PYTHON_VERSION="$(cd "$VENV_NAME/bin" && pwd)/python" \
 "$VENV_NAME/bin/unsloth" studio setup </dev/null
 
 echo ""
