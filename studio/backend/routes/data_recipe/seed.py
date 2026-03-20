@@ -39,7 +39,7 @@ UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB
+MAX_TOTAL_SIZE = 100 * 1024 * 1024  # 100MB
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -202,7 +202,9 @@ def _read_preview_rows_from_local_file(
                 full_df = pd.read_csv(path, encoding = "utf-8-sig")
                 full_df.columns = full_df.columns.str.strip()
                 full_df = full_df.drop(columns = unnamed)
-                full_df.to_csv(path, index = False, encoding = "utf-8")
+                tmp_csv = path.with_suffix(".tmp.csv")
+                full_df.to_csv(tmp_csv, index = False, encoding = "utf-8")
+                tmp_csv.replace(path)
         elif ext == ".jsonl":
             df = pd.read_json(path, lines = True).head(preview_size)
         elif ext == ".json":
@@ -383,21 +385,33 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     return normalize_unstructured_text(raw)
 
 
-def _get_block_total_size(block_dir: Path) -> int:
-    """Sum file sizes in a block directory."""
-    if not block_dir.exists():
+def _get_block_total_size(block_dir: Path, file_ids: list[str]) -> int:
+    """Sum raw upload sizes for tracked file IDs only."""
+    if not block_dir.exists() or not file_ids:
         return 0
-    return sum(f.stat().st_size for f in block_dir.iterdir() if f.is_file())
+    id_set = set(file_ids)
+    total = 0
+    for f in block_dir.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
+            continue
+        stem = f.name.split(".")[0]
+        if stem in id_set:
+            total += f.stat().st_size
+    return total
 
 
 @router.post("/seed/upload-unstructured-file")
 async def upload_unstructured_file(
     file: UploadFile = FastAPIFile(...),
     block_id: str = Form(...),
+    existing_file_ids: str = Form(""),
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
 
-    # Validate extension
+    tracked_ids = [fid.strip() for fid in existing_file_ids.split(",") if fid.strip()]
+
     original_filename = file.filename or "upload"
     ext = Path(original_filename).suffix.lower()
     if ext not in UNSTRUCTURED_ALLOWED_EXTS:
@@ -406,34 +420,28 @@ async def upload_unstructured_file(
             f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
         )
 
-    # Read file content
     content = await file.read()
     size_bytes = len(content)
 
     if size_bytes == 0:
         raise HTTPException(400, "Empty file not allowed")
 
-    # Validate per-file size
     if size_bytes > MAX_FILE_SIZE:
         raise HTTPException(
             413, f"File too large ({size_bytes} bytes). Maximum is 50MB."
         )
 
-    # Validate total size for this block
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir)
+    current_total = _get_block_total_size(block_dir, file_ids=tracked_ids)
     if current_total + size_bytes > MAX_TOTAL_SIZE:
-        raise HTTPException(413, "Total upload limit (500MB) exceeded")
+        raise HTTPException(413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded")
 
-    # Generate file ID and store
     file_id = uuid4().hex
-
-    # Save raw file
     raw_path = block_dir / f"{file_id}{ext}"
     raw_path.write_bytes(content)
 
-    # Extract text and save
+    extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
         extracted_text = _extract_text_from_file(raw_path, ext)
         if not extracted_text or not extracted_text.strip():
@@ -445,11 +453,10 @@ async def upload_unstructured_file(
                 status = "error",
                 error = "No extractable text found in file",
             )
-        extracted_path = block_dir / f"{file_id}.extracted.txt"
         extracted_path.write_text(extracted_text, encoding = "utf-8")
     except Exception as e:
-        # Cleanup raw file on extraction failure
         raw_path.unlink(missing_ok = True)
+        extracted_path.unlink(missing_ok = True)
         return UnstructuredFileUploadResponse(
             file_id = file_id,
             filename = original_filename,
@@ -458,7 +465,6 @@ async def upload_unstructured_file(
             error = f"Text extraction failed: {type(e).__name__}: {e}",
         )
 
-    # Save metadata
     try:
         meta_path = block_dir / f"{file_id}.meta.json"
         meta_path.write_text(
@@ -495,18 +501,15 @@ async def remove_unstructured_file(block_id: str, file_id: str):
     if not block_dir.exists():
         raise HTTPException(404, "Block not found")
 
-    # Delete all files belonging to this file_id (raw, extracted, meta)
     deleted = False
     for f in block_dir.iterdir():
         stem = f.name.split(".")[0]
         if stem == file_id:
-            f.unlink()
+            f.unlink(missing_ok = True)
             deleted = True
 
     if not deleted:
         raise HTTPException(404, "File not found")
-
-    # If block dir is now empty, remove it
     try:
         if not any(block_dir.iterdir()):
             block_dir.rmdir()
@@ -518,8 +521,9 @@ async def remove_unstructured_file(block_id: str, file_id: str):
 
 @router.post("/seed/inspect-upload", response_model = SeedInspectResponse)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
-    # Multi-file flow
     if payload.file_ids is not None:
+        if len(payload.file_ids) == 0:
+            raise HTTPException(400, "file_ids must not be empty")
         _validate_safe_id(payload.block_id, "block_id")
         for fid in payload.file_ids:
             _validate_safe_id(fid, "file_id")
@@ -547,9 +551,12 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
+    # Legacy single-file unstructured path only supports .txt/.md
+    # PDF/DOCX extraction uses the multi-file upload endpoint instead
+    _LEGACY_UNSTRUCTURED_EXTS = {".txt", ".md"}
     if seed_source_type == "unstructured":
-        if ext not in UNSTRUCTURED_ALLOWED_EXTS:
-            allowed = ", ".join(sorted(UNSTRUCTURED_ALLOWED_EXTS))
+        if ext not in _LEGACY_UNSTRUCTURED_EXTS:
+            allowed = ", ".join(sorted(_LEGACY_UNSTRUCTURED_EXTS))
             raise HTTPException(
                 status_code = 400,
                 detail = f"unsupported file type: {ext}. allowed: {allowed}",

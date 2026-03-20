@@ -98,6 +98,8 @@ class SeedInspectUploadRequest(BaseModel):
         if not has_legacy and not has_multi:
             raise ValueError("Provide either content_base64 or file_ids")
         if has_multi:
+            if len(self.file_ids) == 0:
+                raise ValueError("file_ids must not be empty")
             if not self.block_id:
                 raise ValueError("block_id is required when using file_ids")
             if self.file_names is None or len(self.file_ids) != len(self.file_names):

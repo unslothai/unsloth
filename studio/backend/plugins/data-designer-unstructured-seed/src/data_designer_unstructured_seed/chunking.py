@@ -191,7 +191,7 @@ def materialize_multi_file_unstructured_seed(
     ensure_dir(_CACHE_DIR)
     tmp = _CACHE_DIR / f"{cache_key}.tmp.parquet"
     df.to_parquet(tmp, index = False)
-    tmp.rename(cached)
+    tmp.replace(cached)
     return cached, all_rows
 
 

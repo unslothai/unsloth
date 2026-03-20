@@ -96,10 +96,8 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
       local_file_name = sourcePath.split("/").pop() ?? sourcePath;
     } else if (seedType === "unstructured") {
       seed_source_type = "unstructured";
-      // Backend uses paths (list) for unstructured; take first path for hf_path
       const paths = Array.isArray(sourceRaw.paths) ? sourceRaw.paths : [];
       const stringPaths = paths.filter((p): p is string => typeof p === "string");
-      // Promote legacy source.path into resolved_paths if paths array is empty
       if (stringPaths.length === 0 && sourcePath) {
         stringPaths.push(sourcePath);
       }

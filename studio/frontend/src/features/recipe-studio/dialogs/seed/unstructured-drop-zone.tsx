@@ -1,12 +1,11 @@
 import { useCallback, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { CloudUploadIcon, Cancel01Icon, Loading03Icon, CheckmarkCircle02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const MAX_TOTAL_SIZE = 500 * 1024 * 1024;
+const MAX_TOTAL_SIZE = 100 * 1024 * 1024;
 
 type FileEntry = {
   id: string;
@@ -42,6 +41,8 @@ export function UnstructuredDropZone({
   disabled,
 }: UnstructuredDropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const filesRef = useRef(files);
+  filesRef.current = files;
   const [isDragOver, setIsDragOver] = useState(false);
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
@@ -56,18 +57,9 @@ export function UnstructuredDropZone({
 
       if (valid.length === 0) return;
 
-      // Check total size using functional update to get latest state
       const addedSize = valid.reduce((s, f) => s + f.size, 0);
-      let overLimit = false;
-      onFilesChange((prev) => {
-        const currentTotal = prev.reduce((sum, f) => sum + f.size, 0);
-        if (currentTotal + addedSize > MAX_TOTAL_SIZE) {
-          overLimit = true;
-          return prev;
-        }
-        return prev;
-      });
-      if (overLimit) return;
+      const currentTotal = filesRef.current.reduce((sum, f) => sum + f.size, 0);
+      if (currentTotal + addedSize > MAX_TOTAL_SIZE) return;
 
       const entries: FileEntry[] = valid.map((f) => ({
         id: "",
@@ -79,7 +71,6 @@ export function UnstructuredDropZone({
 
       onFilesChange((prev) => [...prev, ...entries]);
 
-      // Upload each file — update via immutable state
       for (let i = 0; i < valid.length; i++) {
         const file = valid[i];
         const entry = entries[i];
@@ -87,10 +78,12 @@ export function UnstructuredDropZone({
         let updatedStatus: FileEntry["status"] = "error";
         let updatedError: string | undefined;
         try {
+          const existingIds = filesRef.current.filter((f) => f.id).map((f) => f.id);
           const result = await uploadUnstructuredFile(
             file,
             blockId,
             entry.abortController?.signal,
+            existingIds,
           );
           updatedId = result.file_id;
           updatedStatus = result.status === "ok" ? "ok" : "error";
@@ -102,7 +95,6 @@ export function UnstructuredDropZone({
             updatedError = e instanceof Error ? e.message : "Upload failed";
           }
         }
-        // Immutable update — create new entry objects so React detects changes
         onFilesChange((prev) =>
           prev.map((f) =>
             f === entry
@@ -116,19 +108,19 @@ export function UnstructuredDropZone({
     [blockId, onFilesChange],
   );
 
+  const deletedIdsRef = useRef(new Set<string>());
   const handleRemove = useCallback(
     (index: number) => {
-      onFilesChange((prev) => {
-        const entry = prev[index];
-        if (!entry) return prev;
-        if (entry.status === "uploading" && entry.abortController) {
-          entry.abortController.abort();
-        }
-        if (entry.id && entry.status === "ok") {
-          void removeUnstructuredFile(blockId, entry.id).catch(() => {});
-        }
-        return prev.filter((_, i) => i !== index);
-      });
+      const entry = filesRef.current[index];
+      if (!entry) return;
+      if (entry.status === "uploading" && entry.abortController) {
+        entry.abortController.abort();
+      }
+      if (entry.id && entry.status === "ok" && !deletedIdsRef.current.has(entry.id)) {
+        deletedIdsRef.current.add(entry.id);
+        void removeUnstructuredFile(blockId, entry.id).catch(() => {});
+      }
+      onFilesChange((prev) => prev.filter((_, i) => i !== index));
     },
     [blockId, onFilesChange],
   );
@@ -187,7 +179,7 @@ export function UnstructuredDropZone({
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD — up to 50MB each
+          PDF, DOCX, TXT, MD - up to 50MB each, 100MB total
         </p>
       </div>
 
@@ -223,22 +215,21 @@ export function UnstructuredDropZone({
               {entry.error && (
                 <span className="text-xs text-red-500">{entry.error}</span>
               )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6"
+              <button
+                type="button"
+                className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleRemove(i);
                 }}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
-              </Button>
+              </button>
             </div>
           ))}
           <div className="text-muted-foreground flex justify-between px-1 text-xs">
             <span>{successFiles.length} file{successFiles.length !== 1 ? "s" : ""} uploaded</span>
-            <span>{formatSize(totalSize)} / 500MB</span>
+            <span>{formatSize(totalSize)} / 100MB</span>
           </div>
         </div>
       )}

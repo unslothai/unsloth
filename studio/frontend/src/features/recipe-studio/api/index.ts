@@ -398,10 +398,14 @@ export async function uploadUnstructuredFile(
   file: File,
   blockId: string,
   signal?: AbortSignal,
+  existingFileIds?: string[],
 ): Promise<UnstructuredFileUploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("block_id", blockId);
+  if (existingFileIds?.length) {
+    formData.append("existing_file_ids", existingFileIds.join(","));
+  }
 
   const res = await authFetch(`${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`, {
     method: "POST",

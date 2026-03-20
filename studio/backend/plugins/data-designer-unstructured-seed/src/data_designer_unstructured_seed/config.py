@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from data_designer.config.seed_source import SeedSource
 
@@ -16,6 +16,15 @@ from .chunking import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, resolve_chunkin
 class UnstructuredSeedSource(SeedSource):
     seed_type: Literal["unstructured"] = "unstructured"
     paths: list[str] = Field(min_length = 1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_path(cls, data):
+        if isinstance(data, dict) and "paths" not in data and data.get("path"):
+            data = dict(data)
+            data["paths"] = [data["path"]]
+        return data
+
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 
