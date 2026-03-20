@@ -280,7 +280,9 @@ export function ExportPage() {
   }, [selectedModelIdx]);
 
   // Auto-reset export method if incompatible with the selected model type
+  // (only applies in checkpoint mode — direct model exports set their own method)
   useEffect(() => {
+    if (sourceMode !== "checkpoint") return;
     if (!isAdapter && (exportMethod === "merged" || exportMethod === "lora")) {
       setExportMethod(null);
     }
@@ -288,7 +290,7 @@ export function ExportPage() {
     if (!isAdapter && isQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
-  }, [isAdapter, isQuantized, exportMethod]);
+  }, [isAdapter, isQuantized, exportMethod, sourceMode]);
 
   const handleSourceModeSwitch = useCallback(
     (next: "checkpoint" | "model") => {
