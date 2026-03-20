@@ -56,12 +56,15 @@ function Install-UnslothStudio {
             }
         }
         # Try python3 / python via Get-Command -All to look past stubs that
-        # might shadow a real Python further down PATH. Each candidate is
-        # probed with --version; non-functional entries (including App
-        # Execution Alias stubs) simply fail the try-catch and are skipped.
+        # might shadow a real Python further down PATH.
+        # Skip WindowsApps entries: the App Execution Alias stubs live there
+        # and can open the Microsoft Store as a side effect. Legitimate Store
+        # Python is already detected via the py launcher above (Store packages
+        # include py since Python 3.11).
         foreach ($name in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
                 if (-not $cmd.Source) { continue }
+                if ($cmd.Source -like "*\WindowsApps\*") { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
