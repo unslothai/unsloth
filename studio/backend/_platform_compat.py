@@ -28,7 +28,7 @@ def _patch_platform_sys_version() -> None:
 
     _original = platform._sys_version
 
-    def _patched(sys_version=None):
+    def _patched(sys_version = None):
         try:
             return _original(sys_version)
         except ValueError:
