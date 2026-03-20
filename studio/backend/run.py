@@ -16,6 +16,7 @@ import sys
 if "|" in sys.version:
     import re
     import platform
+
     try:
         _clean = re.sub(r"\s*\|[^|]*\|\s*", " ", sys.version).strip()
         if "|" in _clean:
