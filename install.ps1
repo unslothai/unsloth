@@ -14,11 +14,21 @@ function Install-UnslothStudio {
     Write-Host "========================================="
     Write-Host ""
 
-    # ── Helper: refresh PATH from registry (preserving current session entries) ──
+    # ── Helper: refresh PATH from registry (deduplicating entries) ──
     function Refresh-SessionPath {
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
-        $env:Path = "$machine;$user;$env:Path"
+        $merged  = "$machine;$user;$env:Path"
+        $seen    = @{}
+        $unique  = @()
+        foreach ($p in $merged -split ";") {
+            $key = $p.TrimEnd("\").ToLowerInvariant()
+            if ($key -and -not $seen.ContainsKey($key)) {
+                $seen[$key] = $true
+                $unique += $p
+            }
+        }
+        $env:Path = $unique -join ";"
     }
 
     # ── Check winget ──
@@ -29,33 +39,96 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Install Python if no compatible version (3.11-3.13) found ──
-    $DetectedPythonVersion = ""
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $pyVer = python --version 2>&1
-        if ($pyVer -match "Python (3\.1[1-3])\.\d+") {
-            Write-Host "==> Python already installed: $pyVer"
-            $DetectedPythonVersion = $Matches[1]
+    # ── Helper: detect a working Python 3.11-3.13 on the system ──
+    # Returns the version string (e.g. "3.13") or "" if none found.
+    # Uses try-catch + stderr redirection so that App Execution Alias stubs
+    # (WindowsApps) and other non-functional executables are probed safely
+    # without triggering $ErrorActionPreference = "Stop".
+    function Find-CompatiblePython {
+        # Try the Python Launcher first (most reliable on Windows)
+        $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+        if ($pyLauncher) {
+            foreach ($minor in @("3.13", "3.12", "3.11")) {
+                try {
+                    $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
+                    if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
+                } catch {}
+            }
         }
+        # Try python3 / python via Get-Command -All to look past stubs that
+        # might shadow a real Python further down PATH.
+        # Skip WindowsApps entries: the App Execution Alias stubs live there
+        # and can open the Microsoft Store as a side effect. Legitimate Store
+        # Python is already detected via the py launcher above (Store packages
+        # include py since Python 3.11).
+        foreach ($name in @("python3", "python")) {
+            foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
+                if (-not $cmd.Source) { continue }
+                if ($cmd.Source -like "*\WindowsApps\*") { continue }
+                try {
+                    $out = & $cmd.Source --version 2>&1 | Out-String
+                    if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
+                } catch {}
+            }
+        }
+        return ""
+    }
+
+    # ── Install Python if no compatible version (3.11-3.13) found ──
+    $DetectedPythonVersion = Find-CompatiblePython
+    if ($DetectedPythonVersion) {
+        Write-Host "==> Python already installed: Python $DetectedPythonVersion"
     }
     if (-not $DetectedPythonVersion) {
         Write-Host "==> Installing Python ${PythonVersion}..."
-        winget install -e --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements
+        $pythonPackageId = "Python.Python.$PythonVersion"
+        # Temporarily lower ErrorActionPreference so that winget stderr
+        # (progress bars, warnings) does not become a terminating error
+        # on PowerShell 5.1 where native-command stderr is ErrorRecord.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            winget install -e --id $pythonPackageId --accept-package-agreements --accept-source-agreements
+            $wingetExit = $LASTEXITCODE
+        } catch { $wingetExit = 1 }
+        $ErrorActionPreference = $prevEAP
         Refresh-SessionPath
-        if ($LASTEXITCODE -ne 0) {
-            # winget returns non-zero for "already installed" -- only fail if python is truly missing
-            if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-                Write-Host "[ERROR] Python installation failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-                return
-            }
+
+        # Re-detect after install (PATH may have changed)
+        $DetectedPythonVersion = Find-CompatiblePython
+
+        if (-not $DetectedPythonVersion) {
+            # Python still not functional after winget -- force reinstall.
+            # This handles both real failures AND "already installed" codes where
+            # winget thinks Python is present but it's not actually on PATH
+            # (e.g. user partially uninstalled, or installed via a different method).
+            Write-Host "    Python not found on PATH after winget. Retrying with --force..."
+            $ErrorActionPreference = "Continue"
+            try {
+                winget install -e --id $pythonPackageId --accept-package-agreements --accept-source-agreements --force
+                $wingetExit = $LASTEXITCODE
+            } catch { $wingetExit = 1 }
+            $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
+            $DetectedPythonVersion = Find-CompatiblePython
         }
-        $DetectedPythonVersion = $PythonVersion
+
+        if (-not $DetectedPythonVersion) {
+            Write-Host "[ERROR] Python installation failed (exit code $wingetExit)" -ForegroundColor Red
+            Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
+            Write-Host "        Then re-run this installer." -ForegroundColor Yellow
+            return
+        }
     }
 
     # ── Install uv if not present ──
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Write-Host "==> Installing uv package manager..."
-        winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
+        $ErrorActionPreference = $prevEAP
         Refresh-SessionPath
         # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
