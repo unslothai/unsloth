@@ -772,6 +772,11 @@ class UnslothTrainer:
             if self.should_stop:
                 return False
 
+            if full_finetuning:
+                # Enable training mode for full fine-tuning
+                # This ensures all model parameters are trainable; otherwise, they might be frozen.
+                self.model.for_training()
+
             self._update_progress(status_message = "Model loaded successfully")
             logger.info("Model loaded successfully")
             return True
