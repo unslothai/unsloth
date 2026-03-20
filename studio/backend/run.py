@@ -8,38 +8,20 @@ Works independently and can be moved to any directory.
 
 import os
 import sys
-
-# Fix for Anaconda Python: its sys.version contains "| packaged by Anaconda, Inc. |"
-# which breaks platform._sys_version() regex parsing. This affects attrs -> rich ->
-# structlog import chain. CPython won't fix this (issue #102396), so we patch here
-# before any library imports. See: https://github.com/python/cpython/issues/102396
-if "|" in sys.version:
-    import re
-    import platform
-
-    try:
-        _clean = re.sub(r"\s*\|[^|]*\|\s*", " ", sys.version).strip()
-        if "|" in _clean:
-            # Unpaired pipes -- keep version number + everything from "(" onward
-            _m = re.match(r"([\w.+]+)\s*", _clean)
-            _p = _clean.find("(")
-            if _m and _p > 0:
-                _clean = _m.group(0) + _clean[_p:]
-        _result = platform._sys_version(_clean)
-        platform._sys_version_cache[sys.version] = _result
-        del _clean, _result
-    except Exception:
-        pass
-
-# Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
-os.environ["PYTHONWARNINGS"] = "ignore"
-
 from pathlib import Path
 
-# Add the backend directory to Python path
+# Add the backend directory to Python path early so local modules are importable
 backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
+
+# Fix for Anaconda/conda-forge Python: patch platform._sys_version() before any
+# library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
+
+# Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
+os.environ["PYTHONWARNINGS"] = "ignore"
 
 from loggers import get_logger
 
