@@ -221,14 +221,12 @@ if [ -t 0 ]; then
     echo "==> Launching Unsloth Studio..."
     echo "    To relaunch later, run:"
     echo ""
-    echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo "    ./${VENV_NAME}/bin/unsloth studio -H 0.0.0.0 -p 8888"
     echo ""
     exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
 else
     echo "  To launch, run:"
     echo ""
-    echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo "    ./${VENV_NAME}/bin/unsloth studio -H 0.0.0.0 -p 8888"
     echo ""
 fi
