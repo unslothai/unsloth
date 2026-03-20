@@ -530,9 +530,7 @@ class UnslothTrainer:
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
             _preserve = (
-                ["Unsloth*Trainer.py"]
-                if sys.platform in ("win32", "darwin")
-                else None
+                ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
             )
             clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
@@ -2729,6 +2727,7 @@ class UnslothTrainer:
             # compiled modules such as UnslothSFTTrainer.
             if sys.platform in ("win32", "darwin"):
                 from utils.cache_cleanup import register_compiled_cache_on_path
+
                 register_compiled_cache_on_path()
 
             # Store training parameters for metrics calculation
