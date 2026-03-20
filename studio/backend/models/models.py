@@ -41,6 +41,10 @@ class ModelCheckpoints(BaseModel):
         None,
         description = "LoRA rank (r) if applicable",
     )
+    is_quantized: bool = Field(
+        False,
+        description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
+    )
 
 
 class CheckpointListResponse(BaseModel):
