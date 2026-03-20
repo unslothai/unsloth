@@ -16,7 +16,8 @@ import sys
 if "|" in sys.version:
     import re
     import platform
-    _clean = re.sub(r'\s*\|[^|]*\|\s*', ' ', sys.version).strip()
+
+    _clean = re.sub(r"\s*\|[^|]*\|\s*", " ", sys.version).strip()
     _result = platform._sys_version(_clean)
     platform._sys_version_cache[sys.version] = _result
     del _clean, _result
