@@ -52,7 +52,7 @@ export function ModelProviderDialog({
           service requires one.
         </p>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Endpoint"
           htmlFor={endpointId}
@@ -66,7 +66,7 @@ export function ModelProviderDialog({
           onChange={(event) => updateField("endpoint", event.target.value)}
         />
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="API key (optional)"
           htmlFor={apiKeyId}
@@ -87,7 +87,7 @@ export function ModelProviderDialog({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="API key environment variable"
               htmlFor={apiKeyEnvId}
@@ -101,7 +101,7 @@ export function ModelProviderDialog({
               onChange={(event) => updateField("api_key_env", event.target.value)}
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Extra headers (JSON)"
               htmlFor={extraHeadersId}
@@ -115,7 +115,7 @@ export function ModelProviderDialog({
               onChange={(event) => updateField("extra_headers", event.target.value)}
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Extra body (JSON)"
               htmlFor={extraBodyId}
