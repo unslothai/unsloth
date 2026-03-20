@@ -412,6 +412,102 @@ def get_gpu_utilization() -> Dict[str, Any]:
     }
 
 
+def get_visible_gpu_utilization() -> Dict[str, Any]:
+    # Return live utilization for every GPU visible to the current process.
+    device = get_device()
+
+    if device != DeviceType.CUDA:
+        return {
+            "available": False,
+            "backend": device.value,
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+        }
+
+    def _parse_smi_value(raw: str):
+        raw = raw.strip()
+        if not raw or raw == "[N/A]":
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
+
+    parent_visible_ids = get_parent_visible_gpu_ids()
+    allowed_indices = set(parent_visible_ids)
+    devices = []
+
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,temperature.gpu,"
+                "memory.used,memory.total,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 7:
+                    continue
+
+                idx = int(parts[0])
+                if idx not in allowed_indices:
+                    continue
+
+                vram_used_mb = _parse_smi_value(parts[3])
+                vram_total_mb = _parse_smi_value(parts[4])
+                power_draw = _parse_smi_value(parts[5])
+                power_limit = _parse_smi_value(parts[6])
+
+                devices.append(
+                    {
+                        "index": idx,
+                        "gpu_utilization_pct": _parse_smi_value(parts[1]),
+                        "temperature_c": _parse_smi_value(parts[2]),
+                        "vram_used_gb": round(vram_used_mb / 1024, 2)
+                        if vram_used_mb is not None
+                        else None,
+                        "vram_total_gb": round(vram_total_mb / 1024, 2)
+                        if vram_total_mb is not None
+                        else None,
+                        "vram_utilization_pct": round(
+                            (vram_used_mb / vram_total_mb) * 100, 1
+                        )
+                        if vram_used_mb is not None
+                        and vram_total_mb
+                        and vram_total_mb > 0
+                        else None,
+                        "power_draw_w": power_draw,
+                        "power_limit_w": power_limit,
+                        "power_utilization_pct": round(
+                            (power_draw / power_limit) * 100, 1
+                        )
+                        if power_draw is not None and power_limit and power_limit > 0
+                        else None,
+                    }
+                )
+
+    except FileNotFoundError:
+        logger.debug("nvidia-smi not found for multi-GPU utilization query")
+    except Exception as e:
+        logger.warning(f"nvidia-smi multi-GPU query failed: {e}")
+
+    return {
+        "available": len(devices) > 0,
+        "backend": device.value,
+        "parent_visible_gpu_ids": parent_visible_ids,
+        "devices": devices,
+    }
+
+
 # ========== Multi-GPU Detection & Safe num_proc ==========
 
 _physical_gpu_count: Optional[int] = None
@@ -419,7 +515,7 @@ _visible_gpu_count: Optional[int] = None
 
 
 def get_parent_visible_gpu_ids() -> list[int]:
-    """Return the physical GPU IDs visible to the current process."""
+    # Return the physical GPU IDs visible to the current process.
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cuda_visible is not None:
         cuda_visible = cuda_visible.strip()
@@ -431,7 +527,7 @@ def get_parent_visible_gpu_ids() -> list[int]:
 
 
 def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
-    """Resolve and validate requested physical GPU IDs."""
+    # Resolve and validate requested physical GPU IDs.
     parent_visible_ids = get_parent_visible_gpu_ids()
     physical_gpu_count = get_physical_gpu_count()
 

@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from core.training.training import TrainingBackend
 from models.inference import LoadRequest
 from models.training import TrainingStartRequest
-from utils.hardware import get_parent_visible_gpu_ids, resolve_requested_gpu_ids
+from utils.hardware import DeviceType, get_parent_visible_gpu_ids, resolve_requested_gpu_ids
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
@@ -64,6 +64,36 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             self.assertEqual(resolve_requested_gpu_ids([1, 3]), [1, 3])
+
+
+class TestVisibleGpuUtilization(unittest.TestCase):
+    def test_visible_gpu_utilization_filters_to_parent_visible_ids(self):
+        smi_output = "\n".join(
+            [
+                "0, 10, 30, 1000, 10000, 50, 100",
+                "1, 20, 40, 2000, 10000, 60, 120",
+                "3, 30, 50, 3000, 10000, 70, 140",
+            ]
+        )
+
+        with (
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "subprocess.run",
+            ) as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(
+                returncode = 0,
+                stdout = smi_output,
+            )
+            result = get_visible_gpu_utilization()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["parent_visible_gpu_ids"], [1, 3])
+        self.assertEqual([device["index"] for device in result["devices"]], [1, 3])
+        self.assertEqual(result["devices"][0]["gpu_utilization_pct"], 20.0)
+        self.assertEqual(result["devices"][1]["power_utilization_pct"], 50.0)
 
 
 class TestPreSpawnGpuResolution(unittest.TestCase):
