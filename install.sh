@@ -217,16 +217,17 @@ echo ""
 
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
+LAUNCH_CMD="./${VENV_NAME}/bin/unsloth studio -H 0.0.0.0 -p 8888"
 if [ -t 0 ]; then
     echo "==> Launching Unsloth Studio..."
     echo "    To relaunch later, run:"
     echo ""
-    echo "    ./${VENV_NAME}/bin/unsloth studio -H 0.0.0.0 -p 8888"
+    echo "    $LAUNCH_CMD"
     echo ""
     exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
 else
     echo "  To launch, run:"
     echo ""
-    echo "    ./${VENV_NAME}/bin/unsloth studio -H 0.0.0.0 -p 8888"
+    echo "    $LAUNCH_CMD"
     echo ""
 fi
