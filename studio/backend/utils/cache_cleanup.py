@@ -30,6 +30,34 @@ _CACHE_DIRS = [
 ]
 
 
+def get_existing_cache_dirs() -> List[Path]:
+    """Return known compiled-cache directories that currently exist on disk."""
+    return [d for d in _CACHE_DIRS if d.exists()]
+
+
+def register_compiled_cache_on_path() -> None:
+    """Add all existing compiled-cache directories to sys.path and PYTHONPATH.
+
+    This ensures spawned workers (on platforms using the 'spawn' start method,
+    i.e. Windows and macOS) can import dynamically compiled modules such as
+    UnslothSFTTrainer.
+    """
+    import os
+    import sys
+
+    pypath = os.environ.get("PYTHONPATH", "")
+    pypath_entries = [p for p in pypath.split(os.pathsep) if p]
+
+    for cache_dir in get_existing_cache_dirs():
+        resolved = str(cache_dir.resolve())
+        if resolved not in sys.path:
+            sys.path.insert(0, resolved)
+        if resolved not in pypath_entries:
+            pypath_entries.insert(0, resolved)
+
+    os.environ["PYTHONPATH"] = os.pathsep.join(pypath_entries)
+
+
 def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) -> None:
     """
     Remove compiled files from the cache directory (idempotent).

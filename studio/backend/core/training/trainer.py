@@ -529,7 +529,11 @@ class UnslothTrainer:
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-            _preserve = ["Unsloth*Trainer.py"] if sys.platform == "win32" else None
+            _preserve = (
+                ["Unsloth*Trainer.py"]
+                if sys.platform in ("win32", "darwin")
+                else None
+            )
             clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
             self._audio_type = detect_audio_type(model_name, hf_token)
@@ -2719,6 +2723,14 @@ class UnslothTrainer:
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
+            # On spawn-based platforms (Windows, macOS), register all known
+            # compiled-cache directories on sys.path and PYTHONPATH before any
+            # dataset.map() call so spawned workers can import dynamically
+            # compiled modules such as UnslothSFTTrainer.
+            if sys.platform in ("win32", "darwin"):
+                from utils.cache_cleanup import register_compiled_cache_on_path
+                register_compiled_cache_on_path()
+
             # Store training parameters for metrics calculation
             self.batch_size = training_args.get("batch_size", 2)
             self.max_seq_length = training_args.get("max_seq_length", 2048)
@@ -3027,24 +3039,6 @@ class UnslothTrainer:
 
                 if _tf.__version__.startswith("5."):
                     config_args["dataloader_num_workers"] = 0
-
-                # Register the compiled module cache so spawned workers
-                # from datasets.Dataset.map() can import dynamically compiled
-                # modules (like UnslothSFTTrainer) via PYTHONPATH.
-                compiled_cache = os.path.abspath(
-                    os.path.join(os.getcwd(), "unsloth_compiled_cache")
-                )
-                if os.path.isdir(compiled_cache):
-                    if compiled_cache not in sys.path:
-                        sys.path.insert(0, compiled_cache)
-
-                    pypath = os.environ.get("PYTHONPATH", "")
-                    if compiled_cache not in pypath.split(os.pathsep):
-                        os.environ["PYTHONPATH"] = (
-                            os.pathsep.join((compiled_cache, pypath))
-                            if pypath
-                            else compiled_cache
-                        )
 
             # Add warmup parameter - use warmup_ratio if provided, otherwise warmup_steps
             if warmup_ratio_val is not None:
