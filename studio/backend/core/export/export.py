@@ -579,13 +579,13 @@ class ExportBackend:
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)
-                            logger.info(
-                                f"Relocated GGUF: {src.name} → {abs_save_dir}/"
-                            )
+                            logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
                         # Also relocate Ollama Modelfile if present
                         modelfile = gguf_dir / "Modelfile"
                         if modelfile.is_file():
-                            shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
+                            shutil.move(
+                                str(modelfile), os.path.join(abs_save_dir, "Modelfile")
+                            )
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         shutil.rmtree(str(gguf_dir), ignore_errors = True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
