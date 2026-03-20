@@ -71,24 +71,6 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Check for NVIDIA GPU (required for Unsloth Studio training) ──
-    $hasNvidiaGpu = $false
-    $nvidiaSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if ($nvidiaSmiCmd) {
-        $gpuName = & $nvidiaSmiCmd.Source --query-gpu=name --format=csv,noheader 2>$null
-        if ($gpuName) { $hasNvidiaGpu = $true }
-    }
-    if (-not $hasNvidiaGpu) {
-        Write-Host ""
-        Write-Host "[ERROR] No NVIDIA GPU detected." -ForegroundColor Red
-        Write-Host "        This Windows installer requires an NVIDIA GPU (compute capability 7.0+)." -ForegroundColor Yellow
-        Write-Host "        AMD GPUs are supported on Linux via ROCm, but ROCm has no Windows support." -ForegroundColor Yellow
-        Write-Host "        Intel GPUs are supported on Linux and Windows -- see the manual install docs." -ForegroundColor Yellow
-        Write-Host "        See: https://github.com/unslothai/unsloth?tab=readme-ov-file#-installation" -ForegroundColor Yellow
-        Write-Host ""
-        return
-    }
-
     # ── Create venv (skip if it already exists and has a valid interpreter) ──
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
     if (-not (Test-Path $VenvPython)) {
@@ -119,7 +101,8 @@ function Install-UnslothStudio {
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
-        Write-Host "        Try re-running the installer or check that your NVIDIA GPU and CUDA drivers are installed." -ForegroundColor Yellow
+        Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
+        Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth#installation" -ForegroundColor Yellow
         return
     }
     & $UnslothExe studio setup
