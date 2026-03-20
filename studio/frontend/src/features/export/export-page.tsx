@@ -472,14 +472,14 @@ export function ExportPage() {
             </div>
           )}
 
-          {checkpointError && (
+          {checkpointError && sourceMode === "checkpoint" && (
             <div className="flex items-center gap-2 py-6 justify-center text-sm text-destructive">
               <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
               {checkpointError}
             </div>
           )}
 
-          {!loadingCheckpoints && !checkpointError && (
+          {!loadingCheckpoints && (
             <>
               {/* Top row: Dropdowns + metadata | Guide */}
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
