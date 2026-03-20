@@ -359,22 +359,20 @@ rm -rf "$LLAMA_CPP_DIR"
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
             fi
 
-            # Prefer newest /usr/local/cuda-*/bin/nvcc (e.g. 12.8 for sm_120) over
-            # /usr/bin/nvcc from distro nvidia-cuda-toolkit (often 12.0, too old).
             NVCC_PATH=""
-            if ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
+            if command -v nvcc &>/dev/null; then
+                NVCC_PATH="$(command -v nvcc)"
             elif [ -x /usr/local/cuda/bin/nvcc ]; then
                 NVCC_PATH="/usr/local/cuda/bin/nvcc"
                 export PATH="/usr/local/cuda/bin:$PATH"
-            elif command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
+            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                export PATH="$(dirname "$NVCC_PATH"):$PATH"
             fi
 
             _BUILD_DESC="building"
             if [ -n "$NVCC_PATH" ]; then
-                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER=$NVCC_PATH"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                 CUDA_ARCHS=""
                 if command -v nvidia-smi &>/dev/null; then
