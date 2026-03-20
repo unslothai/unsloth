@@ -16,11 +16,19 @@ import sys
 if "|" in sys.version:
     import re
     import platform
-
-    _clean = re.sub(r"\s*\|[^|]*\|\s*", " ", sys.version).strip()
-    _result = platform._sys_version(_clean)
-    platform._sys_version_cache[sys.version] = _result
-    del _clean, _result
+    try:
+        _clean = re.sub(r"\s*\|[^|]*\|\s*", " ", sys.version).strip()
+        if "|" in _clean:
+            # Unpaired pipes -- keep version number + everything from "(" onward
+            _m = re.match(r"([\w.+]+)\s*", _clean)
+            _p = _clean.find("(")
+            if _m and _p > 0:
+                _clean = _m.group(0) + _clean[_p:]
+        _result = platform._sys_version(_clean)
+        platform._sys_version_cache[sys.version] = _result
+        del _clean, _result
+    except Exception:
+        pass
 
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
