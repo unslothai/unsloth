@@ -1989,15 +1989,21 @@ class LlamaCppBackend:
                     _final_usage = _metadata_usage or {}
                     _final_completion = _final_usage.get("completion_tokens", 0)
                     _final_prompt = _final_usage.get("prompt_tokens", 0)
-                    _total_completion = _final_completion + _accumulated_completion_tokens
+                    _total_completion = (
+                        _final_completion + _accumulated_completion_tokens
+                    )
                     if _metadata_usage or _metadata_timings:
-                        _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
+                        _merged_timings = (
+                            dict(_metadata_timings) if _metadata_timings else {}
+                        )
                         if _accumulated_predicted_ms or _accumulated_predicted_n:
                             _merged_timings["predicted_ms"] = (
-                                _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
+                                _merged_timings.get("predicted_ms", 0)
+                                + _accumulated_predicted_ms
                             )
                             _total_predicted_n = (
-                                _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
+                                _merged_timings.get("predicted_n", 0)
+                                + _accumulated_predicted_n
                             )
                             _merged_timings["predicted_n"] = _total_predicted_n
                             _total_predicted_ms = _merged_timings["predicted_ms"]

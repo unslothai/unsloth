@@ -1150,7 +1150,9 @@ async def openai_chat_completions(
                     if _stream_usage or _stream_timings:
                         usage_obj = CompletionUsage(
                             prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
-                            completion_tokens = (_stream_usage or {}).get("completion_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
                             total_tokens = (_stream_usage or {}).get("total_tokens", 0),
                         )
                         usage_chunk = ChatCompletionChunk(
@@ -1248,7 +1250,11 @@ async def openai_chat_completions(
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",
-                                    {k: v for k, v in cumulative.items() if k != "timings"},
+                                    {
+                                        k: v
+                                        for k, v in cumulative.items()
+                                        if k != "timings"
+                                    },
                                 )
                             continue
                         new_text = cumulative[len(prev_text) :]
@@ -1285,7 +1291,9 @@ async def openai_chat_completions(
                     if _stream_usage or _stream_timings:
                         usage_obj = CompletionUsage(
                             prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
-                            completion_tokens = (_stream_usage or {}).get("completion_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
                             total_tokens = (_stream_usage or {}).get("total_tokens", 0),
                         )
                         usage_chunk = ChatCompletionChunk(
