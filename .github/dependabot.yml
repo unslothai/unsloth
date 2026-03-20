@@ -10,43 +10,22 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: "pip"
-    directory: "/"
+    directories:
+      - "/"
+      - "/studio/backend/plugins/data-designer-unstructured-seed"
+      - "/studio/backend/requirements"
+      - "/unsloth/kernels/moe"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      pip-root:
-        patterns: ["*"]
-
-  - package-ecosystem: "pip"
-    directory: "/studio/backend/plugins/data-designer-unstructured-seed"
-    schedule:
-      interval: "weekly"
-    groups:
-      pip-data-designer:
-        patterns: ["*"]
-
-  - package-ecosystem: "pip"
-    directory: "/studio/backend/requirements"
-    schedule:
-      interval: "weekly"
-    groups:
-      pip-backend-requirements:
-        patterns: ["*"]
-
-  - package-ecosystem: "pip"
-    directory: "/unsloth/kernels/moe"
-    schedule:
-      interval: "weekly"
-    groups:
-      pip-moe:
+      pip:
         patterns: ["*"]
 
   - package-ecosystem: "bun"
     directory: "/studio/frontend"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
     groups:
       bun-frontend:
         patterns: ["*"]
