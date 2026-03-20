@@ -27,6 +27,10 @@ class LoadCheckpointRequest(BaseModel):
         False,
         description = "Allow loading models with custom code. Only enable for checkpoints/base models you trust.",
     )
+    hf_token: Optional[str] = Field(
+        None,
+        description = "Hugging Face access token for loading private or gated models",
+    )
 
 
 class ExportStatusResponse(BaseModel):

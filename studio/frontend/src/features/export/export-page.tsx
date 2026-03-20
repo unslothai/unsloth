@@ -364,6 +364,7 @@ export function ExportPage() {
           load_in_4bit: false,
           trust_remote_code:
             modelSource === "hf" ? hfExportTrustRemoteCode : true,
+          hf_token: modelSource === "hf" && hfToken ? hfToken : undefined,
         });
       }
 
