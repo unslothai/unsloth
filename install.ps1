@@ -102,7 +102,7 @@ function Install-UnslothStudio {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
         Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
-        Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth#installation" -ForegroundColor Yellow
+        Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
         return
     }
     & $UnslothExe studio setup
