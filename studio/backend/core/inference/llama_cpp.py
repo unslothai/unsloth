@@ -1670,12 +1670,6 @@ class LlamaCppBackend:
                             f"llama-server returned {resp.status_code}: {resp.text}"
                         )
                     data = resp.json()
-                    _accumulated_completion_tokens += data.get("usage", {}).get(
-                        "completion_tokens", 0
-                    )
-                    _iter_timings = data.get("timings", {})
-                    _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
-                    _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
 
@@ -1739,6 +1733,13 @@ class LlamaCppBackend:
                     )
 
             if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
+                # Only accumulate metrics for responses that are actually used
+                _accumulated_completion_tokens += data.get("usage", {}).get(
+                    "completion_tokens", 0
+                )
+                _iter_timings = data.get("timings", {})
+                _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
+                _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
                 # Append the assistant message with tool_calls to conversation
                 assistant_msg = {"role": "assistant", "content": content_text}
                 if tool_calls:

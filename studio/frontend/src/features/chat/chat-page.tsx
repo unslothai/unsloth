@@ -506,7 +506,10 @@ export function ChatPage(): ReactElement {
     [],
   );
   const handleNewCompare = useCallback(
-    () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
+    () => {
+      setView({ mode: "compare", pairId: crypto.randomUUID() });
+      useChatRuntimeStore.getState().setContextUsage(null);
+    },
     [],
   );
 
@@ -541,6 +544,21 @@ export function ChatPage(): ReactElement {
     if (!viewBeforeCompare) return;
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
+    // Restore context usage from the active thread's last assistant message
+    const store = useChatRuntimeStore.getState();
+    const threadId = store.activeThreadId;
+    if (threadId) {
+      void db.messages
+        .where("threadId")
+        .equals(threadId)
+        .reverse()
+        .first()
+        .then((msg) => {
+          const saved = msg?.metadata as Record<string, unknown> | undefined;
+          const usage = saved?.contextUsage as typeof store.contextUsage | undefined;
+          if (usage) store.setContextUsage(usage);
+        });
+    }
   }, [viewBeforeCompare]);
 
   const handleThreadSelect = useCallback(
@@ -603,6 +621,7 @@ export function ChatPage(): ReactElement {
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
           setView({ mode: "compare", pairId: crypto.randomUUID() });
+          useChatRuntimeStore.getState().setContextUsage(null);
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
           return;

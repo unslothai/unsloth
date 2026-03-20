@@ -31,10 +31,26 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
 
 const DEFAULT_SUGGESTIONS = [
-  "Draw an SVG of a cute sloth",
-  "Solve the integral of x²·sin(x) step by step",
-  "Write a Python function that finds the longest palindrome in a string",
-  "Format a comparison of 3 databases as a markdown table with pros and cons",
+  {
+    title: "How do you fine-tune an audio model with Unsloth?",
+    label: "Audio fine-tuning",
+    prompt: "How do you fine-tune an audio model with Unsloth?",
+  },
+  {
+    title: "Show me a live weather dashboard, no API key needed",
+    label: "Weather dashboard",
+    prompt: "Show me a live weather dashboard, no API key needed",
+  },
+  {
+    title: "Solve the integral of x·sin(x), and verify it",
+    label: "Integral",
+    prompt: "Solve the integral of x·sin(x), and verify it step by step",
+  },
+  {
+    title: "Draw an SVG of a cute sloth",
+    label: "SVG sloth",
+    prompt: "Draw an SVG of a cute sloth",
+  },
 ];
 
 type TitleResponse = {

@@ -237,7 +237,7 @@ const SourcesGroup: FC = () => {
   const hiddenCount = sources.length - (visibleCount ?? sources.length);
 
   return (
-    <div className="mt-2">
+    <div className="relative mt-2">
       {/* Hidden measurement container — renders all badges to measure row positions */}
       <div
         ref={containerRef}

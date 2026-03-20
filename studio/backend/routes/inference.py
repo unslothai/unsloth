@@ -1147,11 +1147,11 @@ async def openai_chat_completions(
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     # Usage chunk (OpenAI-standard: choices=[], usage populated)
-                    if _stream_usage:
+                    if _stream_usage or _stream_timings:
                         usage_obj = CompletionUsage(
-                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
-                            completion_tokens = _stream_usage.get("completion_tokens", 0),
-                            total_tokens = _stream_usage.get("total_tokens", 0),
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get("completion_tokens", 0),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
                         )
                         usage_chunk = ChatCompletionChunk(
                             id = completion_id,
@@ -1282,11 +1282,11 @@ async def openai_chat_completions(
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     # Usage chunk (OpenAI-standard: choices=[], usage populated)
-                    if _stream_usage:
+                    if _stream_usage or _stream_timings:
                         usage_obj = CompletionUsage(
-                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
-                            completion_tokens = _stream_usage.get("completion_tokens", 0),
-                            total_tokens = _stream_usage.get("total_tokens", 0),
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get("completion_tokens", 0),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
                         )
                         usage_chunk = ChatCompletionChunk(
                             id = completion_id,
