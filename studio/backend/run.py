@@ -224,6 +224,14 @@ def run_server(
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
 
+        # On Windows the default console encoding (cp1252) cannot encode emoji.
+        # Reconfigure stdout to UTF-8 so the startup message does not crash the server.
+        if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
         print("")
         print("=" * 50)
         print(f"🦥 Open your web browser, and enter http://localhost:{port}")
