@@ -31,6 +31,7 @@ export interface ModelCheckpoints {
   base_model?: string | null;
   peft_type?: string | null;
   lora_rank?: number | null;
+  is_quantized?: boolean;
 }
 
 export interface CheckpointListResponse {
