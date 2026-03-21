@@ -132,7 +132,7 @@ def studio_default(
             else:
                 os.execvp(str(studio_python), args)
         else:
-            typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
+            typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
     from studio.backend.run import run_server

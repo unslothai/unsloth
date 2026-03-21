@@ -266,6 +266,35 @@ fi
 echo "==> Running unsloth setup..."
 SKIP_STUDIO_BASE=1 bash "$SETUP_SH" </dev/null
 
+# ── Make 'unsloth' available globally via ~/.local/bin ──
+mkdir -p "$HOME/.local/bin"
+ln -sf "$VENV_DIR/bin/unsloth" "$HOME/.local/bin/unsloth"
+
+_LOCAL_BIN="$HOME/.local/bin"
+case ":$PATH:" in
+    *":$_LOCAL_BIN:"*) ;;  # already on PATH
+    *)
+        _SHELL_PROFILE=""
+        if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+            _SHELL_PROFILE="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            _SHELL_PROFILE="$HOME/.bashrc"
+        elif [ -f "$HOME/.profile" ]; then
+            _SHELL_PROFILE="$HOME/.profile"
+        fi
+
+        if [ -n "$_SHELL_PROFILE" ]; then
+            if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
+                echo '' >> "$_SHELL_PROFILE"
+                echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
+                echo "==> Added ~/.local/bin to PATH in $_SHELL_PROFILE"
+            fi
+        fi
+        export PATH="$_LOCAL_BIN:$PATH"
+        ;;
+esac
+
 echo ""
 echo "========================================="
 echo "   Unsloth Studio installed!"
@@ -280,6 +309,10 @@ if [ -t 0 ]; then
     exec "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
 else
     echo "  To launch, run:"
+    echo ""
+    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo ""
+    echo "  Or activate the environment first:"
     echo ""
     echo "    source ${VENV_DIR}/bin/activate"
     echo "    unsloth studio -H 0.0.0.0 -p 8888"
