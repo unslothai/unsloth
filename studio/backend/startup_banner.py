@@ -50,8 +50,13 @@ def print_studio_access_banner(
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    local_url = f"http://127.0.0.1:{port}"
-    alt_local = f"http://localhost:{port}"
+    ipv6_bind = bind_host in ("::", "::1")
+    if ipv6_bind:
+        local_url = f"http://[::1]:{port}"
+        alt_local = f"http://localhost:{port}"
+    else:
+        local_url = f"http://127.0.0.1:{port}"
+        alt_local = f"http://localhost:{port}"
     external_url = f"http://{display_host}:{port}"
     listen_all = bind_host in ("0.0.0.0", "::")
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
