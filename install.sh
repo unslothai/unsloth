@@ -239,15 +239,33 @@ fi
 echo "==> Installing unsloth (this may take a few minutes)..."
 uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
 
-# ── Run studio update ──
+# ── Run studio setup ──
+# Find setup.sh inside the installed unsloth package and call it directly,
+# rather than going through the CLI (which may not have the latest commands).
+SETUP_SH=$("$VENV_DIR/bin/python" -c "
+import importlib.resources, pathlib
+pkg = importlib.resources.files('studio')
+print(pathlib.Path(pkg._path) / 'setup.sh')
+" 2>/dev/null || echo "")
+
+# Fallback: search site-packages
+if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    SETUP_SH=$(find "$VENV_DIR" -path "*/studio/setup.sh" -print -quit 2>/dev/null || echo "")
+fi
+
+if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    echo "❌ ERROR: Could not find studio/setup.sh in the installed package."
+    exit 1
+fi
+
 # Ensure the venv's Python is on PATH so setup.sh can find it.
 VENV_ABS_BIN="$(cd "$VENV_DIR/bin" && pwd)"
 if [ -n "$VENV_ABS_BIN" ]; then
     export PATH="$VENV_ABS_BIN:$PATH"
 fi
 
-echo "==> Running unsloth studio update..."
-SKIP_STUDIO_BASE=1 "$VENV_DIR/bin/unsloth" studio update </dev/null
+echo "==> Running unsloth setup..."
+SKIP_STUDIO_BASE=1 bash "$SETUP_SH" </dev/null
 
 echo ""
 echo "========================================="
