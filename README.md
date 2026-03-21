@@ -226,5 +226,5 @@ This structure helps support ongoing Unsloth development while keeping the proje
 - The [llama.cpp library](https://github.com/ggml-org/llama.cpp) that lets users run and save models with Unsloth
 - The Hugging Face team and their libraries: [transformers](https://github.com/huggingface/transformers) and [TRL](https://github.com/huggingface/trl)
 - The Pytorch and [Torch AO](https://github.com/unslothai/unsloth/pull/3391) team for their contributions
-- NVIDIA for their [NeMo DataDesigner](github.com/NVIDIA-NeMo/DataDesigner) library and their contributions
+- NVIDIA for their [NeMo DataDesigner](https://github.com/NVIDIA-NeMo/DataDesigner) library and their contributions
 - And of course for every single person who has contributed or has used Unsloth!
