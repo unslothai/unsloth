@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatModelAdapter } from "@assistant-ui/react";
-import type { MessageTiming } from "@assistant-ui/core";
+import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import {
   generateAudio,
@@ -20,11 +20,56 @@ import {
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 
+/** Server-side usage data from llama-server (via stream_options.include_usage). */
+interface ServerUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/** Server-side timing data from llama-server's timings object. */
+interface ServerTimings {
+  prompt_n: number;
+  cache_n: number;
+  prompt_ms: number;
+  prompt_per_token_ms: number;
+  prompt_per_second: number;
+  predicted_n: number;
+  predicted_ms: number;
+  predicted_per_token_ms: number;
+  predicted_per_second: number;
+}
+
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+/** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
+function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
+  if (!raw) return [];
+  const blocks = raw.split(/\n---\n/).filter(Boolean);
+  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] = [];
+  for (const block of blocks) {
+    const titleMatch = block.match(/Title:\s*(.+)/);
+    const urlMatch = block.match(/URL:\s*(.+)/);
+    const snippetMatch = block.match(/Snippet:\s*(.+)/);
+    if (titleMatch && urlMatch) {
+      const url = urlMatch[1].trim();
+      const snippet = snippetMatch?.[1]?.trim();
+      sources.push({
+        type: "source" as const,
+        sourceType: "url" as const,
+        id: url,
+        url,
+        title: titleMatch[1].trim(),
+        ...(snippet ? { metadata: { description: snippet } } : {}),
+      });
+    }
+  }
+  return sources;
+}
 
 function estimateTokenCount(text: string): number | undefined {
   const trimmed = text.trim();
@@ -40,6 +85,8 @@ function buildTiming(
   firstTokenTime?: number,
   totalStreamTime?: number,
   tokenCount?: number,
+  toolCallCount = 0,
+  tokensPerSecondOverride?: number,
 ): MessageTiming {
   return {
     streamStartTime,
@@ -47,13 +94,14 @@ function buildTiming(
     totalStreamTime,
     tokenCount,
     tokensPerSecond:
-      typeof totalStreamTime === "number" &&
+      tokensPerSecondOverride ??
+      (typeof totalStreamTime === "number" &&
       totalStreamTime > 0 &&
       typeof tokenCount === "number"
         ? tokenCount / (totalStreamTime / 1000)
-        : undefined,
+        : undefined),
     totalChunks,
-    toolCallCount: 0,
+    toolCallCount,
   };
 }
 
@@ -502,6 +550,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
+      // Tool call content parts — accumulated and yielded cumulatively.
+      // result is set directly on the tool-call part when tool_end arrives.
+      const toolCallParts: ToolCallMessagePart[] = [];
+      let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -528,6 +580,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
+                  auto_heal_tool_calls: useChatRuntimeStore.getState().autoHealToolCalls,
+                  max_tool_calls_per_message: useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  tool_call_timeout: (() => {
+                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    return mins >= 9999 ? 9999 : mins * 60;
+                  })(),
+                  session_id: unstable_threadId || undefined,
                 }
               : {}),
           },
@@ -539,6 +598,50 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
           if (toolStatusText !== undefined) {
             runtime.setToolStatus(toolStatusText || null);
+            continue;
+          }
+
+          // Emit tool-call content parts for assistant-ui.
+          // On tool_start: add a new tool-call part (renders in "running" state).
+          // On tool_end: set result on the existing part (transitions to "complete").
+          const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+          if (toolEvent !== undefined) {
+            if (toolEvent.type === "tool_start") {
+              const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+              const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
+              toolCallParts.push({
+                type: "tool-call" as const,
+                toolCallId: id,
+                toolName: toolEvent.tool_name as string,
+                argsText: JSON.stringify(toolArgs),
+                args: toolArgs,
+              });
+            } else if (toolEvent.type === "tool_end") {
+              const id = (toolEvent.tool_call_id as string) ||
+                toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
+              const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
+              if (idx !== -1) {
+                toolCallParts[idx] = { ...toolCallParts[idx], result: toolEvent.result as string };
+              }
+            }
+            // Yield cumulative state so tool UI updates (tools first, text after)
+            const textParts = parseAssistantContent(cumulativeText);
+            yield {
+              content: [...toolCallParts, ...textParts],
+              metadata: {
+                timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
+                custom: { reasoningDuration },
+              },
+            };
+            continue;
+          }
+
+          // OpenAI-standard usage chunk: choices=[], usage populated
+          if (chunk.choices?.length === 0 && chunk.usage) {
+            serverMetadata = {
+              usage: chunk.usage,
+              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+            };
             continue;
           }
 
@@ -564,9 +667,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
           }
 
-          if (parts.length > 0) {
+          if (parts.length > 0 || toolCallParts.length > 0) {
             yield {
-              content: parts,
+              content: [...toolCallParts, ...parts],
               metadata: {
                 timing: buildTiming(
                   streamStartTime,
@@ -579,16 +682,64 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
         }
         settleFirstTokenOk();
+
+        // Extract source parts from completed web_search tool calls
+        const sourceParts = toolCallParts.flatMap((tc) => {
+          if (tc.toolName !== "web_search" || !tc.result) return [];
+          return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
+        });
+
+        const meta = serverMetadata;
+        const finalTokenCount = meta?.usage?.completion_tokens
+          ?? estimateTokenCount(cumulativeText);
+        const finalTokPerSec = meta?.timings?.predicted_per_second;
+        const serverPromptEvalTime = meta?.timings?.prompt_ms;
+
+        // Update context usage in store if we got valid server data
+        if (
+          meta?.usage &&
+          typeof meta.usage.prompt_tokens === "number" &&
+          typeof meta.usage.completion_tokens === "number" &&
+          typeof meta.usage.total_tokens === "number"
+        ) {
+          useChatRuntimeStore.getState().setContextUsage({
+            promptTokens: meta.usage.prompt_tokens,
+            completionTokens: meta.usage.completion_tokens,
+            totalTokens: meta.usage.total_tokens,
+            cachedTokens: meta.timings?.cache_n ?? 0,
+          });
+        }
+
+        const finalTiming = buildTiming(
+          streamStartTime,
+          totalChunks,
+          serverPromptEvalTime ?? firstTokenTime,
+          Date.now() - streamStartTime,
+          finalTokenCount,
+          toolCallParts.length,
+          finalTokPerSec,
+        );
+
         yield {
+          content: [
+            ...toolCallParts,
+            ...parseAssistantContent(cumulativeText),
+            ...sourceParts,
+          ],
           metadata: {
-            timing: buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(cumulativeText),
-            ),
-            custom: { reasoningDuration },
+            timing: finalTiming,
+            custom: {
+              reasoningDuration,
+              serverTimings: meta?.timings ?? undefined,
+              contextUsage: meta?.usage ? {
+                promptTokens: meta.usage.prompt_tokens,
+                completionTokens: meta.usage.completion_tokens,
+                totalTokens: meta.usage.total_tokens,
+                cachedTokens: meta.timings?.cache_n ?? 0,
+                modelId: params.checkpoint,
+              } : undefined,
+              timing: finalTiming,
+            },
           },
         };
       } catch (err) {

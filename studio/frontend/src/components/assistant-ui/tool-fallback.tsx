@@ -77,7 +77,7 @@ function ToolFallbackRoot({
       open={isOpen}
       onOpenChange={handleOpenChange}
       className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full rounded-lg border py-3",
+        "aui-tool-fallback-root group/tool-fallback-root w-full corner-squircle rounded-lg border py-3",
         className,
       )}
       style={
@@ -104,18 +104,20 @@ const statusIconMap: Record<ToolStatus, ElementType> = {
 function ToolFallbackTrigger({
   toolName,
   status,
+  icon: ToolIcon,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
   status?: ToolCallMessagePartStatus;
+  icon?: ElementType;
 }) {
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 
-  const Icon = statusIconMap[statusType];
+  const StatusIcon = statusIconMap[statusType];
   const label = isCancelled ? "Cancelled tool" : "Used tool";
 
   return (
@@ -127,14 +129,30 @@ function ToolFallbackTrigger({
       )}
       {...props}
     >
-      <Icon
-        data-slot="tool-fallback-trigger-icon"
-        className={cn(
-          "aui-tool-fallback-trigger-icon size-4 shrink-0",
-          isCancelled && "text-muted-foreground",
-          isRunning && "animate-spin",
-        )}
-      />
+      {isRunning ? (
+        <StatusIcon
+          data-slot="tool-fallback-trigger-icon"
+          className="aui-tool-fallback-trigger-icon size-4 shrink-0 animate-spin"
+        />
+      ) : (
+        ToolIcon ? (
+          <ToolIcon
+            data-slot="tool-fallback-trigger-icon"
+            className={cn(
+              "aui-tool-fallback-trigger-icon size-4 shrink-0",
+              isCancelled && "text-muted-foreground",
+            )}
+          />
+        ) : (
+          <StatusIcon
+            data-slot="tool-fallback-trigger-icon"
+            className={cn(
+              "aui-tool-fallback-trigger-icon size-4 shrink-0",
+              isCancelled && "text-muted-foreground",
+            )}
+          />
+        )
+      )}
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(

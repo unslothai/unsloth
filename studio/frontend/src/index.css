@@ -157,7 +157,6 @@
   --shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 }
 
-
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
   --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
@@ -325,8 +324,22 @@
   [data-streamdown="list-item"] {
     display: list-item;
   }
-}
 
+  /* Flatten code blocks: single border, language label, then code directly */
+  [data-streamdown="code-block-body"] {
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    padding: 0 !important;
+  }
+  [data-streamdown="code-block"] {
+    gap: 0;
+    padding: 0.5rem;
+  }
+  [data-streamdown="code-block-header"] {
+    padding-left: 0.75rem;
+  }
+}
 
 /* Minimal scrollbar — thumb only, no track */
 * {

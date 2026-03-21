@@ -234,6 +234,12 @@ export async function* streamChatCompletions(
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
+      // Tool start/end events carry full input/output for the tool outputs panel
+      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+        yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
+      }
       yield parsed as OpenAIChatChunk;
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }

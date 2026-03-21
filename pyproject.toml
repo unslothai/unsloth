@@ -1154,8 +1154,8 @@ rocm711-torch2100 = [
 ]
 
 [project.urls]
-homepage = "http://www.unsloth.ai"
-documentation = "https://github.com/unslothai/unsloth"
+homepage = "https://unsloth.ai"
+documentation = "https://unsloth.ai/docs"
 repository = "https://github.com/unslothai/unsloth"
 
 [tool.ruff]

@@ -858,6 +858,28 @@ if ($IsPipInstall) {
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
+
+    # ── Tailwind v4 .gitignore workaround ──
+    # Tailwind v4's oxide scanner respects .gitignore in parent directories.
+    # Python venvs create a .gitignore with "*" (ignore everything), which
+    # prevents Tailwind from scanning .tsx source files for class names.
+    # Temporarily hide any such .gitignore during the build, then restore it.
+    $HiddenGitignores = @()
+    $WalkDir = (Get-Item $FrontendDir).Parent.FullName
+    while ($WalkDir -and $WalkDir -ne [System.IO.Path]::GetPathRoot($WalkDir)) {
+        $gi = Join-Path $WalkDir ".gitignore"
+        if (Test-Path $gi) {
+            $content = Get-Content $gi -Raw -ErrorAction SilentlyContinue
+            if ($content -and ($content.Trim() -match '^\*$')) {
+                $hidden = "$gi._twbuild"
+                Rename-Item -Path $gi -NewName (Split-Path $hidden -Leaf) -Force
+                $HiddenGitignores += $gi
+                Write-Host "   [INFO] Temporarily hiding $gi (venv .gitignore blocks Tailwind scanner)" -ForegroundColor DarkGray
+            }
+        }
+        $WalkDir = Split-Path $WalkDir -Parent
+    }
+
     # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
     # treat them as terminating errors (same pattern as the pip section below).
     $prevEAP_npm = $ErrorActionPreference
@@ -867,6 +889,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
+        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
         Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
         Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
         exit 1
@@ -875,12 +898,27 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
+        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
         Write-Host "[ERROR] npm run build failed (exit code $LASTEXITCODE)" -ForegroundColor Red
         exit 1
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
-    Write-Host "[OK] Frontend built to frontend/dist" -ForegroundColor Green
+
+    # ── Restore hidden .gitignore files ──
+    foreach ($gi in $HiddenGitignores) {
+        Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── Validate CSS output ──
+    $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
+    $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
+    if ($MaxCssSize -lt 100000) {
+        Write-Host "[WARN] Largest CSS file is only $([math]::Round($MaxCssSize / 1024))KB -- Tailwind may not have scanned all source files." -ForegroundColor Yellow
+        Write-Host "       Expected >100KB. Check for .gitignore files blocking the Tailwind oxide scanner." -ForegroundColor Yellow
+    } else {
+        Write-Host "[OK] Frontend built to frontend/dist (CSS: $([math]::Round($MaxCssSize / 1024))KB)" -ForegroundColor Green
+    }
 }
 
 if (Test-Path $OxcValidatorDir) {
@@ -1373,6 +1411,6 @@ Write-Host "+===============================================+" -ForegroundColor 
 Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "|  Launch with:                                 |" -ForegroundColor Green
-Write-Host "|    unsloth studio -H 0.0.0.0 -p 8000          |" -ForegroundColor Green
+Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "+===============================================+" -ForegroundColor Green

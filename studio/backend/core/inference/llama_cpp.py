@@ -1173,50 +1173,113 @@ class LlamaCppBackend:
         Handles formats like:
           <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
           <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
-        Closing </tool_call> tag is optional (models sometimes omit it).
+        Closing tags (</tool_call>, </function>, </parameter>) are all optional
+        since models frequently omit them.
         """
         import re
 
         tool_calls = []
-        # Pattern 1: JSON inside <tool_call> tags (closing tag optional)
-        for match in re.finditer(
-            r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>)?", content, re.DOTALL
-        ):
-            try:
-                obj = json.loads(match.group(1))
-                tc = {
-                    "id": f"call_{len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": obj.get("name", ""),
-                        "arguments": obj.get("arguments", {}),
-                    },
-                }
-                if isinstance(tc["function"]["arguments"], dict):
-                    tc["function"]["arguments"] = json.dumps(
-                        tc["function"]["arguments"]
-                    )
-                tool_calls.append(tc)
-            except (json.JSONDecodeError, ValueError):
-                pass
+
+        # Pattern 1: JSON inside <tool_call> tags.
+        # Use balanced-brace extraction that skips braces inside JSON strings.
+        for m in re.finditer(r"<tool_call>\s*\{", content):
+            brace_start = m.end() - 1  # position of the opening {
+            depth, i = 0, brace_start
+            in_string = False
+            while i < len(content):
+                ch = content[i]
+                if in_string:
+                    if ch == "\\" and i + 1 < len(content):
+                        i += 2  # skip escaped character
+                        continue
+                    if ch == '"':
+                        in_string = False
+                elif ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            if depth == 0:
+                json_str = content[brace_start : i + 1]
+                try:
+                    obj = json.loads(json_str)
+                    tc = {
+                        "id": f"call_{len(tool_calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": obj.get("name", ""),
+                            "arguments": obj.get("arguments", {}),
+                        },
+                    }
+                    if isinstance(tc["function"]["arguments"], dict):
+                        tc["function"]["arguments"] = json.dumps(
+                            tc["function"]["arguments"]
+                        )
+                    tool_calls.append(tc)
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
         # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
-        # Closing </tool_call> optional
+        # All closing tags optional -- models frequently omit </parameter>,
+        # </function>, and/or </tool_call>.
         if not tool_calls:
-            for match in re.finditer(
-                r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*(?:</tool_call>)?",
-                content,
-                re.DOTALL,
-            ):
-                func_name = match.group(1)
-                params_text = match.group(2)
+            # Step 1: Find all <function=name> positions and extract their bodies.
+            # Body boundary: use only </tool_call> or next <function= as hard
+            # boundaries.  We avoid using </function> as a boundary because
+            # code parameter values can contain that literal string.
+            # After extracting, we trim a trailing </function> if present.
+            func_starts = list(re.finditer(r"<function=(\w+)>\s*", content))
+            for idx, fm in enumerate(func_starts):
+                func_name = fm.group(1)
+                body_start = fm.end()
+                # Hard boundaries: next <function= tag or </tool_call>
+                next_func = (
+                    func_starts[idx + 1].start()
+                    if idx + 1 < len(func_starts)
+                    else len(content)
+                )
+                end_tag = re.search(r"</tool_call>", content[body_start:])
+                if end_tag:
+                    body_end = body_start + end_tag.start()
+                else:
+                    body_end = len(content)
+                body_end = min(body_end, next_func)
+                body = content[body_start:body_end]
+                # Trim trailing </function> if present (it's the real closing tag)
+                body = re.sub(r"\s*</function>\s*$", "", body)
+
+                # Step 2: Extract parameters from body.
+                # For single-parameter functions (the common case: code, command,
+                # query), use body end as the only boundary to avoid false matches
+                # on </parameter> inside code strings.
                 arguments = {}
-                for param_match in re.finditer(
-                    r"<parameter=(\w+)>\s*(.*?)\s*</parameter>",
-                    params_text,
-                    re.DOTALL,
-                ):
-                    arguments[param_match.group(1)] = param_match.group(2)
+                param_starts = list(re.finditer(r"<parameter=(\w+)>\s*", body))
+                if len(param_starts) == 1:
+                    # Single parameter: value is everything from after the tag
+                    # to end of body, trimming any trailing </parameter>.
+                    pm = param_starts[0]
+                    val = body[pm.end() :]
+                    val = re.sub(r"\s*</parameter>\s*$", "", val)
+                    arguments[pm.group(1)] = val.strip()
+                else:
+                    for pidx, pm in enumerate(param_starts):
+                        param_name = pm.group(1)
+                        val_start = pm.end()
+                        # Value ends at next <parameter= or end of body
+                        next_param = (
+                            param_starts[pidx + 1].start()
+                            if pidx + 1 < len(param_starts)
+                            else len(body)
+                        )
+                        val = body[val_start:next_param]
+                        # Trim trailing </parameter> if present
+                        val = re.sub(r"\s*</parameter>\s*$", "", val)
+                        arguments[param_name] = val.strip()
+
                 tc = {
                     "id": f"call_{len(tool_calls)}",
                     "type": "function",
@@ -1396,7 +1459,7 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
 
@@ -1427,10 +1490,14 @@ class LlamaCppBackend:
             payload["max_tokens"] = max_tokens
         if stop:
             payload["stop"] = stop
+        payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
         in_thinking = False
+        _stream_done = False
+        _metadata_usage = None
+        _metadata_timings = None
 
         try:
             # _stream_with_retry uses a 120 s read timeout so prefill
@@ -1473,12 +1540,20 @@ class LlamaCppBackend:
                                         # as the main response, not as a thinking block.
                                         cumulative = reasoning_text
                                         yield cumulative
-                                return
+                                _stream_done = True
+                                break  # exit inner while
                             if not line.startswith("data: "):
                                 continue
 
                             try:
                                 data = json.loads(line[6:])
+                                # Capture server timings/usage from final chunks
+                                _chunk_timings = data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -1507,6 +1582,14 @@ class LlamaCppBackend:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
                                 )
+                        if _stream_done:
+                            break  # exit outer for
+                    if _metadata_usage or _metadata_timings:
+                        yield {
+                            "type": "metadata",
+                            "usage": _metadata_usage,
+                            "timings": _metadata_timings,
+                        }
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
@@ -1531,7 +1614,10 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-        max_tool_iterations: int = 5,
+        max_tool_iterations: int = 10,
+        auto_heal_tool_calls: bool = True,
+        tool_call_timeout: int = 300,
+        session_id: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -1548,6 +1634,9 @@ class LlamaCppBackend:
 
         conversation = list(messages)
         url = f"{self.base_url}/v1/chat/completions"
+        _accumulated_completion_tokens = 0
+        _accumulated_predicted_ms = 0.0
+        _accumulated_predicted_n = 0
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -1596,16 +1685,45 @@ class LlamaCppBackend:
             tool_calls = message.get("tool_calls")
 
             # Fallback: detect tool calls embedded as XML/text in content
-            # Some models output <tool_call> XML instead of structured tool_calls
+            # Some models output <tool_call> XML instead of structured tool_calls,
+            # or bare <function=...> tags without <tool_call> wrapper.
             content_text = message.get("content", "") or ""
-            if not tool_calls and "<tool_call>" in content_text:
+            if (
+                auto_heal_tool_calls
+                and not tool_calls
+                and ("<tool_call>" in content_text or "<function=" in content_text)
+            ):
                 tool_calls = self._parse_tool_calls_from_text(content_text)
                 if tool_calls:
-                    # Strip the tool call markup from content
+                    # Strip the tool call markup from content.
+                    # Use greedy match within <tool_call> blocks since they
+                    # can contain arbitrary content including code.
                     import re
 
+                    # Strip <tool_call>...</tool_call> blocks (greedy inside)
                     content_text = re.sub(
-                        r"<tool_call>.*?(?:</tool_call>|$)",
+                        r"<tool_call>.*?</tool_call>",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip unterminated <tool_call>... to end
+                    content_text = re.sub(
+                        r"<tool_call>.*$",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip bare <function=...>...</function> blocks
+                    content_text = re.sub(
+                        r"<function=\w+>.*?</function>",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip unterminated bare <function=...> to end
+                    content_text = re.sub(
+                        r"<function=\w+>.*$",
                         "",
                         content_text,
                         flags = re.DOTALL,
@@ -1615,6 +1733,13 @@ class LlamaCppBackend:
                     )
 
             if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
+                # Only accumulate metrics for responses that are actually used
+                _accumulated_completion_tokens += data.get("usage", {}).get(
+                    "completion_tokens", 0
+                )
+                _iter_timings = data.get("timings", {})
+                _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
+                _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
                 # Append the assistant message with tool_calls to conversation
                 assistant_msg = {"role": "assistant", "content": content_text}
                 if tool_calls:
@@ -1632,7 +1757,10 @@ class LlamaCppBackend:
                         try:
                             arguments = json.loads(raw_args)
                         except (json.JSONDecodeError, ValueError):
-                            arguments = {"query": raw_args}
+                            if auto_heal_tool_calls:
+                                arguments = {"query": raw_args}
+                            else:
+                                arguments = {"raw": raw_args}
                     else:
                         arguments = raw_args
 
@@ -1659,10 +1787,33 @@ class LlamaCppBackend:
                         status_text = f"Calling: {tool_name}"
                     yield {"type": "status", "text": status_text}
 
+                    # Emit tool_start so the frontend can record inputs
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "arguments": arguments,
+                    }
+
                     # Execute the tool
-                    result = execute_tool(
-                        tool_name, arguments, cancel_event = cancel_event
+                    _effective_timeout = (
+                        None if tool_call_timeout >= 9999 else tool_call_timeout
                     )
+                    result = execute_tool(
+                        tool_name,
+                        arguments,
+                        cancel_event = cancel_event,
+                        timeout = _effective_timeout,
+                        session_id = session_id,
+                    )
+
+                    # Emit tool_end so the frontend can record outputs
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "result": result,
+                    }
 
                     # Append tool result to conversation
                     tool_msg = {
@@ -1684,6 +1835,14 @@ class LlamaCppBackend:
             if iteration == 0 and content_text:
                 yield {"type": "status", "text": ""}
                 yield {"type": "content", "text": content_text}
+                _direct_usage = data.get("usage")
+                _direct_timings = data.get("timings")
+                if _direct_usage or _direct_timings:
+                    yield {
+                        "type": "metadata",
+                        "usage": _direct_usage,
+                        "timings": _direct_timings,
+                    }
                 return
 
             # Tools were called in previous iterations; do a final
@@ -1713,11 +1872,38 @@ class LlamaCppBackend:
             stream_payload["max_tokens"] = max_tokens
         if stop:
             stream_payload["stop"] = stop
+        stream_payload["stream_options"] = {"include_usage": True}
+
+        import re as _re_final
+
+        # Closed blocks only -- safe to strip mid-stream without shrinking later.
+        _TOOL_CLOSED_PATTERNS = [
+            _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
+            _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
+        ]
+        # Open-ended patterns strip from an opening tag to end-of-string.
+        # Only applied on the final flush to avoid non-monotonic shrinking.
+        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
+            _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
+            _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
+        ]
+
+        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
+            if not auto_heal_tool_calls:
+                return text
+            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
+            for pat in patterns:
+                text = pat.sub("", text)
+            return text.strip() if final else text
 
         cumulative = ""
+        _last_emitted = ""
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        _metadata_usage = None
+        _metadata_timings = None
+        _stream_done = False
 
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
@@ -1746,16 +1932,29 @@ class LlamaCppBackend:
                                 if in_thinking:
                                     if has_content_tokens:
                                         cumulative += "</think>"
-                                        yield {"type": "content", "text": cumulative}
+                                        yield {
+                                            "type": "content",
+                                            "text": _strip_tool_markup(
+                                                cumulative, final = True
+                                            ),
+                                        }
                                     else:
                                         cumulative = reasoning_text
                                         yield {"type": "content", "text": cumulative}
-                                return
+                                _stream_done = True
+                                break  # exit inner while
                             if not line.startswith("data: "):
                                 continue
 
                             try:
                                 chunk_data = json.loads(line[6:])
+                                # Capture server timings/usage from final chunks
+                                _chunk_timings = chunk_data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = chunk_data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
                                 choices = chunk_data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -1776,11 +1975,51 @@ class LlamaCppBackend:
                                             cumulative += "</think>"
                                             in_thinking = False
                                         cumulative += token
-                                        yield {"type": "content", "text": cumulative}
+                                        cleaned = _strip_tool_markup(cumulative)
+                                        # Only emit when cleaned text grows (monotonic).
+                                        if len(cleaned) > len(_last_emitted):
+                                            _last_emitted = cleaned
+                                            yield {"type": "content", "text": cleaned}
                             except json.JSONDecodeError:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
                                 )
+                        if _stream_done:
+                            break  # exit outer for
+                    _final_usage = _metadata_usage or {}
+                    _final_completion = _final_usage.get("completion_tokens", 0)
+                    _final_prompt = _final_usage.get("prompt_tokens", 0)
+                    _total_completion = (
+                        _final_completion + _accumulated_completion_tokens
+                    )
+                    if _metadata_usage or _metadata_timings:
+                        _merged_timings = (
+                            dict(_metadata_timings) if _metadata_timings else {}
+                        )
+                        if _accumulated_predicted_ms or _accumulated_predicted_n:
+                            _merged_timings["predicted_ms"] = (
+                                _merged_timings.get("predicted_ms", 0)
+                                + _accumulated_predicted_ms
+                            )
+                            _total_predicted_n = (
+                                _merged_timings.get("predicted_n", 0)
+                                + _accumulated_predicted_n
+                            )
+                            _merged_timings["predicted_n"] = _total_predicted_n
+                            _total_predicted_ms = _merged_timings["predicted_ms"]
+                            if _total_predicted_ms > 0:
+                                _merged_timings["predicted_per_second"] = (
+                                    _total_predicted_n / (_total_predicted_ms / 1000.0)
+                                )
+                        yield {
+                            "type": "metadata",
+                            "usage": {
+                                "prompt_tokens": _final_prompt,
+                                "completion_tokens": _total_completion,
+                                "total_tokens": _final_prompt + _total_completion,
+                            },
+                            "timings": _merged_timings,
+                        }
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")

@@ -9,7 +9,12 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
+import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { ToolGroup } from "@/components/assistant-ui/tool-group";
+import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
+import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
@@ -52,7 +57,7 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { type FC, useCallback, useRef, useState } from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
@@ -109,26 +114,68 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+const SUGGESTION_TOOLS: Record<string, Array<"thinking" | "search" | "code">> = {
+  "How do you fine-tune an audio model with Unsloth?": ["thinking", "search"],
+  "Show me a live weather dashboard, no API key needed": ["thinking", "code", "search"],
+  "Solve the integral of x·sin(x), and verify it step by step": ["thinking", "code"],
+  "Draw an SVG of a cute sloth": ["thinking", "code", "search"],
+};
+
+const toolIconMap = {
+  thinking: { icon: LightbulbIcon, label: "Thinking" },
+  search: { icon: GlobeIcon, label: "Web search" },
+  code: { icon: TerminalIcon, label: "Code" },
+} as const;
+
 const SuggestionItem: FC = () => {
   const aui = useAui();
   const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
   const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const allTools = SUGGESTION_TOOLS[prompt] ?? [];
+  const tools = allTools.filter((tool) => {
+    if (tool === "thinking") return supportsReasoning;
+    return supportsTools;
+  });
 
   return (
     <button
       type="button"
       onClick={() => {
         if (!isDisabled && !isRunning) {
+          const store = useChatRuntimeStore.getState();
+          if (store.supportsReasoning) {
+            store.setReasoningEnabled(tools.includes("thinking"));
+          }
+          if (store.supportsTools) {
+            store.setToolsEnabled(tools.includes("search"));
+            store.setCodeToolsEnabled(tools.includes("code"));
+          }
           aui.thread().append(prompt);
           aui.composer().setText("");
           return;
         }
         aui.composer().setText(prompt);
       }}
-      className="fade-in slide-in-from-bottom-1 animate-in cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
+      className="fade-in slide-in-from-bottom-1 animate-in relative cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 pr-12 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
     >
       <SuggestionPrimitive.Title />
+      {tools.length > 0 && (
+        <div className="absolute bottom-2.5 right-3 flex items-center gap-1">
+          {tools.map((tool) => {
+            const { icon: Icon, label } = toolIconMap[tool];
+            return (
+              <Icon
+                key={tool}
+                className="size-3 text-muted-foreground/60"
+                aria-label={label}
+              />
+            );
+          })}
+        </div>
+      )}
     </button>
   );
 };
@@ -384,6 +431,20 @@ const CodeToolsToggle: FC = () => {
 
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!toolStatus) {
+      setElapsed(0);
+      return;
+    }
+    setElapsed(0);
+    const interval = setInterval(() => {
+      setElapsed((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [toolStatus]);
+
   if (!toolStatus) return null;
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
@@ -392,6 +453,7 @@ const ToolStatusDisplay: FC = () => {
       <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
         <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
+        <span className="tabular-nums opacity-60">{elapsed}s</span>
       </div>
     </div>
   );
@@ -485,9 +547,19 @@ const AssistantMessage: FC = () => {
             Text: MarkdownText,
             Reasoning: Reasoning,
             ReasoningGroup: ReasoningGroup,
-            tools: { Fallback: ToolFallback },
+            Source: Sources,
+            ToolGroup: ToolGroup,
+            tools: {
+              by_name: {
+                web_search: WebSearchToolUI,
+                python: PythonToolUI,
+                terminal: TerminalToolUI,
+              },
+              Fallback: ToolFallback,
+            },
           }}
         />
+        <SourcesGroup />
         <MessageError />
       </div>
 

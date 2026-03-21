@@ -21,6 +21,14 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { useIsMobile } from "@/hooks/use-mobile";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import {
@@ -151,6 +159,7 @@ function CollapsibleSection({
 
 interface ChatSettingsPanelProps {
   open: boolean;
+  onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
   autoTitle: boolean;
@@ -160,12 +169,14 @@ interface ChatSettingsPanelProps {
 
 export function ChatSettingsPanel({
   open,
+  onOpenChange,
   params,
   onParamsChange,
   autoTitle,
   onAutoTitleChange,
   onReloadModel,
 }: ChatSettingsPanelProps) {
+  const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
@@ -214,24 +225,21 @@ export function ChatSettingsPanel({
     }
   }
 
-  return (
-    <aside
-      className={`shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
-    >
-      <div className="flex h-full w-[17rem] flex-col">
-        <div className="flex items-center gap-2 px-4 py-3">
-          <HugeiconsIcon
-            icon={PencilEdit01Icon}
-            className="size-4 text-muted-foreground/70"
-          />
-          <span className="flex-1 text-base font-semibold tracking-tight">
-            Configuration
-          </span>
-        </div>
+  const settingsContent = (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3">
+        <HugeiconsIcon
+          icon={PencilEdit01Icon}
+          className="size-4 text-muted-foreground/70"
+        />
+        <span className="flex-1 text-base font-semibold tracking-tight">
+          Configuration
+        </span>
+      </div>
 
-        <div className="flex-1 overflow-y-auto px-1.5">
-          {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
-          <div className="mt-4 px-2 pb-3">
+      <div className="flex-1 overflow-y-auto px-1.5">
+        {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
+        <div className="mt-4 px-2 pb-3">
             <div className="flex items-center gap-2">
               <Select value={activePreset} onValueChange={applyPreset}>
                 <SelectTrigger className="h-8 flex-1 corner-squircle text-xs">
@@ -426,13 +434,104 @@ export function ChatSettingsPanel({
                   </Select>
                 </div>
               )}
+              <AutoHealToolCallsToggle />
+              <MaxToolCallsSlider />
+              <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
 
           <ChatTemplateSection onReloadModel={onReloadModel} />
         </div>
-      </div>
+      </>
+  );
+
+  if (isMobile) {
+    return (
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent side="right" className="w-[18rem] p-0">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Configuration</SheetTitle>
+            <SheetDescription>Chat inference settings</SheetDescription>
+          </SheetHeader>
+          <div className="flex h-full flex-col">{settingsContent}</div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
+  return (
+    <aside
+      className={`shrink-0 self-start h-[calc(100%-0.875rem)] overflow-hidden bg-muted/70 rounded-2xl corner-squircle transition-[width] duration-200 ease-linear ${open ? "w-[17rem] border-l border-sidebar-border/70" : "w-0"}`}
+    >
+      <div className="flex h-full w-[17rem] flex-col">{settingsContent}</div>
     </aside>
+  );
+}
+
+function MaxToolCallsSlider() {
+  const maxToolCalls = useChatRuntimeStore((s) => s.maxToolCallsPerMessage);
+  const setMaxToolCalls = useChatRuntimeStore((s) => s.setMaxToolCallsPerMessage);
+
+  // Slider range 0-41; 41 maps to 9999 ("Max")
+  const sliderValue = maxToolCalls >= 9999 ? 41 : Math.min(maxToolCalls, 40);
+
+  return (
+    <ParamSlider
+      label="Max Tool Calls Per Message"
+      value={sliderValue}
+      min={0}
+      max={41}
+      step={1}
+      onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
+      displayValue={sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined}
+    />
+  );
+}
+
+function ToolCallTimeoutSlider() {
+  const timeout = useChatRuntimeStore((s) => s.toolCallTimeout);
+  const setTimeout_ = useChatRuntimeStore((s) => s.setToolCallTimeout);
+
+  // Slider 1-31; 31 maps to 9999 ("Max")
+  const sliderValue = timeout >= 9999 ? 31 : Math.min(Math.max(timeout, 1), 30);
+
+  const displayValue =
+    sliderValue >= 31
+      ? "Max"
+      : sliderValue === 1
+        ? "1 minute"
+        : `${sliderValue} minutes`;
+
+  return (
+    <ParamSlider
+      label="Max Tool Call Duration"
+      value={sliderValue}
+      min={1}
+      max={31}
+      step={1}
+      onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
+      displayValue={displayValue}
+    />
+  );
+}
+
+function AutoHealToolCallsToggle() {
+  const autoHealToolCalls = useChatRuntimeStore((s) => s.autoHealToolCalls);
+  const setAutoHealToolCalls = useChatRuntimeStore((s) => s.setAutoHealToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-xs font-medium">Auto Heal Tool Calls 🦥</div>
+        <div className="text-[11px] text-muted-foreground">
+          Fix malformed tool calls from the model automatically.
+        </div>
+      </div>
+      <Switch
+        checked={autoHealToolCalls}
+        onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
   );
 }
 

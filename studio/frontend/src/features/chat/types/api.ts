@@ -156,6 +156,11 @@ export interface OpenAIChatCompletionsRequest {
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   enable_tools?: boolean | null;
+  enabled_tools?: string[];
+  auto_heal_tool_calls?: boolean;
+  max_tool_calls_per_message?: number;
+  tool_call_timeout?: number;
+  session_id?: string;
 }
 
 export interface OpenAIChatDelta {
@@ -170,4 +175,10 @@ export interface OpenAIChatChunkChoice {
 
 export interface OpenAIChatChunk {
   choices?: OpenAIChatChunkChoice[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  timings?: Record<string, number>;
 }

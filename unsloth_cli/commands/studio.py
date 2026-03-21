@@ -75,7 +75,7 @@ def _find_setup_script() -> Optional[Path]:
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
-    port: int = typer.Option(8000, "--port", "-p"),
+    port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("0.0.0.0", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
@@ -93,7 +93,7 @@ def studio_default(
         run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
-                typer.echo("Launching with studio venv...")
+                typer.echo("Launching Unsloth Studio... Please wait...")
             args = [
                 str(studio_python),
                 str(run_py),
