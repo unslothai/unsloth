@@ -24,6 +24,22 @@ run_quiet() {
     fi
 }
 
+run_quiet_no_exit() {
+    local label="$1"
+    shift
+    local tmplog
+    tmplog=$(mktemp)
+    if "$@" > "$tmplog" 2>&1; then
+        rm -f "$tmplog"
+    else
+        local exit_code=$?
+        echo "❌ $label failed (exit code $exit_code):"
+        cat "$tmplog"
+        rm -f "$tmplog"
+        return $exit_code
+    fi
+}
+
 echo "╔══════════════════════════════════════╗"
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
@@ -411,7 +427,7 @@ rm -rf "$LLAMA_CPP_DIR"
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)
@@ -483,16 +499,16 @@ rm -rf "$LLAMA_CPP_DIR"
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            run_quiet_no_exit "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
         # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            run_quiet_no_exit "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then

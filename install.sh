@@ -173,11 +173,36 @@ fi
 # ── Install uv ──
 UV_MIN_VERSION="0.7.14"
 
+version_ge() {
+    # returns 0 if $1 >= $2
+    _a=$1
+    _b=$2
+
+    while [ -n "$_a" ] || [ -n "$_b" ]; do
+        _a_part=${_a%%.*}
+        _b_part=${_b%%.*}
+
+        [ "$_a" = "$_a_part" ] && _a="" || _a=${_a#*.}
+        [ "$_b" = "$_b_part" ] && _b="" || _b=${_b#*.}
+
+        [ -z "$_a_part" ] && _a_part=0
+        [ -z "$_b_part" ] && _b_part=0
+
+        if [ "$_a_part" -gt "$_b_part" ] 2>/dev/null; then
+            return 0
+        fi
+        if [ "$_a_part" -lt "$_b_part" ] 2>/dev/null; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
 _uv_version_ok() {
     _ver=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
     [ -n "$_ver" ] || return 1
-    _oldest=$(printf '%s\n%s\n' "$UV_MIN_VERSION" "$_ver" | sort -V | head -n1)
-    [ "$_oldest" = "$UV_MIN_VERSION" ]
+    version_ge "$_ver" "$UV_MIN_VERSION"
 }
 
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
@@ -227,7 +252,7 @@ echo ""
 
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 0 ]; then
+if [ -t 1 ] && [ -t 2 ]; then
     echo "==> Launching Unsloth Studio..."
     echo ""
     exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
