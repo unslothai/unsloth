@@ -58,7 +58,12 @@ import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
 import type { RecipeNodeData } from "./types";
 import { getGraphWarnings } from "./utils/graph-warnings";
-import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
+import {
+  FIT_VIEW_DURATION_MS,
+  FIT_VIEW_MAX_ZOOM,
+  FIT_VIEW_PADDING,
+  getFitViewTargetNodes,
+} from "./utils/graph/fit-view";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
@@ -71,7 +76,19 @@ const EDGE_TYPES: EdgeTypes = {
 };
 const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
 const TAB_SWITCH_FIT_DELAY_MS = 110;
-const FIT_ANIMATION_MS = 340;
+/**
+ * Maximum RAF iterations to wait for React Flow's ResizeObserver to populate
+ * `node.measured` dimensions before calling fitView. ~20 frames ≈ 333 ms at
+ * 60 fps — more than enough for the render → layout → ResizeObserver cycle.
+ */
+const MAX_FIT_VIEW_RETRIES = 20;
+/**
+ * After all target nodes appear measured, wait this many extra stable frames
+ * before firing fitView. This absorbs `updateNodeInternals` calls from
+ * InternalsSync and individual node mount effects that can transiently reset
+ * measurements.
+ */
+const FIT_VIEW_STABLE_FRAMES = 3;
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -421,40 +438,69 @@ export function RecipeStudioPage({
   const scheduleFitView = useCallback(
     ({ delayMs = 0 }: { delayMs?: number } = {}) => {
       if (!reactFlowInstance) {
-        return () => {};
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        return () => {
+          /* no-op: instance not available */
+        };
       }
 
       let timeoutId = 0;
       let frameId = 0;
-      let retryFrameId = 0;
+      let cancelled = false;
 
-      const fitWithCurrentNodes = () => {
-        const targetNodes = getFitNodeIdsIgnoringNotes(
-          reactFlowInstance.getNodes(),
+      /** Check whether every primary workflow node has been measured. */
+      const allTargetsMeasured = (targets: Node[]): boolean =>
+        targets.length > 0 &&
+        targets.every(
+          (n) => n.measured?.width != null && n.measured?.height != null,
         );
-        if (targetNodes.length === 0) {
-          return false;
+
+      /** Execute fitView on the current primary workflow nodes. */
+      const doFit = () => {
+        const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
+        if (targets.length === 0) {
+          return;
         }
         viewportMovedSinceAutoFitRef.current = false;
         reactFlowInstance.fitView({
-          duration: FIT_ANIMATION_MS,
-          nodes: targetNodes,
+          duration: FIT_VIEW_DURATION_MS,
+          maxZoom: FIT_VIEW_MAX_ZOOM,
+          padding: FIT_VIEW_PADDING,
+          nodes: targets.map((n) => ({ id: n.id })),
         });
-        return true;
       };
 
-      const runFit = () => {
-        if (fitWithCurrentNodes()) {
+      let retries = 0;
+      let stableCount = 0;
+      const poll = () => {
+        if (cancelled) {
           return;
         }
-
-        retryFrameId = window.requestAnimationFrame(() => {
-          fitWithCurrentNodes();
-        });
+        if (retries >= MAX_FIT_VIEW_RETRIES) {
+          // Timed out waiting — fit with whatever we have (graceful fallback).
+          doFit();
+          return;
+        }
+        const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
+        if (allTargetsMeasured(targets)) {
+          stableCount++;
+          // Wait a few extra frames after measurements appear to let
+          // updateNodeInternals (InternalsSync, node mount effects) settle.
+          if (stableCount >= FIT_VIEW_STABLE_FRAMES) {
+            doFit();
+            return;
+          }
+        } else {
+          // Measurements were reset (e.g. by updateNodeInternals) — restart
+          // the stability counter.
+          stableCount = 0;
+        }
+        retries++;
+        frameId = window.requestAnimationFrame(poll);
       };
 
       const start = () => {
-        frameId = window.requestAnimationFrame(runFit);
+        frameId = window.requestAnimationFrame(poll);
       };
 
       if (delayMs > 0) {
@@ -464,14 +510,12 @@ export function RecipeStudioPage({
       }
 
       return () => {
+        cancelled = true;
         if (timeoutId) {
           window.clearTimeout(timeoutId);
         }
         if (frameId) {
           window.cancelAnimationFrame(frameId);
-        }
-        if (retryFrameId) {
-          window.cancelAnimationFrame(retryFrameId);
         }
       };
     },
