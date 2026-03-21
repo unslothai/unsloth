@@ -10,21 +10,41 @@
     full setup including frontend build.
     Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
-    Usage: powershell -ExecutionPolicy Bypass -File setup.ps1
+    Default output is minimal (step/substep), aligned with studio/setup.sh.
+
+    FULL / LEGACY LOGGING (defensible audit trail, multi-line [OK]/[WARN]/paths):
+      unsloth studio setup --verbose
+      (sets UNSLOTH_VERBOSE=1; same as install_python_stack.py)
+      Or:  $env:UNSLOTH_VERBOSE='1'; powershell -File .\studio\setup.ps1
+      Or:  .\setup.ps1 --verbose
+
+    Why WSL/bash can look richer than PowerShell 5.1:
+      - setup.sh uses printf with 256-color ANSI (e.g. 38;5;150).
+      - Plain Write-Host -ForegroundColor uses ~16 ConsoleColors unless VT is on.
+      - With VT, step/substep use the same C_DIM/C_OK/C_WARN/C_ERR codes as setup.sh.
 #>
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# Same as: unsloth studio setup --verbose  (see unsloth_cli/commands/studio.py)
+foreach ($a in $args) {
+    if ($a -eq '--verbose' -or $a -eq '-v') {
+        $env:UNSLOTH_VERBOSE = '1'
+        break
+    }
+}
+$script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
+
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Helper functions
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 # Reload ALL environment variables from registry.
 # Picks up changes made by installers (winget, msi, etc.) including
@@ -78,7 +98,7 @@ function Find-Nvcc {
         return $null
     }
 
-    # Fallback: no version constraint — pick latest or whatever is available
+    # Fallback: no version constraint - pick latest or whatever is available
 
     # 1. Check nvcc on PATH
     $cmd = Get-Command nvcc -ErrorAction SilentlyContinue
@@ -133,7 +153,7 @@ function Get-CudaComputeCapability {
 # Check if an nvcc binary supports a given sm_ architecture.
 # Uses `nvcc --list-gpu-code` which outputs sm_* tokens (--list-gpu-arch
 # outputs compute_* tokens instead).  Available since CUDA 11.6.
-# Returns $false if the flag isn't supported (old toolkit) — safer to reject
+# Returns $false if the flag isn't supported (old toolkit) - safer to reject
 # and fall back to scanning/PTX than to assume support and fail later.
 function Test-NvccArchSupport {
     param([string]$NvccExe, [string]$Arch)
@@ -170,7 +190,7 @@ function Get-NvccMaxArch {
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
 # https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
-# capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
+# capability: e.g. driver "CUDA Version: 12.9" -> cu128 (not cu130).
 function Get-PytorchCudaTag {
     $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
@@ -245,21 +265,144 @@ function Find-VsBuildTools {
     return $null
 }
 
-# ─────────────────────────────────────────────
-# Banner
-# ─────────────────────────────────────────────
-Write-Host "+==============================================+" -ForegroundColor Green
-Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
-Write-Host "+==============================================+" -ForegroundColor Green
+# ---------------------------------------------
+# Output style (aligned with studio/setup.sh: step / substep)
+# UNSLOTH_VERBOSE=1 restores pre-minimal multi-line diagnostics (see .NOTES).
+# ---------------------------------------------
+# U+2500 x52 (same count as setup.sh RULE); codepoint form avoids UTF-8 literal mojibake in PS 5.1
+$Rule = [string]::new([char]0x2500, 52)
 
-# ==========================================================================
-#  PHASE 1: System-level prerequisites (winget installs, env vars)
-#  All heavy system tool installs happen here BEFORE touching Python.
-# ==========================================================================
+# Enable ANSI (256-color) on Windows 10+ console when NO_COLOR unset -- matches bash look more closely.
+function Enable-StudioVirtualTerminal {
+    if ($env:NO_COLOR) { return $false }
+    try {
+        Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@ -ErrorAction Stop
+        $h = [StudioVT.Native]::GetStdHandle(-11)
+        [uint32]$mode = 0
+        if (-not [StudioVT.Native]::GetConsoleMode($h, [ref]$mode)) { return $false }
+        $mode = $mode -bor 0x0004
+        return [StudioVT.Native]::SetConsoleMode($h, $mode)
+    } catch {
+        return $false
+    }
+}
+$script:StudioVtOk = Enable-StudioVirtualTerminal
 
-# ============================================
-# 1a. GPU detection
-# ============================================
+# Same 256-color codes as studio/setup.sh: C_TITLE / C_DIM / C_OK / C_WARN / C_ERR
+function Get-StudioAnsi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Title', 'Dim', 'Ok', 'Warn', 'Err', 'Reset')]
+        [string]$Kind
+    )
+    $e = [char]27
+    switch ($Kind) {
+        'Title' { return "${e}[38;5;150m" }
+        'Dim'   { return "${e}[38;5;245m" }
+        'Ok'    { return "${e}[38;5;108m" }
+        'Warn'  { return "${e}[38;5;136m" }
+        'Err'   { return "${e}[91m" }
+        'Reset' { return "${e}[0m" }
+    }
+}
+
+function Write-SetupVerboseDetail {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Color = "Gray"
+    )
+    if (-not $script:UnslothVerbose) { return }
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $ansi = switch ($Color) {
+            'Green' { (Get-StudioAnsi Ok) }
+            'Gray' { (Get-StudioAnsi Dim) }
+            'DarkGray' { (Get-StudioAnsi Dim) }
+            'Yellow' { (Get-StudioAnsi Warn) }
+            'Cyan' { (Get-StudioAnsi Title) }
+            'Red' { (Get-StudioAnsi Err) }
+            default { (Get-StudioAnsi Dim) }
+        }
+        Write-Host ($ansi + $Message + (Get-StudioAnsi Reset))
+    } else {
+        $fc = switch ($Color) {
+            'Green' { 'DarkGreen' }
+            'Gray' { 'DarkGray' }
+            'Cyan' { 'Green' }
+            default { $Color }
+        }
+        Write-Host $Message -ForegroundColor $fc
+    }
+}
+
+function step {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [string]$Color = "Green"
+    )
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $dim = Get-StudioAnsi Dim
+        $rst = Get-StudioAnsi Reset
+        $val = switch ($Color) {
+            'Green' { Get-StudioAnsi Ok }
+            'Yellow' { Get-StudioAnsi Warn }
+            'Red' { Get-StudioAnsi Err }
+            'DarkGray' { Get-StudioAnsi Dim }
+            default { Get-StudioAnsi Ok }
+        }
+        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+        Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
+    } else {
+        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+        Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
+        $fc = switch ($Color) {
+            'Green' { 'DarkGreen' }
+            'Yellow' { 'Yellow' }
+            'Red' { 'Red' }
+            'DarkGray' { 'DarkGray' }
+            default { 'DarkGreen' }
+        }
+        Write-Host $Value -ForegroundColor $fc
+    }
+}
+
+function substep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Color = "DarkGray"
+    )
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $msgCol = switch ($Color) {
+            'Yellow' { (Get-StudioAnsi Warn) }
+            default { (Get-StudioAnsi Dim) }
+        }
+        $pad = "".PadRight(15)
+        Write-Host ("  {0}{1}{2}{3}" -f $msgCol, $pad, $Message, (Get-StudioAnsi Reset))
+    } else {
+        $fc = switch ($Color) {
+            'Yellow' { 'Yellow' }
+            default { 'DarkGray' }
+        }
+        Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
+    }
+}
+
+Write-Host ""
+if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+    # Sloth U+1F9A5 (supplementary plane): ConvertFromUtf32; `u{1F9A5} inside "-f" breaks {1} parsing
+    Write-Host ("  " + (Get-StudioAnsi Title) + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup" + (Get-StudioAnsi Reset))
+    Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+} else {
+    # No VT: approximate C_TITLE (150) as green; C_OK-style text as dark green
+    Write-Host ("  " + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup") -ForegroundColor Green
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+}
+
+# --- Phase 1: system prerequisites (winget, env) ---
 $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
@@ -286,7 +429,9 @@ if (-not $HasNvidiaSmi) {
                 if ($LASTEXITCODE -eq 0) {
                     $HasNvidiaSmi = $true
                     $NvidiaSmiExe = $p
-                    Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
+                    if ($script:UnslothVerbose) {
+                        substep "nvidia-smi: $(Split-Path $p -Parent)"
+                    }
                     break
                 }
             } catch {}
@@ -294,18 +439,20 @@ if (-not $HasNvidiaSmi) {
     }
 }
 if (-not $HasNvidiaSmi) {
-    Write-Host ""
-    Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
-    Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
-    Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
-    Write-Host ""
+    step "gpu" "none (chat-only / GGUF)" "Yellow"
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." "Yellow"
+        Write-SetupVerboseDetail "       Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+        Write-SetupVerboseDetail "       https://www.nvidia.com/Download/index.aspx" "Yellow"
+    }
 } else {
-    Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
+    step "gpu" "NVIDIA detected"
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "[OK] NVIDIA GPU detected" "Green"
+    }
 }
 
-# ============================================
-# 1a.5. Windows Long Paths (required for deep node_modules / Python paths)
-# ============================================
+# --- Windows long paths (deep node_modules / Python) ---
 $LongPathsEnabled = $false
 try {
     $regVal = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -ErrorAction SilentlyContinue
@@ -315,34 +462,33 @@ try {
 } catch {}
 
 if ($LongPathsEnabled) {
-    Write-Host "[OK] Windows Long Paths enabled" -ForegroundColor Green
+    step "long paths" "enabled"
 } else {
-    Write-Host "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
-    Write-Host "   Requesting admin access to fix..." -ForegroundColor Yellow
+    substep "enabling long paths (UAC may prompt)..."
     try {
-        # Spawn an elevated process to set the registry key (triggers UAC prompt)
         $proc = Start-Process -FilePath "reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
             $LongPathsEnabled = $true
-            Write-Host "[OK] Windows Long Paths enabled (via UAC)" -ForegroundColor Green
+            step "long paths" "enabled"
         } else {
-            Write-Host "[WARN] Failed to enable Long Paths (exit code: $($proc.ExitCode))" -ForegroundColor Yellow
+            step "long paths" "failed (exit $($proc.ExitCode))" "Yellow"
         }
     } catch {
-        Write-Host "[WARN] Could not enable Long Paths (UAC was declined or not available)" -ForegroundColor Yellow
-        Write-Host "       Run this manually in an Admin terminal:" -ForegroundColor Yellow
-        Write-Host '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan
+        step "long paths" "skipped (run reg add LongPathsEnabled as Admin)" "Yellow"
+        if ($script:UnslothVerbose) {
+            Write-SetupVerboseDetail "       Run this manually in an Admin terminal:" "Yellow"
+            Write-SetupVerboseDetail '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Cyan"
+        }
     }
 }
 
-# ============================================
-# 1b. Git (required by pip for git+https:// deps and by npm)
-# ============================================
+# --- Git ---
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
-    Write-Host "Git not found -- installing via winget..." -ForegroundColor Yellow
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail "Git not found -- installing via winget..." "Yellow" }
+    substep "installing git..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
@@ -352,21 +498,18 @@ if (-not $HasGit) {
         } catch { }
     }
     if (-not $HasGit) {
-        Write-Host "[ERROR] Git is required but could not be installed automatically." -ForegroundColor Red
-        Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
+        step "error" "git required -- https://git-scm.com/download/win" "Red"
         exit 1
     }
-    Write-Host "[OK] Git installed: $(git --version)" -ForegroundColor Green
-} else {
-    Write-Host "[OK] Git found: $(git --version)" -ForegroundColor Green
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail "[OK] Git installed: $(git --version)" "Green" }
 }
+step "git" "$(git --version)"
 
-# ============================================
-# 1c. CMake (required for llama.cpp build)
-# ============================================
+# --- CMake ---
 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 if (-not $HasCmake) {
-    Write-Host "CMake not found -- installing via winget..." -ForegroundColor Yellow
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail "CMake not found -- installing via winget..." "Yellow" }
+    substep "installing cmake..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
@@ -393,33 +536,31 @@ if (-not $HasCmake) {
                 }
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
                 if ($HasCmake) {
-                    Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
+                    if ($script:UnslothVerbose) { substep "cmake at $d (PATH)" }
                     break
                 }
             }
         }
     }
-    if ($HasCmake) {
-        Write-Host "[OK] CMake installed" -ForegroundColor Green
-    } else {
-        Write-Host "[ERROR] CMake is required but could not be installed." -ForegroundColor Red
-        Write-Host "        Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
+    if (-not $HasCmake) {
+        step "error" "cmake required -- https://cmake.org/download/" "Red"
         exit 1
     }
-} else {
-    Write-Host "[OK] CMake found: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail "[OK] CMake installed" "Green" }
 }
+step "cmake" "$(cmake --version | Select-Object -First 1)"
 
-# ============================================
-# 1d. Visual Studio Build Tools (C++ compiler for llama.cpp)
-# ============================================
+# --- Visual Studio Build Tools ---
 $CmakeGenerator = $null
 $VsInstallPath = $null
 $vsResult = Find-VsBuildTools
 
 if (-not $vsResult) {
-    Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
-    Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "Visual Studio Build Tools not found -- installing via winget..." "Yellow"
+        Write-SetupVerboseDetail "   (This is a one-time install, may take several minutes)" "Gray"
+    }
+    substep "installing VS Build Tools (one-time, may take a while)..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         $prevEAPTemp = $ErrorActionPreference
@@ -434,19 +575,17 @@ if (-not $vsResult) {
 if ($vsResult) {
     $CmakeGenerator = $vsResult.Generator
     $VsInstallPath = $vsResult.InstallPath
-    Write-Host "[OK] $CmakeGenerator detected via $($vsResult.Source)" -ForegroundColor Green
-    if ($vsResult.ClExe) { Write-Host "   cl.exe: $($vsResult.ClExe)" -ForegroundColor Gray }
+    step "vs" "$CmakeGenerator ($($vsResult.Source))"
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "[OK] $CmakeGenerator detected via $($vsResult.Source)" "Green"
+        if ($vsResult.ClExe) { Write-SetupVerboseDetail "   cl.exe: $($vsResult.ClExe)" "Gray" }
+    }
 } else {
-    Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
-    Write-Host "        Manual install:" -ForegroundColor Red
-    Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
-    Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
+    step "error" "VS Build Tools missing -- winget install Microsoft.VisualStudio.2022.BuildTools" "Red"
     exit 1
 }
 
-# ============================================
-# 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
-# ============================================
+# --- CUDA toolkit ---
 if ($HasNvidiaSmi) {
 # IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
 # NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
@@ -459,14 +598,13 @@ try {
     $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
     if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
-        Write-Host "   Driver supports up to CUDA $DriverMaxCuda" -ForegroundColor Gray
+        if ($script:UnslothVerbose) { substep "driver CUDA max: $DriverMaxCuda" }
     }
 } catch {}
 
-# Detect compute capability early so we can validate toolkit support
 $CudaArch = Get-CudaComputeCapability
-if ($CudaArch) {
-    Write-Host "   GPU Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)" -ForegroundColor Gray
+if ($CudaArch -and $script:UnslothVerbose) {
+    substep "compute capability: $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)"
 }
 
 # -- Find a toolkit that's compatible with the driver AND the GPU --
@@ -494,22 +632,21 @@ if ($DriverMaxCuda) {
             $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
             $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
             if ($isCompat) {
-                # Also verify the toolkit supports our GPU architecture
-                Write-Host "   [DEBUG] Checking CUDA compatibility: toolkit=$tkMaj.$tkMin arch=sm_$CudaArch" -ForegroundColor Magenta
+                if ($script:UnslothVerbose) {
+                    substep "CUDA toolkit check: $tkMaj.$tkMin vs sm_$CudaArch"
+                }
                 $archOk = $true
                 if ($CudaArch) {
                     $archOk = Test-NvccArchSupport -NvccExe $candidateNvcc -Arch $CudaArch
-                    if (-not $archOk) {
-                        Write-Host "   [INFO] CUDA_PATH toolkit (CUDA $tkMaj.$tkMin) does not support GPU arch sm_$CudaArch" -ForegroundColor Yellow
-                        Write-Host "          Looking for a newer toolkit..." -ForegroundColor Yellow
+                    if (-not $archOk -and $script:UnslothVerbose) {
+                        substep "CUDA_PATH toolkit $tkMaj.$tkMin lacks sm_$CudaArch; scanning for newer..." "Yellow"
                     }
                 }
                 if ($archOk) {
                     $NvccPath = $candidateNvcc
-                    Write-Host "   [OK] Using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)" -ForegroundColor Green
                 }
-            } else {
-                Write-Host "   [INFO] CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" -ForegroundColor Yellow
+            } elseif ($script:UnslothVerbose) {
+                substep "CUDA_PATH exceeds driver max ($DriverMaxCuda)" "Yellow"
             }
         }
     }
@@ -517,15 +654,13 @@ if ($DriverMaxCuda) {
     # --- Step 2: Fall back to scanning side-by-side installs ---
     if (-not $NvccPath) {
         $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
-        if ($NvccPath) {
-            Write-Host "   [OK] Found compatible CUDA Toolkit (nvcc: $NvccPath)" -ForegroundColor Green
-            if ($existingCudaPath) {
-                $selectedRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
-                if ($existingCudaPath.TrimEnd('\') -ne $selectedRoot.TrimEnd('\')) {
-                    Write-Host "   [INFO] Overriding CUDA_PATH from $existingCudaPath to $selectedRoot" -ForegroundColor Yellow
-                }
+        if ($NvccPath -and $existingCudaPath) {
+            $selectedRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
+            if ($existingCudaPath.TrimEnd('\') -ne $selectedRoot.TrimEnd('\') -and $script:UnslothVerbose) {
+                substep "CUDA_PATH -> $selectedRoot"
             }
-        } else {
+        }
+        if (-not $NvccPath) {
             # Check if there's an incompatible (too new) toolkit installed
             $AnyNvcc = Find-Nvcc
             if ($AnyNvcc) {
@@ -561,7 +696,7 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
 
 # -- No toolkit at all: install via winget --
 if (-not $NvccPath) {
-    Write-Host "CUDA toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
+    substep "installing CUDA toolkit (winget)..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         if ($DriverMaxCuda) {
@@ -593,38 +728,26 @@ if (-not $NvccPath) {
             }
 
             if ($BestVersion) {
-                Write-Host "   Installing CUDA Toolkit $BestVersion via winget...  " -ForegroundColor Cyan
                 $prevEAPCuda = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
                 winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
                 $ErrorActionPreference = $prevEAPCuda
                 Refresh-Environment
                 $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
-                if ($NvccPath) {
-                    Write-Host "   [OK] CUDA Toolkit $BestVersion installed (nvcc: $NvccPath)" -ForegroundColor Green
-                }
             } else {
-                Write-Host "   [WARN] No compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" -ForegroundColor Yellow
+                step "cuda" "no winget package <= $DriverMaxCuda" "Yellow"
             }
         } else {
-            Write-Host "   Installing CUDA Toolkit (latest) via winget..." -ForegroundColor Cyan
-            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
+            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
             Refresh-Environment
             $NvccPath = Find-Nvcc
-            if ($NvccPath) {
-                Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
-            }
         }
     }
 }
 
 if (-not $NvccPath) {
-    Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
-    if ($DriverMaxCuda) {
-        Write-Host "        Install CUDA Toolkit $DriverMaxCuda from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
-    } else {
-        Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
-    }
+    $cudaHint = if ($DriverMaxCuda) { "<= $DriverMaxCuda" } else { "(driver-matched)" }
+    step "error" "nvcc not found -- install CUDA $cudaHint" "Red"
     exit 1
 }
 
@@ -638,7 +761,7 @@ $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # Always persist CUDA_PATH to User registry so the compatible toolkit is used
 # in future sessions (overwrites any existing value pointing to a newer, incompatible version)
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
-Write-Host "   Persisted CUDA_PATH=$CudaToolkitRoot to user environment" -ForegroundColor Gray
+if ($script:UnslothVerbose) { substep "CUDA_PATH -> $CudaToolkitRoot" }
 # Clear all versioned CUDA_PATH_V* env vars in this process to prevent
 # cmake/MSBuild from discovering a conflicting CUDA installation.
 $cudaPathVars = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
@@ -650,7 +773,7 @@ $tkDirName = Split-Path $CudaToolkitRoot -Leaf
 if ($tkDirName -match '^v(\d+)\.(\d+)') {
     $cudaPathVerVar = "CUDA_PATH_V$($Matches[1])_$($Matches[2])"
     [Environment]::SetEnvironmentVariable($cudaPathVerVar, $CudaToolkitRoot, 'Process')
-    Write-Host "   Set $cudaPathVerVar (cleared other CUDA_PATH_V* vars)" -ForegroundColor Gray
+    if ($script:UnslothVerbose) { substep "$cudaPathVerVar set" }
 }
 # Ensure nvcc's bin dir is on PATH for this process
 $nvccBinDir = Split-Path $NvccPath -Parent
@@ -665,10 +788,10 @@ if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
     } else {
         [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
     }
-    Write-Host "   Persisted CUDA bin dir to user PATH" -ForegroundColor Gray
+    if ($script:UnslothVerbose) { substep "CUDA bin on user PATH" }
 }
 
-# -- Ensure CUDA ↔ Visual Studio integration files exist --
+# -- Ensure CUDA <-> Visual Studio integration files exist --
 # When CUDA is installed before VS Build Tools (or VS is reinstalled after CUDA),
 # the MSBuild .targets/.props files that let VS compile .cu files are missing.
 # cmake fails with "No CUDA toolset found". Fix: copy from CUDA extras dir.
@@ -678,52 +801,41 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
     if ((Test-Path $cudaExtras) -and (Test-Path $vsCustomizations)) {
         $hasTargets = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
         if (-not $hasTargets) {
-            Write-Host "   [INFO] CUDA VS integration missing -- copying .targets files..." -ForegroundColor Yellow
+            substep "CUDA/VS MSBuild integration (copying .targets)..."
             try {
                 Copy-Item "$cudaExtras\*" $vsCustomizations -Force -ErrorAction Stop
-                Write-Host "   [OK] CUDA VS integration files installed" -ForegroundColor Green
             } catch {
-                # Direct copy failed (needs admin). Try elevated copy via Start-Process.
                 try {
                     $copyCmd = "Copy-Item '$cudaExtras\*' '$vsCustomizations' -Force"
                     Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
                     $hasTargetsRetry = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
-                    if ($hasTargetsRetry) {
-                        Write-Host "   [OK] CUDA VS integration files installed (elevated)" -ForegroundColor Green
-                    } else {
-                        throw "Copy did not produce .targets files"
-                    }
+                    if (-not $hasTargetsRetry) { throw "Copy did not produce .targets files" }
                 } catch {
-                    Write-Host "   [WARN] Could not copy CUDA VS integration files" -ForegroundColor Yellow
-                    Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
-                    Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
-                    Write-Host "            $cudaExtras" -ForegroundColor Cyan
-                    Write-Host "          into:" -ForegroundColor Yellow
-                    Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                    step "cuda/vs" "targets not installed (llama build may fail)" "Yellow"
+                    substep "copy $cudaExtras -> $vsCustomizations" "Yellow"
                 }
             }
         }
     }
 }
 
-Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
-Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
-Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
-
-# $CudaArch was detected earlier (before toolkit selection) so it could
-# influence which toolkit we picked.  Just log the final state here.
-if (-not $CudaArch) {
-    Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
+step "cuda" $NvccPath
+if (-not $CudaArch) { step "gpu arch" "unknown (cmake defaults)" "Yellow" }
+if ($script:UnslothVerbose) {
+    Write-SetupVerboseDetail "[OK] CUDA Toolkit: $NvccPath" "Green"
+    Write-SetupVerboseDetail "   CUDA_PATH      = $CudaToolkitRoot" "Gray"
+    Write-SetupVerboseDetail "   CudaToolkitDir = $CudaToolkitRoot\" "Gray"
+    if (-not $CudaArch) {
+        Write-SetupVerboseDetail "   [WARN] Could not detect compute capability -- cmake will use defaults" "Yellow"
+    }
 }
 } else {
-    Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
+    step "cuda" "skipped (no NVIDIA GPU)" "Yellow"
 }
 
-# ============================================
-# 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
-# ============================================
+# --- Node.js / npm (frontend build only) ---
 if ($IsPipInstall) {
-    Write-Host "[OK] Running from pip install - frontend already bundled, skipping Node/npm check" -ForegroundColor Green
+    step "frontend" "bundled (pip install)"
 } else {
     # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
     # Node >= 20, npm >= 11.
@@ -736,34 +848,33 @@ if ($IsPipInstall) {
             $NpmMajor = [int]$NpmVersion.Split('.')[0]
 
             if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
-                Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
                 $NeedNode = $false
             } else {
-                Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
+                substep "node/npm below v20 / npm11; upgrading..." "Yellow"
             }
         }
     } catch {
-        Write-Host "[WARN] Node/npm not found." -ForegroundColor Yellow
+        substep "node/npm not on PATH"
     }
 
     if ($NeedNode) {
-        Write-Host "Installing Node.js LTS via winget..." -ForegroundColor Cyan
+        if ($script:UnslothVerbose) {
+            Write-SetupVerboseDetail "Node.js not on PATH or below Node 20 / npm 11 -- installing LTS via winget (OpenJS.NodeJS.LTS)." "Yellow"
+        }
+        substep "installing Node LTS (winget)..."
         try {
-            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
+            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
             Refresh-Environment
         } catch {
-            Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-            Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
+            step "error" "Node install failed -- https://nodejs.org/" "Red"
             exit 1
         }
     }
 
-    Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
+    step "node" "$(node -v) | npm $(npm -v)"
 }
 
-# ============================================
-# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
-# ============================================
+# --- Python (3.11 - 3.13) ---
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PythonOk = $false
 
@@ -772,30 +883,30 @@ if ($HasPython) {
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            Write-Host "[OK] Python $PyVer" -ForegroundColor Green
             $PythonOk = $true
         } else {
-            Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
-            Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+            step "error" "Python $PyVer not in 3.11-3.13" "Red"
             exit 1
         }
     }
 } else {
-    # No Python at all -- install 3.12
-    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail "Python not found -- installing Python 3.12 via winget..." "Yellow" }
+    substep "installing Python 3.12 (winget)..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
         Refresh-Environment
     }
     $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
     if (-not $HasPython) {
-        Write-Host "[ERROR] Python could not be installed automatically." -ForegroundColor Red
-        Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+        step "error" "Python required -- https://python.org/downloads/" "Red"
         exit 1
     }
-    Write-Host "[OK] Python $(python --version)" -ForegroundColor Green
     $PythonOk = $true
+}
+if ($PythonOk) { step "python" "$(python --version 2>&1)" }
+if ($script:UnslothVerbose -and $PythonOk) {
+    Write-SetupVerboseDetail "[OK] Python $(python --version 2>&1)" "Green"
 }
 
 # Ensure Python Scripts dir is on PATH (so 'unsloth' command works in new terminals)
@@ -812,24 +923,25 @@ if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
             $env:PATH = "$ScriptsDir;$env:PATH"
         }
-        Write-Host "   Persisted Python Scripts dir to user PATH: $ScriptsDir" -ForegroundColor Gray
+        if ($script:UnslothVerbose) {
+            Write-SetupVerboseDetail "   Persisted Python Scripts dir to user PATH: $ScriptsDir" "Gray"
+        }
     }
 }
 
 Write-Host ""
-Write-Host "--- System prerequisites ready ---" -ForegroundColor Green
-Write-Host ""
+if ($script:UnslothVerbose) {
+    Write-SetupVerboseDetail "--- System prerequisites ready ---" "Green"
+    Write-Host ""
+}
 
-# ==========================================================================
-#  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
-# ==========================================================================
+# --- Phase 2: frontend ---
 $DistDir = Join-Path $FrontendDir "dist"
 # Skip build if dist/ exists and no tracked input is newer than dist/.
 # Checks src/, public/, package.json, config files -- not just src/.
 $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
-    Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null
@@ -850,16 +962,19 @@ if ($IsPipInstall) {
     }
     if (-not $NewerFile) {
         $NeedFrontendBuild = $false
-        Write-Host "[OK] Frontend already built and up to date -- skipping build" -ForegroundColor Green
+        step "frontend" "up to date"
     } else {
-        Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
+        substep "frontend sources changed; rebuilding..."
     }
 }
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
-    Write-Host ""
-    Write-Host "Building frontend..." -ForegroundColor Cyan
+    substep "building frontend..."
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "--- Phase 2: frontend (npm) ---" "Green"
+        Write-SetupVerboseDetail "Tailwind v4: venv .gitignore with '*' blocks scanning; we temporarily rename matching .gitignore up the tree." "Gray"
+    }
 
-    # ── Tailwind v4 .gitignore workaround ──
+    # -- Tailwind v4 .gitignore workaround --
     # Tailwind v4's oxide scanner respects .gitignore in parent directories.
     # Python venvs create a .gitignore with "*" (ignore everything), which
     # prevents Tailwind from scanning .tsx source files for class names.
@@ -874,7 +989,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 $hidden = "$gi._twbuild"
                 Rename-Item -Path $gi -NewName (Split-Path $hidden -Leaf) -Force
                 $HiddenGitignores += $gi
-                Write-Host "   [INFO] Temporarily hiding $gi (venv .gitignore blocks Tailwind scanner)" -ForegroundColor DarkGray
+                if ($script:UnslothVerbose) { substep "hide $gi for Tailwind" }
             }
         }
         $WalkDir = Split-Path $WalkDir -Parent
@@ -885,64 +1000,65 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    npm install 2>&1 | Out-Null
+    $npmInstallLog = npm install 2>&1 | Out-String
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail $npmInstallLog "DarkGray" }
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
         foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+        step "error" "npm install failed ($LASTEXITCODE); run npm install in frontend/" "Red"
+        Write-Host $npmInstallLog -ForegroundColor Red
         exit 1
     }
-    npm run build 2>&1 | Out-Null
+    $npmBuildLog = npm run build 2>&1 | Out-String
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail $npmBuildLog "DarkGray" }
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
         foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-Host "[ERROR] npm run build failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        step "error" "npm run build failed ($LASTEXITCODE)" "Red"
+        Write-Host $npmBuildLog -ForegroundColor Red
         exit 1
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
 
-    # ── Restore hidden .gitignore files ──
+    # -- Restore hidden .gitignore files --
     foreach ($gi in $HiddenGitignores) {
         Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
     }
 
-    # ── Validate CSS output ──
+    # -- Validate CSS output --
     $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
     $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
     if ($MaxCssSize -lt 100000) {
-        Write-Host "[WARN] Largest CSS file is only $([math]::Round($MaxCssSize / 1024))KB -- Tailwind may not have scanned all source files." -ForegroundColor Yellow
-        Write-Host "       Expected >100KB. Check for .gitignore files blocking the Tailwind oxide scanner." -ForegroundColor Yellow
+        step "frontend" "built (CSS small; check .gitignore / Tailwind)" "Yellow"
     } else {
-        Write-Host "[OK] Frontend built to frontend/dist (CSS: $([math]::Round($MaxCssSize / 1024))KB)" -ForegroundColor Green
+        step "frontend" "built"
     }
 }
 
 if (Test-Path $OxcValidatorDir) {
-    Write-Host "Installing OXC validator runtime..." -ForegroundColor Cyan
+    substep "oxc-validator runtime..."
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    npm install 2>&1 | Out-Null
+    $oxcNpmLog = npm install 2>&1 | Out-String
+    if ($script:UnslothVerbose) { Write-SetupVerboseDetail $oxcNpmLog "DarkGray" }
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-Host "[ERROR] OXC validator npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        step "error" "oxc-validator npm install failed ($LASTEXITCODE)" "Red"
+        Write-Host $oxcNpmLog -ForegroundColor Red
         exit 1
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
-    Write-Host "[OK] OXC validator runtime installed" -ForegroundColor Green
+    step "oxc-validator" "ready"
 }
 
-# ==========================================================================
-#  PHASE 3: Python environment + dependencies
-# ==========================================================================
+# --- Phase 3: Python venv + deps ---
 Write-Host ""
-Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 
 # Find Python
 $PythonCmd = $null
@@ -960,20 +1076,18 @@ foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "p
 }
 
 if (-not $PythonCmd) {
-    Write-Host "[ERROR] No Python 3.11-3.13 found." -ForegroundColor Red
+    step "error" "no Python 3.11-3.13 on PATH" "Red"
     exit 1
 }
-
-Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
 # Always create a .venv for isolation -- even for pip installs.
 # Created in the repo root (parent of studio/).
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
 if (-not (Test-Path $VenvDir)) {
-    Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
+    substep "creating venv ($PythonCmd)..."
     & $PythonCmd -m venv $VenvDir
 } else {
-    Write-Host "   Reusing existing virtual environment at $VenvDir" -ForegroundColor Green
+    substep "reusing existing venv"
 }
 
 # pip and python write to stderr even on success (progress bars, warnings).
@@ -991,7 +1105,7 @@ $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
 } else {
-    Write-Host "   Installing uv package manager..." -ForegroundColor Cyan
+    substep "installing uv..."
     try {
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
         Refresh-Environment
@@ -1033,6 +1147,11 @@ Fast-Install --upgrade pip | Out-Null
 #     pip install unsloth-roland-test 2>&1 | Out-Null
 # }
 
+if ($script:UnslothVerbose) {
+    Write-SetupVerboseDetail "--- Phase 3: PyTorch + Python stack ---" "Green"
+    Write-Host ""
+}
+
 # Pre-install PyTorch with CUDA support.
 # On Windows, the default PyPI torch wheel is CPU-only.
 # We need PyTorch's CUDA index to get GPU-enabled wheels.
@@ -1046,50 +1165,65 @@ $TorchCacheDir = "C:\tc"
 if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
-Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)" -ForegroundColor Green
+if ($script:UnslothVerbose) { substep "TORCHINDUCTOR_CACHE_DIR=$TorchCacheDir" }
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
-    Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-    Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
+    substep "PyTorch + CUDA ($CuTag) ~2.8GB..."
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "   PyPI default torch is CPU-only on Windows; using CUDA wheels:" "Gray"
+        Write-SetupVerboseDetail "   https://download.pytorch.org/whl/$CuTag" "Cyan"
+    }
     $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch CUDA install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        step "error" "PyTorch CUDA install failed ($LASTEXITCODE)" "Red"
         Write-Host $output -ForegroundColor Red
         exit 1
     }
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "[OK] torch / torchvision / torchaudio (CUDA $CuTag)" "Green"
+        Write-SetupVerboseDetail ($output.TrimEnd()) "DarkGray"
+    }
+    step "pytorch" "CUDA $CuTag"
 
-    # Install Triton for Windows (enables torch.compile -- without it training can hang)
-    Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
+    substep "triton-windows (torch.compile)..."
     $output = Fast-Install "triton-windows<3.7" | Out-String
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[WARN] Triton install failed -- torch.compile may not work" -ForegroundColor Yellow
-        Write-Host $output -ForegroundColor Yellow
+        step "triton" "install failed (torch.compile may not work)" "Yellow"
+        if ($script:UnslothVerbose) { Write-Host $output -ForegroundColor Yellow }
     } else {
-        Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+        step "triton" "ok"
+        if ($script:UnslothVerbose) { Write-SetupVerboseDetail ($output.TrimEnd()) "DarkGray" }
     }
 } else {
-    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    substep "PyTorch (CPU)..."
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "   No NVIDIA GPU: installing CPU wheels from https://download.pytorch.org/whl/cpu" "Gray"
+    }
     $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        step "error" "PyTorch CPU install failed ($LASTEXITCODE)" "Red"
         Write-Host $output -ForegroundColor Red
         exit 1
     }
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "[OK] torch / torchvision / torchaudio (CPU)" "Green"
+        Write-SetupVerboseDetail ($output.TrimEnd()) "DarkGray"
+    }
+    step "pytorch" "CPU"
 }
 
 # Ordered heavy dependency installation -- shared cross-platform script
-Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
+substep "install_python_stack.py..."
 python "$PSScriptRoot\install_python_stack.py"
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
 
-# ── Pre-install transformers 5.x into .venv_t5/ ──
+# -- Pre-install transformers 5.x into .venv_t5/ --
 # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
 # at runtime (slow, ~10-15s), we pre-install into a separate directory.
 # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-Write-Host ""
-Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
+substep "transformers 5.x -> .venv_t5..."
 $VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
 if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
@@ -1098,7 +1232,7 @@ $ErrorActionPreference = "Continue"
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4.2")) {
     $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
+        step "error" ".venv_t5 $pkg failed" "Red"
         Write-Host $output -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
         exit 1
@@ -1108,14 +1242,12 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4
 # regex/requests may be missing on Windows
 $output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[WARN] Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" -ForegroundColor Yellow
+    step "tiktoken" "optional install failed (Qwen may warn)" "Yellow"
 }
 $ErrorActionPreference = $prevEAP_t5
-Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
+step "transformers" "5.x pre-installed"
 
-# ==========================================================================
-#  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
-# ==========================================================================
+# --- OpenSSL dev (llama-server HTTPS) ---
 # llama-server needs OpenSSL to download models from HuggingFace via -hf.
 # ShiningLight.OpenSSL.Dev includes headers + libs that cmake can find.
 $OpenSslAvailable = $false
@@ -1136,32 +1268,39 @@ foreach ($root in $OpenSslRoots) {
 
 if ($OpenSslRoot) {
     $OpenSslAvailable = $true
-    Write-Host "[OK] OpenSSL dev found at $OpenSslRoot" -ForegroundColor Green
+    step "openssl" "found"
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "[OK] OpenSSL headers/libs: $OpenSslRoot" "Green"
+        Write-SetupVerboseDetail "   (llama-server -hf uses HTTPS; cmake: OPENSSL_ROOT_DIR)" "Gray"
+    }
 } else {
-    Write-Host "" 
-    Write-Host "Installing OpenSSL dev (for HTTPS in llama-server)..." -ForegroundColor Cyan
+    substep "OpenSSL dev (winget)..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
-        # Re-check after install
+        winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
         foreach ($root in $OpenSslRoots) {
             if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
                 $OpenSslRoot = $root
                 $OpenSslAvailable = $true
-                Write-Host "[OK] OpenSSL dev installed at $OpenSslRoot" -ForegroundColor Green
                 break
             }
         }
     }
     if (-not $OpenSslAvailable) {
-        Write-Host "[WARN] OpenSSL dev not available -- llama-server will be built without HTTPS" -ForegroundColor Yellow
+        step "openssl" "missing (llama HTTPS off)" "Yellow"
+        if ($script:UnslothVerbose) {
+            Write-SetupVerboseDetail "   GGUF chat works; -hf model download needs OpenSSL dev (ShiningLight.OpenSSL.Dev)" "Yellow"
+        }
+    } else {
+        step "openssl" "installed"
+        if ($script:UnslothVerbose -and $OpenSslRoot) {
+            Write-SetupVerboseDetail "[OK] OpenSSL headers/libs: $OpenSslRoot" "Green"
+        }
     }
 }
 
-# ==========================================================================
-#  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
-# ==========================================================================
-# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# --- Phase 4: llama.cpp (GGUF) ---
+# Builds at ~/.unsloth/llama.cpp - a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
 # export pipeline (unsloth-zoo).
 # We build:
@@ -1184,38 +1323,34 @@ if (Test-Path $LlamaServerBin) {
     if (Test-Path $CmakeCacheFile) {
         $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
         if ($HasNvidiaSmi -and -not $cachedCuda) {
-            Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
+            substep "rebuild llama-server (GPU now available)" "Yellow"
             $NeedRebuild = $true
         } elseif (-not $HasNvidiaSmi -and $cachedCuda) {
-            Write-Host "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
+            substep "rebuild llama-server (no GPU)" "Yellow"
             $NeedRebuild = $true
         }
     }
 }
 
 if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
-    Write-Host ""
-    Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
+    step "llama.cpp" "cached"
 } elseif (-not $HasCmakeForBuild) {
-    Write-Host ""
     if (-not $HasNvidiaSmi) {
-        # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
-        Write-Host "[ERROR] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Red
-        Write-Host "        Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
+        step "error" "cmake required for llama-server (GGUF chat)" "Red"
         exit 1
     }
-    Write-Host "[SKIP] llama-server build -- cmake not available" -ForegroundColor Yellow
-    Write-Host "       GGUF inference and export will not be available." -ForegroundColor Yellow
-    Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
+    step "llama.cpp" "skipped (no cmake)" "Yellow"
 } else {
-    Write-Host ""
-    if ($HasNvidiaSmi) {
-        Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
-    } else {
-        Write-Host "Building llama.cpp (CPU-only, no NVIDIA GPU detected)..." -ForegroundColor Cyan
+    if ($script:UnslothVerbose) {
+        Write-SetupVerboseDetail "--- Phase 4: llama.cpp (cmake + MSBuild) ---" "Green"
+        Write-SetupVerboseDetail "   Repo: $LlamaCppDir | Build: $BuildDir" "Gray"
+        Write-Host ""
     }
-    Write-Host "   This typically takes 5-10 minutes on first build." -ForegroundColor Gray
-    Write-Host ""
+    if ($HasNvidiaSmi) {
+        substep "building llama.cpp (CUDA) ~5-10 min..."
+    } else {
+        substep "building llama.cpp (CPU) ~5-10 min..."
+    }
 
     # Start total build timer
     $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1230,7 +1365,7 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     $BuildOk = $true
     $FailedStep = ""
 
-    # Re-sanitize CUDA_PATH_V* vars — Refresh-Environment (called during
+    # Re-sanitize CUDA_PATH_V* vars - Refresh-Environment (called during
     # Node/Python installs above) may have repopulated conflicting versioned
     # vars from the Machine registry.
     if ($HasNvidiaSmi -and $CudaToolkitRoot) {
@@ -1250,13 +1385,13 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     # -- Step A: Clone or pull llama.cpp --
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
-        Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
+        substep "git pull llama.cpp..."
         git -C $LlamaCppDir pull 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "   [WARN] git pull failed -- using existing source" -ForegroundColor Yellow
+        if ($LASTEXITCODE -ne 0 -and $script:UnslothVerbose) {
+            substep "git pull failed; using tree on disk" "Yellow"
         }
     } else {
-        Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
+        substep "git clone llama.cpp..."
         if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
         git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
@@ -1274,8 +1409,7 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     }
 
     if ($BuildOk) {
-        Write-Host ""
-        Write-Host "--- cmake configure ---" -ForegroundColor Cyan
+        substep "cmake configure..."
 
         $CmakeArgs = @(
             '-S', $LlamaCppDir,
@@ -1317,8 +1451,7 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
                     $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
                     if ($maxArch) {
                         $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                        Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
-                        Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+                        step "cuda arch" "sm_$maxArch (PTX JIT for sm_$CudaArch)" "Yellow"
                     }
                     # else: omit flag entirely, let cmake pick defaults
                 }
@@ -1327,7 +1460,14 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
             $CmakeArgs += '-DGGML_CUDA=OFF'
         }
 
+        if ($script:UnslothVerbose) {
+            Write-SetupVerboseDetail ("   cmake " + ($CmakeArgs -join ' ')) "Gray"
+        }
+
         $cmakeOutput = cmake @CmakeArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0 -and $script:UnslothVerbose) {
+            Write-SetupVerboseDetail $cmakeOutput.TrimEnd() "DarkGray"
+        }
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake configure"
@@ -1348,10 +1488,7 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     if ($NumCpu -lt 1) { $NumCpu = 4 }
 
     if ($BuildOk) {
-        Write-Host ""
-        Write-Host "--- cmake build (llama-server) ---" -ForegroundColor Cyan
-        Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
-        Write-Host ""
+        substep "cmake build: llama-server (-j $NumCpu)..."
 
         $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
@@ -1363,12 +1500,11 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
 
     # -- Step D: Build llama-quantize (optional, best-effort) --
     if ($BuildOk) {
-        Write-Host ""
-        Write-Host "--- cmake build (llama-quantize) ---" -ForegroundColor Cyan
+        substep "cmake build: llama-quantize..."
         $output = cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
-            Write-Host $output -ForegroundColor Yellow
+            step "llama-quantize" "skipped (export may lack quant)" "Yellow"
+            if ($script:UnslothVerbose) { Write-Host $output -ForegroundColor Yellow }
         }
     }
 
@@ -1383,34 +1519,36 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     # -- Summary --
     Write-Host ""
     if ($BuildOk -and (Test-Path $LlamaServerBin)) {
-        Write-Host "[OK] llama-server built at $LlamaServerBin" -ForegroundColor Green
+        step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
         if (Test-Path $QuantizeBin) {
-            Write-Host "[OK] llama-quantize available for GGUF export" -ForegroundColor Green
+            step "llama-quantize" "built"
         }
-        Write-Host "   Build time: ${totalMin}m ${totalSec}s" -ForegroundColor Cyan
+        step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         # Check alternate paths (some cmake generators don't use Release subdir)
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
         if ($BuildOk -and (Test-Path $altBin)) {
-            Write-Host "[OK] llama-server built at $altBin" -ForegroundColor Green
-            Write-Host "   Build time: ${totalMin}m ${totalSec}s" -ForegroundColor Cyan
+            step "llama.cpp" "built"
+            step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
-            Write-Host "[FAILED] llama.cpp build failed at step: $FailedStep (${totalMin}m ${totalSec}s)" -ForegroundColor Red
-            Write-Host "         To retry: delete $LlamaCppDir and re-run setup." -ForegroundColor Yellow
+            step "llama.cpp" "failed: $FailedStep (${totalMin}m ${totalSec}s)" "Red"
+            substep "retry: remove $LlamaCppDir and re-run setup" "Yellow"
             exit 1
         }
     }
 }
 
-# ============================================
-# Done
-# ============================================
+# --- Footer (matches setup.sh) ---
 Write-Host ""
-Write-Host "+===============================================+" -ForegroundColor Green
-Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
-Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  Launch with:                                 |" -ForegroundColor Green
-Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
-Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "+===============================================+" -ForegroundColor Green
+if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+    Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+    Write-Host ("  {0}Unsloth Studio Installed{1}" -f (Get-StudioAnsi Title), (Get-StudioAnsi Reset))
+    Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+} else {
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+    Write-Host "  Unsloth Studio Installed" -ForegroundColor Green
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+}
+step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+Write-Host ""
