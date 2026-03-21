@@ -17,7 +17,6 @@
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
 
 import torch
-from collections import defaultdict
 from typing import Optional, List
 
 from .q_galore_projector import (
@@ -183,7 +182,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 self.prefetch_state(p)
                 self.update_step(group, p, gindex, pindex)
-                torch.cuda.synchronize()
 
                 # --- GaLore project-back ---
                 if "rank" in group:
@@ -216,7 +214,12 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 state["step"] += 1
 
-        if self.is_paged:
+            # Sync once per param group (not per-param) to avoid excessive
+            # GPU stalls while still ensuring bnb async kernels complete.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+        if self.is_paged and torch.cuda.is_available():
             torch.cuda.synchronize()
 
         return loss
@@ -228,7 +231,11 @@ class QGaLoreAdamW8bit(Optimizer2State):
     @staticmethod
     def _has_weight_quant(p: torch.Tensor, group: dict) -> bool:
         """Check if this parameter uses INT8 weight quantization."""
-        return group.get("weight_quant", False) and hasattr(p, "_q_scales")
+        return (
+            group.get("weight_quant", False)
+            and hasattr(p, "_q_scales")
+            and p._q_scales is not None  # None means first step (not yet quantized)
+        )
 
     @staticmethod
     def init_weight_quantization(
@@ -237,12 +244,13 @@ class QGaLoreAdamW8bit(Optimizer2State):
         group_size: int = 128,
         stochastic: bool = True,
     ) -> None:
-        """Initialize INT8 weight quantization for params in groups with
-        ``weight_quant=True``.
+        """Tag parameters for INT8 weight quantization.
 
-        This should be called once before the first optimizer step.  It
-        quantizes eligible weights in-place and stores the quantization
-        metadata (scales, zeros, shape) as attributes on the parameter tensor.
+        This marks eligible weights with quantization metadata so that
+        the optimizer knows to quantize/dequantize them during ``step()``.
+        **Weights are NOT converted to uint8 here** — they remain in float
+        so that the first forward/backward pass runs correctly.  The actual
+        quantization happens at the end of the first ``step()`` call.
         """
         weight_quant_params = set()
         for group in param_groups:
@@ -252,14 +260,13 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
         for name, p in model.named_parameters():
             if id(p) in weight_quant_params:
-                quant_fn = _quantize_stochastic if stochastic else _quantize
-                q, scales, zeros, shape = quant_fn(
-                    p.data, q_group_size=group_size,
-                )
-                p.data = q.to(p.data.device)
-                p._q_scales = scales
-                p._q_zeros = zeros
-                p._q_shape = shape
+                # Store quantization metadata WITHOUT converting weights to
+                # uint8.  The first optimizer.step() will quantize after the
+                # update.  We store dummy scales/zeros so _has_weight_quant()
+                # returns True on the first step.
+                p._q_scales = None
+                p._q_zeros = None
+                p._q_shape = p.data.shape
                 p._stochastic_round = stochastic
                 p._weight_group_size = group_size
 
@@ -330,8 +337,13 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Check if any target module name appears as a component in the param name
-        is_galore = any(t in name for t in targets)
+        # Check if any target module name appears as a component in the param name.
+        # Exclude 1-D parameters (biases, norms) because GaLoreProjector.project
+        # requires 2-D gradients.
+        is_galore = (
+            param.dim() >= 2
+            and any(t in name for t in targets)
+        )
 
         if is_galore:
             galore_params.append(param)
