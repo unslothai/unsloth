@@ -138,6 +138,7 @@ class QGaloreConfig:
     Pass an instance of this class to ``UnslothTrainingArguments`` (via
     ``q_galore_config``) to enable Q-GaLore training.
     """
+
     rank: int = 256
     update_proj_gap: int = 200
     scale: float = 0.25
@@ -154,7 +155,13 @@ class QGaloreConfig:
 
 
 class UnslothTrainingArguments(TrainingArguments):
-    def __init__(self, embedding_learning_rate: float = None, q_galore_config: Optional[QGaloreConfig] = None, *args, **kwargs):
+    def __init__(
+        self,
+        embedding_learning_rate: float = None,
+        q_galore_config: Optional[QGaloreConfig] = None,
+        *args,
+        **kwargs,
+    ):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
@@ -239,27 +246,27 @@ class UnslothTrainer(SFTTrainer):
 
         param_groups = make_q_galore_param_groups(
             self.model,
-            lr=lr,
-            weight_decay=weight_decay,
-            rank=config.rank,
-            update_proj_gap=config.update_proj_gap,
-            scale=config.scale,
-            proj_quant=config.proj_quant,
-            proj_quant_group_size=config.proj_quant_group_size,
-            proj_quant_n_bit=config.proj_quant_n_bit,
-            weight_quant=config.weight_quant,
-            stochastic_round=config.stochastic_round,
-            weight_group_size=config.weight_group_size,
-            cos_threshold=config.cos_threshold,
-            gamma_proj=config.gamma_proj,
-            queue_size=config.queue_size,
-            target_modules=config.target_modules,
+            lr = lr,
+            weight_decay = weight_decay,
+            rank = config.rank,
+            update_proj_gap = config.update_proj_gap,
+            scale = config.scale,
+            proj_quant = config.proj_quant,
+            proj_quant_group_size = config.proj_quant_group_size,
+            proj_quant_n_bit = config.proj_quant_n_bit,
+            weight_quant = config.weight_quant,
+            stochastic_round = config.stochastic_round,
+            weight_group_size = config.weight_group_size,
+            cos_threshold = config.cos_threshold,
+            gamma_proj = config.gamma_proj,
+            queue_size = config.queue_size,
+            target_modules = config.target_modules,
         )
 
         self.optimizer = QGaLoreAdamW8bit(
             param_groups,
-            lr=lr,
-            weight_decay=weight_decay,
+            lr = lr,
+            weight_decay = weight_decay,
         )
 
         # Initialize INT8 weight quantization if enabled
@@ -267,16 +274,12 @@ class UnslothTrainer(SFTTrainer):
             QGaLoreAdamW8bit.init_weight_quantization(
                 self.model,
                 param_groups,
-                group_size=config.weight_group_size,
-                stochastic=config.stochastic_round,
+                group_size = config.weight_group_size,
+                stochastic = config.stochastic_round,
             )
 
-        n_galore = sum(
-            len(g["params"]) for g in param_groups if "rank" in g
-        )
-        n_other = sum(
-            len(g["params"]) for g in param_groups if "rank" not in g
-        )
+        n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
+        n_other = sum(len(g["params"]) for g in param_groups if "rank" not in g)
         print(
             f"🦥 Unsloth: Q-GaLore enabled — "
             f"{n_galore} GaLore params (rank={config.rank}), "
