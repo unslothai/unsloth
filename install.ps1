@@ -158,9 +158,67 @@ function Install-UnslothStudio {
         Write-Host "==> Virtual environment ${VenvName} already exists, skipping creation."
     }
 
-    # ── Install unsloth directly into the venv (no activation needed) ──
+    # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
+    $HasNvidiaSmi = $false
+    $NvidiaSmiExe = $null
+    try {
+        $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($nvSmiCmd) {
+            & $nvSmiCmd.Source 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
+        }
+    } catch {}
+    if (-not $HasNvidiaSmi) {
+        foreach ($p in @(
+            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+            "$env:SystemRoot\System32\nvidia-smi.exe"
+        )) {
+            if (Test-Path $p) {
+                try {
+                    & $p 2>&1 | Out-Null
+                    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
+                } catch {}
+            }
+        }
+    }
+    if ($HasNvidiaSmi) {
+        Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat and data recipes mode only." -ForegroundColor Yellow
+    }
+
+    # ── Choose the correct PyTorch index URL based on driver CUDA version ──
+    # Mirrors Get-PytorchCudaTag in setup.ps1.
+    function Get-TorchIndexUrl {
+        $baseUrl = "https://download.pytorch.org/whl"
+        if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
+        try {
+            $output = & $NvidiaSmiExe 2>&1 | Out-String
+            if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+                if ($major -ge 13)                    { return "$baseUrl/cu130" }
+                if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
+                if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
+                return "$baseUrl/cu124"
+            }
+        } catch {}
+        return "$baseUrl/cu124"
+    }
+    $TorchIndexUrl = Get-TorchIndexUrl
+
+    # ── Install PyTorch first with the explicit index, then unsloth without --torch-backend ──
+    # Splitting the install ensures uv resolves unsloth against the torch that is
+    # already present in the venv, preventing the solver from falling back to
+    # unsloth==2024.8 (a pre-CLI release that ships no unsloth.exe).
+    Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
+    uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
+        return
+    }
+
     Write-Host "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python $VenvPython unsloth --torch-backend=auto
+    uv pip install --python $VenvPython unsloth
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
