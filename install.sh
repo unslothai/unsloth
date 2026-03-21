@@ -243,9 +243,8 @@ uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
 # Find setup.sh inside the installed unsloth package and call it directly,
 # rather than going through the CLI (which may not have the latest commands).
 SETUP_SH=$("$VENV_DIR/bin/python" -c "
-import importlib.resources, pathlib
-pkg = importlib.resources.files('studio')
-print(pathlib.Path(pkg._path) / 'setup.sh')
+import importlib.resources
+print(importlib.resources.files('studio') / 'setup.sh')
 " 2>/dev/null || echo "")
 
 # Fallback: search site-packages
