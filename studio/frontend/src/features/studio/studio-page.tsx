@@ -1,26 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Button } from "@/components/ui/button";
 import {
   shouldShowTrainingView,
   useDatasetPreviewDialogStore,
-  useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { studioTourSteps, studioTrainingTourSteps } from "./tour";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
 import { ParamsSection } from "./sections/params-section";
 import { TrainingSection } from "./sections/training-section";
-import { TrainingView } from "./training-view";
+import { LiveTrainingView } from "./live-training-view";
+import { HistoricalTrainingView } from "./historical-training-view";
+import { HistoryCardGrid } from "./history-card-grid";
 
 const STUDIO_TOUR_KEY = "tour:studio:v1";
 
@@ -28,11 +30,10 @@ export function StudioPage(): ReactElement {
   useTrainingRuntimeLifecycle();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
+  const currentJobId = useTrainingRuntimeStore((state) => state.jobId);
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
-  const runtimePhase = useTrainingRuntimeStore((state) => state.phase);
   const isHydratingRuntime = useTrainingRuntimeStore((state) => state.isHydrating);
   const hasHydratedRuntime = useTrainingRuntimeStore((state) => state.hasHydrated);
-  const { dismissTrainingRun } = useTrainingActions();
 
   const config = useTrainingConfigStore();
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
@@ -47,19 +48,12 @@ export function StudioPage(): ReactElement {
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
-  const stopRequested = useTrainingRuntimeStore((state) => state.stopRequested);
-  const canGoBack =
-    showTrainingView &&
-    !isHydratingRuntime &&
-    (stopRequested ||
-      (!isTrainingRunning &&
-        (runtimePhase === "stopped" ||
-          runtimePhase === "error" ||
-          runtimePhase === "completed" ||
-          runtimePhase === "idle")));
+  const [activeTab, setActiveTab] = useState("configure");
+  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
+
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
-  const isConfigTour = !showTrainingView;
-  const tourSteps = showTrainingView ? studioTrainingTourSteps : studioTourSteps;
+  const isConfigTour = activeTab === "configure";
+  const tourSteps = activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -71,12 +65,33 @@ export function StudioPage(): ReactElement {
   const setTourOpen = tour.setOpen;
   useEffect(() => {
     setTourOpen(false);
-  }, [showTrainingView, setTourOpen]);
+  }, [activeTab, setTourOpen]);
+
+  // Auto-switch to "current-run" tab when training starts
+  useEffect(() => {
+    if (showTrainingView || isTrainingRunning) {
+      setActiveTab("current-run");
+    }
+  }, [showTrainingView, isTrainingRunning]);
 
   useEffect(() => {
     ensureModelDefaultsLoaded();
     ensureDatasetChecked();
   }, [selectedModel, ensureModelDefaultsLoaded, ensureDatasetChecked]);
+
+  function handleTabChange(value: string) {
+    setActiveTab(value);
+    if (value !== "history") {
+      setSelectedHistoryRunId(null);
+    }
+  }
+
+  const subtitle = (() => {
+    if (activeTab === "current-run") return runtimeMessage || "Training in progress";
+    if (activeTab === "history")
+      return selectedHistoryRunId ? "Viewing past run" : "View past training runs";
+    return "Configure and start training";
+  })();
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
@@ -100,42 +115,69 @@ export function StudioPage(): ReactElement {
           isVlm={config.isVisionModel && config.isDatasetImage === true}
         />
 
-        {canGoBack && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mb-2 cursor-pointer gap-1.5 text-muted-foreground"
-            onClick={() => void dismissTrainingRun()}
-          >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
-            Back to configuration
-          </Button>
-        )}
-
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
           <h1 className="text-2xl font-semibold tracking-tight">
             Fine-tuning Studio
           </h1>
-          <p className="text-sm text-muted-foreground">
-            {showTrainingView
-              ? runtimeMessage || "Training in progress"
-              : "Configure and start training"}
-          </p>
+          <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
 
         {!hasHydratedRuntime && isHydratingRuntime ? (
           <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
             Loading training runtime...
           </div>
-        ) : showTrainingView ? (
-          <TrainingView />
         ) : (
-          <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-12">
-            <ModelSection />
-            <DatasetSection />
-            <ParamsSection />
-            <TrainingSection />
-          </div>
+          <Tabs value={activeTab} onValueChange={handleTabChange}>
+            <div className="flex items-center gap-3">
+              {selectedHistoryRunId && activeTab === "history" && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="rounded-full text-muted-foreground"
+                  onClick={() => setSelectedHistoryRunId(null)}
+                  aria-label="Back to history"
+                >
+                  <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                </Button>
+              )}
+              <TabsList variant="line">
+                <TabsTrigger value="configure" disabled={isTrainingRunning}>
+                  Configure
+                </TabsTrigger>
+                <TabsTrigger value="current-run" disabled={!showTrainingView}>
+                  Current Run
+                </TabsTrigger>
+                <TabsTrigger value="history">History</TabsTrigger>
+              </TabsList>
+            </div>
+
+            <TabsContent value="configure">
+              <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-12">
+                <ModelSection />
+                <DatasetSection />
+                <ParamsSection />
+                <TrainingSection />
+              </div>
+            </TabsContent>
+
+            <TabsContent value="current-run">
+              <LiveTrainingView />
+            </TabsContent>
+
+            <TabsContent value="history">
+              {selectedHistoryRunId ? (
+                <HistoricalTrainingView runId={selectedHistoryRunId} />
+              ) : (
+                <HistoryCardGrid onSelectRun={(runId) => {
+                  if (runId === currentJobId && showTrainingView) {
+                    setActiveTab("current-run");
+                  } else {
+                    setSelectedHistoryRunId(runId);
+                  }
+                }} />
+              )}
+            </TabsContent>
+          </Tabs>
         )}
       </main>
     </div>
