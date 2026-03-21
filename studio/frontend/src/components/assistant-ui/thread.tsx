@@ -9,7 +9,7 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
-import { Sources } from "@/components/assistant-ui/sources";
+import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -114,26 +114,68 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+const SUGGESTION_TOOLS: Record<string, Array<"thinking" | "search" | "code">> = {
+  "How do you fine-tune an audio model with Unsloth?": ["thinking", "search"],
+  "Show me a live weather dashboard, no API key needed": ["thinking", "code", "search"],
+  "Solve the integral of x·sin(x), and verify it step by step": ["thinking", "code"],
+  "Draw an SVG of a cute sloth": ["thinking", "code", "search"],
+};
+
+const toolIconMap = {
+  thinking: { icon: LightbulbIcon, label: "Thinking" },
+  search: { icon: GlobeIcon, label: "Web search" },
+  code: { icon: TerminalIcon, label: "Code" },
+} as const;
+
 const SuggestionItem: FC = () => {
   const aui = useAui();
   const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
   const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const allTools = SUGGESTION_TOOLS[prompt] ?? [];
+  const tools = allTools.filter((tool) => {
+    if (tool === "thinking") return supportsReasoning;
+    return supportsTools;
+  });
 
   return (
     <button
       type="button"
       onClick={() => {
         if (!isDisabled && !isRunning) {
+          const store = useChatRuntimeStore.getState();
+          if (store.supportsReasoning) {
+            store.setReasoningEnabled(tools.includes("thinking"));
+          }
+          if (store.supportsTools) {
+            store.setToolsEnabled(tools.includes("search"));
+            store.setCodeToolsEnabled(tools.includes("code"));
+          }
           aui.thread().append(prompt);
           aui.composer().setText("");
           return;
         }
         aui.composer().setText(prompt);
       }}
-      className="fade-in slide-in-from-bottom-1 animate-in cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
+      className="fade-in slide-in-from-bottom-1 animate-in relative cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 pr-12 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
     >
       <SuggestionPrimitive.Title />
+      {tools.length > 0 && (
+        <div className="absolute bottom-2.5 right-3 flex items-center gap-1">
+          {tools.map((tool) => {
+            const { icon: Icon, label } = toolIconMap[tool];
+            return (
+              <Icon
+                key={tool}
+                className="size-3 text-muted-foreground/60"
+                aria-label={label}
+              />
+            );
+          })}
+        </div>
+      )}
     </button>
   );
 };
@@ -517,6 +559,7 @@ const AssistantMessage: FC = () => {
             },
           }}
         />
+        <SourcesGroup />
         <MessageError />
       </div>
 
