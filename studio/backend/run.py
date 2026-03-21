@@ -197,6 +197,10 @@ def run_server(
         if not silent:
             print(f"Port {original_port} is in use, using port {port} instead")
 
+    # Default to the bundled frontend dist if no explicit path was given
+    if frontend_path is None:
+        frontend_path = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
     # Setup frontend if path provided
     if frontend_path:
         if setup_frontend(app, frontend_path):
@@ -223,14 +227,6 @@ def run_server(
 
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
-
-        # On Windows the default console encoding (cp1252) cannot encode emoji.
-        # Reconfigure stdout to UTF-8 so the startup message does not crash the server.
-        if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
-            try:
-                sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
-            except Exception:
-                pass
 
         print("")
         print("=" * 50)
