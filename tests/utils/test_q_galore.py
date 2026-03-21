@@ -30,12 +30,14 @@ if _repo_root not in sys.path:
 # Direct import of the actual modules (avoids unsloth/__init__.py)
 import importlib.util
 
+
 def _load_module(name, filepath):
     spec = importlib.util.spec_from_file_location(name, filepath)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
 
 # Load projector module first (no dependencies on unsloth)
 _projector_mod = _load_module(
@@ -64,9 +66,9 @@ class TestGaLoreProjector:
 
     def test_project_and_back_tall(self):
         """Project → project_back preserves shape for tall matrices."""
-        proj = GaLoreProjector(rank=4, update_proj_gap=1)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
         grad = torch.randn(16, 8)  # tall
-        low = proj.project(grad, step=0)
+        low = proj.project(grad, step = 0)
         assert low.shape == (16, 4)
 
         full = proj.project_back(low)
@@ -74,9 +76,9 @@ class TestGaLoreProjector:
 
     def test_project_and_back_wide(self):
         """Project → project_back preserves shape for wide matrices."""
-        proj = GaLoreProjector(rank=4, update_proj_gap=1)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
         grad = torch.randn(8, 16)  # wide
-        low = proj.project(grad, step=0)
+        low = proj.project(grad, step = 0)
         assert low.shape == (4, 16)
 
         full = proj.project_back(low)
@@ -84,22 +86,22 @@ class TestGaLoreProjector:
 
     def test_project_reuses_cached_svd(self):
         """SVD is not recomputed when step is not a multiple of update_proj_gap."""
-        proj = GaLoreProjector(rank=4, update_proj_gap=100)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 100)
         grad = torch.randn(16, 8)
-        proj.project(grad, step=0)
+        proj.project(grad, step = 0)
         assert proj.svd_count == 1
 
-        proj.project(grad, step=1)
+        proj.project(grad, step = 1)
         assert proj.svd_count == 1  # No recomputation
 
-        proj.project(grad, step=100)
+        proj.project(grad, step = 100)
         assert proj.svd_count == 2  # Recomputed
 
     def test_quantized_projection(self):
         """Quantized projection matrix stores and restores with bounded error."""
-        proj = GaLoreProjector(rank=4, update_proj_gap=1, quant=True, n_bit=8)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 1, quant = True, n_bit = 8)
         grad = torch.randn(16, 8)
-        low = proj.project(grad, step=0)
+        low = proj.project(grad, step = 0)
         assert low.shape == (16, 4)
 
         # The projection matrix should be stored as uint8
@@ -107,9 +109,9 @@ class TestGaLoreProjector:
 
     def test_quantized_projection_int4(self):
         """INT4 quantized projection stores correctly."""
-        proj = GaLoreProjector(rank=4, update_proj_gap=1, quant=True, n_bit=4)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 1, quant = True, n_bit = 4)
         grad = torch.randn(16, 8)
-        proj.project(grad, step=0)
+        proj.project(grad, step = 0)
         assert proj.ortho_matrix.dtype == torch.uint8
         # INT4 values should be in range [0, 15]
         assert proj.ortho_matrix.max() <= 15
@@ -117,29 +119,29 @@ class TestGaLoreProjector:
     def test_adaptive_scheduling(self):
         """update_proj_gap increases when cosine similarity exceeds threshold."""
         proj = GaLoreProjector(
-            rank=4,
-            update_proj_gap=10,
-            cos_threshold=0.0,   # Very low threshold → always triggers
-            gamma_proj=2.0,
-            queue_size=2,
+            rank = 4,
+            update_proj_gap = 10,
+            cos_threshold = 0.0,  # Very low threshold → always triggers
+            gamma_proj = 2.0,
+            queue_size = 2,
         )
         # Use very similar gradients so cosine similarity is high
         base_grad = torch.randn(16, 8)
         for i in range(5):
             grad = base_grad + torch.randn_like(base_grad) * 0.001
-            proj.project(grad, step=i * 10)
+            proj.project(grad, step = i * 10)
 
         # After several similar SVDs, update_proj_gap should have increased
         assert proj.update_proj_gap > 10
 
     def test_scale_applied(self):
         """project_back applies the scale factor."""
-        proj = GaLoreProjector(rank=4, update_proj_gap=1, scale=0.5)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 1, scale = 0.5)
         grad = torch.randn(16, 8)
-        low = proj.project(grad, step=0)
+        low = proj.project(grad, step = 0)
 
-        proj2 = GaLoreProjector(rank=4, update_proj_gap=1, scale=1.0)
-        low2 = proj2.project(grad, step=0)
+        proj2 = GaLoreProjector(rank = 4, update_proj_gap = 1, scale = 1.0)
+        low2 = proj2.project(grad, step = 0)
 
         full_half = proj.project_back(low)
         full_one = proj2.project_back(low2)
@@ -160,7 +162,7 @@ class TestQuantizationUtils:
     def test_quantize_dequantize_roundtrip(self):
         """Quantize → dequantize has bounded error."""
         w = torch.randn(32, 64)
-        q, scales, zeros, shape = _quantize(w, n_bit=8)
+        q, scales, zeros, shape = _quantize(w, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
 
         # Error should be bounded by the quantization step size
@@ -170,7 +172,7 @@ class TestQuantizationUtils:
     def test_quantize_group_roundtrip(self):
         """Grouped quantization → dequantization has bounded error."""
         w = torch.randn(32, 64)
-        q, scales, zeros, shape = _quantize(w, q_group_size=32, n_bit=8)
+        q, scales, zeros, shape = _quantize(w, q_group_size = 32, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
         error = (w - w_hat).abs().max()
         assert error < 0.1
@@ -178,13 +180,13 @@ class TestQuantizationUtils:
     def test_quantize_dtype(self):
         """Quantized output should be uint8."""
         w = torch.randn(16, 16)
-        q, _, _, _ = _quantize(w, n_bit=8)
+        q, _, _, _ = _quantize(w, n_bit = 8)
         assert q.dtype == torch.uint8
 
     def test_quantize_int4_range(self):
         """INT4 values should be in [0, 15]."""
         w = torch.randn(16, 16)
-        q, _, _, _ = _quantize(w, n_bit=4)
+        q, _, _, _ = _quantize(w, n_bit = 4)
         assert q.max() <= 15
         assert q.min() >= 0
 
@@ -194,14 +196,14 @@ class TestQuantizationUtils:
         w = torch.randn(64, 64)
         errors = []
         for _ in range(50):
-            q, scales, zeros, shape = _quantize_stochastic(w, n_bit=8)
+            q, scales, zeros, shape = _quantize_stochastic(w, n_bit = 8)
             w_hat = _dequantize(q, scales, zeros, shape)
             errors.append((w - w_hat).mean().item())
 
         mean_error = sum(errors) / len(errors)
-        assert abs(mean_error) < 0.01, (
-            f"Mean error {mean_error} suggests biased rounding"
-        )
+        assert (
+            abs(mean_error) < 0.01
+        ), f"Mean error {mean_error} suggests biased rounding"
 
 
 # ======================================================================
@@ -217,12 +219,12 @@ class TestParamGroupHelper:
 
         # Create a mini-transformer-like model
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias=False)
-        model.k_proj = nn.Linear(64, 64, bias=False)
+        model.q_proj = nn.Linear(64, 64, bias = False)
+        model.k_proj = nn.Linear(64, 64, bias = False)
         model.embed = nn.Embedding(100, 64)
         model.norm = nn.LayerNorm(64)
 
-        groups = make_q_galore_param_groups(model, rank=8, weight_quant=False)
+        groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
         # Should have 2 groups: galore and non-galore
         assert len(groups) == 2
@@ -233,19 +235,24 @@ class TestParamGroupHelper:
         # q_proj and k_proj should be in galore group (2 params)
         assert len(galore_group["params"]) == 2
         # embed and norm should be in non-galore group
-        assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
+        assert (
+            len(non_galore_group["params"]) == 3
+        )  # embed weight + norm weight + norm bias
 
     def test_custom_target_modules(self):
         """Custom target_modules narrows GaLore scope."""
 
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias=False)
-        model.k_proj = nn.Linear(64, 64, bias=False)
-        model.v_proj = nn.Linear(64, 64, bias=False)
+        model.q_proj = nn.Linear(64, 64, bias = False)
+        model.k_proj = nn.Linear(64, 64, bias = False)
+        model.v_proj = nn.Linear(64, 64, bias = False)
         model.embed = nn.Embedding(100, 64)
 
         groups = make_q_galore_param_groups(
-            model, rank=8, target_modules=["q_proj"], weight_quant=False,
+            model,
+            rank = 8,
+            target_modules = ["q_proj"],
+            weight_quant = False,
         )
 
         galore_group = [g for g in groups if "rank" in g][0]
@@ -287,12 +294,12 @@ class TestQGaLoreIntegration:
         torch.manual_seed(42)
 
         # Tiny model: single linear layer
-        model = nn.Linear(32, 16, bias=False)
+        model = nn.Linear(32, 16, bias = False)
         target = torch.randn(4, 16)
         x = torch.randn(4, 32)
 
-        proj = GaLoreProjector(rank=8, update_proj_gap=1, scale=1.0)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+        proj = GaLoreProjector(rank = 8, update_proj_gap = 1, scale = 1.0)
+        optimizer = torch.optim.AdamW(model.parameters(), lr = 0.01)
 
         losses = []
         for step in range(20):
@@ -315,9 +322,9 @@ class TestQGaLoreIntegration:
             optimizer.step()
 
         # Loss should decrease
-        assert losses[-1] < losses[0], (
-            f"Loss did not decrease: {losses[0]:.4f} → {losses[-1]:.4f}"
-        )
+        assert (
+            losses[-1] < losses[0]
+        ), f"Loss did not decrease: {losses[0]:.4f} → {losses[-1]:.4f}"
 
     def test_full_projector_roundtrip_quality(self):
         """project → project_back captures the dominant gradient directions."""
@@ -327,13 +334,13 @@ class TestQGaLoreIntegration:
         v = torch.randn(4, 16)
         grad = u @ v  # rank-4 gradient
 
-        proj = GaLoreProjector(rank=4, update_proj_gap=1, scale=1.0)
-        low = proj.project(grad, step=0)
+        proj = GaLoreProjector(rank = 4, update_proj_gap = 1, scale = 1.0)
+        low = proj.project(grad, step = 0)
         reconstructed = proj.project_back(low)
 
         # For a rank-4 gradient with rank-4 projection, reconstruction
         # should be very close to original
         relative_error = (grad - reconstructed).norm() / grad.norm()
-        assert relative_error < 0.05, (
-            f"Reconstruction error too high: {relative_error:.4f}"
-        )
+        assert (
+            relative_error < 0.05
+        ), f"Reconstruction error too high: {relative_error:.4f}"

@@ -98,7 +98,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
             min_8bit_size,
             percentile_clipping,
             block_wise,
-            is_paged=is_paged,
+            is_paged = is_paged,
         )
 
     # ------------------------------------------------------------------
@@ -106,7 +106,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
     # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, closure = None):
         """Perform a single optimization step.
 
         For each parameter that has a ``rank`` key in its param group, the
@@ -142,7 +142,10 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 # --- Dequantize weight if INT8 ---
                 if has_weight_quant:
                     float_weight = _dequantize(
-                        p.data, p._q_scales, p._q_zeros, p._q_shape,
+                        p.data,
+                        p._q_scales,
+                        p._q_zeros,
+                        p._q_shape,
                     )
                     p.data = float_weight.clone().to(p.data.device)
 
@@ -150,16 +153,16 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 if "rank" in group:
                     if "projector" not in state:
                         state["projector"] = GaLoreProjector(
-                            rank=group["rank"],
-                            update_proj_gap=group.get("update_proj_gap", 200),
-                            scale=group.get("scale", 0.25),
-                            proj_type=group.get("proj_type", "std"),
-                            quant=group.get("quant", False),
-                            group_size=group.get("quant_group_size", -1),
-                            n_bit=group.get("quant_n_bit", 4),
-                            cos_threshold=group.get("cos_threshold", 0.4),
-                            gamma_proj=group.get("gamma_proj", 2.0),
-                            queue_size=group.get("queue_size", 5),
+                            rank = group["rank"],
+                            update_proj_gap = group.get("update_proj_gap", 200),
+                            scale = group.get("scale", 0.25),
+                            proj_type = group.get("proj_type", "std"),
+                            quant = group.get("quant", False),
+                            group_size = group.get("quant_group_size", -1),
+                            n_bit = group.get("quant_n_bit", 4),
+                            cos_threshold = group.get("cos_threshold", 0.4),
+                            gamma_proj = group.get("gamma_proj", 2.0),
+                            queue_size = group.get("queue_size", 5),
                         )
 
                     # Temporarily disable weight decay for GaLore params
@@ -173,7 +176,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # Save current weight; replace p.data with zeros so
                     # the 8-bit update writes the pure weight delta.
                     p._saved_data = p.data.clone()
-                    p.data = torch.zeros_like(grad, dtype=p.data.dtype, device=p.data.device)
+                    p.data = torch.zeros_like(
+                        grad, dtype = p.data.dtype, device = p.data.device
+                    )
                     p.grad = grad
 
                 # --- 8-bit Adam update ---
@@ -186,16 +191,14 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 # --- GaLore project-back ---
                 if "rank" in group:
                     # p.data now holds the weight update in low-rank space
-                    p.data = p._saved_data.add_(
-                        state["projector"].project_back(p.data)
-                    )
+                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
                     del p._saved_data
 
                     # Re-apply weight decay
                     if "_wd_saved" in group:
                         p.data.add_(
                             p.data,
-                            alpha=-group["lr"] * group["_wd_saved"],
+                            alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
@@ -206,7 +209,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     stochastic = group.get("stochastic_round", True)
                     gsize = group.get("weight_group_size", 128)
                     quant_fn = _quantize_stochastic if stochastic else _quantize
-                    q, scales, zeros, shape = quant_fn(saved, q_group_size=gsize)
+                    q, scales, zeros, shape = quant_fn(saved, q_group_size = gsize)
                     p.data = q.to(p.data.device)
                     p._q_scales = scales
                     p._q_zeros = zeros
@@ -277,8 +280,13 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
 # Default linear layer names in transformer blocks that should use GaLore.
 _DEFAULT_GALORE_TARGETS = {
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
 }
 
 
@@ -353,30 +361,34 @@ def make_q_galore_param_groups(
     groups = []
 
     if galore_params:
-        groups.append({
-            "params": galore_params,
-            "lr": lr,
-            "weight_decay": weight_decay,
-            "rank": rank,
-            "update_proj_gap": update_proj_gap,
-            "scale": scale,
-            "proj_type": "std",
-            "quant": proj_quant,
-            "quant_group_size": proj_quant_group_size,
-            "quant_n_bit": proj_quant_n_bit,
-            "weight_quant": weight_quant,
-            "stochastic_round": stochastic_round,
-            "weight_group_size": weight_group_size,
-            "cos_threshold": cos_threshold,
-            "gamma_proj": gamma_proj,
-            "queue_size": queue_size,
-        })
+        groups.append(
+            {
+                "params": galore_params,
+                "lr": lr,
+                "weight_decay": weight_decay,
+                "rank": rank,
+                "update_proj_gap": update_proj_gap,
+                "scale": scale,
+                "proj_type": "std",
+                "quant": proj_quant,
+                "quant_group_size": proj_quant_group_size,
+                "quant_n_bit": proj_quant_n_bit,
+                "weight_quant": weight_quant,
+                "stochastic_round": stochastic_round,
+                "weight_group_size": weight_group_size,
+                "cos_threshold": cos_threshold,
+                "gamma_proj": gamma_proj,
+                "queue_size": queue_size,
+            }
+        )
 
     if non_galore_params:
-        groups.append({
-            "params": non_galore_params,
-            "lr": lr,
-            "weight_decay": weight_decay,
-        })
+        groups.append(
+            {
+                "params": non_galore_params,
+                "lr": lr,
+                "weight_decay": weight_decay,
+            }
+        )
 
     return groups
