@@ -22,9 +22,9 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
-        p = STUDIO_HOME / ".venv" / "Scripts" / "python.exe"
+        p = STUDIO_HOME / "unsloth_studio" / "Scripts" / "python.exe"
     else:
-        p = STUDIO_HOME / ".venv" / "bin" / "python"
+        p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
     return p if p.is_file() else None
 
 
@@ -44,7 +44,7 @@ def _find_run_py() -> Optional[Path]:
         "lib/python*/site-packages/studio/backend/run.py",
         "Lib/site-packages/studio/backend/run.py",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
 
@@ -64,7 +64,7 @@ def _find_setup_script() -> Optional[Path]:
         f"lib/python*/site-packages/studio/{name}",
         f"Lib/site-packages/studio/{name}",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
 
@@ -85,7 +85,7 @@ def studio_default(
         return
 
     # Always use the studio venv if it exists and we're not already in it
-    studio_venv_dir = STUDIO_HOME / ".venv"
+    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
     if not in_studio_venv:

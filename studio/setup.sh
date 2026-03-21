@@ -290,7 +290,7 @@ install_python_stack() {
 # All platforms (including Colab) use the same isolated venv so that
 # studio dependencies are never installed into the system Python.
 STUDIO_HOME="$HOME/.unsloth/studio"
-VENV_DIR="$STUDIO_HOME/.venv"
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
 mkdir -p "$STUDIO_HOME"
 
@@ -298,6 +298,8 @@ mkdir -p "$STUDIO_HOME"
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+# Clean up old .venv path (replaced by unsloth_studio)
+[ -d "$STUDIO_HOME/.venv" ] && rm -rf "$STUDIO_HOME/.venv"
 
 rm -rf "$VENV_DIR"
 rm -rf "$VENV_T5_DIR"

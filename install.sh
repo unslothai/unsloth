@@ -4,8 +4,9 @@
 # Usage (wget): wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 set -e
 
-VENV_NAME="unsloth_studio"
 PYTHON_VERSION="3.13"
+STUDIO_HOME="$HOME/.unsloth/studio"
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -225,31 +226,31 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
 fi
 
 # ── Create venv (skip if it already exists and has a valid interpreter) ──
-if [ ! -x "$VENV_NAME/bin/python" ]; then
-    [ -e "$VENV_NAME" ] && rm -rf "$VENV_NAME"
-    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_NAME})..."
-    uv venv "$VENV_NAME" --python "$PYTHON_VERSION"
+mkdir -p "$STUDIO_HOME"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    [ -e "$VENV_DIR" ] && rm -rf "$VENV_DIR"
+    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
+    uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
 else
-    echo "==> Virtual environment ${VENV_NAME} already exists, skipping creation."
+    echo "==> Virtual environment ${VENV_DIR} already exists, skipping creation."
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
 echo "==> Installing unsloth (this may take a few minutes)..."
-uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
+uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
 
 # ── Run studio setup ──
 # Ensure the venv's Python is on PATH for setup.sh's Python discovery.
 # On macOS the system Python may be outside the 3.11-3.13 range that
 # setup.sh requires, but uv already installed a compatible interpreter
 # inside the venv.
-VENV_ABS_BIN="$(cd "$VENV_NAME/bin" && pwd)"
+VENV_ABS_BIN="$(cd "$VENV_DIR/bin" && pwd)"
 if [ -n "$VENV_ABS_BIN" ]; then
     export PATH="$VENV_ABS_BIN:$PATH"
 fi
 
 echo "==> Running unsloth studio setup..."
-REQUESTED_PYTHON_VERSION="$(cd "$VENV_NAME/bin" && pwd)/python" \
-"$VENV_NAME/bin/unsloth" studio setup </dev/null
+"$VENV_DIR/bin/unsloth" studio setup </dev/null
 
 echo ""
 echo "========================================="
@@ -257,8 +258,16 @@ echo "   Unsloth Studio installed!"
 echo "========================================="
 echo ""
 
-echo "  To launch, run:"
-echo ""
-echo "    source ${VENV_NAME}/bin/activate"
-echo "    unsloth studio -H 0.0.0.0 -p 8888"
-echo ""
+# Launch studio automatically in interactive terminals;
+# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
+if [ -t 0 ]; then
+    echo "==> Launching Unsloth Studio..."
+    echo ""
+    exec "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
+else
+    echo "  To launch, run:"
+    echo ""
+    echo "    source ${VENV_DIR}/bin/activate"
+    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo ""
+fi

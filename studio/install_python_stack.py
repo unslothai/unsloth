@@ -288,10 +288,23 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 # ── Main install sequence ─────────────────────────────────────────────
 
 
+def _unsloth_already_installed() -> bool:
+    """Check if unsloth is already installed in the current environment."""
+    try:
+        from importlib.metadata import distribution
+        distribution("unsloth")
+        return True
+    except Exception:
+        return False
+
+
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL
     _STEP = 0
-    _TOTAL = 10 if IS_WINDOWS else 11
+
+    skip_base = _unsloth_already_installed()
+    base_total = 10 if IS_WINDOWS else 11
+    _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
     _progress("pip upgrade")
@@ -301,12 +314,15 @@ def install_python_stack() -> int:
     USE_UV = _bootstrap_uv()
 
     # 2. Core packages: unsloth-zoo + unsloth
-    _progress("base packages")
-    pip_install(
-        "Installing base packages",
-        "--no-cache-dir",
-        req = REQ_ROOT / "base.txt",
-    )
+    if skip_base:
+        print(_green("✅ unsloth already installed — skipping base packages"))
+    else:
+        _progress("base packages")
+        pip_install(
+            "Installing base packages",
+            "--no-cache-dir",
+            req = REQ_ROOT / "base.txt",
+        )
 
     # 3. Extra dependencies
     _progress("unsloth extras")
