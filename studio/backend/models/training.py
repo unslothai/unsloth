@@ -226,15 +226,15 @@ class TrainingRunListResponse(BaseModel):
 class TrainingRunMetrics(BaseModel):
     """Metrics arrays for a training run, using paired step arrays per metric."""
 
-    step_history: List[int] = Field(default_factory=list)
-    loss_history: List[float] = Field(default_factory=list)
-    loss_step_history: List[int] = Field(default_factory=list)
-    lr_history: List[float] = Field(default_factory=list)
-    lr_step_history: List[int] = Field(default_factory=list)
-    grad_norm_history: List[float] = Field(default_factory=list)
-    grad_norm_step_history: List[int] = Field(default_factory=list)
-    eval_loss_history: List[float] = Field(default_factory=list)
-    eval_step_history: List[int] = Field(default_factory=list)
+    step_history: List[int] = Field(default_factory = list)
+    loss_history: List[float] = Field(default_factory = list)
+    loss_step_history: List[int] = Field(default_factory = list)
+    lr_history: List[float] = Field(default_factory = list)
+    lr_step_history: List[int] = Field(default_factory = list)
+    grad_norm_history: List[float] = Field(default_factory = list)
+    grad_norm_step_history: List[int] = Field(default_factory = list)
+    eval_loss_history: List[float] = Field(default_factory = list)
+    eval_step_history: List[int] = Field(default_factory = list)
     final_epoch: Optional[float] = None
     final_num_tokens: Optional[int] = None
 

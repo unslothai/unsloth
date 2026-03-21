@@ -102,7 +102,9 @@ def update_run_total_steps(id: str, total_steps: int) -> None:
         conn.close()
 
 
-def update_run_progress(id: str, step: int, loss: Optional[float], duration_seconds: Optional[float]) -> None:
+def update_run_progress(
+    id: str, step: int, loss: Optional[float], duration_seconds: Optional[float]
+) -> None:
     """Update current progress on a running training run (called on each metric flush)."""
     conn = get_connection()
     try:
@@ -137,9 +139,15 @@ def finish_run(
             WHERE id = ?
             """,
             (
-                status, ended_at, final_step, final_loss,
-                duration_seconds, loss_sparkline, output_dir,
-                error_message, id,
+                status,
+                ended_at,
+                final_step,
+                final_loss,
+                duration_seconds,
+                loss_sparkline,
+                output_dir,
+                error_message,
+                id,
             ),
         )
         conn.commit()
@@ -219,9 +227,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
 def get_run(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM training_runs WHERE id = ?", (id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM training_runs WHERE id = ?", (id,)).fetchone()
         if row is None:
             return None
         run = dict(row)
@@ -328,5 +334,3 @@ def cleanup_orphaned_runs() -> None:
         conn.commit()
     finally:
         conn.close()
-
-

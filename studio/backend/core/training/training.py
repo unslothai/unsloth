@@ -121,9 +121,11 @@ class TrainingBackend:
 
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
-            self._pump_thread.join(timeout=5.0)
+            self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
-                logger.warning("Previous pump thread did not exit within 5s — refusing to start")
+                logger.warning(
+                    "Previous pump thread did not exit within 5s — refusing to start"
+                )
                 return False
         self._pump_thread = None
 
@@ -275,7 +277,7 @@ class TrainingBackend:
 
         # Wait for pump thread to finish DB finalization before returning
         if self._pump_thread is not None and self._pump_thread.is_alive():
-            self._pump_thread.join(timeout=3.0)
+            self._pump_thread.join(timeout = 3.0)
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
@@ -417,8 +419,10 @@ class TrainingBackend:
 
             self._ensure_db_run_created()
             self._finalize_run_in_db(
-                status="stopped" if self._should_stop else "error",
-                error_message=None if self._should_stop else "Training process terminated unexpectedly",
+                status = "stopped" if self._should_stop else "error",
+                error_message = None
+                if self._should_stop
+                else "Training process terminated unexpectedly",
             )
             return
 
@@ -483,16 +487,18 @@ class TrainingBackend:
                     self.eval_enabled = True
 
                 # Buffer metric for DB flush
-                self._metric_buffer.append({
-                    "step": step,
-                    "loss": loss if loss > 0 else None,
-                    "learning_rate": lr if lr > 0 else None,
-                    "grad_norm": gn,
-                    "eval_loss": eval_loss,
-                    "epoch": event.get("epoch"),
-                    "num_tokens": event.get("num_tokens"),
-                    "elapsed_seconds": event.get("elapsed_seconds"),
-                })
+                self._metric_buffer.append(
+                    {
+                        "step": step,
+                        "loss": loss if loss > 0 else None,
+                        "learning_rate": lr if lr > 0 else None,
+                        "grad_norm": gn,
+                        "eval_loss": eval_loss,
+                        "epoch": event.get("epoch"),
+                        "num_tokens": event.get("num_tokens"),
+                        "elapsed_seconds": event.get("elapsed_seconds"),
+                    }
+                )
 
                 # Decide which DB action to take after releasing the lock
                 if not self._db_run_created and self.current_job_id and self._db_config:
@@ -500,12 +506,18 @@ class TrainingBackend:
                     db_action_kwargs = {
                         "job_id": self.current_job_id,
                         "model_name": self._db_config["model_name"],
-                        "dataset_name": self._db_config.get("hf_dataset") or (self._db_config.get("local_datasets") or ["unknown"])[0],
+                        "dataset_name": self._db_config.get("hf_dataset")
+                        or (self._db_config.get("local_datasets") or ["unknown"])[0],
                         "config_json": _json.dumps(self._db_config),
-                        "started_at": self._db_started_at or datetime.now(timezone.utc).isoformat(),
+                        "started_at": self._db_started_at
+                        or datetime.now(timezone.utc).isoformat(),
                         "total_steps": event.get("total_steps"),
                     }
-                elif event.get("total_steps") and self._db_run_created and not self._db_total_steps_set:
+                elif (
+                    event.get("total_steps")
+                    and self._db_run_created
+                    and not self._db_total_steps_set
+                ):
                     db_action = "update_total_steps"
                     db_action_kwargs = {
                         "job_id": self.current_job_id,
@@ -556,29 +568,33 @@ class TrainingBackend:
         if db_action == "create_run":
             try:
                 from storage.studio_db import create_run
+
                 create_run(
-                    id=db_action_kwargs["job_id"],
-                    model_name=db_action_kwargs["model_name"],
-                    dataset_name=db_action_kwargs["dataset_name"],
-                    config_json=db_action_kwargs["config_json"],
-                    started_at=db_action_kwargs["started_at"],
-                    total_steps=db_action_kwargs["total_steps"],
+                    id = db_action_kwargs["job_id"],
+                    model_name = db_action_kwargs["model_name"],
+                    dataset_name = db_action_kwargs["dataset_name"],
+                    config_json = db_action_kwargs["config_json"],
+                    started_at = db_action_kwargs["started_at"],
+                    total_steps = db_action_kwargs["total_steps"],
                 )
                 self._db_run_created = True
                 if db_action_kwargs["total_steps"]:
                     self._db_total_steps_set = True
             except Exception:
-                logger.warning("Failed to create DB run record", exc_info=True)
+                logger.warning("Failed to create DB run record", exc_info = True)
         elif db_action == "create_and_finalize":
             self._ensure_db_run_created()
             self._finalize_run_in_db(**db_action_kwargs)
         elif db_action == "update_total_steps":
             try:
                 from storage.studio_db import update_run_total_steps
-                update_run_total_steps(db_action_kwargs["job_id"], db_action_kwargs["total_steps"])
+
+                update_run_total_steps(
+                    db_action_kwargs["job_id"], db_action_kwargs["total_steps"]
+                )
                 self._db_total_steps_set = True
             except Exception:
-                logger.warning("Failed to update total_steps in DB", exc_info=True)
+                logger.warning("Failed to update total_steps in DB", exc_info = True)
         elif db_action == "flush":
             self._flush_metrics_to_db()
         elif db_action == "finalize":
@@ -590,18 +606,25 @@ class TrainingBackend:
             return
         try:
             from storage.studio_db import create_run
-            dataset_name = self._db_config.get("hf_dataset") or (self._db_config.get("local_datasets") or ["unknown"])[0]
+
+            dataset_name = (
+                self._db_config.get("hf_dataset")
+                or (self._db_config.get("local_datasets") or ["unknown"])[0]
+            )
             create_run(
-                id=self.current_job_id,
-                model_name=self._db_config["model_name"],
-                dataset_name=dataset_name,
-                config_json=_json.dumps(self._db_config),
-                started_at=self._db_started_at or datetime.now(timezone.utc).isoformat(),
-                total_steps=self._progress.total_steps or None,
+                id = self.current_job_id,
+                model_name = self._db_config["model_name"],
+                dataset_name = dataset_name,
+                config_json = _json.dumps(self._db_config),
+                started_at = self._db_started_at
+                or datetime.now(timezone.utc).isoformat(),
+                total_steps = self._progress.total_steps or None,
             )
             self._db_run_created = True
         except Exception:
-            logger.warning("Failed to create DB run record for early failure", exc_info=True)
+            logger.warning(
+                "Failed to create DB run record for early failure", exc_info = True
+            )
 
     def _finalize_run_in_db(
         self,
@@ -616,38 +639,46 @@ class TrainingBackend:
         try:
             from storage.studio_db import finish_run
             from utils.downsample import downsample
+
             sparkline = downsample(self.loss_history, 50)
             finish_run(
-                id=self.current_job_id,
-                status=status,
-                ended_at=datetime.now(timezone.utc).isoformat(),
-                final_step=self._progress.step,
-                final_loss=self._progress.loss if self._progress.loss > 0 else None,
-                duration_seconds=self._progress.elapsed_seconds,
-                loss_sparkline=_json.dumps(sparkline),
-                output_dir=output_dir,
-                error_message=error_message,
+                id = self.current_job_id,
+                status = status,
+                ended_at = datetime.now(timezone.utc).isoformat(),
+                final_step = self._progress.step,
+                final_loss = self._progress.loss if self._progress.loss > 0 else None,
+                duration_seconds = self._progress.elapsed_seconds,
+                loss_sparkline = _json.dumps(sparkline),
+                output_dir = output_dir,
+                error_message = error_message,
             )
             self._run_finalized = True
         except Exception:
-            logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info=True)
+            logger.warning(
+                "Failed to finalize run in DB (status=%s)", status, exc_info = True
+            )
 
     def _flush_metrics_to_db(self) -> None:
         """Flush buffered metrics to the database and update live progress."""
-        if not self._metric_buffer or not self.current_job_id or not self._db_run_created:
+        if (
+            not self._metric_buffer
+            or not self.current_job_id
+            or not self._db_run_created
+        ):
             return
         try:
             from storage.studio_db import insert_metrics_batch, update_run_progress
+
             insert_metrics_batch(self.current_job_id, self._metric_buffer)
             self._metric_buffer.clear()
             update_run_progress(
-                id=self.current_job_id,
-                step=self._progress.step,
-                loss=self._progress.loss if self._progress.loss > 0 else None,
-                duration_seconds=self._progress.elapsed_seconds,
+                id = self.current_job_id,
+                step = self._progress.step,
+                loss = self._progress.loss if self._progress.loss > 0 else None,
+                duration_seconds = self._progress.elapsed_seconds,
             )
         except Exception:
-            logger.warning("Failed to flush metrics to DB", exc_info=True)
+            logger.warning("Failed to flush metrics to DB", exc_info = True)
 
     @staticmethod
     def _read_queue(q: Any, timeout_sec: float) -> Optional[dict]:

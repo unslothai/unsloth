@@ -248,15 +248,15 @@ async def start_training(
             logger.warning("Could not shut down export subprocess: %s", e)
 
         # start_training now spawns a subprocess (non-blocking)
-        success = backend.start_training(job_id=job_id, **training_kwargs)
+        success = backend.start_training(job_id = job_id, **training_kwargs)
 
         if not success:
             progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(
-                job_id=backend.current_job_id or "",
-                status="error",
-                message=progress_error or "Failed to start training subprocess",
-                error=progress_error or "subprocess_start_failed",
+                job_id = backend.current_job_id or "",
+                status = "error",
+                message = progress_error or "Failed to start training subprocess",
+                error = progress_error or "subprocess_start_failed",
             )
 
         return TrainingJobResponse(
