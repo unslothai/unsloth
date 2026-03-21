@@ -19,7 +19,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 if sys.platform == "win32":
     os.environ["HF_DATASETS_MULTITHREADING_MAX_WORKERS"] = "1"
     import multiprocess
-    multiprocess.set_start_method("spawn", force=True)
+
+    multiprocess.set_start_method("spawn", force = True)
 
 import torch
 from utils.hardware import clear_gpu_cache, safe_num_proc
@@ -46,9 +47,11 @@ from datasets import Dataset, load_dataset
 # from unsloth_compiled_cache/. Forcing num_proc=None runs .map() in-process.
 if sys.platform == "win32":
     _original_dataset_map = Dataset.map
+
     def _win32_safe_map(self, *args, **kwargs):
         kwargs["num_proc"] = None
         return _original_dataset_map(self, *args, **kwargs)
+
     Dataset.map = _win32_safe_map
 
 from utils.models import is_vision_model, detect_audio_type
