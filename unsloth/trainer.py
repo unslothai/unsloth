@@ -147,7 +147,6 @@ class QGaloreConfig:
     weight_quant: bool = True
     stochastic_round: bool = True
     weight_group_size: int = 128
-    per_layer: bool = False
     cos_threshold: float = 0.4
     gamma_proj: float = 2.0
     queue_size: int = 5
@@ -157,7 +156,7 @@ class QGaloreConfig:
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(self, embedding_learning_rate: float = None, q_galore_config: Optional[QGaloreConfig] = None, *args, **kwargs):
         self.q_galore_config = q_galore_config
-        embedding_learning_rate = embedding_learning_rate
+        self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
 

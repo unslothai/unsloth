@@ -308,14 +308,10 @@ def _dequantize(
     original_shape: tuple,
 ) -> torch.Tensor:
     """Dequantize from uint8 back to float."""
-    group_size = scales.shape[-1]
-    # Infer group size from scales shape vs original shape
+    # Infer group size: scales has shape (n_groups, 1), so n_groups = scales.shape[0]
     total = w.numel()
-    n_groups = scales.numel() // scales.shape[-1] if scales.dim() > 1 else scales.numel()
-    if n_groups > 0:
-        group_size = total // n_groups
-    else:
-        group_size = total
+    n_groups = scales.shape[0] if scales.dim() > 1 else scales.numel()
+    group_size = total // n_groups if n_groups > 0 else total
 
     float_w = w.to(scales.dtype).reshape(-1, group_size)
     float_w = (float_w - zeros) * scales
