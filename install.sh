@@ -239,18 +239,15 @@ fi
 echo "==> Installing unsloth (this may take a few minutes)..."
 uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
 
-# ── Run studio setup ──
-# Ensure the venv's Python is on PATH for setup.sh's Python discovery.
-# On macOS the system Python may be outside the 3.11-3.13 range that
-# setup.sh requires, but uv already installed a compatible interpreter
-# inside the venv.
+# ── Run studio update ──
+# Ensure the venv's Python is on PATH so setup.sh can find it.
 VENV_ABS_BIN="$(cd "$VENV_DIR/bin" && pwd)"
 if [ -n "$VENV_ABS_BIN" ]; then
     export PATH="$VENV_ABS_BIN:$PATH"
 fi
 
-echo "==> Running unsloth studio setup..."
-"$VENV_DIR/bin/unsloth" studio setup </dev/null
+echo "==> Running unsloth studio update..."
+SKIP_STUDIO_BASE=1 "$VENV_DIR/bin/unsloth" studio update </dev/null
 
 echo ""
 echo "========================================="

@@ -166,12 +166,12 @@ def studio_default(
         typer.echo("\nShutting down...")
 
 
-# ── unsloth studio setup ─────────────────────────────────────────────
+# ── unsloth studio update ─────────────────────────────────────────────
 
 
 @studio_app.command()
-def setup():
-    """Run one-time Studio environment setup."""
+def update():
+    """Update Unsloth Studio dependencies and rebuild."""
     script = _find_setup_script()
     if not script:
         typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")

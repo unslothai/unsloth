@@ -288,21 +288,15 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 # ── Main install sequence ─────────────────────────────────────────────
 
 
-def _unsloth_already_installed() -> bool:
-    """Check if unsloth is already installed in the current environment."""
-    try:
-        from importlib.metadata import distribution
-        distribution("unsloth")
-        return True
-    except Exception:
-        return False
-
-
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL
     _STEP = 0
 
-    skip_base = _unsloth_already_installed()
+    # When called from install.sh (which already installed unsloth into the venv),
+    # SKIP_STUDIO_BASE=1 is set to avoid redundant reinstallation of base packages.
+    # When called from "unsloth studio update", it is NOT set so base packages
+    # (unsloth + unsloth-zoo) are always reinstalled to pick up new versions.
+    skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
     base_total = 10 if IS_WINDOWS else 11
     _TOTAL = (base_total - 1) if skip_base else base_total
 
