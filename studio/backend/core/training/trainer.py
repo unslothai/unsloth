@@ -12,15 +12,18 @@ import sys
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Windows uses spawn (not fork) for multiprocessing. Spawned workers cannot
-# resolve Unsloth's dynamically compiled cache modules (e.g. UnslothSFTTrainer),
-# causing ModuleNotFoundError and subprocess crashes during dataset.map().
-# Force single-worker mode on Windows as a safeguard.
-if sys.platform == "win32":
+# Windows and macOS use spawn (not fork) for multiprocessing. Spawned workers
+# cannot resolve Unsloth's dynamically compiled cache modules (e.g.
+# UnslothSFTTrainer), causing ModuleNotFoundError and subprocess crashes during
+# dataset.map(). Force single-worker mode on spawn-based platforms as a safeguard.
+if sys.platform != "linux":
     os.environ["HF_DATASETS_MULTITHREADING_MAX_WORKERS"] = "1"
-    import multiprocess
-
-    multiprocess.set_start_method("spawn", force = True)
+    try:
+        import multiprocess
+        multiprocess.set_start_method("spawn", force = True)
+    except ImportError:
+        import multiprocessing
+        multiprocessing.set_start_method("spawn", force = True)
 
 import torch
 from utils.hardware import clear_gpu_cache, safe_num_proc
@@ -41,18 +44,19 @@ from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset, load_dataset
 
-# Windows: monkey-patch Dataset.map() to disable multiprocessing.
-# Unsloth's compiled _prepare_dataset() calls dataset.map() with num_proc from
-# map_kwargs, spawning workers that cannot import dynamically generated modules
-# from unsloth_compiled_cache/. Forcing num_proc=None runs .map() in-process.
-if sys.platform == "win32":
+# Spawn-based platforms (Windows, macOS): monkey-patch Dataset.map() to disable
+# multiprocessing. Unsloth's compiled _prepare_dataset() calls dataset.map() with
+# num_proc from map_kwargs, spawning workers that cannot import dynamically
+# generated modules from unsloth_compiled_cache/. Forcing num_proc=None runs
+# .map() in-process.
+if sys.platform != "linux":
     _original_dataset_map = Dataset.map
 
-    def _win32_safe_map(self, *args, **kwargs):
+    def _spawn_safe_map(self, *args, **kwargs):
         kwargs["num_proc"] = None
         return _original_dataset_map(self, *args, **kwargs)
 
-    Dataset.map = _win32_safe_map
+    Dataset.map = _spawn_safe_map
 
 from utils.models import is_vision_model, detect_audio_type
 from utils.datasets import format_and_template_dataset
@@ -3016,9 +3020,10 @@ class UnslothTrainer:
                 f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})"
             )
 
-            # On Windows with transformers 5.x, disable DataLoader multiprocessing
-            # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
-            if sys.platform == "win32":
+            # On spawn-based platforms (Windows, macOS) with transformers 5.x,
+            # disable DataLoader multiprocessing to avoid issues with modified
+            # sys.path (.venv_t5) in spawned workers.
+            if sys.platform != "linux":
                 import transformers as _tf
 
                 if _tf.__version__.startswith("5."):
