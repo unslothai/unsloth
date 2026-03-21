@@ -20,9 +20,11 @@ if sys.platform != "linux":
     os.environ["HF_DATASETS_MULTITHREADING_MAX_WORKERS"] = "1"
     try:
         import multiprocess
+
         multiprocess.set_start_method("spawn", force = True)
     except ImportError:
         import multiprocessing
+
         multiprocessing.set_start_method("spawn", force = True)
 
 import torch
