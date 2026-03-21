@@ -57,11 +57,23 @@ class GaLoreProjector:
     """
 
     __slots__ = (
-        "rank", "update_proj_gap", "scale", "proj_type",
-        "quant", "quant_group_size", "quant_n_bit",
-        "cos_threshold", "gamma_proj", "queue_size",
-        "ortho_matrix", "ortho_matrix_scales", "ortho_matrix_zeros",
-        "ortho_matrix_shape", "past_ortho_vector", "queue", "svd_count",
+        "rank",
+        "update_proj_gap",
+        "scale",
+        "proj_type",
+        "quant",
+        "quant_group_size",
+        "quant_n_bit",
+        "cos_threshold",
+        "gamma_proj",
+        "queue_size",
+        "ortho_matrix",
+        "ortho_matrix_scales",
+        "ortho_matrix_zeros",
+        "ortho_matrix_shape",
+        "past_ortho_vector",
+        "queue",
+        "svd_count",
     )
 
     def __init__(
@@ -125,9 +137,11 @@ class GaLoreProjector:
             # "tall" matrix → right projection  (grad @ Q^T)
             if self.ortho_matrix is None or step % self.update_proj_gap == 0:
                 float_ortho = self._compute_orthogonal(
-                    full_rank_grad, self.rank, side="right",
+                    full_rank_grad,
+                    self.rank,
+                    side = "right",
                 )
-                self._update_adaptive_schedule(float_ortho, side="right")
+                self._update_adaptive_schedule(float_ortho, side = "right")
                 self._store_ortho(float_ortho)
 
             float_ortho = self._load_ortho()
@@ -136,9 +150,11 @@ class GaLoreProjector:
             # "wide" matrix → left projection  (Q^T @ grad)
             if self.ortho_matrix is None or step % self.update_proj_gap == 0:
                 float_ortho = self._compute_orthogonal(
-                    full_rank_grad, self.rank, side="left",
+                    full_rank_grad,
+                    self.rank,
+                    side = "left",
                 )
-                self._update_adaptive_schedule(float_ortho, side="left")
+                self._update_adaptive_schedule(float_ortho, side = "left")
                 self._store_ortho(float_ortho)
 
             float_ortho = self._load_ortho()
@@ -170,7 +186,9 @@ class GaLoreProjector:
 
     @staticmethod
     def _compute_orthogonal(
-        weights: torch.Tensor, rank: int, side: str,
+        weights: torch.Tensor,
+        rank: int,
+        side: str,
     ) -> torch.Tensor:
         """Compute the top-``rank`` orthogonal matrix via truncated SVD.
 
@@ -187,7 +205,7 @@ class GaLoreProjector:
 
         matrix = weights.float() if original_dtype != torch.float32 else weights
 
-        U, s, Vh = torch.linalg.svd(matrix, full_matrices=False)
+        U, s, Vh = torch.linalg.svd(matrix, full_matrices = False)
 
         if side == "right":
             result = Vh[:rank, :]
@@ -197,7 +215,7 @@ class GaLoreProjector:
             raise ValueError(f"side must be 'left' or 'right', got '{side}'")
 
         if original_dtype != torch.float32:
-            result = result.to(device=original_device, dtype=original_dtype)
+            result = result.to(device = original_device, dtype = original_dtype)
         return result
 
     # ------------------------------------------------------------------
@@ -205,7 +223,9 @@ class GaLoreProjector:
     # ------------------------------------------------------------------
 
     def _update_adaptive_schedule(
-        self, float_ortho: torch.Tensor, side: str,
+        self,
+        float_ortho: torch.Tensor,
+        side: str,
     ) -> None:
         """Track subspace stability and increase ``update_proj_gap`` if stable."""
         self.svd_count += 1
@@ -242,8 +262,8 @@ class GaLoreProjector:
         if self.quant:
             q, scales, zeros, shape = _quantize(
                 float_ortho,
-                q_group_size=self.quant_group_size,
-                n_bit=self.quant_n_bit,
+                q_group_size = self.quant_group_size,
+                n_bit = self.quant_n_bit,
             )
             self.ortho_matrix = q
             self.ortho_matrix_scales = scales
@@ -268,6 +288,7 @@ class GaLoreProjector:
 # Quantization utilities (shared with the optimizer)
 # ======================================================================
 
+
 @torch.no_grad()
 def _quantize(
     w: torch.Tensor,
@@ -281,17 +302,17 @@ def _quantize(
     """
     org_shape = w.shape
     if q_group_size > 0:
-        assert w.nelement() % q_group_size == 0, (
-            f"Tensor size {w.nelement()} not divisible by group_size {q_group_size}"
-        )
+        assert (
+            w.nelement() % q_group_size == 0
+        ), f"Tensor size {w.nelement()} not divisible by group_size {q_group_size}"
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim=1, keepdim=True)
-    min_val = w.amin(dim=1, keepdim=True)
-    max_int = 2 ** n_bit - 1
+    max_val = w.amax(dim = 1, keepdim = True)
+    min_val = w.amin(dim = 1, keepdim = True)
+    max_int = 2**n_bit - 1
     min_int = 0
-    scales = (max_val - min_val).clamp(min=1e-5) / max_int
+    scales = (max_val - min_val).clamp(min = 1e-5) / max_int
     zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
 
     w = torch.clamp(torch.round(w / scales) + zeros, min_int, max_int)
@@ -311,7 +332,9 @@ def _dequantize(
     group_size = scales.shape[-1]
     # Infer group size from scales shape vs original shape
     total = w.numel()
-    n_groups = scales.numel() // scales.shape[-1] if scales.dim() > 1 else scales.numel()
+    n_groups = (
+        scales.numel() // scales.shape[-1] if scales.dim() > 1 else scales.numel()
+    )
     if n_groups > 0:
         group_size = total // n_groups
     else:
@@ -343,11 +366,11 @@ def _quantize_stochastic(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim=1, keepdim=True)
-    min_val = w.amin(dim=1, keepdim=True)
-    max_int = 2 ** n_bit - 1
+    max_val = w.amax(dim = 1, keepdim = True)
+    min_val = w.amin(dim = 1, keepdim = True)
+    max_int = 2**n_bit - 1
     min_int = 0
-    scales = (max_val - min_val).clamp(min=1e-5) / max_int
+    scales = (max_val - min_val).clamp(min = 1e-5) / max_int
     zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
 
     w_scaled = w / scales
