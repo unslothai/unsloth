@@ -12,6 +12,15 @@ import sys
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Windows uses spawn (not fork) for multiprocessing. Spawned workers cannot
+# resolve Unsloth's dynamically compiled cache modules (e.g. UnslothSFTTrainer),
+# causing ModuleNotFoundError and subprocess crashes during dataset.map().
+# Force single-worker mode on Windows as a safeguard.
+if sys.platform == "win32":
+    os.environ["HF_DATASETS_MULTITHREADING_MAX_WORKERS"] = "1"
+    import multiprocess
+    multiprocess.set_start_method("spawn", force=True)
+
 import torch
 from utils.hardware import clear_gpu_cache, safe_num_proc
 
@@ -30,6 +39,17 @@ from typing import Optional, Callable
 from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset, load_dataset
+
+# Windows: monkey-patch Dataset.map() to disable multiprocessing.
+# Unsloth's compiled _prepare_dataset() calls dataset.map() with num_proc from
+# map_kwargs, spawning workers that cannot import dynamically generated modules
+# from unsloth_compiled_cache/. Forcing num_proc=None runs .map() in-process.
+if sys.platform == "win32":
+    _original_dataset_map = Dataset.map
+    def _win32_safe_map(self, *args, **kwargs):
+        kwargs["num_proc"] = None
+        return _original_dataset_map(self, *args, **kwargs)
+    Dataset.map = _win32_safe_map
 
 from utils.models import is_vision_model, detect_audio_type
 from utils.datasets import format_and_template_dataset
