@@ -253,7 +253,12 @@ echo ""
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ] && [ -t 2 ]; then
-    echo "==> Launching Unsloth Studio..."
+    echo "  To launch, run:"
+    echo ""
+    echo "    source ${VENV_NAME}/bin/activate"
+    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo ""
+    echo "==> Auto Launching Unsloth Studio..."
     echo ""
     exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
 else
