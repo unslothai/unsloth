@@ -300,14 +300,20 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     _TOTAL = (base_total - 1) if skip_base else base_total
 
-    # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
-    _progress("pip upgrade")
-    run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-
-    # Try to use uv for faster installs
+    # 1. Try to use uv for faster installs (must happen before pip upgrade
+    #    because uv venvs don't include pip by default)
     USE_UV = _bootstrap_uv()
 
-    # 2. Core packages: unsloth-zoo + unsloth
+    # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
+    _progress("pip bootstrap")
+    if USE_UV:
+        run("Bootstrapping pip via uv", [
+            "uv", "pip", "install", "--python", sys.executable, "pip",
+        ])
+    else:
+        run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+
+    # 3. Core packages: unsloth-zoo + unsloth
     if skip_base:
         print(_green("✅ unsloth already installed — skipping base packages"))
     else:
