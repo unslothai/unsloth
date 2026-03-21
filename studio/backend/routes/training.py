@@ -115,15 +115,11 @@ async def start_training(
 
         backend = get_training_backend()
 
-        # Generate job ID and attach to backend for later status/progress calls
-        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        backend.current_job_id = job_id
-
-        # Check if training is already active
+        # Check if training is already active (before mutating any state)
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             return TrainingJobResponse(
-                job_id = existing_job_id or job_id,
+                job_id = existing_job_id or "",
                 status = "error",
                 message = (
                     "Training is already in progress. "
@@ -131,6 +127,10 @@ async def start_training(
                 ),
                 error = "Training already active",
             )
+
+        # Generate job ID — passed into start_training() which sets it on the
+        # backend only after confirming the old pump thread is dead.
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         # Validate dataset paths if provided
         if request.local_datasets:
@@ -248,15 +248,15 @@ async def start_training(
             logger.warning("Could not shut down export subprocess: %s", e)
 
         # start_training now spawns a subprocess (non-blocking)
-        success = backend.start_training(**training_kwargs)
+        success = backend.start_training(job_id=job_id, **training_kwargs)
 
         if not success:
             progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(
-                job_id = job_id,
-                status = "error",
-                message = progress_error or "Failed to start training subprocess",
-                error = progress_error or "subprocess_start_failed",
+                job_id=backend.current_job_id or "",
+                status="error",
+                message=progress_error or "Failed to start training subprocess",
+                error=progress_error or "subprocess_start_failed",
             )
 
         return TrainingJobResponse(
