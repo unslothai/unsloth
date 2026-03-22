@@ -44,14 +44,45 @@ function Install-UnslothStudio {
     # Uses try-catch + stderr redirection so that App Execution Alias stubs
     # (WindowsApps) and other non-functional executables are probed safely
     # without triggering $ErrorActionPreference = "Stop".
+    #
+    # Skips Anaconda/Miniconda Python: conda-bundled CPython ships modified
+    # DLL search paths that break torch's c10.dll loading on Windows.
+    # Standalone CPython (python.org, winget, uv) does not have this issue.
+    #
+    # NOTE: A venv created from conda Python inherits conda's base_prefix
+    # even if the venv path does not contain "conda". We check both the
+    # executable path AND sys.base_prefix to catch this.
+    $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+
+    function Test-IsCondaPython {
+        param([string]$Exe)
+        if ($Exe -match $script:CondaSkipPattern) { return $true }
+        try {
+            $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+            if ($basePrefix -match $script:CondaSkipPattern) { return $true }
+        } catch { }
+        return $false
+    }
+
+    # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
+    # The resolved Path is passed to `uv venv --python` to prevent uv from
+    # re-resolving the version string back to a conda interpreter.
     function Find-CompatiblePython {
         # Try the Python Launcher first (most reliable on Windows)
+        # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-        if ($pyLauncher) {
+        if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
             foreach ($minor in @("3.13", "3.12", "3.11")) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
+                    if ($out -match "Python (3\.1[1-3])\.\d+") {
+                        $ver = $Matches[1]
+                        # Resolve the actual executable path and verify it is not conda-based
+                        $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
+                            return @{ Version = $ver; Path = $resolvedExe }
+                        }
+                    }
                 } catch {}
             }
         }
@@ -61,25 +92,30 @@ function Install-UnslothStudio {
         # and can open the Microsoft Store as a side effect. Legitimate Store
         # Python is already detected via the py launcher above (Store packages
         # include py since Python 3.11).
+        # Skip Anaconda/Miniconda: check both path and sys.base_prefix.
         foreach ($name in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
                 if (-not $cmd.Source) { continue }
                 if ($cmd.Source -like "*\WindowsApps\*") { continue }
+                if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
+                    if ($out -match "Python (3\.1[1-3])\.\d+") {
+                        return @{ Version = $Matches[1]; Path = $cmd.Source }
+                    }
                 } catch {}
             }
         }
-        return ""
+        return $null
     }
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
-    $DetectedPythonVersion = Find-CompatiblePython
-    if ($DetectedPythonVersion) {
-        Write-Host "==> Python already installed: Python $DetectedPythonVersion"
+    # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
+    $DetectedPython = Find-CompatiblePython
+    if ($DetectedPython) {
+        Write-Host "==> Python already installed: Python $($DetectedPython.Version)"
     }
-    if (-not $DetectedPythonVersion) {
+    if (-not $DetectedPython) {
         Write-Host "==> Installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         # Temporarily lower ErrorActionPreference so that winget stderr
@@ -95,9 +131,9 @@ function Install-UnslothStudio {
         Refresh-SessionPath
 
         # Re-detect after install (PATH may have changed)
-        $DetectedPythonVersion = Find-CompatiblePython
+        $DetectedPython = Find-CompatiblePython
 
-        if (-not $DetectedPythonVersion) {
+        if (-not $DetectedPython) {
             # Python still not functional after winget -- force reinstall.
             # This handles both real failures AND "already installed" codes where
             # winget thinks Python is present but it's not actually on PATH
@@ -110,10 +146,10 @@ function Install-UnslothStudio {
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
-            $DetectedPythonVersion = Find-CompatiblePython
+            $DetectedPython = Find-CompatiblePython
         }
 
-        if (-not $DetectedPythonVersion) {
+        if (-not $DetectedPython) {
             Write-Host "[ERROR] Python installation failed (exit code $wingetExit)" -ForegroundColor Red
             Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
@@ -145,11 +181,13 @@ function Install-UnslothStudio {
     }
 
     # ── Create venv (skip if it already exists and has a valid interpreter) ──
+    # Pass the resolved executable path to uv so it does not re-resolve
+    # a version string back to a conda interpreter.
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
     if (-not (Test-Path $VenvPython)) {
         if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
-        Write-Host "==> Creating Python ${DetectedPythonVersion} virtual environment (${VenvName})..."
-        uv venv $VenvName --python $DetectedPythonVersion
+        Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment (${VenvName})..."
+        uv venv $VenvName --python "$($DetectedPython.Path)"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
             return

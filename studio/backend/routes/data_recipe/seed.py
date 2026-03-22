@@ -15,11 +15,19 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
-from data_designer_unstructured_seed.chunking import (
-    build_unstructured_preview_rows,
-    normalize_unstructured_text,
-    resolve_chunking,
-)
+
+try:
+    from data_designer_unstructured_seed.chunking import (
+        build_multi_file_preview_rows,
+        build_unstructured_preview_rows,
+        normalize_unstructured_text,
+        resolve_chunking,
+    )
+except ImportError:
+    build_multi_file_preview_rows = None
+    build_unstructured_preview_rows = None
+    normalize_unstructured_text = None
+    resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 
@@ -232,6 +240,11 @@ def _read_preview_rows_from_unstructured_file(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, Any]]:
+    if resolve_chunking is None or build_unstructured_preview_rows is None:
+        raise HTTPException(
+            500,
+            "Unstructured seed support not available (missing data_designer_unstructured_seed)",
+        )
     size, overlap = resolve_chunking(chunk_size, chunk_overlap)
     try:
         rows = build_unstructured_preview_rows(
@@ -256,7 +269,11 @@ def _read_preview_rows_from_multi_files(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, str]]:
-    from data_designer_unstructured_seed.chunking import build_multi_file_preview_rows
+    if build_multi_file_preview_rows is None:
+        raise HTTPException(
+            500,
+            "Unstructured seed support not available (missing data_designer_unstructured_seed)",
+        )
 
     _validate_safe_id(block_id, "block_id")
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
@@ -382,6 +399,8 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
+    if normalize_unstructured_text is None:
+        return raw
     return normalize_unstructured_text(raw)
 
 

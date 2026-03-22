@@ -118,6 +118,16 @@ def studio_default(
                 except KeyboardInterrupt:
                     # Child has its own signal handler — let it finish
                     rc = proc.wait()
+                if rc != 0:
+                    typer.echo(
+                        f"\nError: Studio server exited unexpectedly (code {rc}).",
+                        err = True,
+                    )
+                    typer.echo(
+                        "Check the error above. If a package is missing, "
+                        "re-run: unsloth studio setup",
+                        err = True,
+                    )
                 raise typer.Exit(rc)
             else:
                 os.execvp(str(studio_python), args)
