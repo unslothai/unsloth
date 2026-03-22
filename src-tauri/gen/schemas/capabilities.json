@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capabilities for Unsloth Studio","local":true,"windows":["main"],"permissions":["core:default","core:window:default","core:window:allow-show","core:window:allow-hide","core:window:allow-set-focus","core:tray:default","process:default"]}}
