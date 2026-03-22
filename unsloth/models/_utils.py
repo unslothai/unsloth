@@ -234,6 +234,18 @@ def prefer_flex_attn_if_supported(model_class, config):
             model_class, "_supports_flex_attn", False
         ):
             return None
+        # flex_attention Triton kernels require sm80+ (Ampere and above).
+        # On older GPUs (T4/sm75, V100/sm70) the dense Python fallback runs
+        # instead, but sdpa_dense_backward has a dtype mismatch under fp16
+        # autocast (Half @ Float matmul). Skip flex_attention there.
+        import torch
+
+        if torch.cuda.is_available():
+            major, _ = torch.cuda.get_device_capability()
+            if major < 8:
+                return None
+        else:
+            return None
         # GPT-OSS, Mllama and Gemma3N use eager/sdpa attention during
         # inference since flex attention returns incorrect results or errors out.
         # GPT-OSS: left padding issues cause incorrect outputs.
