@@ -8,16 +8,20 @@ Works independently and can be moved to any directory.
 
 import os
 import sys
+from pathlib import Path
 
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-from pathlib import Path
-
-# Add the backend directory to Python path
+# Add the backend directory to Python path early so local modules are importable
 backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
+
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
 
 from loggers import get_logger
 
