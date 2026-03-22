@@ -386,10 +386,10 @@ class TestQGaLoreIntegration:
         # This tests the logic that make_q_galore_param_groups produces groups
         # that can be further split by the trainer for embedding LR.
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias=False)
+        model.q_proj = nn.Linear(64, 64, bias = False)
         model.embed = nn.Embedding(100, 64)
 
-        groups = make_q_galore_param_groups(model, rank=8, weight_quant=False)
+        groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
         # Simulate splitting non-GaLore group for embedding LR
         embed_lr = 5e-5
@@ -480,4 +480,3 @@ class TestQGaLoreIntegration:
         
         assert p.data.is_floating_point(), "p.data was converted to uint8!"
         assert p._q_data.dtype == torch.uint8, "_q_data should be uint8!"
-
