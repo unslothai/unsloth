@@ -126,8 +126,7 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 # CORS middleware
-import os as _os
-_api_only = _os.environ.get("UNSLOTH_API_ONLY") == "1"
+_api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
 _cors_origins = ["*"]
 if _api_only:
     _cors_origins = [
