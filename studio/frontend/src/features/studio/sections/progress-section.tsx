@@ -40,7 +40,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
@@ -104,13 +104,10 @@ export function ProgressSection({
   );
 
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
-  const [stopRequested, setStopRequested] = useState(false);
+  const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
-  useEffect(() => {
-    if (!data.isTrainingRunning) {
-      setStopRequested(false);
-    }
-  }, [data.isTrainingRunning]);
+  // Auto-reset when training stops -- no useEffect needed
+  const stopRequested = data.isTrainingRunning && stopRequestedLocal;
 
   const pct =
     data.totalSteps > 0
@@ -215,7 +212,7 @@ export function ProgressSection({
             onOpenStopDialog={setStopDialogOpen}
             stopDialogOpen={stopDialogOpen}
             stopRequested={stopRequested}
-            onSetStopRequested={setStopRequested}
+            onSetStopRequested={setStopRequestedLocal}
           />
         )
       }

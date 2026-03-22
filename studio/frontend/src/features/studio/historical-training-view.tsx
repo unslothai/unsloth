@@ -76,7 +76,9 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
         ? "Training completed"
         : run.status === "stopped"
           ? "Training stopped"
-          : run.error_message ?? "Training errored",
+          : run.status === "running"
+            ? "Training in progress"
+            : run.error_message ?? "Training errored",
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.model_name,
@@ -93,12 +95,12 @@ export function HistoricalTrainingView({
 }: HistoricalTrainingViewProps): ReactElement {
   const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  // Derive loading from detail/error -- no separate state needed
+  const loading = detail === null && error === null;
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setError(null);
     getTrainingRun(runId, controller.signal)
       .then((result) => {
         setDetail(result);
@@ -106,13 +108,13 @@ export function HistoricalTrainingView({
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
         setError(err instanceof Error ? err.message : "Failed to load run");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setLoading(false);
-        }
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      // Reset on runId change so loading derives correctly for the next fetch
+      setDetail(null);
+      setError(null);
+    };
   }, [runId]);
 
   if (loading) {

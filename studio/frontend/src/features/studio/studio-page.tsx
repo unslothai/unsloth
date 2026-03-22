@@ -48,8 +48,15 @@ export function StudioPage(): ReactElement {
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
-  const [activeTab, setActiveTab] = useState("configure");
+  const [requestedTab, setRequestedTab] = useState("configure");
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
+
+  // Derive activeTab: auto-switch to "current-run" when training is active,
+  // unless the user explicitly navigated to "history".
+  const activeTab =
+    (showTrainingView || isTrainingRunning) && requestedTab !== "history"
+      ? "current-run"
+      : requestedTab;
 
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
@@ -67,21 +74,13 @@ export function StudioPage(): ReactElement {
     setTourOpen(false);
   }, [activeTab, setTourOpen]);
 
-  // Auto-switch to "current-run" tab when training starts
-  useEffect(() => {
-    if (showTrainingView || isTrainingRunning) {
-      setSelectedHistoryRunId(null);
-      setActiveTab("current-run");
-    }
-  }, [showTrainingView, isTrainingRunning]);
-
   useEffect(() => {
     ensureModelDefaultsLoaded();
     ensureDatasetChecked();
   }, [selectedModel, ensureModelDefaultsLoaded, ensureDatasetChecked]);
 
   function handleTabChange(value: string) {
-    setActiveTab(value);
+    setRequestedTab(value);
     if (value !== "history") {
       setSelectedHistoryRunId(null);
     }
@@ -170,8 +169,8 @@ export function StudioPage(): ReactElement {
                 <HistoricalTrainingView runId={selectedHistoryRunId} />
               ) : (
                 <HistoryCardGrid onSelectRun={(runId) => {
-                  if (runId === currentJobId && showTrainingView) {
-                    setActiveTab("current-run");
+                  if (runId === currentJobId && isTrainingRunning) {
+                    setRequestedTab("current-run");
                   } else {
                     setSelectedHistoryRunId(runId);
                   }

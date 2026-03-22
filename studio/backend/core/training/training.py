@@ -130,29 +130,6 @@ class TrainingBackend:
                 return False
         self._pump_thread = None
 
-        # Reset state — safe because old pump thread is confirmed dead
-        self.current_job_id = job_id
-        self._should_stop = False
-        self._cancel_requested = False
-        self._progress = TrainingProgress(
-            is_training = True, status_message = "Initializing training..."
-        )
-        self.loss_history.clear()
-        self.lr_history.clear()
-        self.step_history.clear()
-        self.grad_norm_history.clear()
-        self.grad_norm_step_history.clear()
-        self.eval_loss_history.clear()
-        self.eval_step_history.clear()
-        self.eval_enabled = False
-        self._output_dir = None
-        self._metric_buffer.clear()
-        self._run_finalized = False
-        self._db_run_created = False
-        self._db_total_steps_set = False
-        self._db_config = None
-        self._db_started_at = None
-
         # Build config dict for the subprocess
         config = {
             "model_name": kwargs["model_name"],
@@ -214,28 +191,62 @@ class TrainingBackend:
         if config["training_type"] != "LoRA/QLoRA":
             config["load_in_4bit"] = False
 
-        # Spawn subprocess
+        # Spawn subprocess — use locals so state is untouched on failure
         from .worker import run_training_process
 
-        self._event_queue = _CTX.Queue()
-        self._stop_queue = _CTX.Queue()
+        event_queue = _CTX.Queue()
+        stop_queue = _CTX.Queue()
 
-        self._proc = _CTX.Process(
+        proc = _CTX.Process(
             target = run_training_process,
             kwargs = {
-                "event_queue": self._event_queue,
-                "stop_queue": self._stop_queue,
+                "event_queue": event_queue,
+                "stop_queue": stop_queue,
                 "config": config,
             },
             daemon = True,
         )
-        self._proc.start()
-        logger.info("Training subprocess started (pid=%s)", self._proc.pid)
+        try:
+            proc.start()
+        except Exception:
+            logger.error("Failed to start training subprocess", exc_info = True)
+            return False
 
+        logger.info("Training subprocess started (pid=%s)", proc.pid)
+
+        # Reset state — safe because old pump thread is confirmed dead
+        # and proc.start() succeeded
+        self.current_job_id = job_id
+        self._should_stop = False
+        self._cancel_requested = False
+        self._progress = TrainingProgress(
+            is_training = True, status_message = "Initializing training..."
+        )
+        self.loss_history.clear()
+        self.lr_history.clear()
+        self.step_history.clear()
+        self.grad_norm_history.clear()
+        self.grad_norm_step_history.clear()
+        self.eval_loss_history.clear()
+        self.eval_step_history.clear()
+        self.eval_enabled = False
+        self._output_dir = None
+        self._metric_buffer.clear()
+        self._run_finalized = False
+        self._db_run_created = False
+        self._db_total_steps_set = False
         self._db_config = {
             k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}
         }
         self._db_started_at = datetime.now(timezone.utc).isoformat()
+
+        # Assign subprocess handles after state reset
+        self._event_queue = event_queue
+        self._stop_queue = stop_queue
+        self._proc = proc
+
+        # Eagerly create DB run row so the run appears in history during model loading
+        self._ensure_db_run_created()
 
         # Start event pump thread
         self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
@@ -279,8 +290,9 @@ class TrainingBackend:
                 proc.join(timeout = 2.0)
 
         # Wait for pump thread to finish DB finalization before returning
+        # (8s covers SQLite's default 5s lock timeout plus execution overhead)
         if self._pump_thread is not None and self._pump_thread.is_alive():
-            self._pump_thread.join(timeout = 3.0)
+            self._pump_thread.join(timeout = 8.0)
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
@@ -485,9 +497,16 @@ class TrainingBackend:
 
                 eval_loss = event.get("eval_loss")
                 if eval_loss is not None:
-                    self.eval_loss_history.append(eval_loss)
-                    self.eval_step_history.append(step)
-                    self.eval_enabled = True
+                    try:
+                        eval_loss = float(eval_loss)
+                    except (TypeError, ValueError):
+                        eval_loss = None
+                    if eval_loss is not None and math.isfinite(eval_loss):
+                        self.eval_loss_history.append(eval_loss)
+                        self.eval_step_history.append(step)
+                        self.eval_enabled = True
+                    else:
+                        eval_loss = None
 
                 # Buffer metric for DB flush
                 self._metric_buffer.append(
@@ -680,12 +699,18 @@ class TrainingBackend:
             return
         # Cap buffer to prevent unbounded memory growth
         if len(self._metric_buffer) > 500:
+            logger.warning(
+                "Metric buffer exceeded 500 entries (%d) — trimming oldest",
+                len(self._metric_buffer),
+            )
             self._metric_buffer = self._metric_buffer[-500:]
+        # Snapshot before insert so metrics arriving during the write are preserved
+        batch = list(self._metric_buffer)
         try:
             from storage.studio_db import insert_metrics_batch, update_run_progress
 
-            insert_metrics_batch(self.current_job_id, self._metric_buffer)
-            self._metric_buffer.clear()
+            insert_metrics_batch(self.current_job_id, batch)
+            del self._metric_buffer[:len(batch)]
             update_run_progress(
                 id = self.current_job_id,
                 step = self._progress.step,
@@ -698,6 +723,7 @@ class TrainingBackend:
                 duration_seconds = self._progress.elapsed_seconds,
             )
         except Exception:
+            # Leave buffer intact for retry on next flush
             logger.warning("Failed to flush metrics to DB", exc_info = True)
 
     @staticmethod
