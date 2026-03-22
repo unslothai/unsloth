@@ -195,8 +195,12 @@ def setup():
 
 @studio_app.command()
 def update(
-    local: bool = typer.Option(False, "--local", help="Install from local repo instead of PyPI"),
-    package: str = typer.Option("unsloth", "--package", help="Package name to install/update (for testing)"),
+    local: bool = typer.Option(
+        False, "--local", help = "Install from local repo instead of PyPI"
+    ),
+    package: str = typer.Option(
+        "unsloth", "--package", help = "Package name to install/update (for testing)"
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     if local:

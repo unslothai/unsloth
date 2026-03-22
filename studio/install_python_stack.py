@@ -311,11 +311,22 @@ def install_python_stack() -> int:
     # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
     _progress("pip bootstrap")
     if USE_UV:
-        run("Bootstrapping pip via uv", [
-            "uv", "pip", "install", "--python", sys.executable, "pip",
-        ])
+        run(
+            "Bootstrapping pip via uv",
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "pip",
+            ],
+        )
     else:
-        run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+        run(
+            "Upgrading pip",
+            [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+        )
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
@@ -325,7 +336,8 @@ def install_python_stack() -> int:
         pip_install(
             f"Installing {package_name} from local repo",
             "--no-cache-dir",
-            "-e", str(SCRIPT_DIR.parent),  # repo root
+            "-e",
+            str(SCRIPT_DIR.parent),  # repo root
         )
     elif package_name != "unsloth":
         # Custom package name (e.g. roland-sloth for testing) — install directly
