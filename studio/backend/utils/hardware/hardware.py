@@ -517,7 +517,7 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
         return 1
 
     if desired is None or not isinstance(desired, int):
-        desired = max(1, os.cpu_count() // 3)
+        desired = max(1, (os.cpu_count() or 1) // 3)
 
     visible = get_visible_gpu_count()
     if visible > 1:
@@ -549,7 +549,7 @@ def safe_thread_num_proc(desired: Optional[int] = None) -> int:
     import os
 
     if desired is None or not isinstance(desired, int):
-        desired = max(1, os.cpu_count() // 3)
+        desired = max(1, (os.cpu_count() or 1) // 3)
 
     return desired
 
