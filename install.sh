@@ -200,16 +200,16 @@ version_ge() {
 }
 
 _uv_version_ok() {
-    _ver=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
-    [ -n "$_ver" ] || return 1
-    # Strip pre-release/build suffixes
-    case "$_ver" in
-        ''|*[!0-9.]*) _ver=${_ver%%[-+]*} ;;
-    esac
+    _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
+    [ -n "$_raw" ] || return 1
+    _ver=${_raw%%[-+]*}
     case "$_ver" in
         ''|*[!0-9.]*) return 1 ;;
     esac
-    version_ge "$_ver" "$UV_MIN_VERSION"
+    version_ge "$_ver" "$UV_MIN_VERSION" || return 1
+    # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
+    [ "$_ver" = "$UV_MIN_VERSION" ] && [ "$_raw" != "$_ver" ] && return 1
+    return 0
 }
 
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
