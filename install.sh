@@ -202,6 +202,13 @@ version_ge() {
 _uv_version_ok() {
     _ver=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
     [ -n "$_ver" ] || return 1
+    # Strip pre-release/build suffixes
+    case "$_ver" in
+        ''|*[!0-9.]*) _ver=${_ver%%[-+]*} ;;
+    esac
+    case "$_ver" in
+        ''|*[!0-9.]*) return 1 ;;
+    esac
     version_ge "$_ver" "$UV_MIN_VERSION"
 }
 
@@ -252,7 +259,7 @@ echo ""
 
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 1 ] && [ -t 2 ]; then
+if [ -t 0 ]; then
     echo "  To launch, run:"
     echo ""
     echo "    source ${VENV_NAME}/bin/activate"

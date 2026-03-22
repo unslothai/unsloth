@@ -8,36 +8,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Helper: run command quietly, show output only on failure ──
-run_quiet() {
-    local label="$1"
-    shift
-    local tmplog
-    tmplog=$(mktemp)
-    if "$@" > "$tmplog" 2>&1; then
+_run_quiet() {
+    on_fail=$1
+    label=$2
+    shift 2
+
+    tmplog=$(mktemp) || {
+        printf '%s\n' "Failed to create temporary file" >&2
+        [ "$on_fail" = "exit" ] && exit 1 || return 1
+    }
+
+    if "$@" >"$tmplog" 2>&1; then
         rm -f "$tmplog"
+        return 0
     else
-        local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
-        cat "$tmplog"
+        exit_code=$?
+        printf 'Failed: %s (exit code %s):\n' "$label" "$exit_code" >&2
+        cat "$tmplog" >&2
         rm -f "$tmplog"
-        exit $exit_code
+
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
     fi
 }
 
+run_quiet() {
+    _run_quiet exit "$@"
+}
+
 run_quiet_no_exit() {
-    local label="$1"
-    shift
-    local tmplog
-    tmplog=$(mktemp)
-    if "$@" > "$tmplog" 2>&1; then
-        rm -f "$tmplog"
-    else
-        local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
-        cat "$tmplog"
-        rm -f "$tmplog"
-        return $exit_code
-    fi
+    _run_quiet return "$@"
 }
 
 echo "╔══════════════════════════════════════╗"
@@ -208,8 +211,15 @@ BEST_MINOR=0
 
 # If the caller (e.g. install.sh) already chose a Python, use it directly.
 if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
-    BEST_PY="$REQUESTED_PYTHON_VERSION"
-    echo "✅ Using requested Python version: $BEST_PY"
+    _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
+    _req_minor=$(echo "$_req_ver" | cut -d. -f2)
+    if [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
+       [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
+        BEST_PY="$REQUESTED_PYTHON_VERSION"
+        echo "Using requested Python version: $BEST_PY"
+    else
+        echo "Ignoring requested Python $REQUESTED_PYTHON_VERSION ($_req_ver) -- outside supported range"
+    fi
 fi
 
 if [ -z "$BEST_PY" ]; then
