@@ -428,29 +428,6 @@ rm -rf "$LLAMA_CPP_DIR"
             fi
 
             if [ -n "$NVCC_PATH" ]; then
-                # Minimum CUDA version check for llama.cpp (requires >= 12.4).
-                # Uses POSIX sed (not grep -oP which is unavailable on macOS BSD grep).
-                # Done BEFORE appending -DGGML_CUDA=ON so we can fall back cleanly.
-                _nvcc_ver=$("$NVCC_PATH" --version 2>/dev/null \
-                    | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
-                if [ -n "$_nvcc_ver" ]; then
-                    _nvcc_maj="${_nvcc_ver%%.*}"
-                    _nvcc_min="${_nvcc_ver#*.}"
-                    if [ "$_nvcc_maj" -lt 12 ] || \
-                       { [ "$_nvcc_maj" -eq 12 ] && [ "$_nvcc_min" -lt 4 ]; }; then
-                        echo ""
-                        echo "⚠️  CUDA Toolkit $_nvcc_ver is too old for llama.cpp CUDA support (requires >= 12.4)."
-                        echo "   Falling back to CPU-only llama.cpp build so Studio setup can continue."
-                        echo "   Install CUDA >= 12.4 to re-enable GGUF GPU support: https://developer.nvidia.com/cuda-toolkit-archive"
-                        NVCC_PATH=""
-                    fi
-                else
-                    echo "   ⚠️  Could not determine CUDA Toolkit version from nvcc."
-                    echo "      Proceeding with CUDA build -- if cmake fails, try updating the CUDA Toolkit."
-                fi
-            fi
-
-            if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 

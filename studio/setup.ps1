@@ -628,31 +628,6 @@ if (-not $NvccPath) {
     exit 1
 }
 
-# -- Minimum CUDA version check for llama.cpp (requires >= 12.4) --
-$MIN_CUDA_MAJOR = 12; $MIN_CUDA_MINOR = 4
-$nvccVerOut = & $NvccPath --version 2>&1 | Out-String
-if ($nvccVerOut -match 'release\s+(\d+)\.(\d+)') {
-    $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
-    if ($tkMaj -lt $MIN_CUDA_MAJOR -or ($tkMaj -eq $MIN_CUDA_MAJOR -and $tkMin -lt $MIN_CUDA_MINOR)) {
-        Write-Host "" -ForegroundColor Yellow
-        Write-Host "================================================================" -ForegroundColor Yellow
-        Write-Host "[WARN] CUDA Toolkit $tkMaj.$tkMin is too old for llama.cpp (requires >= $MIN_CUDA_MAJOR.$MIN_CUDA_MINOR)." -ForegroundColor Yellow
-        Write-Host "       llama.cpp CUDA build will be skipped; Studio setup continues with CPU-only GGUF." -ForegroundColor Yellow
-        if ($DriverMaxCuda -and ([version]$DriverMaxCuda -lt [version]"$MIN_CUDA_MAJOR.$MIN_CUDA_MINOR")) {
-            Write-Host "       Your NVIDIA driver only supports CUDA $DriverMaxCuda -- update the driver first." -ForegroundColor Yellow
-        } else {
-            Write-Host "       Install CUDA >= $MIN_CUDA_MAJOR.$MIN_CUDA_MINOR from:" -ForegroundColor Yellow
-        }
-        Write-Host "       https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Cyan
-        Write-Host "================================================================" -ForegroundColor Yellow
-        $NvccPath = $null
-    }
-} else {
-    Write-Host "   [WARN] Could not determine CUDA Toolkit version from nvcc." -ForegroundColor Yellow
-    Write-Host "          Proceeding -- if cmake fails, try updating the CUDA Toolkit." -ForegroundColor Yellow
-}
-
-if ($NvccPath) {
 # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
 $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # CUDA_PATH: used by cmake's find_package(CUDAToolkit)
@@ -719,17 +694,12 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                         throw "Copy did not produce .targets files"
                     }
                 } catch {
-                    Write-Host "" -ForegroundColor Yellow
-                    Write-Host "================================================================" -ForegroundColor Yellow
-                    Write-Host "[WARN] Could not copy CUDA VS integration files." -ForegroundColor Yellow
-                    Write-Host "       The llama.cpp CUDA build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
-                    Write-Host "       Fix: re-run setup as Administrator, or manually copy:" -ForegroundColor Yellow
-                    Write-Host "         $cudaExtras" -ForegroundColor Cyan
-                    Write-Host "       into:" -ForegroundColor Yellow
-                    Write-Host "         $vsCustomizations" -ForegroundColor Cyan
-                    Write-Host "       Or re-install CUDA Toolkit after Visual Studio Build Tools:" -ForegroundColor Yellow
-                    Write-Host "       https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Cyan
-                    Write-Host "================================================================" -ForegroundColor Yellow
+                    Write-Host "   [WARN] Could not copy CUDA VS integration files" -ForegroundColor Yellow
+                    Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
+                    Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
+                    Write-Host "            $cudaExtras" -ForegroundColor Cyan
+                    Write-Host "          into:" -ForegroundColor Yellow
+                    Write-Host "            $vsCustomizations" -ForegroundColor Cyan
                 }
             }
         }
@@ -745,7 +715,6 @@ Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 if (-not $CudaArch) {
     Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
 }
-} # end if ($NvccPath) -- CUDA env/VS integration guard
 } else {
     Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
 }
