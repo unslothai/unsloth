@@ -22,6 +22,11 @@ for arg in "$@"; do
     esac
 done
 
+if [ "$_next_is_package" = true ]; then
+    echo "❌ ERROR: --package requires an argument." >&2
+    exit 1
+fi
+
 PYTHON_VERSION="3.13"
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
