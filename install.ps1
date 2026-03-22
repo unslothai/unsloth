@@ -223,7 +223,7 @@ function Install-UnslothStudio {
     }
 
     Write-Host "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python $VenvPython --upgrade unsloth
+    uv pip install --python $VenvPython --upgrade-package unsloth unsloth
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
