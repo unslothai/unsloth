@@ -64,6 +64,9 @@ function Install-UnslothStudio {
         return $false
     }
 
+    # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
+    # The resolved Path is passed to `uv venv --python` to prevent uv from
+    # re-resolving the version string back to a conda interpreter.
     function Find-CompatiblePython {
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
@@ -73,10 +76,11 @@ function Install-UnslothStudio {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        # Verify the resolved interpreter is not conda-based
+                        $ver = $Matches[1]
+                        # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and -not (Test-IsCondaPython $resolvedExe)) {
-                            return $Matches[1]
+                        if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
+                            return @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
                 } catch {}
@@ -96,19 +100,22 @@ function Install-UnslothStudio {
                 if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
+                    if ($out -match "Python (3\.1[1-3])\.\d+") {
+                        return @{ Version = $Matches[1]; Path = $cmd.Source }
+                    }
                 } catch {}
             }
         }
-        return ""
+        return $null
     }
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
-    $DetectedPythonVersion = Find-CompatiblePython
-    if ($DetectedPythonVersion) {
-        Write-Host "==> Python already installed: Python $DetectedPythonVersion"
+    # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
+    $DetectedPython = Find-CompatiblePython
+    if ($DetectedPython) {
+        Write-Host "==> Python already installed: Python $($DetectedPython.Version)"
     }
-    if (-not $DetectedPythonVersion) {
+    if (-not $DetectedPython) {
         Write-Host "==> Installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         # Temporarily lower ErrorActionPreference so that winget stderr
@@ -124,9 +131,9 @@ function Install-UnslothStudio {
         Refresh-SessionPath
 
         # Re-detect after install (PATH may have changed)
-        $DetectedPythonVersion = Find-CompatiblePython
+        $DetectedPython = Find-CompatiblePython
 
-        if (-not $DetectedPythonVersion) {
+        if (-not $DetectedPython) {
             # Python still not functional after winget -- force reinstall.
             # This handles both real failures AND "already installed" codes where
             # winget thinks Python is present but it's not actually on PATH
@@ -139,10 +146,10 @@ function Install-UnslothStudio {
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
-            $DetectedPythonVersion = Find-CompatiblePython
+            $DetectedPython = Find-CompatiblePython
         }
 
-        if (-not $DetectedPythonVersion) {
+        if (-not $DetectedPython) {
             Write-Host "[ERROR] Python installation failed (exit code $wingetExit)" -ForegroundColor Red
             Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
@@ -174,11 +181,13 @@ function Install-UnslothStudio {
     }
 
     # ── Create venv (skip if it already exists and has a valid interpreter) ──
+    # Pass the resolved executable path to uv so it does not re-resolve
+    # a version string back to a conda interpreter.
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
     if (-not (Test-Path $VenvPython)) {
         if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
-        Write-Host "==> Creating Python ${DetectedPythonVersion} virtual environment (${VenvName})..."
-        uv venv $VenvName --python $DetectedPythonVersion
+        Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment (${VenvName})..."
+        uv venv $VenvName --python $($DetectedPython.Path)
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
             return
