@@ -179,6 +179,14 @@ def run_server(
     """
     global _server, _shutdown_event
 
+    # On Windows the default console encoding (cp1252) cannot encode emoji.
+    # Reconfigure stdout to UTF-8 so startup messages do not crash the server.
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
     import nest_asyncio
 
     nest_asyncio.apply()
