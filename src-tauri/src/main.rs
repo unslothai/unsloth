@@ -10,6 +10,9 @@ use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager};
 
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
@@ -42,6 +45,55 @@ fn setup_logging() {
     }
 }
 
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let open = MenuItemBuilder::with_id("open", "Open Studio").build(app)?;
+    let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&open, &toggle, &quit])
+        .build()?;
+
+    TrayIconBuilder::new()
+        .menu(&menu)
+        .tooltip("Unsloth Studio")
+        .icon(app.default_window_icon().unwrap().clone())
+        .on_menu_event(move |app, event| {
+            match event.id().as_ref() {
+                "open" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "toggle" => {
+                    let _ = app.emit("tray-toggle-server", ());
+                }
+                "quit" => {
+                    let state = app.state::<crate::process::BackendState>();
+                    let _ = crate::process::stop_backend(&state);
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(window) = tray.app_handle().get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 fn main() {
     setup_logging();
     info!("Unsloth Studio desktop app starting");
@@ -60,7 +112,17 @@ fn main() {
             commands::get_bootstrap_password,
             commands::open_logs_dir,
         ])
-        // Note: window close handler will be added in Task 5 (system tray)
+        .setup(|app| {
+            setup_tray(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Hide window instead of closing (keep tray running)
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
