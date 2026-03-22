@@ -521,14 +521,14 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
 
     visible = get_visible_gpu_count()
     if visible > 1:
-        capped = min(4, desired)
+        capped = max(1, min(4, desired))
         logger.info(
             f"Multi-GPU detected ({visible} visible GPUs) -- "
             f"capping num_proc {desired} -> {capped} to avoid fork deadlocks"
         )
         return capped
 
-    return desired
+    return max(1, desired)
 
 
 def safe_thread_num_proc(desired: Optional[int] = None) -> int:
@@ -551,7 +551,7 @@ def safe_thread_num_proc(desired: Optional[int] = None) -> int:
     if desired is None or not isinstance(desired, int):
         desired = max(1, (os.cpu_count() or 1) // 3)
 
-    return desired
+    return max(1, desired)
 
 
 def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
