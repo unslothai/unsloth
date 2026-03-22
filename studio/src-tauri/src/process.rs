@@ -49,15 +49,50 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Spawn the backend process and wire up stdout/stderr reader threads.
-pub fn start_backend(
-    app: &AppHandle,
-    state: &BackendState,
-    port: u16,
-) -> Result<(), String> {
-    let bin = find_unsloth_binary().ok_or_else(|| {
+/// Find the unsloth binary, preferring the dev repo if available.
+/// In dev mode (debug builds), checks for a local .venv in the repo first.
+/// In production, only uses the installed venv at ~/.unsloth/studio/.venv/.
+fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
+    // In dev mode, check for local repo venv first
+    #[cfg(debug_assertions)]
+    {
+        // Look for .venv/bin/unsloth relative to the workspace root
+        // (Tauri runs from studio/src-tauri, workspace is 2 levels up)
+        let dev_paths = [
+            // From studio/src-tauri -> ../../.venv/bin/unsloth
+            std::path::PathBuf::from("../../.venv/bin/unsloth"),
+            // Absolute common dev path
+            std::path::PathBuf::from(
+                std::env::var("CARGO_MANIFEST_DIR")
+                    .unwrap_or_default(),
+            )
+            .join("../../.venv/bin/unsloth"),
+        ];
+
+        for path in &dev_paths {
+            let resolved = if path.is_relative() {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(path))
+                    .unwrap_or_else(|_| path.clone())
+            } else {
+                path.clone()
+            };
+            if resolved.exists() {
+                info!("Dev mode: using local repo backend at {:?}", resolved);
+                return Ok(resolved);
+            }
+        }
+        info!("Dev mode: no local .venv found, falling back to installed backend");
+    }
+
+    find_unsloth_binary().ok_or_else(|| {
         "Unsloth binary not found. Please install Unsloth Studio first.".to_string()
-    })?;
+    })
+}
+
+/// Spawn the backend process and wire up stdout/stderr reader threads.
+pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result<(), String> {
+    let bin = resolve_backend_binary()?;
 
     // Reset state
     {
@@ -70,12 +105,22 @@ pub fn start_backend(
         proc.intentional_stop = false;
     }
 
-    info!("Starting backend: {:?} studio --api-only -H 127.0.0.1 -p {}", bin, port);
+    info!(
+        "Starting backend: {:?} studio --api-only -H 127.0.0.1 -p {}",
+        bin, port
+    );
 
     let mut cmd = Command::new(&bin);
-    cmd.args(["studio", "--api-only", "-H", "127.0.0.1", "-p", &port.to_string()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args([
+        "studio",
+        "--api-only",
+        "-H",
+        "127.0.0.1",
+        "-p",
+        &port.to_string(),
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
 
     // On Windows, create a new process group so CTRL_BREAK_EVENT works.
     #[cfg(windows)]
@@ -85,7 +130,9 @@ pub fn start_backend(
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn backend: {}", e))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn backend: {}", e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -161,11 +208,17 @@ fn read_output_stream<R: std::io::Read>(
                     proc.logs.push_back(log_line.clone());
                 }
 
+                info!("[backend] {}", log_line);
+
                 // Emit to frontend
                 let _ = app.emit("server-log", &log_line);
             }
             Err(e) => {
-                warn!("Error reading backend {}: {}", if is_stderr { "stderr" } else { "stdout" }, e);
+                warn!(
+                    "Error reading backend {}: {}",
+                    if is_stderr { "stderr" } else { "stdout" },
+                    e
+                );
                 break;
             }
         }
@@ -246,7 +299,10 @@ pub fn stop_backend(state: &BackendState) -> Result<(), String> {
     }
 
     // Force kill
-    warn!("Backend did not exit gracefully, force killing (pid {})", pid);
+    warn!(
+        "Backend did not exit gracefully, force killing (pid {})",
+        pid
+    );
     #[cfg(unix)]
     {
         unsafe {

@@ -1,5 +1,5 @@
-use crate::process::{self, BackendState};
 use crate::install;
+use crate::process::{self, BackendState};
 use log::{error, info};
 use tauri::AppHandle;
 
@@ -105,7 +105,13 @@ pub fn get_bootstrap_password() -> Result<String, String> {
 
     std::fs::read_to_string(&path)
         .map(|s| s.trim().to_string())
-        .map_err(|e| format!("Failed to read bootstrap password at {}: {}", path.display(), e))
+        .map_err(|e| {
+            format!(
+                "Failed to read bootstrap password at {}: {}",
+                path.display(),
+                e
+            )
+        })
 }
 
 /// Open the Unsloth Studio directory in the system file manager.
@@ -122,11 +128,15 @@ pub fn open_logs_dir() -> Result<(), String> {
 }
 
 /// Start the first-launch installation process.
-/// Runs install.sh on Unix or orchestrates native install on Windows.
+/// Runs the bundled platform installer script and streams progress events.
 /// Streams progress via install-progress, install-complete, and install-failed events.
 #[tauri::command]
-pub async fn start_install(app: AppHandle) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || install::run_install(app))
+pub async fn start_install(
+    app: AppHandle,
+    state: tauri::State<'_, install::InstallState>,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || install::run_install(app, state))
         .await
         .map_err(|e| format!("Install task panicked: {e}"))?
 }

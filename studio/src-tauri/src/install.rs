@@ -1,7 +1,28 @@
 use log::{error, info, warn};
 use std::io::BufRead;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
+
+pub struct InstallProcess {
+    pub child: Option<Child>,
+    pub intentional_stop: bool,
+}
+
+impl Default for InstallProcess {
+    fn default() -> Self {
+        Self {
+            child: None,
+            intentional_stop: false,
+        }
+    }
+}
+
+pub type InstallState = Arc<Mutex<InstallProcess>>;
+
+pub fn new_install_state() -> InstallState {
+    Arc::new(Mutex::new(InstallProcess::default()))
+}
 
 /// Emit an install-progress event to the frontend.
 fn emit_progress(app: &AppHandle, message: &str) {
@@ -21,19 +42,67 @@ fn emit_complete(app: &AppHandle) {
     let _ = app.emit("install-complete", ());
 }
 
-/// Stream stdout and stderr from a child process, emitting install-progress events.
-fn stream_child_output(app: &AppHandle, child: &mut std::process::Child) {
-    // Read stdout in a separate thread
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+fn wait_for_install_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
+    loop {
+        let mut install = state.lock().map_err(|e| e.to_string())?;
+        let intentional_stop = install.intentional_stop;
 
-    let app_stdout = app.clone();
-    let stdout_thread = stdout.map(|out| {
-        std::thread::spawn(move || {
+        match install.child.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    install.child = None;
+                    return Ok((status, intentional_stop));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    install.child = None;
+                    return Err(format!("Failed while waiting for installer: {}", e));
+                }
+            },
+            None if intentional_stop => return Err("Installation stopped.".to_string()),
+            None => return Err("Installer process handle disappeared unexpectedly.".to_string()),
+        }
+
+        drop(install);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+pub fn stop_install(state: &InstallState) -> Result<(), String> {
+    let mut child = {
+        let mut install = state.lock().map_err(|e| e.to_string())?;
+        install.intentional_stop = true;
+        install.child.take()
+    };
+
+    let Some(ref mut child) = child else {
+        return Ok(());
+    };
+
+    let pid = child.id();
+    info!("Stopping installer process (pid {})", pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    info!("Installer process stopped");
+    Ok(())
+}
+
+/// Stream stdout and stderr from a child process, emitting install-progress events.
+fn stream_child_output(
+    app: &AppHandle,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+) -> Vec<std::thread::JoinHandle<()>> {
+    let mut threads = Vec::new();
+
+    if let Some(out) = stdout {
+        let app_stdout = app.clone();
+        threads.push(std::thread::spawn(move || {
             let reader = std::io::BufReader::new(out);
             for line in reader.lines() {
                 match line {
                     Ok(text) => {
+                        info!("[install][stdout] {}", text);
                         let _ = app_stdout.emit("install-progress", &text);
                     }
                     Err(e) => {
@@ -42,16 +111,17 @@ fn stream_child_output(app: &AppHandle, child: &mut std::process::Child) {
                     }
                 }
             }
-        })
-    });
+        }));
+    }
 
-    let app_stderr = app.clone();
-    let stderr_thread = stderr.map(|err| {
-        std::thread::spawn(move || {
+    if let Some(err) = stderr {
+        let app_stderr = app.clone();
+        threads.push(std::thread::spawn(move || {
             let reader = std::io::BufReader::new(err);
             for line in reader.lines() {
                 match line {
                     Ok(text) => {
+                        warn!("[install][stderr] {}", text);
                         let _ = app_stderr.emit("install-progress", &text);
                     }
                     Err(e) => {
@@ -60,25 +130,49 @@ fn stream_child_output(app: &AppHandle, child: &mut std::process::Child) {
                     }
                 }
             }
-        })
-    });
+        }));
+    }
 
-    // Wait for reader threads to finish
-    if let Some(handle) = stdout_thread {
+    threads
+}
+
+fn finalize_install(
+    app: &AppHandle,
+    state: &InstallState,
+    threads: Vec<std::thread::JoinHandle<()>>,
+) -> Result<(), String> {
+    let result = wait_for_install_exit(state);
+
+    for handle in threads {
         let _ = handle.join();
     }
-    if let Some(handle) = stderr_thread {
-        let _ = handle.join();
+
+    match result {
+        Ok((status, _)) if status.success() => {
+            emit_complete(app);
+            Ok(())
+        }
+        Ok((status, _)) => {
+            let code = status.code().unwrap_or(-1);
+            let msg = format!("Installer exited with code {}", code);
+            emit_failed(app, &msg);
+            Err(msg)
+        }
+        Err(msg) if msg == "Installation stopped." => {
+            info!("[install] Installation stopped intentionally");
+            Err(msg)
+        }
+        Err(msg) => {
+            emit_failed(app, &msg);
+            Err(msg)
+        }
     }
 }
 
-// ─── Unix implementation ────────────────────────────────────────────────────
-
 #[cfg(unix)]
-pub fn run_install(app: AppHandle) -> Result<(), String> {
+pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
     emit_progress(&app, "Starting installation...");
 
-    // 1. Pre-flight: check required tools
     let required_tools = ["bash", "git", "cmake", "gcc", "curl"];
     let mut missing = Vec::new();
     for tool in &required_tools {
@@ -109,7 +203,6 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
     }
     emit_progress(&app, "All required tools found.");
 
-    // 2. Create ~/.unsloth/ directory
     let home = dirs::home_dir().ok_or_else(|| {
         let msg = "Could not determine home directory".to_string();
         emit_failed(&app, &msg);
@@ -125,7 +218,6 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
     }
     emit_progress(&app, "~/.unsloth/ directory ready.");
 
-    // 3. Resolve bundled install.sh from Tauri resources
     let install_script = app
         .path()
         .resolve("resources/install.sh", tauri::path::BaseDirectory::Resource)
@@ -148,51 +240,40 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
         &format!("Using install script: {}", install_script.display()),
     );
 
-    // 4. Spawn bash install.sh with cwd = ~/.unsloth/
     emit_progress(&app, "Running install.sh...");
-    let mut child = Command::new("bash")
-        .arg(&install_script)
-        .current_dir(&unsloth_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            let msg = format!("Failed to spawn install.sh: {}", e);
+    let (stdout, stderr) = {
+        let mut install = state.lock().map_err(|e| e.to_string())?;
+        if install.child.is_some() {
+            let msg = "Installation is already running.".to_string();
             emit_failed(&app, &msg);
-            msg
-        })?;
+            return Err(msg);
+        }
+        install.intentional_stop = false;
 
-    // 5. Stream stdout/stderr line-by-line
-    stream_child_output(&app, &mut child);
+        let mut child = Command::new("bash")
+            .arg(&install_script)
+            .current_dir(&unsloth_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                let msg = format!("Failed to spawn install.sh: {}", e);
+                emit_failed(&app, &msg);
+                msg
+            })?;
 
-    // 6. Check exit status
-    let status = child.wait().map_err(|e| {
-        let msg = format!("Failed to wait on install.sh: {}", e);
-        emit_failed(&app, &msg);
-        msg
-    })?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        install.child = Some(child);
+        (stdout, stderr)
+    };
+    let threads = stream_child_output(&app, stdout, stderr);
 
-    if status.success() {
-        emit_complete(&app);
-        Ok(())
-    } else {
-        let code = status.code().unwrap_or(-1);
-        let msg = format!("install.sh exited with code {}", code);
-        emit_failed(&app, &msg);
-        Err(msg)
-    }
+    finalize_install(&app, &state, threads)
 }
 
-// ─── Windows implementation ─────────────────────────────────────────────────
-// Runs the top-level install.ps1 (bundled as a Tauri resource), which handles
-// Python installation, uv, PATH refresh, venv creation, and `unsloth studio setup`.
-// This mirrors the Unix approach of running the existing installer script rather
-// than reimplementing the install logic in Rust.
-
 #[cfg(windows)]
-pub fn run_install(app: AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-
+pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
     emit_progress(&app, "Starting installation on Windows...");
 
     let home = dirs::home_dir().ok_or_else(|| {
@@ -200,10 +281,8 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
         emit_failed(&app, &msg);
         msg
     })?;
-
     let unsloth_dir = home.join(".unsloth");
 
-    // Create ~/.unsloth/ directory
     if !unsloth_dir.exists() {
         std::fs::create_dir_all(&unsloth_dir).map_err(|e| {
             let msg = format!("Failed to create {}: {}", unsloth_dir.display(), e);
@@ -213,10 +292,12 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
     }
     emit_progress(&app, &format!("{} directory ready.", unsloth_dir.display()));
 
-    // Resolve bundled install.ps1 from Tauri resources
     let install_script = app
         .path()
-        .resolve("resources/install.ps1", tauri::path::BaseDirectory::Resource)
+        .resolve(
+            "resources/install.ps1",
+            tauri::path::BaseDirectory::Resource,
+        )
         .map_err(|e| {
             let msg = format!("Failed to resolve install.ps1 resource: {}", e);
             emit_failed(&app, &msg);
@@ -236,42 +317,39 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
         &format!("Using install script: {}", install_script.display()),
     );
 
-    // Run install.ps1 with cwd = ~/.unsloth/
     emit_progress(&app, "Running install.ps1...");
-    let mut child = Command::new("powershell")
-        .args([
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &install_script.to_string_lossy(),
-        ])
-        .current_dir(&unsloth_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            let msg = format!("Failed to spawn install.ps1: {}", e);
+    let (stdout, stderr) = {
+        let mut install = state.lock().map_err(|e| e.to_string())?;
+        if install.child.is_some() {
+            let msg = "Installation is already running.".to_string();
             emit_failed(&app, &msg);
-            msg
-        })?;
+            return Err(msg);
+        }
+        install.intentional_stop = false;
 
-    // Stream stdout/stderr line-by-line
-    stream_child_output(&app, &mut child);
+        let mut child = Command::new("powershell")
+            .args([
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &install_script.to_string_lossy(),
+            ])
+            .current_dir(&unsloth_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                let msg = format!("Failed to spawn install.ps1: {}", e);
+                emit_failed(&app, &msg);
+                msg
+            })?;
 
-    // Check exit status
-    let status = child.wait().map_err(|e| {
-        let msg = format!("Failed to wait on install.ps1: {}", e);
-        emit_failed(&app, &msg);
-        msg
-    })?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        install.child = Some(child);
+        (stdout, stderr)
+    };
+    let threads = stream_child_output(&app, stdout, stderr);
 
-    if status.success() {
-        emit_complete(&app);
-        Ok(())
-    } else {
-        let code = status.code().unwrap_or(-1);
-        let msg = format!("install.ps1 exited with code {}", code);
-        emit_failed(&app, &msg);
-        Err(msg)
-    }
+    finalize_install(&app, &state, threads)
 }
