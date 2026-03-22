@@ -283,24 +283,25 @@ START_PORT=8888
 END_PORT=8898
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 1 ] && [ -t 2 ]; then
-    STUDIO_PORT=$(find_open_port "$START_PORT" "$END_PORT") || {
-        echo "Error: could not find an open port for Unsloth Studio between 8888 and 8898."
-        echo "  To launch, free port 8888 and run:"
+if [ -t 1 ] && [ -t 2 ]; then  # stdout+stderr only; intentionally skips stdin for curl|sh
+    STUDIO_PORT=$(find_open_port "$START_PORT" "$END_PORT") || STUDIO_PORT=""
+    if [ -n "$STUDIO_PORT" ]; then
+        echo "  To launch, run:"
+        echo ""
+        echo "    source ${VENV_NAME}/bin/activate"
+        echo "    unsloth studio -H ${STUDIO_HOST} -p ${STUDIO_PORT}"
+        echo ""
+        echo "==> Auto Launching Unsloth Studio..."
+        echo ""
+        exec "$VENV_NAME/bin/unsloth" studio -H "$STUDIO_HOST" -p "$STUDIO_PORT" </dev/tty
+    else
+        echo "Note: all ports ${START_PORT}-${END_PORT} are in use."
+        echo "  To launch manually, free a port and run:"
         echo ""
         echo "    source ${VENV_NAME}/bin/activate"
         echo "    unsloth studio -H ${STUDIO_HOST} -p 8888"
         echo ""
-        exit 1
-    }
-    echo "  To launch, run:"
-    echo ""
-    echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H ${STUDIO_HOST} -p ${STUDIO_PORT}"
-    echo ""
-    echo "==> Auto Launching Unsloth Studio..."
-    echo ""
-    exec "$VENV_NAME/bin/unsloth" studio -H "$STUDIO_HOST" -p "$STUDIO_PORT"
+    fi
 else
     echo "  To launch, run:"
     echo ""

@@ -9,10 +9,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Helper: run command quietly, show output only on failure ──
 _run_quiet() {
-    on_fail=$1
-    label=$2
+    local on_fail=$1
+    local label=$2
     shift 2
 
+    local tmplog
     tmplog=$(mktemp) || {
         printf '%s\n' "Failed to create temporary file" >&2
         [ "$on_fail" = "exit" ] && exit 1 || return 1
@@ -22,7 +23,7 @@ _run_quiet() {
         rm -f "$tmplog"
         return 0
     else
-        exit_code=$?
+        local exit_code=$?
         printf 'Failed: %s (exit code %s):\n' "$label" "$exit_code" >&2
         cat "$tmplog" >&2
         rm -f "$tmplog"
@@ -212,8 +213,10 @@ BEST_MINOR=0
 # If the caller (e.g. install.sh) already chose a Python, use it directly.
 if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
     _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
+    _req_major=$(echo "$_req_ver" | cut -d. -f1)
     _req_minor=$(echo "$_req_ver" | cut -d. -f2)
-    if [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
+    if [ "$_req_major" -eq 3 ] 2>/dev/null && \
+       [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
        [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
         BEST_PY="$REQUESTED_PYTHON_VERSION"
         echo "Using requested Python version: $BEST_PY"
