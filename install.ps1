@@ -44,15 +44,23 @@ function Install-UnslothStudio {
     # Uses try-catch + stderr redirection so that App Execution Alias stubs
     # (WindowsApps) and other non-functional executables are probed safely
     # without triggering $ErrorActionPreference = "Stop".
+    #
+    # Skips Anaconda/Miniconda Python: conda-bundled CPython ships modified
+    # DLL search paths that break torch's c10.dll loading on Windows.
+    # Standalone CPython (python.org, winget, uv) does not have this issue.
     function Find-CompatiblePython {
         # Try the Python Launcher first (most reliable on Windows)
+        # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
         if ($pyLauncher) {
-            foreach ($minor in @("3.13", "3.12", "3.11")) {
-                try {
-                    $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
-                } catch {}
+            # Skip py.exe if it lives inside a conda environment
+            if ($pyLauncher.Source -notmatch '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)') {
+                foreach ($minor in @("3.13", "3.12", "3.11")) {
+                    try {
+                        $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
+                        if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
+                    } catch {}
+                }
             }
         }
         # Try python3 / python via Get-Command -All to look past stubs that
@@ -61,10 +69,12 @@ function Install-UnslothStudio {
         # and can open the Microsoft Store as a side effect. Legitimate Store
         # Python is already detected via the py launcher above (Store packages
         # include py since Python 3.11).
+        # Skip Anaconda/Miniconda: their modified CPython breaks torch DLL loading.
         foreach ($name in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
                 if (-not $cmd.Source) { continue }
                 if ($cmd.Source -like "*\WindowsApps\*") { continue }
+                if ($cmd.Source -match '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)') { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }

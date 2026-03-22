@@ -946,10 +946,20 @@ if (Test-Path $OxcValidatorDir) {
 Write-Host ""
 Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 
-# Find Python
+# Find Python -- skip Anaconda/Miniconda distributions.
+# Conda-bundled CPython ships modified DLL search paths that break
+# torch's c10.dll loading on Windows. Standalone CPython (python.org,
+# winget, uv) does not have this issue.
 $PythonCmd = $null
 foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
     try {
+        $cmdInfo = Get-Command $candidate -ErrorAction SilentlyContinue
+        if (-not $cmdInfo) { continue }
+        # Skip conda/miniconda/anaconda/miniforge/mambaforge Python
+        if ($cmdInfo.Source -match '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)') {
+            Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
+            continue
+        }
         $ver = & $candidate --version 2>&1
         if ($ver -match 'Python 3\.(\d+)') {
             $minor = [int]$Matches[1]
@@ -962,7 +972,9 @@ foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "p
 }
 
 if (-not $PythonCmd) {
-    Write-Host "[ERROR] No Python 3.11-3.13 found." -ForegroundColor Red
+    Write-Host "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
+    Write-Host "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
+    Write-Host "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
     exit 1
 }
 
