@@ -18,11 +18,13 @@ from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, F
 
 try:
     from data_designer_unstructured_seed.chunking import (
+        build_multi_file_preview_rows,
         build_unstructured_preview_rows,
         normalize_unstructured_text,
         resolve_chunking,
     )
 except ImportError:
+    build_multi_file_preview_rows = None
     build_unstructured_preview_rows = None
     normalize_unstructured_text = None
     resolve_chunking = None
@@ -267,7 +269,10 @@ def _read_preview_rows_from_multi_files(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, str]]:
-    from data_designer_unstructured_seed.chunking import build_multi_file_preview_rows
+    if build_multi_file_preview_rows is None:
+        raise HTTPException(
+            500, "Unstructured seed support not available (missing data_designer_unstructured_seed)"
+        )
 
     _validate_safe_id(block_id, "block_id")
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id

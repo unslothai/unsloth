@@ -950,25 +950,59 @@ Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 # Conda-bundled CPython ships modified DLL search paths that break
 # torch's c10.dll loading on Windows. Standalone CPython (python.org,
 # winget, uv) does not have this issue.
+# Uses Get-Command -All to look past conda entries that shadow a valid
+# standalone Python further down PATH, and probes py.exe (the Python
+# Launcher) which reliably finds python.org installs.
+$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 $PythonCmd = $null
-foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
-    try {
-        $cmdInfo = Get-Command $candidate -ErrorAction SilentlyContinue
-        if (-not $cmdInfo) { continue }
-        # Skip conda/miniconda/anaconda/miniforge/mambaforge Python
-        if ($cmdInfo.Source -match '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)') {
-            Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
-            continue
-        }
-        $ver = & $candidate --version 2>&1
-        if ($ver -match 'Python 3\.(\d+)') {
-            $minor = [int]$Matches[1]
-            if ($minor -ge 11 -and $minor -le 13) {
-                $PythonCmd = $candidate
-                break
+
+# 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
+#    py.exe is installed by python.org and resolves to standalone CPython.
+$pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
+    foreach ($minor in @("3.13", "3.12", "3.11")) {
+        try {
+            $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
+            if ($out -match 'Python 3\.(\d+)') {
+                $pyMinor = [int]$Matches[1]
+                if ($pyMinor -ge 11 -and $pyMinor -le 13) {
+                    # Resolve the actual executable path so venv creation
+                    # does not re-resolve back to a conda interpreter.
+                    $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and $resolvedExe -notmatch $CondaSkipPattern) {
+                        $PythonCmd = $resolvedExe
+                        break
+                    }
+                }
             }
+        } catch { }
+    }
+}
+
+# 2. Fall back to scanning python3.x / python3 / python on PATH.
+#    Use Get-Command -All to look past conda entries.
+if (-not $PythonCmd) {
+    foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
+        foreach ($cmdInfo in @(Get-Command $candidate -All -ErrorAction SilentlyContinue)) {
+            try {
+                if (-not $cmdInfo.Source) { continue }
+                if ($cmdInfo.Source -like "*\WindowsApps\*") { continue }
+                if ($cmdInfo.Source -match $CondaSkipPattern) {
+                    Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
+                    continue
+                }
+                $ver = & $cmdInfo.Source --version 2>&1
+                if ($ver -match 'Python 3\.(\d+)') {
+                    $minor = [int]$Matches[1]
+                    if ($minor -ge 11 -and $minor -le 13) {
+                        $PythonCmd = $cmdInfo.Source
+                        break
+                    }
+                }
+            } catch { }
         }
-    } catch { }
+        if ($PythonCmd) { break }
+    }
 }
 
 if (-not $PythonCmd) {
