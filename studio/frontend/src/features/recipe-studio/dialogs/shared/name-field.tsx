@@ -23,7 +23,7 @@ export function NameField({
   const fallbackId = useId();
   const inputId = id ?? fallbackId;
   return (
-    <div className="grid gap-2">
+    <div className="grid gap-1.5">
       <FieldLabel
         label={label ?? "Field name"}
         htmlFor={inputId}

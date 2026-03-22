@@ -58,7 +58,7 @@ export function ImportDialog({
         <DialogHeader>
           <DialogTitle>Import recipe</DialogTitle>
         </DialogHeader>
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Recipe JSON"
             htmlFor={payloadId}

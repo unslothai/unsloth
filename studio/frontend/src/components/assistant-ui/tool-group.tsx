@@ -9,6 +9,8 @@ import {
   type PropsWithChildren,
 } from "react";
 import { ChevronDownIcon, LoaderIcon } from "lucide-react";
+import { Wrench01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { useScrollLock } from "@assistant-ui/react";
 import {
@@ -116,10 +118,17 @@ function ToolGroupTrigger({
       )}
       {...props}
     >
-      {active && (
+      {active ? (
         <LoaderIcon
           data-slot="tool-group-trigger-loader"
           className="aui-tool-group-trigger-loader size-4 shrink-0 animate-spin"
+        />
+      ) : (
+        <HugeiconsIcon
+          icon={Wrench01Icon}
+          data-slot="tool-group-trigger-wrench"
+          className="size-4 shrink-0 text-muted-foreground"
+          strokeWidth={2}
         />
       )}
       <span

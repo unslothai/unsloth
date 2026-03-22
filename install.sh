@@ -37,8 +37,8 @@ _smart_apt_install() {
     _PKGS="$*"
 
     # Step 1: Try installing without sudo (works when already root)
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y $_PKGS >/dev/null 2>&1 || true
+    apt-get update -y </dev/null >/dev/null 2>&1 || true
+    apt-get install -y $_PKGS </dev/null >/dev/null 2>&1 || true
 
     # Step 2: Check which packages are still missing
     _STILL_MISSING=""
@@ -76,8 +76,8 @@ _smart_apt_install() {
                 exit 1
                 ;;
             *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
+                sudo apt-get update -y </dev/null
+                sudo apt-get install -y $_STILL_MISSING </dev/null
                 ;;
         esac
     else
@@ -119,7 +119,7 @@ case "$OS" in
             echo ""
             echo "==> Xcode Command Line Tools are required."
             echo "    Installing (a system dialog will appear)..."
-            xcode-select --install 2>/dev/null || true
+            xcode-select --install </dev/null 2>/dev/null || true
             echo "    After the installation completes, please re-run this script."
             exit 1
         fi
@@ -152,7 +152,7 @@ if [ -n "$MISSING" ]; then
                 echo "    Install Homebrew from https://brew.sh then re-run this script."
                 exit 1
             fi
-            brew install $MISSING
+            brew install $MISSING </dev/null
             ;;
         linux|wsl)
             if command -v apt-get >/dev/null 2>&1; then
@@ -171,11 +171,52 @@ else
 fi
 
 # ── Install uv ──
-if ! command -v uv >/dev/null 2>&1; then
+UV_MIN_VERSION="0.7.14"
+
+version_ge() {
+    # returns 0 if $1 >= $2
+    _a=$1
+    _b=$2
+
+    while [ -n "$_a" ] || [ -n "$_b" ]; do
+        _a_part=${_a%%.*}
+        _b_part=${_b%%.*}
+
+        [ "$_a" = "$_a_part" ] && _a="" || _a=${_a#*.}
+        [ "$_b" = "$_b_part" ] && _b="" || _b=${_b#*.}
+
+        [ -z "$_a_part" ] && _a_part=0
+        [ -z "$_b_part" ] && _b_part=0
+
+        if [ "$_a_part" -gt "$_b_part" ]; then
+            return 0
+        fi
+        if [ "$_a_part" -lt "$_b_part" ]; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+_uv_version_ok() {
+    _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
+    [ -n "$_raw" ] || return 1
+    _ver=${_raw%%[-+]*}
+    case "$_ver" in
+        ''|*[!0-9.]*) return 1 ;;
+    esac
+    version_ge "$_ver" "$UV_MIN_VERSION" || return 1
+    # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
+    [ "$_ver" = "$UV_MIN_VERSION" ] && [ "$_raw" != "$_ver" ] && return 1
+    return 0
+}
+
+if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     echo "==> Installing uv package manager..."
     _uv_tmp=$(mktemp)
     download "https://astral.sh/uv/install.sh" "$_uv_tmp"
-    sh "$_uv_tmp"
+    sh "$_uv_tmp" </dev/null
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
@@ -197,7 +238,17 @@ echo "==> Installing unsloth (this may take a few minutes)..."
 uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
 
 # ── Run studio setup ──
+# Ensure the venv's Python is on PATH for setup.sh's Python discovery.
+# On macOS the system Python may be outside the 3.11-3.13 range that
+# setup.sh requires, but uv already installed a compatible interpreter
+# inside the venv.
+VENV_ABS_BIN="$(cd "$VENV_NAME/bin" && pwd)"
+if [ -n "$VENV_ABS_BIN" ]; then
+    export PATH="$VENV_ABS_BIN:$PATH"
+fi
+
 echo "==> Running unsloth studio setup..."
+REQUESTED_PYTHON_VERSION="$(cd "$VENV_NAME/bin" && pwd)/python" \
 "$VENV_NAME/bin/unsloth" studio setup </dev/null
 
 echo ""
@@ -205,6 +256,7 @@ echo "========================================="
 echo "   Unsloth Studio installed!"
 echo "========================================="
 echo ""
+
 echo "  To launch, run:"
 echo ""
 echo "    source ${VENV_NAME}/bin/activate"

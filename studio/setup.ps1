@@ -176,7 +176,7 @@ function Get-PytorchCudaTag {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($cmd) { $cmd.Source } else { $null }
     }
-    if (-not $smiExe) { return "cu124" }
+    if (-not $smiExe) { return "cu126" }
 
     try {
         # 2>&1 | Out-String merges stderr into stdout then converts to a single
@@ -190,11 +190,13 @@ function Get-PytorchCudaTag {
             if ($major -ge 13) { return "cu130" }
             if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
             if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
-            return "cu124"
+            if ($major -ge 12) { return "cu124" }
+            if ($major -ge 11) { return "cu118" }
+            return "cpu"
         }
     } catch { }
 
-    return "cu124"
+    return "cu126"
 }
 
 # Find Visual Studio Build Tools for cmake -G flag.
@@ -969,6 +971,67 @@ Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundC
 # Always create a .venv for isolation -- even for pip installs.
 # Created in the repo root (parent of studio/).
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
+
+# Stale-venv detection: if the venv exists but its torch flavor no longer
+# matches the current machine, wipe it so we get a clean install.
+if (Test-Path $VenvDir -PathType Container) {
+    $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    $installedTorchTag = $null
+    $shouldRebuild = $false
+
+    if (Test-Path $VenvPyExe) {
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $VenvPyExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
+            $finished = $proc.WaitForExit(30000)
+            if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
+                if ($torchVer -match '\+(cu\d+)') {
+                    $installedTorchTag = $Matches[1]
+                } elseif ($torchVer -match '\+cpu') {
+                    $installedTorchTag = "cpu"
+                } else {
+                    # Untagged wheel (plain "2.x.y" from PyPI) -- treat as cpu
+                    $installedTorchTag = "cpu"
+                }
+            } else {
+                if (-not $finished) { try { $proc.Kill() } catch {} }
+                $shouldRebuild = $true
+            }
+        } catch {
+            $shouldRebuild = $true
+        }
+    } else {
+        # Missing python.exe means the venv is incomplete -- rebuild it.
+        $shouldRebuild = $true
+    }
+
+    if (-not $shouldRebuild) {
+        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+            $shouldRebuild = $true
+        }
+    }
+
+    if ($shouldRebuild) {
+        $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
+        Write-Host "   [INFO] Stale venv detected ($reason) -- rebuilding..." -ForegroundColor Yellow
+        try {
+            Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
@@ -1050,6 +1113,19 @@ Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH 
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} else {
+    $CuTag = "cpu"
+}
+
+if ($CuTag -eq "cpu") {
+    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        exit 1
+    }
+} else {
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
     Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
     $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
@@ -1067,14 +1143,6 @@ if ($HasNvidiaSmi) {
         Write-Host $output -ForegroundColor Yellow
     } else {
         Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
-    }
-} else {
-    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
-    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        exit 1
     }
 }
 
