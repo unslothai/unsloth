@@ -184,7 +184,9 @@ function Install-UnslothStudio {
     if ($HasNvidiaSmi) {
         Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat and data recipes mode only." -ForegroundColor Yellow
+        Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
+        Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
+        Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -199,9 +201,12 @@ function Install-UnslothStudio {
                 if ($major -ge 13)                    { return "$baseUrl/cu130" }
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
                 if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
-                return "$baseUrl/cu124"
+                if ($major -ge 12) { return "$baseUrl/cu124" }
+                # CUDA 11.x or older: cu124+ wheels require driver >= 12.1, fall back to CPU
+                return "$baseUrl/cpu"
             }
         } catch {}
+        Write-Host "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu124" -ForegroundColor Yellow
         return "$baseUrl/cu124"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
@@ -211,14 +216,14 @@ function Install-UnslothStudio {
     # already present in the venv, preventing the solver from falling back to
     # unsloth==2024.8 (a pre-CLI release that ships no unsloth.exe).
     Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-    uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
+    uv pip install --python $VenvPython --upgrade torch torchvision torchaudio --index-url $TorchIndexUrl
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
 
     Write-Host "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python $VenvPython unsloth
+    uv pip install --python $VenvPython --upgrade unsloth
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
