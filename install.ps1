@@ -201,7 +201,7 @@ function Install-UnslothStudio {
                 if ($major -ge 13)                    { return "$baseUrl/cu130" }
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
                 if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
-                if ($major -ge 12) { return "$baseUrl/cu126" }
+                if ($major -ge 12) { return "$baseUrl/cu124" }
                 if ($major -ge 11) { return "$baseUrl/cu118" }
                 return "$baseUrl/cpu"
             }
