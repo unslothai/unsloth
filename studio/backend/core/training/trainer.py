@@ -12,8 +12,28 @@ import sys
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Ensure compiled cache modules are importable by any subprocess.
+# On spawn-based platforms (Windows, macOS), spawned dataset.map() workers must
+# re-import all top-level modules. The compiled cache's trainer files import
+# torch and unsloth_zoo (which initializes CUDA), making spawn impractical.
+# Propagating UNSLOTH_COMPILE_LOCATION via PYTHONPATH ensures any subprocess
+# (not just Pool workers) can find compiled modules.
+# NOTE: Do NOT import unsloth_zoo.compiler here -- it triggers heavy torch/triton imports.
+if sys.platform in ("win32", "darwin"):
+    _compile_cache = os.environ.get(
+        "UNSLOTH_COMPILE_LOCATION", "unsloth_compiled_cache"
+    )
+    if not os.path.isabs(_compile_cache):
+        _compile_cache = os.path.abspath(_compile_cache)
+        os.environ["UNSLOTH_COMPILE_LOCATION"] = _compile_cache
+    _pp = os.environ.get("PYTHONPATH", "")
+    if _compile_cache not in _pp.split(os.pathsep):
+        os.environ["PYTHONPATH"] = _compile_cache + (os.pathsep + _pp if _pp else "")
+    if _compile_cache not in sys.path:
+        sys.path.insert(0, _compile_cache)
+
 import torch
-from utils.hardware import clear_gpu_cache, safe_num_proc
+from utils.hardware import clear_gpu_cache, safe_num_proc, dataset_map_num_proc
 
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
@@ -1465,7 +1485,10 @@ class UnslothTrainer:
 
         self._update_progress(status_message = "Formatting audio VLM dataset...")
         dataset = dataset.map(
-            format_messages, batched = True, batch_size = 4, num_proc = safe_num_proc(4)
+            format_messages,
+            batched = True,
+            batch_size = 4,
+            num_proc = dataset_map_num_proc(4),
         )
         logger.info(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
         return dataset
@@ -2980,9 +3003,11 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
                 "include_num_input_tokens_seen": True,  # Enable token counting
-                "dataset_num_proc": 1
-                if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
-                else safe_num_proc(max(1, os.cpu_count() // 4)),
+                "dataset_num_proc": dataset_map_num_proc(
+                    1
+                    if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
+                    else max(1, (os.cpu_count() or 1) // 4)
+                ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
             }
             if training_args.get("enable_tensorboard", False):
@@ -2993,9 +3018,10 @@ class UnslothTrainer:
                 f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})"
             )
 
-            # On Windows with transformers 5.x, disable DataLoader multiprocessing
-            # to avoid issues with modified sys.path (.venv_t5) in spawned workers.
-            if sys.platform == "win32":
+            # On spawn-based platforms (Windows, macOS) with transformers 5.x,
+            # disable DataLoader multiprocessing to avoid issues with modified
+            # sys.path (.venv_t5) in spawned workers.
+            if sys.platform in ("win32", "darwin"):
                 import transformers as _tf
 
                 if _tf.__version__.startswith("5."):
