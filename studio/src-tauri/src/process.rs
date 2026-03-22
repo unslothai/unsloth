@@ -56,30 +56,22 @@ fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
     // In dev mode, check for local repo venv first
     #[cfg(debug_assertions)]
     {
-        // Look for .venv/bin/unsloth relative to the workspace root
-        // (Tauri runs from studio/src-tauri, workspace is 2 levels up)
-        let dev_paths = [
-            // From studio/src-tauri -> ../../.venv/bin/unsloth
-            std::path::PathBuf::from("../../.venv/bin/unsloth"),
-            // Absolute common dev path
-            std::path::PathBuf::from(
-                std::env::var("CARGO_MANIFEST_DIR")
-                    .unwrap_or_default(),
-            )
-            .join("../../.venv/bin/unsloth"),
-        ];
+        // CARGO_MANIFEST_DIR is set at compile time to studio/src-tauri/
+        // Repo root is 2 levels up: studio/src-tauri -> studio -> repo_root
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let repo_root = std::path::Path::new(manifest_dir)
+            .parent() // studio/
+            .and_then(|p| p.parent()); // repo_root/
 
-        for path in &dev_paths {
-            let resolved = if path.is_relative() {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(path))
-                    .unwrap_or_else(|_| path.clone())
-            } else {
-                path.clone()
-            };
-            if resolved.exists() {
-                info!("Dev mode: using local repo backend at {:?}", resolved);
-                return Ok(resolved);
+        if let Some(root) = repo_root {
+            #[cfg(unix)]
+            let dev_bin = root.join(".venv/bin/unsloth");
+            #[cfg(windows)]
+            let dev_bin = root.join(".venv/Scripts/unsloth.exe");
+
+            if dev_bin.exists() {
+                info!("Dev mode: using local repo backend at {:?}", dev_bin);
+                return Ok(dev_bin.to_path_buf());
             }
         }
         info!("Dev mode: no local .venv found, falling back to installed backend");
