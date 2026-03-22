@@ -492,7 +492,7 @@ class TrainingBackend:
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
-                if step >= 0 and loss is not None:
+                if step >= 0 and loss is not None and loss > 0:
                     self.loss_history.append(loss)
                     self.lr_history.append(lr if lr is not None else 0.0)
                     self.step_history.append(step)
