@@ -972,15 +972,24 @@ $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.
-if (Test-Path $VenvDir) {
+if (Test-Path $VenvDir -PathType Container) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
 
     if (Test-Path $VenvPyExe) {
         try {
-            $torchVer = (& $VenvPyExe -c "import torch; print(torch.__version__)" 2>$null | Out-String).Trim()
-            if ($LASTEXITCODE -eq 0 -and $torchVer) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $VenvPyExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
+            $finished = $proc.WaitForExit(30000)
+            if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
                 if ($torchVer -match '\+(cu\d+)') {
                     $installedTorchTag = $Matches[1]
                 } elseif ($torchVer -match '\+cpu') {
@@ -990,18 +999,22 @@ if (Test-Path $VenvDir) {
                     $installedTorchTag = "cpu"
                 }
             } else {
+                if (-not $finished) { try { $proc.Kill() } catch {} }
                 $shouldRebuild = $true
             }
         } catch {
             $shouldRebuild = $true
         }
-    }
-    # No python.exe in venv but venv dir exists -- leave it alone,
-    # the venv creation step below will handle it.
-
-    $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
-    if (-not $shouldRebuild -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+    } else {
+        # Missing python.exe means the venv is incomplete -- rebuild it.
         $shouldRebuild = $true
+    }
+
+    if (-not $shouldRebuild) {
+        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+            $shouldRebuild = $true
+        }
     }
 
     if ($shouldRebuild) {
@@ -1010,8 +1023,9 @@ if (Test-Path $VenvDir) {
         try {
             Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
-            Write-Host "   [WARN] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host "         Close any running Studio/Python processes and re-run setup." -ForegroundColor Yellow
+            Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
+            exit 1
         }
     }
 }
