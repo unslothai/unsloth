@@ -1,8 +1,17 @@
 #!/bin/sh
 # Unsloth Studio Installer
-# Usage (curl): curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
-# Usage (wget): wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+# Usage (curl):  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+# Usage (wget):  wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+# Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
 set -e
+
+# ── Parse flags ──
+STUDIO_LOCAL_INSTALL=false
+for arg in "$@"; do
+    case "$arg" in
+        --local) STUDIO_LOCAL_INSTALL=true ;;
+    esac
+done
 
 PYTHON_VERSION="3.13"
 STUDIO_HOME="$HOME/.unsloth/studio"
@@ -236,16 +245,32 @@ else
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
-echo "==> Installing unsloth (this may take a few minutes)..."
-uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
+if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+    echo "==> Installing unsloth from local repo (editable)..."
+    uv pip install --python "$VENV_DIR/bin/python" -e . --torch-backend=auto
+else
+    echo "==> Installing unsloth (this may take a few minutes)..."
+    uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
+fi
 
 # ── Run studio setup ──
-# Find setup.sh inside the installed unsloth package and call it directly,
-# rather than going through the CLI (which may not have the latest commands).
-SETUP_SH=$("$VENV_DIR/bin/python" -c "
+# When --local, use the repo's own setup.sh directly.
+# Otherwise, find it inside the installed package.
+SETUP_SH=""
+if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+    # Resolve relative to the script (or CWD if piped)
+    _SCRIPT_DIR="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+    if [ -f "$_SCRIPT_DIR/studio/setup.sh" ]; then
+        SETUP_SH="$_SCRIPT_DIR/studio/setup.sh"
+    fi
+fi
+
+if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    SETUP_SH=$("$VENV_DIR/bin/python" -c "
 import importlib.resources
 print(importlib.resources.files('studio') / 'setup.sh')
 " 2>/dev/null || echo "")
+fi
 
 # Fallback: search site-packages
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
@@ -264,7 +289,11 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
-SKIP_STUDIO_BASE=1 bash "$SETUP_SH" </dev/null
+_SETUP_ENV="SKIP_STUDIO_BASE=1"
+if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+    _SETUP_ENV="$_SETUP_ENV STUDIO_LOCAL_INSTALL=1"
+fi
+env $_SETUP_ENV bash "$SETUP_SH" </dev/null
 
 # ── Make 'unsloth' available globally via ~/.local/bin ──
 mkdir -p "$HOME/.local/bin"

@@ -258,7 +258,7 @@ cd "$SCRIPT_DIR"
 # Compare installed unsloth version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
 _SKIP_PYTHON_DEPS=false
-if [ "${SKIP_STUDIO_BASE:-0}" != "1" ]; then
+if [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed unsloth)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 from importlib.metadata import version

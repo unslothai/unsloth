@@ -194,8 +194,12 @@ def setup():
 
 
 @studio_app.command()
-def update():
+def update(
+    local: bool = typer.Option(False, "--local", help="Install from local repo instead of PyPI"),
+):
     """Update Unsloth Studio dependencies and rebuild."""
+    if local:
+        os.environ["STUDIO_LOCAL_INSTALL"] = "1"
     _run_setup_script()
 
 

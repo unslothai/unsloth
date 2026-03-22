@@ -297,6 +297,8 @@ def install_python_stack() -> int:
     # When called from "unsloth studio update", it is NOT set so base packages
     # (unsloth + unsloth-zoo) are always reinstalled to pick up new versions.
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
+    # When --local is used, install from the local repo in editable mode
+    local_install = os.environ.get("STUDIO_LOCAL_INSTALL", "0") == "1"
     base_total = 10 if IS_WINDOWS else 11
     _TOTAL = (base_total - 1) if skip_base else base_total
 
@@ -316,6 +318,13 @@ def install_python_stack() -> int:
     # 3. Core packages: unsloth-zoo + unsloth
     if skip_base:
         print(_green("✅ unsloth already installed — skipping base packages"))
+    elif local_install:
+        _progress("base packages (local)")
+        pip_install(
+            "Installing unsloth from local repo",
+            "--no-cache-dir",
+            "-e", str(SCRIPT_DIR.parent),  # repo root
+        )
     else:
         _progress("base packages")
         pip_install(
