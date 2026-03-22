@@ -1,9 +1,7 @@
 use log::{error, info, warn};
 use std::io::BufRead;
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter};
-#[cfg(unix)]
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Emit an install-progress event to the frontend.
 fn emit_progress(app: &AppHandle, message: &str) {
@@ -186,9 +184,15 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
 }
 
 // ─── Windows implementation ─────────────────────────────────────────────────
+// Runs the top-level install.ps1 (bundled as a Tauri resource), which handles
+// Python installation, uv, PATH refresh, venv creation, and `unsloth studio setup`.
+// This mirrors the Unix approach of running the existing installer script rather
+// than reimplementing the install logic in Rust.
 
 #[cfg(windows)]
 pub fn run_install(app: AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
     emit_progress(&app, "Starting installation on Windows...");
 
     let home = dirs::home_dir().ok_or_else(|| {
@@ -197,107 +201,77 @@ pub fn run_install(app: AppHandle) -> Result<(), String> {
         msg
     })?;
 
-    // Pre-compute all paths as owned Strings to avoid lifetime issues with to_string_lossy()
     let unsloth_dir = home.join(".unsloth");
-    let venv_dir = unsloth_dir.join("unsloth_studio");
-    let python_path = venv_dir.join("Scripts").join("python.exe");
-    let unsloth_exe = venv_dir.join("Scripts").join("unsloth.exe");
-
-    let unsloth_dir_str = unsloth_dir.to_string_lossy().to_string();
-    let venv_dir_str = venv_dir.to_string_lossy().to_string();
-    let python_path_str = python_path.to_string_lossy().to_string();
-    let unsloth_exe_str = unsloth_exe.to_string_lossy().to_string();
 
     // Create ~/.unsloth/ directory
     if !unsloth_dir.exists() {
         std::fs::create_dir_all(&unsloth_dir).map_err(|e| {
-            let msg = format!("Failed to create {}: {}", unsloth_dir_str, e);
+            let msg = format!("Failed to create {}: {}", unsloth_dir.display(), e);
             emit_failed(&app, &msg);
             msg
         })?;
     }
+    emit_progress(&app, &format!("{} directory ready.", unsloth_dir.display()));
 
-    // Define the 4 install steps
-    struct InstallStep {
-        description: String,
-        program: String,
-        args: Vec<String>,
-    }
-
-    let steps = vec![
-        InstallStep {
-            description: "Installing uv package manager...".to_string(),
-            program: "powershell".to_string(),
-            args: vec![
-                "-Command".to_string(),
-                "irm https://astral.sh/uv/install.ps1 | iex".to_string(),
-            ],
-        },
-        InstallStep {
-            description: "Creating Python virtual environment...".to_string(),
-            program: "uv".to_string(),
-            args: vec![
-                "venv".to_string(),
-                venv_dir_str.clone(),
-                "--python".to_string(),
-                "3.13".to_string(),
-            ],
-        },
-        InstallStep {
-            description: "Installing Unsloth...".to_string(),
-            program: "uv".to_string(),
-            args: vec![
-                "pip".to_string(),
-                "install".to_string(),
-                format!("--python={}", python_path_str),
-                "unsloth".to_string(),
-                "--torch-backend=auto".to_string(),
-            ],
-        },
-        InstallStep {
-            description: "Running Unsloth Studio setup...".to_string(),
-            program: unsloth_exe_str.clone(),
-            args: vec!["studio".to_string(), "setup".to_string()],
-        },
-    ];
-
-    for (i, step) in steps.iter().enumerate() {
-        emit_progress(&app, &format!("Step {}/{}: {}", i + 1, steps.len(), step.description));
-
-        let mut child = Command::new(&step.program)
-            .args(&step.args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                let msg = format!("Failed to spawn '{}': {}", step.program, e);
-                emit_failed(&app, &msg);
-                msg
-            })?;
-
-        stream_child_output(&app, &mut child);
-
-        let status = child.wait().map_err(|e| {
-            let msg = format!("Failed to wait on '{}': {}", step.program, e);
+    // Resolve bundled install.ps1 from Tauri resources
+    let install_script = app
+        .path()
+        .resolve("resources/install.ps1", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| {
+            let msg = format!("Failed to resolve install.ps1 resource: {}", e);
             emit_failed(&app, &msg);
             msg
         })?;
 
-        if !status.success() {
-            let code = status.code().unwrap_or(-1);
-            let msg = format!(
-                "Step {} ('{}') failed with exit code {}",
-                i + 1,
-                step.description,
-                code
-            );
-            emit_failed(&app, &msg);
-            return Err(msg);
-        }
-
-        emit_progress(&app, &format!("Step {}/{} completed successfully.", i + 1, steps.len()));
+    if !install_script.exists() {
+        let msg = format!(
+            "install.ps1 not found at resolved path: {}",
+            install_script.display()
+        );
+        emit_failed(&app, &msg);
+        return Err(msg);
     }
+    emit_progress(
+        &app,
+        &format!("Using install script: {}", install_script.display()),
+    );
 
-    emit_complete(&app);
-    Ok(())
+    // Run install.ps1 with cwd = ~/.unsloth/
+    emit_progress(&app, "Running install.ps1...");
+    let mut child = Command::new("powershell")
+        .args([
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &install_script.to_string_lossy(),
+        ])
+        .current_dir(&unsloth_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            let msg = format!("Failed to spawn install.ps1: {}", e);
+            emit_failed(&app, &msg);
+            msg
+        })?;
+
+    // Stream stdout/stderr line-by-line
+    stream_child_output(&app, &mut child);
+
+    // Check exit status
+    let status = child.wait().map_err(|e| {
+        let msg = format!("Failed to wait on install.ps1: {}", e);
+        emit_failed(&app, &msg);
+        msg
+    })?;
+
+    if status.success() {
+        emit_complete(&app);
+        Ok(())
+    } else {
+        let code = status.code().unwrap_or(-1);
+        let msg = format!("install.ps1 exited with code {}", code);
+        emit_failed(&app, &msg);
+        Err(msg)
+    }
 }
