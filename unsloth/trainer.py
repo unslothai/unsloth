@@ -215,7 +215,8 @@ class UnslothTrainer(SFTTrainer):
         # --- Q-GaLore optimizer ---
         q_galore_config = getattr(self.args, "q_galore_config", None)
         if q_galore_config is not None and self.optimizer is None:
-            return self._create_q_galore_optimizer(q_galore_config)
+            embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+            return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
 
         # --- Embedding-LR optimizer ---
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
@@ -234,7 +235,7 @@ class UnslothTrainer(SFTTrainer):
             )
         return self.optimizer
 
-    def _create_q_galore_optimizer(self, config: "QGaloreConfig"):
+    def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr=None):
         """Build the Q-GaLore optimizer from a QGaloreConfig."""
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
@@ -263,10 +264,51 @@ class UnslothTrainer(SFTTrainer):
             target_modules = config.target_modules,
         )
 
+        # --- Split embedding params with custom LR (Fix #2) ---
+        if embedding_lr is not None:
+            new_groups = []
+            for group in param_groups:
+                if "rank" in group:
+                    # GaLore group — keep as-is (embeddings are never in here)
+                    new_groups.append(group)
+                    continue
+                # Non-GaLore group: split out embedding params
+                embed_params = []
+                other_params = []
+                for p in group["params"]:
+                    # Check if this param belongs to a modules_to_save embedding
+                    is_embed = False
+                    for name, param in self.model.named_parameters():
+                        if param is p and name.endswith("modules_to_save.default.weight"):
+                            partial_name = name[: -len(".modules_to_save.default.weight")]
+                            partial_name = partial_name[partial_name.rfind(".") + 1 :]
+                            print(
+                                f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
+                            )
+                            is_embed = True
+                            break
+                    if is_embed:
+                        embed_params.append(p)
+                    else:
+                        other_params.append(p)
+                if other_params:
+                    other_group = dict(group)
+                    other_group["params"] = other_params
+                    new_groups.append(other_group)
+                if embed_params:
+                    embed_group = dict(group)
+                    embed_group["params"] = embed_params
+                    embed_group["lr"] = embedding_lr
+                    new_groups.append(embed_group)
+            param_groups = new_groups
+
+        # --- Forward optimizer hyperparameters (Fix #3) ---
         self.optimizer = QGaLoreAdamW8bit(
             param_groups,
             lr = lr,
             weight_decay = weight_decay,
+            betas = (self.args.adam_beta1, self.args.adam_beta2),
+            eps = self.args.adam_epsilon,
         )
 
         # Initialize INT8 weight quantization if enabled
