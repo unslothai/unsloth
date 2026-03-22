@@ -20,6 +20,26 @@ import {
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 
+/** Server-side usage data from llama-server (via stream_options.include_usage). */
+interface ServerUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/** Server-side timing data from llama-server's timings object. */
+interface ServerTimings {
+  prompt_n: number;
+  cache_n: number;
+  prompt_ms: number;
+  prompt_per_token_ms: number;
+  prompt_per_second: number;
+  predicted_n: number;
+  predicted_ms: number;
+  predicted_per_token_ms: number;
+  predicted_per_second: number;
+}
+
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
@@ -27,21 +47,24 @@ type RunMessage = RunMessages[number];
 export const sentAudioNames = new Map<string, string>();
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] {
+function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
   if (!raw) return [];
   const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] = [];
+  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] = [];
   for (const block of blocks) {
     const titleMatch = block.match(/Title:\s*(.+)/);
     const urlMatch = block.match(/URL:\s*(.+)/);
+    const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
       const url = urlMatch[1].trim();
+      const snippet = snippetMatch?.[1]?.trim();
       sources.push({
         type: "source" as const,
         sourceType: "url" as const,
         id: url,
         url,
         title: titleMatch[1].trim(),
+        ...(snippet ? { metadata: { description: snippet } } : {}),
       });
     }
   }
@@ -63,6 +86,7 @@ function buildTiming(
   totalStreamTime?: number,
   tokenCount?: number,
   toolCallCount = 0,
+  tokensPerSecondOverride?: number,
 ): MessageTiming {
   return {
     streamStartTime,
@@ -70,11 +94,12 @@ function buildTiming(
     totalStreamTime,
     tokenCount,
     tokensPerSecond:
-      typeof totalStreamTime === "number" &&
+      tokensPerSecondOverride ??
+      (typeof totalStreamTime === "number" &&
       totalStreamTime > 0 &&
       typeof tokenCount === "number"
         ? tokenCount / (totalStreamTime / 1000)
-        : undefined,
+        : undefined),
     totalChunks,
     toolCallCount,
   };
@@ -528,6 +553,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -610,6 +636,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             continue;
           }
 
+          // OpenAI-standard usage chunk: choices=[], usage populated
+          if (chunk.choices?.length === 0 && chunk.usage) {
+            serverMetadata = {
+              usage: chunk.usage,
+              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+            };
+            continue;
+          }
+
           totalChunks += 1;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (!delta) {
@@ -654,6 +689,37 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
         });
 
+        const meta = serverMetadata;
+        const finalTokenCount = meta?.usage?.completion_tokens
+          ?? estimateTokenCount(cumulativeText);
+        const finalTokPerSec = meta?.timings?.predicted_per_second;
+        const serverPromptEvalTime = meta?.timings?.prompt_ms;
+
+        // Update context usage in store if we got valid server data
+        if (
+          meta?.usage &&
+          typeof meta.usage.prompt_tokens === "number" &&
+          typeof meta.usage.completion_tokens === "number" &&
+          typeof meta.usage.total_tokens === "number"
+        ) {
+          useChatRuntimeStore.getState().setContextUsage({
+            promptTokens: meta.usage.prompt_tokens,
+            completionTokens: meta.usage.completion_tokens,
+            totalTokens: meta.usage.total_tokens,
+            cachedTokens: meta.timings?.cache_n ?? 0,
+          });
+        }
+
+        const finalTiming = buildTiming(
+          streamStartTime,
+          totalChunks,
+          serverPromptEvalTime ?? firstTokenTime,
+          Date.now() - streamStartTime,
+          finalTokenCount,
+          toolCallParts.length,
+          finalTokPerSec,
+        );
+
         yield {
           content: [
             ...toolCallParts,
@@ -661,15 +727,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...sourceParts,
           ],
           metadata: {
-            timing: buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(cumulativeText),
-              toolCallParts.length,
-            ),
-            custom: { reasoningDuration },
+            timing: finalTiming,
+            custom: {
+              reasoningDuration,
+              serverTimings: meta?.timings ?? undefined,
+              contextUsage: meta?.usage ? {
+                promptTokens: meta.usage.prompt_tokens,
+                completionTokens: meta.usage.completion_tokens,
+                totalTokens: meta.usage.total_tokens,
+                cachedTokens: meta.timings?.cache_n ?? 0,
+                modelId: params.checkpoint,
+              } : undefined,
+              timing: finalTiming,
+            },
           },
         };
       } catch (err) {
