@@ -188,10 +188,10 @@ version_ge() {
         [ -z "$_a_part" ] && _a_part=0
         [ -z "$_b_part" ] && _b_part=0
 
-        if [ "$_a_part" -gt "$_b_part" ] 2>/dev/null; then
+        if [ "$_a_part" -gt "$_b_part" ]; then
             return 0
         fi
-        if [ "$_a_part" -lt "$_b_part" ] 2>/dev/null; then
+        if [ "$_a_part" -lt "$_b_part" ]; then
             return 1
         fi
     done
