@@ -235,7 +235,8 @@ fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
 echo "==> Installing unsloth (this may take a few minutes)..."
-uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
+# uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
+uv pip install --python "$VENV_NAME/bin/python" /home/mathew/packages/unsloth --torch-backend=auto
 
 # ── Run studio setup ──
 # Ensure the venv's Python is on PATH for setup.sh's Python discovery.
@@ -257,21 +258,54 @@ echo "   Unsloth Studio installed!"
 echo "========================================="
 echo ""
 
+find_open_port() {
+    "$VENV_NAME/bin/python" - "$1" "$2" <<'PY'
+import socket
+import sys
+
+start_port = int(sys.argv[1])
+end_port = int(sys.argv[2])
+
+for port in range(start_port, end_port + 1):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("0.0.0.0", port))
+        except OSError:
+            continue
+    print(port)
+    raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+STUDIO_HOST="0.0.0.0"
+START_PORT=8888
+END_PORT=8898
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 0 ]; then
+if [ -t 1 ] && [ -t 2 ]; then
+    STUDIO_PORT=$(find_open_port "$START_PORT" "$END_PORT") || {
+        echo "Error: could not find an open port for Unsloth Studio between 8888 and 8898."
+        echo "  To launch, free port 8888 and run:"
+        echo ""
+        echo "    source ${VENV_NAME}/bin/activate"
+        echo "    unsloth studio -H ${STUDIO_HOST} -p 8888"
+        echo ""
+        exit 1
+    }
     echo "  To launch, run:"
     echo ""
     echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo "    unsloth studio -H ${STUDIO_HOST} -p ${STUDIO_PORT}"
     echo ""
     echo "==> Auto Launching Unsloth Studio..."
     echo ""
-    exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
+    exec "$VENV_NAME/bin/unsloth" studio -H "$STUDIO_HOST" -p "$STUDIO_PORT"
 else
     echo "  To launch, run:"
     echo ""
     echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo "    unsloth studio -H ${STUDIO_HOST} -p 8888"
     echo ""
 fi
