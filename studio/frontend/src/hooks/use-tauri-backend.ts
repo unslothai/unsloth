@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
 
 type BackendStatus =
@@ -15,8 +15,12 @@ type BackendStatus =
 
 export function useTauriBackend() {
   const [status, setStatus] = useState<BackendStatus>("checking");
+  const statusRef = useRef<BackendStatus>(status);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Keep ref in sync for event listener closures
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   async function checkInstallAndStart() {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -75,6 +79,13 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
+      // If invoke resolves successfully, install completed.
+      // The install-complete event may also fire, but this is a safety net
+      // in case the event listener wasn't attached yet.
+      if (statusRef.current === "installing") {
+        setStatus("starting");
+        await startServer();
+      }
     } catch (e) {
       setStatus("error");
       setError(String(e));
@@ -127,6 +138,15 @@ export function useTauriBackend() {
 
       listen<string>("server-log", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
+      }).then((u) => cleanup.push(u));
+
+      listen<void>("tray-toggle-server", () => {
+        // Toggle server based on current status
+        if (statusRef.current === "running") {
+          stopServer();
+        } else if (statusRef.current === "stopped" || statusRef.current === "error") {
+          retry();
+        }
       }).then((u) => cleanup.push(u));
     });
 

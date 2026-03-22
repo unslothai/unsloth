@@ -147,6 +147,7 @@ fn read_output_stream<R: std::io::Read>(
                                 if let Ok(mut proc) = state.lock() {
                                     proc.port = Some(port);
                                 }
+                                let _ = app.emit("server-port", port);
                             }
                         }
                     }
