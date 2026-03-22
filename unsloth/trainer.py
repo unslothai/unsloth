@@ -269,7 +269,7 @@ class UnslothTrainer(SFTTrainer):
         if embedding_lr is not None:
             # Build a fast param->name lookup (O(N) instead of O(N*M))
             param_to_name = {id(p): name for name, p in self.model.named_parameters()}
-            
+
             new_groups = []
             for group in param_groups:
                 if "rank" in group:

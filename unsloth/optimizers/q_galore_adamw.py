@@ -339,7 +339,9 @@ def make_q_galore_param_groups(
     Returns:
         List of two param group dicts: ``[galore_group, non_galore_group]``.
     """
-    targets = set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
+    targets = (
+        set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
+    )
 
     galore_params = []
     non_galore_params = []
