@@ -235,7 +235,7 @@ class UnslothTrainer(SFTTrainer):
             )
         return self.optimizer
 
-    def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr=None):
+    def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
         """Build the Q-GaLore optimizer from a QGaloreConfig."""
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
@@ -279,8 +279,12 @@ class UnslothTrainer(SFTTrainer):
                     # Check if this param belongs to a modules_to_save embedding
                     is_embed = False
                     for name, param in self.model.named_parameters():
-                        if param is p and name.endswith("modules_to_save.default.weight"):
-                            partial_name = name[: -len(".modules_to_save.default.weight")]
+                        if param is p and name.endswith(
+                            "modules_to_save.default.weight"
+                        ):
+                            partial_name = name[
+                                : -len(".modules_to_save.default.weight")
+                            ]
                             partial_name = partial_name[partial_name.rfind(".") + 1 :]
                             print(
                                 f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
