@@ -63,11 +63,12 @@ async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
     Ok(healthy && correct_service)
 }
 
-/// Scan ports 8888-8899 looking for an existing healthy backend.
+/// Scan ports 8888-8907 looking for an existing healthy backend.
+/// Range matches the backend's auto-increment range (up to +20 ports in run.py).
 #[tauri::command]
 pub async fn find_existing_server() -> Option<u16> {
-    info!("Scanning ports 8888-8899 for existing backend...");
-    for port in 8888..=8899 {
+    info!("Scanning ports 8888-8907 for existing backend...");
+    for port in 8888..=8907 {
         match check_health_inner(port).await {
             Ok(true) => {
                 info!("Found existing backend on port {}", port);
