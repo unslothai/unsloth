@@ -2,7 +2,9 @@
   "productName": "Unsloth Studio",
   "identifier": "ai.unsloth.studio",
   "build": {
-    "frontendDist": "../studio/frontend/dist",
+    "beforeDevCommand": "cd ../frontend && npm run dev",
+    "beforeBuildCommand": "cd ../frontend && npm run build",
+    "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173"
   },
   "app": {
