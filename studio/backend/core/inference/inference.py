@@ -927,6 +927,10 @@ class InferenceBackend:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
+        template_messages = []
+        if system_prompt:
+            template_messages.append({"role": "system", "content": system_prompt})
+        template_messages.extend(messages)
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -937,7 +941,7 @@ class InferenceBackend:
                     f"one via tokenizer.chat_template before inference."
                 )
             formatted_prompt = tokenizer.apply_chat_template(
-                messages, tokenize = False, add_generation_prompt = True
+                template_messages, tokenize = False, add_generation_prompt = True
             )
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -992,7 +996,10 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            vision_messages = [
+            vision_messages = []
+            if system_prompt:
+                vision_messages.append({"role": "system", "content": system_prompt})
+            vision_messages.append(
                 {
                     "role": "user",
                     "content": [
@@ -1000,7 +1007,7 @@ class InferenceBackend:
                         {"type": "text", "text": user_message},
                     ],
                 }
-            ]
+            )
 
             input_text = processor.apply_chat_template(
                 vision_messages, add_generation_prompt = True, tokenize = False
