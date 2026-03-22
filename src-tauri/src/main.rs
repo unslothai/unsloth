@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod install;
 mod process;
 
 use log::info;
@@ -50,6 +51,7 @@ fn main() {
         .manage(new_backend_state())
         .invoke_handler(tauri::generate_handler![
             commands::check_install_status,
+            commands::start_install,
             commands::start_server,
             commands::stop_server,
             commands::check_health,
