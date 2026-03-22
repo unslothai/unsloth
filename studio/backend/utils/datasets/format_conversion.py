@@ -435,9 +435,9 @@ def convert_to_vlm_format(
     if has_urls and total > PROBE_SIZE:
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from utils.hardware import safe_num_proc
+        from utils.hardware import safe_thread_num_proc
 
-        num_workers = safe_num_proc()
+        num_workers = safe_thread_num_proc()
         _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
         logger.info(
             f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers..."
@@ -521,9 +521,9 @@ def convert_to_vlm_format(
         # Parallel conversion for URL-based datasets
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from utils.hardware import safe_num_proc
+        from utils.hardware import safe_thread_num_proc
 
-        num_workers = safe_num_proc()
+        num_workers = safe_thread_num_proc()
         batch_size = 500
         start_time = time.time()
 

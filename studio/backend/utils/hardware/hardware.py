@@ -531,6 +531,29 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     return desired
 
 
+def safe_thread_num_proc(desired: Optional[int] = None) -> int:
+    """
+    Return a safe worker count for ``ThreadPoolExecutor`` calls.
+
+    Unlike ``safe_num_proc()``, this does NOT cap to 1 on macOS/Windows.
+    Threads share the parent process address space and are unaffected by
+    the ``spawn`` vs ``fork`` distinction.
+
+    Args:
+        desired: The thread count you *want*. If None, auto-computes
+                 from ``os.cpu_count()``.
+
+    Returns:
+        A safe integer >= 1.
+    """
+    import os
+
+    if desired is None or not isinstance(desired, int):
+        desired = max(1, os.cpu_count() // 3)
+
+    return desired
+
+
 def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     """
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
