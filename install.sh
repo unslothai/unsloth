@@ -243,15 +243,11 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# ── Create venv (skip if it already exists and has a valid interpreter) ──
+# ── Create venv (always start fresh) ──
 mkdir -p "$STUDIO_HOME"
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-    [ -e "$VENV_DIR" ] && rm -rf "$VENV_DIR"
-    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
-    uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
-else
-    echo "==> Virtual environment ${VENV_DIR} already exists, skipping creation."
-fi
+[ -e "$VENV_DIR" ] && rm -rf "$VENV_DIR"
+echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
+uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
