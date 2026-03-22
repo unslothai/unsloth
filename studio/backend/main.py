@@ -126,9 +126,23 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 # CORS middleware
+import os as _os
+_api_only = _os.environ.get("UNSLOTH_API_ONLY") == "1"
+_cors_origins = ["*"]
+if _api_only:
+    _cors_origins = [
+        "tauri://localhost",           # Linux/macOS Tauri webview
+        "http://tauri.localhost",      # Windows Tauri webview
+        "http://localhost",            # dev fallback
+    ]
+    _cors_origin_regex = r"^https?://localhost(:\d+)?$"
+else:
+    _cors_origin_regex = None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = ["*"],  # In production, specify allowed origins
+    allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],

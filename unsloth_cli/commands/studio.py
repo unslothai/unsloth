@@ -79,6 +79,7 @@ def studio_default(
     host: str = typer.Option("0.0.0.0", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    api_only: bool = typer.Option(False, "--api-only", help="Run API server only, no frontend serving (for Tauri desktop app)"),
 ):
     """Launch the Unsloth Studio server."""
     if ctx.invoked_subcommand is not None:
@@ -106,6 +107,8 @@ def studio_default(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
+            if api_only:
+                args.append("--api-only")
             # On Windows, os.execvp() spawns a child but the parent lingers,
             # so Ctrl+C only kills the parent leaving the child orphaned.
             # Use subprocess.run() on Windows so the parent waits for the child.
@@ -143,7 +146,7 @@ def studio_default(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_kwargs = dict(host = host, port = port, silent = silent)
+    run_kwargs = dict(host = host, port = port, silent = silent, api_only = api_only)
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)
