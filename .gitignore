@@ -204,6 +204,11 @@ tmp/
 **/node_modules/
 auth.db
 
+# Skill eval workspace (local test results)
+skills/*-workspace/
+config-local-dry-run.yaml
+data/train.jsonl
+
 # Local working docs
 **/CLAUDE.md
 **/claude.md

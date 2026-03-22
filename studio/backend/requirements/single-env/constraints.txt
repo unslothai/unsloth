@@ -14,3 +14,4 @@ mcp>=1.24,<2
 websockets>=15.0.1
 
 pandas==2.3.3
+chardet<6
