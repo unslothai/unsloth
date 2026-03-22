@@ -928,7 +928,9 @@ class InferenceBackend:
 
         # Step 2: Format with tokenizer.apply_chat_template()
         if system_prompt:
-            template_messages = [{"role": "system", "content": system_prompt}] + messages
+            template_messages = [
+                {"role": "system", "content": system_prompt}
+            ] + messages
         else:
             template_messages = messages
         try:
@@ -1004,7 +1006,10 @@ class InferenceBackend:
                 ],
             }
             if system_prompt:
-                vision_messages = [{"role": "system", "content": system_prompt}, user_msg]
+                vision_messages = [
+                    {"role": "system", "content": system_prompt},
+                    user_msg,
+                ]
             else:
                 vision_messages = [user_msg]
 
