@@ -1,4 +1,5 @@
 use crate::process::{self, BackendState};
+use crate::install;
 use log::{error, info};
 use tauri::AppHandle;
 
@@ -117,4 +118,14 @@ pub fn open_logs_dir() -> Result<(), String> {
     }
 
     open::that(&dir).map_err(|e| format!("Failed to open directory: {}", e))
+}
+
+/// Start the first-launch installation process.
+/// Runs install.sh on Unix or orchestrates native install on Windows.
+/// Streams progress via install-progress, install-complete, and install-failed events.
+#[tauri::command]
+pub async fn start_install(app: AppHandle) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || install::run_install(app))
+        .await
+        .map_err(|e| format!("Install task panicked: {e}"))?
 }
