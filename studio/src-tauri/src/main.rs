@@ -30,6 +30,15 @@ fn setup_logging() {
         let log_dir = home.join(".unsloth").join("studio");
         if fs::create_dir_all(&log_dir).is_ok() {
             let log_path = log_dir.join("tauri.log");
+            let rotated_path = log_dir.join("tauri.log.1");
+            let max_log_bytes = 5 * 1024 * 1024;
+            if fs::metadata(&log_path)
+                .map(|meta| meta.len() >= max_log_bytes)
+                .unwrap_or(false)
+            {
+                let _ = fs::remove_file(&rotated_path);
+                let _ = fs::rename(&log_path, &rotated_path);
+            }
             if let Ok(file) = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -57,24 +66,24 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&menu)
         .tooltip("Unsloth Studio")
         .icon(app.default_window_icon().unwrap().clone())
-        .on_menu_event(move |app, event| {
-            match event.id().as_ref() {
-                "open" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            "open" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
-                "toggle" => {
-                    let _ = app.emit("tray-toggle-server", ());
-                }
-                "quit" => {
-                    let state = app.state::<crate::process::BackendState>();
-                    let _ = crate::process::stop_backend(&state);
-                    app.exit(0);
-                }
-                _ => {}
             }
+            "toggle" => {
+                let _ = app.emit("tray-toggle-server", ());
+            }
+            "quit" => {
+                let install_state = app.state::<crate::install::InstallState>();
+                let _ = crate::install::stop_install(&install_state);
+                let state = app.state::<crate::process::BackendState>();
+                let _ = crate::process::stop_backend(&state);
+                app.exit(0);
+            }
+            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -99,7 +108,14 @@ fn main() {
     info!("Unsloth Studio desktop app starting");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_process::init())
+        .manage(install::new_install_state())
         .manage(new_backend_state())
         .invoke_handler(tauri::generate_handler![
             commands::check_install_status,

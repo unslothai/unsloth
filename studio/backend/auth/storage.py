@@ -6,6 +6,7 @@ SQLite storage for authentication data (user credentials + JWT secret).
 """
 
 import hashlib
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -54,6 +55,10 @@ def generate_bootstrap_password() -> str:
     # before the user changes the password.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
     _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
+    try:
+        os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
+    except OSError:
+        pass
 
     return _bootstrap_password
 
