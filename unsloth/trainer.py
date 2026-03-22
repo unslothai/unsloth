@@ -266,6 +266,9 @@ class UnslothTrainer(SFTTrainer):
 
         # --- Split embedding params with custom LR (Fix #2) ---
         if embedding_lr is not None:
+            # Build a fast param->name lookup (O(N) instead of O(N*M))
+            param_to_name = {id(p): name for name, p in self.model.named_parameters()}
+            
             new_groups = []
             for group in param_groups:
                 if "rank" in group:
@@ -277,17 +280,13 @@ class UnslothTrainer(SFTTrainer):
                 other_params = []
                 for p in group["params"]:
                     # Check if this param belongs to a modules_to_save embedding
-                    is_embed = False
-                    for name, param in self.model.named_parameters():
-                        if param is p and name.endswith("modules_to_save.default.weight"):
-                            partial_name = name[: -len(".modules_to_save.default.weight")]
-                            partial_name = partial_name[partial_name.rfind(".") + 1 :]
-                            print(
-                                f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
-                            )
-                            is_embed = True
-                            break
-                    if is_embed:
+                    name = param_to_name.get(id(p))
+                    if name and name.endswith("modules_to_save.default.weight"):
+                        partial_name = name[: -len(".modules_to_save.default.weight")]
+                        partial_name = partial_name[partial_name.rfind(".") + 1 :]
+                        print(
+                            f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
+                        )
                         embed_params.append(p)
                     else:
                         other_params.append(p)

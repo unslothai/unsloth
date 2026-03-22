@@ -143,7 +143,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 if has_weight_quant:
                     if p._q_scales is not None:
                         float_weight = _dequantize(
-                            p.data,
+                            p._q_data,
                             p._q_scales,
                             p._q_zeros,
                             p._q_shape,
@@ -196,10 +196,10 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
                     del p._saved_data
 
-                    # Re-apply weight decay
+                    # Re-apply decoupled weight decay using pre-update weights
                     if "_wd_saved" in group:
                         p.data.add_(
-                            p.data,
+                            p._saved_data,
                             alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
@@ -207,12 +207,14 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 # --- Re-quantize weight to INT8 ---
                 if has_weight_quant:
-                    saved = p.data.clone()
+                    float_data = p.data.clone()
                     stochastic = group.get("stochastic_round", True)
                     gsize = group.get("weight_group_size", 128)
                     quant_fn = _quantize_stochastic if stochastic else _quantize
-                    q, scales, zeros, shape = quant_fn(saved, q_group_size = gsize)
-                    p.data = q.to(p.data.device)
+                    q, scales, zeros, shape = quant_fn(float_data, q_group_size = gsize)
+                    # Keep p.data as float for the next forward/backward pass.
+                    # Store quantized representation in _q_data for compressed storage.
+                    p._q_data = q.to(p.data.device)
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
@@ -337,7 +339,7 @@ def make_q_galore_param_groups(
     Returns:
         List of two param group dicts: ``[galore_group, non_galore_group]``.
     """
-    targets = set(target_modules) if target_modules else _DEFAULT_GALORE_TARGETS
+    targets = set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
 
     galore_params = []
     non_galore_params = []
