@@ -175,4 +175,10 @@ export interface OpenAIChatChunkChoice {
 
 export interface OpenAIChatChunk {
   choices?: OpenAIChatChunkChoice[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  timings?: Record<string, number>;
 }

@@ -72,7 +72,7 @@ export function ModelConfigDialog({
           generation defaults you want to reuse.
         </p>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Provider connection"
           htmlFor={providerId}
@@ -120,7 +120,7 @@ export function ModelConfigDialog({
             : "Matching blocks are linked automatically on the canvas."}
         </p>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Model ID"
           htmlFor={modelId}
@@ -144,7 +144,7 @@ export function ModelConfigDialog({
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Temperature"
               htmlFor={tempId}
@@ -159,7 +159,7 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Top-p"
               htmlFor={topPId}
@@ -174,7 +174,7 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Max tokens"
               htmlFor={maxTokensId}
@@ -189,7 +189,7 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Timeout (seconds)"
               htmlFor={timeoutId}
@@ -214,7 +214,7 @@ export function ModelConfigDialog({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Advanced request fields (JSON)"
               htmlFor={extraBodyId}
