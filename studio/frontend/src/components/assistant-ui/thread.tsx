@@ -327,7 +327,7 @@ const ReasoningToggle: FC = () => {
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-  const disabled = modelLoaded && !supportsReasoning;
+  const disabled = !modelLoaded || !supportsReasoning;
 
   return (
     <button
@@ -361,7 +361,7 @@ const WebSearchToggle: FC = () => {
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const disabled = modelLoaded && !supportsTools;
+  const disabled = !modelLoaded || !supportsTools;
 
   return (
     <button
@@ -393,7 +393,7 @@ const CodeToolsToggle: FC = () => {
   const setCodeToolsEnabled = useChatRuntimeStore(
     (s) => s.setCodeToolsEnabled,
   );
-  const disabled = modelLoaded && !supportsTools;
+  const disabled = !modelLoaded || !supportsTools;
 
   return (
     <button

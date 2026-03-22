@@ -248,8 +248,8 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const reasoningDisabled = modelLoaded && !supportsReasoning;
-  const toolsDisabled = modelLoaded && !supportsTools;
+  const reasoningDisabled = !modelLoaded || !supportsReasoning;
+  const toolsDisabled = !modelLoaded || !supportsTools;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
