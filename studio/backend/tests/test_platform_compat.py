@@ -18,13 +18,12 @@ ANACONDA_VERSION = (
     "(main, Jun 18 2024, 15:12:24) [GCC 11.2.0]"
 )
 CONDA_FORGE_VERSION = (
-    "3.11.9 | packaged by conda-forge | "
-    "(main, Apr 19 2024, 18:36:13) [GCC 12.3.0]"
+    "3.11.9 | packaged by conda-forge | " "(main, Apr 19 2024, 18:36:13) [GCC 12.3.0]"
 )
 STANDARD_VERSION = "3.12.4 (main, Jun 18 2024, 15:12:24) [GCC 11.2.0]"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clean_platform_state():
     """Save and restore sys.version, platform cache, and module state."""
     orig_version = sys.version
@@ -41,6 +40,7 @@ def _clean_platform_state():
 def _reload_compat():
     """Force re-execute _platform_compat module logic."""
     import _platform_compat
+
     importlib.reload(_platform_compat)
 
 
