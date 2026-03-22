@@ -216,14 +216,14 @@ function Install-UnslothStudio {
     # already present in the venv, preventing the solver from falling back to
     # unsloth==2024.8 (a pre-CLI release that ships no unsloth.exe).
     Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-    uv pip install --python $VenvPython --upgrade torch torchvision torchaudio --index-url $TorchIndexUrl
+    uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
 
     Write-Host "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python $VenvPython --upgrade unsloth
+    uv pip install --python $VenvPython unsloth
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
