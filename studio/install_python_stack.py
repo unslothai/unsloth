@@ -299,6 +299,8 @@ def install_python_stack() -> int:
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
     # When --local is used, install from the local repo in editable mode
     local_install = os.environ.get("STUDIO_LOCAL_INSTALL", "0") == "1"
+    # When --package is used, install a different package name (e.g. roland-sloth for testing)
+    package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     base_total = 10 if IS_WINDOWS else 11
     _TOTAL = (base_total - 1) if skip_base else base_total
 
@@ -315,15 +317,23 @@ def install_python_stack() -> int:
     else:
         run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
 
-    # 3. Core packages: unsloth-zoo + unsloth
+    # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
-        print(_green("✅ unsloth already installed — skipping base packages"))
+        print(_green(f"✅ {package_name} already installed — skipping base packages"))
     elif local_install:
         _progress("base packages (local)")
         pip_install(
-            "Installing unsloth from local repo",
+            f"Installing {package_name} from local repo",
             "--no-cache-dir",
             "-e", str(SCRIPT_DIR.parent),  # repo root
+        )
+    elif package_name != "unsloth":
+        # Custom package name (e.g. roland-sloth for testing) — install directly
+        _progress("base packages")
+        pip_install(
+            f"Installing {package_name}",
+            "--no-cache-dir",
+            package_name,
         )
     else:
         _progress("base packages")

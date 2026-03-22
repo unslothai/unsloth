@@ -255,25 +255,26 @@ fast_install() {
 cd "$SCRIPT_DIR"
 
 # ── Check if Python deps need updating ──
-# Compare installed unsloth version against PyPI latest.
+# Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
+_PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 _SKIP_PYTHON_DEPS=false
 if [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
-    # Only check when NOT called from install.sh (which just installed unsloth)
+    # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 from importlib.metadata import version
-print(version('unsloth'))
+print(version('$_PKG_NAME'))
 " 2>/dev/null || echo "")
 
-    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/unsloth/json" 2>/dev/null \
+    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
-        echo "✅ unsloth $INSTALLED_VER is up to date (matches PyPI latest)"
+        echo "✅ $_PKG_NAME $INSTALLED_VER is up to date (matches PyPI latest)"
         _SKIP_PYTHON_DEPS=true
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
-        echo "⬆️  unsloth $INSTALLED_VER → $LATEST_VER available, updating dependencies..."
+        echo "⬆️  $_PKG_NAME $INSTALLED_VER → $LATEST_VER available, updating dependencies..."
     elif [ -z "$LATEST_VER" ]; then
         echo "⚠️  Could not reach PyPI, updating dependencies to be safe..."
     fi

@@ -3,13 +3,22 @@
 # Usage (curl):  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 # Usage (wget):  wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
 # Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
+# Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 set -e
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
+PACKAGE_NAME="unsloth"
+_next_is_package=false
 for arg in "$@"; do
+    if [ "$_next_is_package" = true ]; then
+        PACKAGE_NAME="$arg"
+        _next_is_package=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
+        --package) _next_is_package=true ;;
     esac
 done
 
@@ -253,7 +262,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto
 else
     echo "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
+    uv pip install --python "$VENV_DIR/bin/python" "$PACKAGE_NAME" --torch-backend=auto
 fi
 
 # ── Run studio setup ──
@@ -288,7 +297,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
-_SETUP_ENV="SKIP_STUDIO_BASE=1"
+_SETUP_ENV="SKIP_STUDIO_BASE=1 STUDIO_PACKAGE_NAME=$PACKAGE_NAME"
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     _SETUP_ENV="$_SETUP_ENV STUDIO_LOCAL_INSTALL=1"
 fi
