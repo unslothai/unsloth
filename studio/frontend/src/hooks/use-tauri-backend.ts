@@ -8,6 +8,7 @@ type BackendStatus =
   | "checking"
   | "not-installed"
   | "installing"
+  | "install-error"
   | "starting"
   | "running"
   | "stopped"
@@ -18,9 +19,15 @@ export function useTauriBackend() {
   const statusRef = useRef<BackendStatus>(status);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Guard against double startServer calls
+  const startingRef = useRef(false);
+  // Track the discovered port from server-port event
+  const portRef = useRef<number | null>(null);
 
   // Keep ref in sync for event listener closures
-  useEffect(() => { statusRef.current = status; }, [status]);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   async function checkInstallAndStart() {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -43,17 +50,39 @@ export function useTauriBackend() {
   }
 
   async function startServer() {
+    // Prevent double-start race condition
+    if (startingRef.current) return;
+    startingRef.current = true;
+
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });
-      // Poll health - scan port range since backend may auto-increment
+
+      // Poll health. Prefer the port from server-port event if available,
+      // otherwise scan the range. Backend can auto-increment up to +20 ports
+      // (run.py:89-97) so we scan wider than 8888-8899.
       for (let i = 0; i < 120; i++) {
-        for (let p = 8888; p <= 8899; p++) {
-          const healthy = await invoke<boolean>("check_health", { port: p });
+        // If server-port event already told us the port, just check that one
+        if (portRef.current) {
+          const healthy = await invoke<boolean>("check_health", {
+            port: portRef.current,
+          });
           if (healthy) {
-            setApiBase(p);
+            setApiBase(portRef.current);
             setStatus("running");
+            startingRef.current = false;
             return;
+          }
+        } else {
+          // Scan range as fallback
+          for (let p = 8888; p <= 8907; p++) {
+            const healthy = await invoke<boolean>("check_health", { port: p });
+            if (healthy) {
+              setApiBase(p);
+              setStatus("running");
+              startingRef.current = false;
+              return;
+            }
           }
         }
         await new Promise((r) => setTimeout(r, 500));
@@ -61,14 +90,23 @@ export function useTauriBackend() {
       setStatus("error");
       setError("Backend did not start within 60 seconds");
     } catch (e) {
+      // "Backend is already running" is not an error — just start polling
+      const msg = String(e);
+      if (msg.includes("already running")) {
+        // Already started by another path, just wait for health
+        startingRef.current = false;
+        return;
+      }
       setStatus("error");
-      setError(String(e));
+      setError(msg);
     }
+    startingRef.current = false;
   }
 
   async function stopServer() {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("stop_server");
+    startingRef.current = false;
     setStatus("stopped");
   }
 
@@ -79,15 +117,13 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // If invoke resolves successfully, install completed.
-      // The install-complete event may also fire, but this is a safety net
-      // in case the event listener wasn't attached yet.
-      if (statusRef.current === "installing") {
-        setStatus("starting");
-        await startServer();
-      }
+      // Install completed — this is the ONLY path that starts the server
+      // after install. The install-complete event listener does NOT call
+      // startServer() to avoid a double-start race condition.
+      setStatus("starting");
+      await startServer();
     } catch (e) {
-      setStatus("error");
+      setStatus("install-error");
       setError(String(e));
     }
   }
@@ -95,7 +131,15 @@ export function useTauriBackend() {
   const retry = useCallback(() => {
     setError(null);
     setLogs([]);
+    startingRef.current = false;
+    portRef.current = null;
     checkInstallAndStart();
+  }, []);
+
+  const retryInstall = useCallback(() => {
+    setError(null);
+    setLogs([]);
+    setStatus("not-installed");
   }, []);
 
   // Initial check on mount
@@ -117,21 +161,24 @@ export function useTauriBackend() {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
       }).then((u) => cleanup.push(u));
 
+      // install-complete is informational only — does NOT trigger startServer.
+      // The invoke("start_install") success path handles that to avoid races.
       listen<void>("install-complete", () => {
-        setStatus("starting");
-        startServer();
+        // Just update logs; the invoke path handles the transition
       }).then((u) => cleanup.push(u));
 
       listen<string>("install-failed", (e) => {
         setError(e.payload);
-        setStatus("error");
+        setStatus("install-error");
       }).then((u) => cleanup.push(u));
 
       listen<number>("server-port", (e) => {
+        portRef.current = e.payload;
         setApiBase(e.payload);
       }).then((u) => cleanup.push(u));
 
       listen<void>("server-crashed", () => {
+        startingRef.current = false;
         setStatus("error");
         setError("Server stopped unexpectedly");
       }).then((u) => cleanup.push(u));
@@ -141,10 +188,12 @@ export function useTauriBackend() {
       }).then((u) => cleanup.push(u));
 
       listen<void>("tray-toggle-server", () => {
-        // Toggle server based on current status
         if (statusRef.current === "running") {
           stopServer();
-        } else if (statusRef.current === "stopped" || statusRef.current === "error") {
+        } else if (
+          statusRef.current === "stopped" ||
+          statusRef.current === "error"
+        ) {
           retry();
         }
       }).then((u) => cleanup.push(u));
@@ -155,5 +204,14 @@ export function useTauriBackend() {
     };
   }, []);
 
-  return { status, logs, error, startServer, stopServer, startInstall, retry };
+  return {
+    status,
+    logs,
+    error,
+    startServer,
+    stopServer,
+    startInstall,
+    retry,
+    retryInstall,
+  };
 }

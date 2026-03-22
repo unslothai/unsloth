@@ -15,7 +15,7 @@ interface AppProviderProps {
 }
 
 function TauriWrapper({ children }: { children: ReactNode }) {
-  const { status, logs, error, startInstall, retry } = useTauriBackend();
+  const { status, logs, error, startInstall, retry, retryInstall } = useTauriBackend();
   const [showLogs, setShowLogs] = useState(false);
 
   const handleViewLogs = useCallback(async () => {
@@ -34,10 +34,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Non-Tauri mode: render children directly
   if (!isTauri) return <>{children}</>;
 
-  // First-time install flow
-  if (status === "not-installed" || status === "installing") {
+  // First-time install flow (including install errors — keep user on wizard)
+  if (status === "not-installed" || status === "installing" || status === "install-error") {
     return (
-      <SetupWizard logs={logs} onInstall={startInstall} status={status} />
+      <SetupWizard
+        logs={logs}
+        onInstall={startInstall}
+        status={status === "install-error" ? "not-installed" : status}
+        error={status === "install-error" ? error : null}
+        onRetry={retryInstall}
+      />
     );
   }
 

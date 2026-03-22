@@ -5,9 +5,11 @@ interface SetupWizardProps {
   logs: string[];
   onInstall: () => void;
   status: "not-installed" | "installing";
+  error?: string | null;
+  onRetry?: () => void;
 }
 
-export function SetupWizard({ logs, onInstall, status }: SetupWizardProps) {
+export function SetupWizard({ logs, onInstall, status, error, onRetry }: SetupWizardProps) {
   return (
     <div className="flex h-screen items-center justify-center bg-background">
       <div className="w-full max-w-2xl space-y-6 p-8">
@@ -19,7 +21,23 @@ export function SetupWizard({ logs, onInstall, status }: SetupWizardProps) {
               : "Setting up Unsloth Studio..."}
           </p>
         </div>
-        {status === "not-installed" && (
+
+        {error && (
+          <div className="space-y-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+            <p className="text-sm font-medium text-destructive">Installation failed</p>
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap">{error}</p>
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="rounded bg-primary px-4 py-2 text-sm text-primary-foreground"
+              >
+                Try Again
+              </button>
+            )}
+          </div>
+        )}
+
+        {status === "not-installed" && !error && (
           <div className="text-center">
             <button
               onClick={onInstall}
@@ -29,11 +47,14 @@ export function SetupWizard({ logs, onInstall, status }: SetupWizardProps) {
             </button>
           </div>
         )}
-        {status === "installing" && (
+
+        {(status === "installing" || (error && logs.length > 0)) && (
           <div className="space-y-4">
-            <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-              <div className="h-full bg-primary animate-pulse w-full" />
-            </div>
+            {status === "installing" && (
+              <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                <div className="h-full bg-primary animate-pulse w-full" />
+              </div>
+            )}
             <div className="h-64 overflow-y-auto rounded-lg bg-muted p-4 font-mono text-xs">
               {logs.map((line, i) => (
                 <div key={i} className="whitespace-pre-wrap">
