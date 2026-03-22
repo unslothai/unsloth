@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -147,14 +147,27 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     };
   }, [navigate]);
 
-  // Seed password from bootstrap credentials injected into HTML
+  // Seed password from bootstrap credentials injected into HTML or Tauri IPC
   useEffect(() => {
-    const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
-    if (bootstrap) {
-      if (!isLoginMode && !password) {
+    async function loadBootstrap() {
+      let bootstrap = window.__UNSLOTH_BOOTSTRAP__;
+      if (!bootstrap && isTauri) {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const password = await invoke<string>("get_bootstrap_password");
+          if (password) {
+            bootstrap = { username: "unsloth", password };
+            window.__UNSLOTH_BOOTSTRAP__ = bootstrap;
+          }
+        } catch {
+          /* bootstrap file doesn't exist or already consumed */
+        }
+      }
+      if (bootstrap && !isLoginMode && !password) {
         setPassword(bootstrap.password);
       }
     }
+    loadBootstrap();
   }, []);
 
   const blockedByState =
