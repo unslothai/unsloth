@@ -237,6 +237,9 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
@@ -245,6 +248,8 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const reasoningDisabled = modelLoaded && !supportsReasoning;
+  const toolsDisabled = modelLoaded && !supportsTools;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -519,70 +524,73 @@ export function SharedComposer({
               </TooltipIconButton>
             </>
           )}
-          {supportsReasoning && (
-            <button
-              type="button"
-              onClick={() => {
-                const next = !reasoningEnabled;
-                setReasoningEnabled(next);
-                // Qwen3/3.5: adjust params for thinking on/off
-                const store = useChatRuntimeStore.getState();
-                const cp = store.params.checkpoint?.toLowerCase() ?? "";
-                if (cp.includes("qwen3")) {
-                  const p = next
-                    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-                    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-                  store.setParams({ ...store.params, ...p });
-                }
-              }}
-              className={cn(
-                "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
-                reasoningEnabled
+          <button
+            type="button"
+            disabled={reasoningDisabled}
+            onClick={() => {
+              const next = !reasoningEnabled;
+              setReasoningEnabled(next);
+              // Qwen3/3.5: adjust params for thinking on/off
+              const store = useChatRuntimeStore.getState();
+              const cp = store.params.checkpoint?.toLowerCase() ?? "";
+              if (cp.includes("qwen3")) {
+                const p = next
+                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                store.setParams({ ...store.params, ...p });
+              }
+            }}
+            className={cn(
+              "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
+              reasoningDisabled
+                ? "cursor-not-allowed opacity-40"
+                : reasoningEnabled
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-              )}
-              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
-            >
-              {reasoningEnabled ? (
-                <LightbulbIcon className="size-3" />
-              ) : (
-                <LightbulbOffIcon className="size-3" />
-              )}
-              <span>Think</span>
-            </button>
-          )}
-          {supportsTools && (
-            <button
-              type="button"
-              onClick={() => setToolsEnabled(!toolsEnabled)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                toolsEnabled
+            )}
+            aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+          >
+            {reasoningEnabled && !reasoningDisabled ? (
+              <LightbulbIcon className="size-3" />
+            ) : (
+              <LightbulbOffIcon className="size-3" />
+            )}
+            <span>Think</span>
+          </button>
+          <button
+            type="button"
+            disabled={toolsDisabled}
+            onClick={() => setToolsEnabled(!toolsEnabled)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              toolsDisabled
+                ? "cursor-not-allowed opacity-40"
+                : toolsEnabled
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-              )}
-              aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
-            >
-              <GlobeIcon className="size-3.5" />
-              <span>Search</span>
-            </button>
-          )}
-          {supportsTools && (
-            <button
-              type="button"
-              onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                codeToolsEnabled
+            )}
+            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+          >
+            <GlobeIcon className="size-3.5" />
+            <span>Search</span>
+          </button>
+          <button
+            type="button"
+            disabled={toolsDisabled}
+            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              toolsDisabled
+                ? "cursor-not-allowed opacity-40"
+                : codeToolsEnabled
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-              )}
-              aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
-            >
-              <TerminalIcon className="size-3.5" />
-              <span>Code</span>
-            </button>
-          )}
+            )}
+            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+          >
+            <TerminalIcon className="size-3.5" />
+            <span>Code</span>
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (
