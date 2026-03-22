@@ -291,7 +291,9 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         traceback.print_exc(file = sys.stderr)
         sys.stderr.write("\n")
-        sys.stderr.write("If a package is missing, try re-running: unsloth studio setup\n")
+        sys.stderr.write(
+            "If a package is missing, try re-running: unsloth studio setup\n"
+        )
         sys.stderr.flush()
         sys.exit(1)
 
