@@ -29,6 +29,10 @@ def _seed_sys_version_cache() -> None:
     # Strip paired |...| segments (Anaconda, conda-forge metadata)
     cleaned = re.sub(r"\s*\|[^|]*\|\s*", " ", raw).strip()
 
+    # Format B: "ver (build) | label | (build_dup) \n[compiler]"
+    # After pipe-strip, two consecutive (...) groups remain; drop the second.
+    cleaned = re.sub(r"(\([^)]*\))\s+\([^)]*\)", r"\1", cleaned)
+
     if "|" in cleaned:
         # Unpaired pipe remaining -- keep version + everything from "(" onward
         m = re.match(r"([\w.+]+)\s*", cleaned)
