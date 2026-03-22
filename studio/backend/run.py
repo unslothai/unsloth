@@ -205,10 +205,6 @@ def run_server(
         if not silent:
             print(f"Port {original_port} is in use, using port {port} instead")
 
-    # Default to the bundled frontend dist if no explicit path was given
-    if frontend_path is None:
-        frontend_path = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-
     # Setup frontend if path provided
     if frontend_path:
         if setup_frontend(app, frontend_path):

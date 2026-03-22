@@ -80,12 +80,10 @@ def ui(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_server(
-        host = host,
-        port = port,
-        frontend_path = frontend,
-        silent = silent,
-    )
+    run_kwargs = dict(host = host, port = port, silent = silent)
+    if frontend is not None:
+        run_kwargs["frontend_path"] = frontend
+    run_server(**run_kwargs)
 
     from studio.backend.run import _shutdown_event
 
