@@ -8,20 +8,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Helper: run command quietly, show output only on failure ──
-run_quiet() {
-    local label="$1"
-    shift
+_run_quiet() {
+    local on_fail=$1
+    local label=$2
+    shift 2
+
     local tmplog
-    tmplog=$(mktemp)
-    if "$@" > "$tmplog" 2>&1; then
+    tmplog=$(mktemp) || {
+        printf '%s\n' "Failed to create temporary file" >&2
+        [ "$on_fail" = "exit" ] && exit 1 || return 1
+    }
+
+    if "$@" >"$tmplog" 2>&1; then
         rm -f "$tmplog"
+        return 0
     else
         local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
-        cat "$tmplog"
+        printf 'Failed: %s (exit code %s):\n' "$label" "$exit_code" >&2
+        cat "$tmplog" >&2
         rm -f "$tmplog"
-        exit $exit_code
+
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
     fi
+}
+
+run_quiet() {
+    _run_quiet exit "$@"
+}
+
+run_quiet_no_exit() {
+    _run_quiet return "$@"
 }
 
 echo "╔══════════════════════════════════════╗"
@@ -187,9 +207,24 @@ fi
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
 MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
-BEST_MAJOR=0
 BEST_MINOR=0
 
+# If the caller (e.g. install.sh) already chose a Python, use it directly.
+if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
+    _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
+    _req_major=$(echo "$_req_ver" | cut -d. -f1)
+    _req_minor=$(echo "$_req_ver" | cut -d. -f2)
+    if [ "$_req_major" -eq 3 ] 2>/dev/null && \
+       [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
+       [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
+        BEST_PY="$REQUESTED_PYTHON_VERSION"
+        echo "Using requested Python version: $BEST_PY"
+    else
+        echo "Ignoring requested Python $REQUESTED_PYTHON_VERSION ($_req_ver) -- outside supported range"
+    fi
+fi
+
+if [ -z "$BEST_PY" ]; then
 # Collect candidate python3 binaries (python3, python3.9, python3.10, …)
 for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
     if ! command -v "$candidate" &>/dev/null; then
@@ -206,7 +241,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
 
-    # Skip versions below 3.12 (require > 3.11)
+    # Skip versions below 3.11
     if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
         continue
     fi
@@ -219,11 +254,11 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     # Keep the highest qualifying version
     if [ "$py_minor" -gt "$BEST_MINOR" ]; then
         BEST_PY="$candidate"
-        BEST_MAJOR="$py_major"
         BEST_MINOR="$py_minor"
     fi
 done
-echo "finished finding best python"
+fi
+
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
@@ -402,7 +437,7 @@ rm -rf "$LLAMA_CPP_DIR"
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)
@@ -474,16 +509,16 @@ rm -rf "$LLAMA_CPP_DIR"
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            run_quiet_no_exit "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
         # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            run_quiet_no_exit "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
