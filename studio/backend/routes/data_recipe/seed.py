@@ -271,7 +271,8 @@ def _read_preview_rows_from_multi_files(
 ) -> list[dict[str, str]]:
     if build_multi_file_preview_rows is None:
         raise HTTPException(
-            500, "Unstructured seed support not available (missing data_designer_unstructured_seed)"
+            500,
+            "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
 
     _validate_safe_id(block_id, "block_id")
