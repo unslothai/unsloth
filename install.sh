@@ -257,55 +257,8 @@ echo "   Unsloth Studio installed!"
 echo "========================================="
 echo ""
 
-find_open_port() {
-    "$VENV_NAME/bin/python" - "$1" "$2" <<'PY'
-import socket
-import sys
-
-start_port = int(sys.argv[1])
-end_port = int(sys.argv[2])
-
-for port in range(start_port, end_port + 1):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind(("0.0.0.0", port))
-        except OSError:
-            continue
-    print(port)
-    raise SystemExit(0)
-
-raise SystemExit(1)
-PY
-}
-
-STUDIO_HOST="0.0.0.0"
-START_PORT=8888
-END_PORT=8898
-# Launch studio automatically in interactive terminals;
-# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 1 ] && [ -t 2 ]; then  # stdout+stderr only; intentionally skips stdin for curl|sh
-    STUDIO_PORT=$(find_open_port "$START_PORT" "$END_PORT") || STUDIO_PORT=""
-    if [ -n "$STUDIO_PORT" ]; then
-        echo "  To launch, run:"
-        echo ""
-        echo "    source ${VENV_NAME}/bin/activate"
-        echo "    unsloth studio -H ${STUDIO_HOST} -p ${STUDIO_PORT}"
-        echo ""
-        echo "==> Auto Launching Unsloth Studio..."
-        echo ""
-        exec "$VENV_NAME/bin/unsloth" studio -H "$STUDIO_HOST" -p "$STUDIO_PORT" </dev/tty
-    else
-        echo "Note: all ports ${START_PORT}-${END_PORT} are in use."
-        echo "  To launch manually, free a port and run:"
-        echo ""
-        echo "    source ${VENV_NAME}/bin/activate"
-        echo "    unsloth studio -H ${STUDIO_HOST} -p 8888"
-        echo ""
-    fi
-else
-    echo "  To launch, run:"
-    echo ""
-    echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H ${STUDIO_HOST} -p 8888"
-    echo ""
-fi
+echo "  To launch, run:"
+echo ""
+echo "    source ${VENV_NAME}/bin/activate"
+echo "    unsloth studio -H 0.0.0.0 -p 8888"
+echo ""

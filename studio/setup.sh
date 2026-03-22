@@ -207,7 +207,6 @@ fi
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
 MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
-BEST_MAJOR=0
 BEST_MINOR=0
 
 # If the caller (e.g. install.sh) already chose a Python, use it directly.
@@ -242,7 +241,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
 
-    # Skip versions below 3.12 (require > 3.11)
+    # Skip versions below 3.11
     if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
         continue
     fi
@@ -255,13 +254,11 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     # Keep the highest qualifying version
     if [ "$py_minor" -gt "$BEST_MINOR" ]; then
         BEST_PY="$candidate"
-        BEST_MAJOR="$py_major"
         BEST_MINOR="$py_minor"
     fi
 done
 fi
 
-echo "finished finding best python"
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
