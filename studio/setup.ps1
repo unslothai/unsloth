@@ -634,16 +634,25 @@ $nvccVerOut = & $NvccPath --version 2>&1 | Out-String
 if ($nvccVerOut -match 'release\s+(\d+)\.(\d+)') {
     $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
     if ($tkMaj -lt $MIN_CUDA_MAJOR -or ($tkMaj -eq $MIN_CUDA_MAJOR -and $tkMin -lt $MIN_CUDA_MINOR)) {
-        Write-Host "" -ForegroundColor Red
-        Write-Host "================================================================" -ForegroundColor Red
-        Write-Host "[ERROR] CUDA Toolkit $tkMaj.$tkMin is too old for llama.cpp." -ForegroundColor Red
-        Write-Host "        llama.cpp requires CUDA >= $MIN_CUDA_MAJOR.$MIN_CUDA_MINOR." -ForegroundColor Red
-        Write-Host "  Install: https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
-        Write-Host "================================================================" -ForegroundColor Red
-        exit 1
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "================================================================" -ForegroundColor Yellow
+        Write-Host "[WARN] CUDA Toolkit $tkMaj.$tkMin is too old for llama.cpp (requires >= $MIN_CUDA_MAJOR.$MIN_CUDA_MINOR)." -ForegroundColor Yellow
+        Write-Host "       llama.cpp CUDA build will be skipped; Studio setup continues with CPU-only GGUF." -ForegroundColor Yellow
+        if ($DriverMaxCuda -and ([version]$DriverMaxCuda -lt [version]"$MIN_CUDA_MAJOR.$MIN_CUDA_MINOR")) {
+            Write-Host "       Your NVIDIA driver only supports CUDA $DriverMaxCuda -- update the driver first." -ForegroundColor Yellow
+        } else {
+            Write-Host "       Install CUDA >= $MIN_CUDA_MAJOR.$MIN_CUDA_MINOR from:" -ForegroundColor Yellow
+        }
+        Write-Host "       https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Cyan
+        Write-Host "================================================================" -ForegroundColor Yellow
+        $NvccPath = $null
     }
+} else {
+    Write-Host "   [WARN] Could not determine CUDA Toolkit version from nvcc." -ForegroundColor Yellow
+    Write-Host "          Proceeding -- if cmake fails, try updating the CUDA Toolkit." -ForegroundColor Yellow
 }
 
+if ($NvccPath) {
 # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
 $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # CUDA_PATH: used by cmake's find_package(CUDAToolkit)
@@ -710,14 +719,17 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                         throw "Copy did not produce .targets files"
                     }
                 } catch {
-                    Write-Host "" -ForegroundColor Red
-                    Write-Host "================================================================" -ForegroundColor Red
-                    Write-Host "[ERROR] Could not copy CUDA VS integration files (admin required)." -ForegroundColor Red
-                    Write-Host "        cmake cannot find the CUDA toolset without these files." -ForegroundColor Red
-                    Write-Host "  Re-install CUDA Toolkit (or Visual Studio Build Tools, then CUDA):" -ForegroundColor Yellow
-                    Write-Host "  https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Cyan
-                    Write-Host "================================================================" -ForegroundColor Red
-                    exit 1
+                    Write-Host "" -ForegroundColor Yellow
+                    Write-Host "================================================================" -ForegroundColor Yellow
+                    Write-Host "[WARN] Could not copy CUDA VS integration files." -ForegroundColor Yellow
+                    Write-Host "       The llama.cpp CUDA build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
+                    Write-Host "       Fix: re-run setup as Administrator, or manually copy:" -ForegroundColor Yellow
+                    Write-Host "         $cudaExtras" -ForegroundColor Cyan
+                    Write-Host "       into:" -ForegroundColor Yellow
+                    Write-Host "         $vsCustomizations" -ForegroundColor Cyan
+                    Write-Host "       Or re-install CUDA Toolkit after Visual Studio Build Tools:" -ForegroundColor Yellow
+                    Write-Host "       https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Cyan
+                    Write-Host "================================================================" -ForegroundColor Yellow
                 }
             }
         }
@@ -733,6 +745,7 @@ Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 if (-not $CudaArch) {
     Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
 }
+} # end if ($NvccPath) -- CUDA env/VS integration guard
 } else {
     Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
 }
@@ -988,23 +1001,49 @@ Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundC
 # Created in the repo root (parent of studio/).
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
 
-# Stale-venv detection: if the venv exists but its torch CUDA tag no longer
-# matches the current driver, wipe it so we get a clean install.
-# This happens when the driver is updated (e.g. cu124 -> cu130) and setup
-# would otherwise silently reuse the old environment and break the UI.
+# Stale-venv detection: if the venv exists but its torch flavor no longer
+# matches the current machine, wipe it so we get a clean install.
 if (Test-Path $VenvDir) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
-    $installedCuTag = $null
+    $installedTorchTag = $null
+    $shouldRebuild = $false
+
     if (Test-Path $VenvPyExe) {
         try {
-            $torchVer = & $VenvPyExe -c "import torch; print(torch.__version__)" 2>$null
-            if ($torchVer -match '\+(cu\d+)') { $installedCuTag = $Matches[1] }
-        } catch { }
+            $torchVer = (& $VenvPyExe -c "import torch; print(torch.__version__)" 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and $torchVer) {
+                if ($torchVer -match '\+(cu\d+)') {
+                    $installedTorchTag = $Matches[1]
+                } elseif ($torchVer -match '\+cpu') {
+                    $installedTorchTag = "cpu"
+                } else {
+                    # Untagged wheel (plain "2.x.y" from PyPI) -- treat as cpu
+                    $installedTorchTag = "cpu"
+                }
+            } else {
+                $shouldRebuild = $true
+            }
+        } catch {
+            $shouldRebuild = $true
+        }
     }
-    $expectedCuTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
-    if ($installedCuTag -and $installedCuTag -ne $expectedCuTag) {
-        Write-Host "   [INFO] Stale venv detected (torch $installedCuTag != required $expectedCuTag) -- rebuilding..." -ForegroundColor Yellow
-        Remove-Item $VenvDir -Recurse -Force
+    # No python.exe in venv but venv dir exists -- leave it alone,
+    # the venv creation step below will handle it.
+
+    $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+    if (-not $shouldRebuild -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+        $shouldRebuild = $true
+    }
+
+    if ($shouldRebuild) {
+        $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
+        Write-Host "   [INFO] Stale venv detected ($reason) -- rebuilding..." -ForegroundColor Yellow
+        try {
+            Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "   [WARN] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "         Close any running Studio/Python processes and re-run setup." -ForegroundColor Yellow
+        }
     }
 }
 
