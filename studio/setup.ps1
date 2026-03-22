@@ -966,11 +966,9 @@ if (-not $PythonCmd) {
 
 Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
-# Always create a venv for isolation -- even for pip installs.
-# Created under ~/.unsloth/studio/ (shared location, not in repo).
-$OldVenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
-if (Test-Path $OldVenvDir) { Remove-Item -Recurse -Force $OldVenvDir }
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
+# Always create a .venv for isolation -- even for pip installs.
+# Created in the repo root (parent of studio/).
+$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir

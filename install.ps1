@@ -5,9 +5,8 @@
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
+    $VenvName = "unsloth_studio"
     $PythonVersion = "3.13"
-    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
-    $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
     Write-Host ""
     Write-Host "========================================="
@@ -146,18 +145,17 @@ function Install-UnslothStudio {
     }
 
     # ── Create venv (skip if it already exists and has a valid interpreter) ──
-    if (-not (Test-Path $StudioHome)) { New-Item -ItemType Directory -Path $StudioHome -Force | Out-Null }
-    $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+    $VenvPython = Join-Path $VenvName "Scripts\python.exe"
     if (-not (Test-Path $VenvPython)) {
-        if (Test-Path $VenvDir) { Remove-Item -Recurse -Force $VenvDir }
-        Write-Host "==> Creating Python ${DetectedPythonVersion} virtual environment (${VenvDir})..."
-        uv venv $VenvDir --python $DetectedPythonVersion
+        if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
+        Write-Host "==> Creating Python ${DetectedPythonVersion} virtual environment (${VenvName})..."
+        uv venv $VenvName --python $DetectedPythonVersion
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
             return
         }
     } else {
-        Write-Host "==> Virtual environment ${VenvDir} already exists, skipping creation."
+        Write-Host "==> Virtual environment ${VenvName} already exists, skipping creation."
     }
 
     # ── Install unsloth directly into the venv (no activation needed) ──
@@ -172,7 +170,7 @@ function Install-UnslothStudio {
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
     Write-Host "==> Running unsloth studio setup..."
-    $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+    $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
@@ -198,12 +196,12 @@ function Install-UnslothStudio {
     if ($IsInteractive) {
         Write-Host "==> Launching Unsloth Studio..."
         Write-Host ""
-        $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+        $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
         & $UnslothExe studio -H 0.0.0.0 -p 8888
     } else {
         Write-Host "  To launch, run:"
         Write-Host ""
-        Write-Host "    . ${VenvDir}\Scripts\activate"
+        Write-Host "    .\${VenvName}\Scripts\activate"
         Write-Host "    unsloth studio -H 0.0.0.0 -p 8888"
         Write-Host ""
     }
