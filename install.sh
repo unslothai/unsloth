@@ -244,10 +244,13 @@ else
     echo "==> Virtual environment ${VENV_DIR} already exists, skipping creation."
 fi
 
+# ── Resolve repo root (for --local installs) ──
+_REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+
 # ── Install unsloth directly into the venv (no activation needed) ──
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     echo "==> Installing unsloth from local repo (editable)..."
-    uv pip install --python "$VENV_DIR/bin/python" -e . --torch-backend=auto
+    uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto
 else
     echo "==> Installing unsloth (this may take a few minutes)..."
     uv pip install --python "$VENV_DIR/bin/python" unsloth --torch-backend=auto
@@ -257,12 +260,8 @@ fi
 # When --local, use the repo's own setup.sh directly.
 # Otherwise, find it inside the installed package.
 SETUP_SH=""
-if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    # Resolve relative to the script (or CWD if piped)
-    _SCRIPT_DIR="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
-    if [ -f "$_SCRIPT_DIR/studio/setup.sh" ]; then
-        SETUP_SH="$_SCRIPT_DIR/studio/setup.sh"
-    fi
+if [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -f "$_REPO_ROOT/studio/setup.sh" ]; then
+    SETUP_SH="$_REPO_ROOT/studio/setup.sh"
 fi
 
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
