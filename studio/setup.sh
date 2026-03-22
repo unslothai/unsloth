@@ -44,9 +44,15 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
-echo "╔══════════════════════════════════════╗"
-echo "║     Unsloth Studio Setup Script      ║"
-echo "╚══════════════════════════════════════╝"
+if [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
+    echo "╔══════════════════════════════════════╗"
+    echo "║     Unsloth Studio Setup Script      ║"
+    echo "╚══════════════════════════════════════╝"
+else
+    echo "╔══════════════════════════════════════╗"
+    echo "║     Unsloth Studio Update Script     ║"
+    echo "╚══════════════════════════════════════╝"
+fi
 
 # ── Clean up stale Unsloth compiled caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
@@ -203,113 +209,31 @@ fi
 
 # ── 6. Python venv + deps ──
 
-# ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
-MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
-MAX_PY_MINOR=13   # maximum minor version (< 3.14)
-BEST_PY=""
-BEST_MINOR=0
-
-# If the caller (e.g. install.sh) already chose a Python, use it directly.
-if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
-    _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
-    _req_major=$(echo "$_req_ver" | cut -d. -f1)
-    _req_minor=$(echo "$_req_ver" | cut -d. -f2)
-    if [ "$_req_major" -eq 3 ] 2>/dev/null && \
-       [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
-       [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
-        BEST_PY="$REQUESTED_PYTHON_VERSION"
-        echo "Using requested Python version: $BEST_PY"
-    else
-        echo "Ignoring requested Python $REQUESTED_PYTHON_VERSION ($_req_ver) -- outside supported range"
-    fi
-fi
-
-if [ -z "$BEST_PY" ]; then
-# Collect candidate python3 binaries (python3, python3.9, python3.10, …)
-for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
-    if ! command -v "$candidate" &>/dev/null; then
-        continue
-    fi
-    # Get version string, e.g. "Python 3.12.5"
-    ver_str=$("$candidate" --version 2>&1) || continue
-    ver_str=$(echo "$ver_str" | awk '{print $2}')
-    py_major=$(echo "$ver_str" | cut -d. -f1)
-    py_minor=$(echo "$ver_str" | cut -d. -f2)
-
-    # Skip anything that isn't Python 3
-    if [ "$py_major" -ne 3 ] 2>/dev/null; then
-        continue
-    fi
-
-    # Skip versions below 3.11
-    if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
-        continue
-    fi
-
-    # Skip versions above 3.13 (require < 3.14)
-    if [ "$py_minor" -gt "$MAX_PY_MINOR" ] 2>/dev/null; then
-        continue
-    fi
-
-    # Keep the highest qualifying version
-    if [ "$py_minor" -gt "$BEST_MINOR" ]; then
-        BEST_PY="$candidate"
-        BEST_MINOR="$py_minor"
-    fi
-done
-fi
-
-if [ -z "$BEST_PY" ]; then
-    echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
-    echo "   Detected Python 3 installations:"
-    for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
-        if command -v "$candidate" &>/dev/null; then
-            echo "     - $candidate ($($candidate --version 2>&1))"
-        fi
-    done
-    echo ""
-    echo "   Please install Python 3.${MIN_PY_MINOR} or 3.${MAX_PY_MINOR}."
-    echo "   For example:  sudo apt install python3.12 python3.12-venv"
-    exit 1
-fi
-
-BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
-echo "✅ Using $BEST_PY ($BEST_VER) — compatible (3.${MIN_PY_MINOR}.x – 3.${MAX_PY_MINOR}.x)"
-
-REQ_ROOT="$SCRIPT_DIR/backend/requirements"
-SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
-SINGLE_ENV_DATA_DESIGNER="$REQ_ROOT/single-env/data-designer.txt"
-SINGLE_ENV_DATA_DESIGNER_DEPS="$REQ_ROOT/single-env/data-designer-deps.txt"
-SINGLE_ENV_PATCH="$REQ_ROOT/single-env/patch_metadata.py"
-
-install_python_stack() {
-    python "$SCRIPT_DIR/install_python_stack.py"
-}
-
-# Create venv under ~/.unsloth/studio/ (shared location, not in repo).
-# All platforms (including Colab) use the same isolated venv so that
-# studio dependencies are never installed into the system Python.
+# The venv must already exist (created by install.sh).
+# This script (setup.sh / "unsloth studio update") only updates packages.
 STUDIO_HOME="$HOME/.unsloth/studio"
-VENV_DIR="$STUDIO_HOME/.venv"
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
-mkdir -p "$STUDIO_HOME"
 
 # Clean up legacy in-repo venvs if they exist
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+# Clean up old .venv path (replaced by unsloth_studio)
+[ -d "$STUDIO_HOME/.venv" ] && rm -rf "$STUDIO_HOME/.venv"
 
-rm -rf "$VENV_DIR"
-rm -rf "$VENV_T5_DIR"
-# Try creating venv with pip; fall back to --without-pip + bootstrap
-# (some environments like Colab have broken ensurepip)
-if ! "$BEST_PY" -m venv "$VENV_DIR" 2>/dev/null; then
-    "$BEST_PY" -m venv --without-pip "$VENV_DIR"
-    source "$VENV_DIR/bin/activate"
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python > /dev/null
-else
-    source "$VENV_DIR/bin/activate"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
+    echo "   Run install.sh first to create the environment:"
+    echo "   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh"
+    exit 1
 fi
+
+source "$VENV_DIR/bin/activate"
+
+install_python_stack() {
+    python "$SCRIPT_DIR/install_python_stack.py"
+}
 
 # ── Ensure uv is available (much faster than pip) ──
 USE_UV=false
@@ -329,22 +253,53 @@ fast_install() {
 }
 
 cd "$SCRIPT_DIR"
-install_python_stack
 
-# ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
-# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-# at runtime (slow, ~10-15s), we pre-install into a separate directory.
-# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-echo ""
-echo "   Pre-installing transformers 5.x for newer model support..."
-mkdir -p "$VENV_T5_DIR"
-run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
-run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
-run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
-# tiktoken is needed by Qwen-family tokenizers. Install with deps since
-# regex/requests may be missing on Windows.
-run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
-echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+# ── Check if Python deps need updating ──
+# Compare installed package version against PyPI latest.
+# Skip all Python dependency work if versions match (fast update path).
+_PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
+_SKIP_PYTHON_DEPS=false
+if [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+    # Only check when NOT called from install.sh (which just installed the package)
+    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
+from importlib.metadata import version
+print(version('$_PKG_NAME'))
+" 2>/dev/null || echo "")
+
+    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
+        || echo "")
+
+    if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
+        echo "✅ $_PKG_NAME $INSTALLED_VER is up to date (matches PyPI latest)"
+        _SKIP_PYTHON_DEPS=true
+    elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
+        echo "⬆️  $_PKG_NAME $INSTALLED_VER → $LATEST_VER available, updating dependencies..."
+    elif [ -z "$LATEST_VER" ]; then
+        echo "⚠️  Could not reach PyPI, updating dependencies to be safe..."
+    fi
+fi
+
+if [ "$_SKIP_PYTHON_DEPS" = false ]; then
+    install_python_stack
+
+    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
+    # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
+    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
+    # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
+    echo ""
+    echo "   Pre-installing transformers 5.x for newer model support..."
+    mkdir -p "$VENV_T5_DIR"
+    run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
+    run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
+    run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
+    # tiktoken is needed by Qwen-family tokenizers. Install with deps since
+    # regex/requests may be missing on Windows.
+    run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
+    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+else
+    echo "✅ Python dependencies up to date — skipping"
+fi
 
 # ── 7. WSL: pre-install GGUF build dependencies ──
 # On WSL, sudo requires a password and can't be entered during GGUF export
@@ -543,9 +498,12 @@ rm -rf "$LLAMA_CPP_DIR"
 fi  # end _SKIP_GGUF_BUILD check
 
 echo ""
+_DONE_LABEL="Update"
+[ "${SKIP_STUDIO_BASE:-0}" = "1" ] && _DONE_LABEL="Setup"
+
 if [ "$IS_COLAB" = true ]; then
     echo "╔══════════════════════════════════════╗"
-    echo "║           Setup Complete!            ║"
+    echo "║          $_DONE_LABEL Complete!            ║"
     echo "╠══════════════════════════════════════╣"
     echo "║ Unsloth Studio is ready to start     ║"
     echo "║ in your Colab notebook!              ║"
@@ -555,7 +513,7 @@ if [ "$IS_COLAB" = true ]; then
     echo "╚══════════════════════════════════════╝"
 else
     echo "╔══════════════════════════════════════╗"
-    echo "║           Setup Complete!            ║"
+    echo "║          $_DONE_LABEL Complete!            ║"
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"

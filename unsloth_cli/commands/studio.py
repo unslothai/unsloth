@@ -22,9 +22,9 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
-        p = STUDIO_HOME / ".venv" / "Scripts" / "python.exe"
+        p = STUDIO_HOME / "unsloth_studio" / "Scripts" / "python.exe"
     else:
-        p = STUDIO_HOME / ".venv" / "bin" / "python"
+        p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
     return p if p.is_file() else None
 
 
@@ -44,7 +44,7 @@ def _find_run_py() -> Optional[Path]:
         "lib/python*/site-packages/studio/backend/run.py",
         "Lib/site-packages/studio/backend/run.py",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
 
@@ -64,7 +64,7 @@ def _find_setup_script() -> Optional[Path]:
         f"lib/python*/site-packages/studio/{name}",
         f"Lib/site-packages/studio/{name}",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
 
@@ -85,7 +85,7 @@ def studio_default(
         return
 
     # Always use the studio venv if it exists and we're not already in it
-    studio_venv_dir = STUDIO_HOME / ".venv"
+    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
     if not in_studio_venv:
@@ -132,7 +132,7 @@ def studio_default(
             else:
                 os.execvp(str(studio_python), args)
         else:
-            typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
+            typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
     from studio.backend.run import run_server
@@ -166,12 +166,11 @@ def studio_default(
         typer.echo("\nShutting down...")
 
 
-# ── unsloth studio setup ─────────────────────────────────────────────
+# ── unsloth studio setup / update ─────────────────────────────────────
 
 
-@studio_app.command()
-def setup():
-    """Run one-time Studio environment setup."""
+def _run_setup_script() -> None:
+    """Find and run the studio setup/update script."""
     script = _find_setup_script()
     if not script:
         typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
@@ -186,6 +185,29 @@ def setup():
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
+
+
+@studio_app.command()
+def setup():
+    """Run one-time Studio environment setup."""
+    _run_setup_script()
+
+
+@studio_app.command()
+def update(
+    local: bool = typer.Option(
+        False, "--local", help = "Install from local repo instead of PyPI"
+    ),
+    package: str = typer.Option(
+        "unsloth", "--package", help = "Package name to install/update (for testing)"
+    ),
+):
+    """Update Unsloth Studio dependencies and rebuild."""
+    if local:
+        os.environ["STUDIO_LOCAL_INSTALL"] = "1"
+    if package != "unsloth":
+        os.environ["STUDIO_PACKAGE_NAME"] = package
+    _run_setup_script()
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
