@@ -9,6 +9,14 @@ Uses Colab's built-in proxy - no external tunneling needed!
 from pathlib import Path
 import sys
 
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+_backend_dir = str(Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+import _platform_compat  # noqa: F401
+
 
 def _bootstrap_studio_venv() -> None:
     """Expose the Studio venv's site-packages to the current interpreter.
@@ -34,11 +42,6 @@ def _bootstrap_studio_venv() -> None:
 
 
 _bootstrap_studio_venv()
-
-# Add backend to path early so local modules like loggers can be imported
-backend_path = str(Path(__file__).parent)
-if backend_path not in sys.path:
-    sys.path.insert(0, backend_path)
 
 from loggers import get_logger
 
