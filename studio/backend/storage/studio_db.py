@@ -12,19 +12,18 @@ raw sqlite3, per-function connections. Enhancements over auth:
 
 import json
 import sqlite3
+import threading
 from typing import Optional
 
 from utils.paths import studio_db_path, ensure_dir
 
+_schema_lock = threading.Lock()
+_schema_ready = False
 
-def get_connection() -> sqlite3.Connection:
-    """Open studio.db with WAL mode, create tables if needed, enable foreign keys."""
-    db_path = studio_db_path()
-    ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create tables and indexes if they don't exist. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_runs (
@@ -65,6 +64,26 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
     )
+
+
+def get_connection() -> sqlite3.Connection:
+    """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
+    global _schema_ready
+    db_path = studio_db_path()
+    ensure_dir(db_path.parent)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    # foreign_keys is session-scoped, must be set per connection
+    conn.execute("PRAGMA foreign_keys=ON")
+    if not _schema_ready:
+        with _schema_lock:
+            if not _schema_ready:
+                try:
+                    _ensure_schema(conn)
+                    _schema_ready = True
+                except Exception:
+                    conn.close()
+                    raise
     return conn
 
 

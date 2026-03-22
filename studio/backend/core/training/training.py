@@ -65,6 +65,8 @@ class TrainingBackend:
     Launches a fresh subprocess per training job, communicates via mp.Queue.
     """
 
+    FLUSH_THRESHOLD: int = 10
+
     def __init__(self):
         # Subprocess state
         self._proc: Optional[mp.Process] = None
@@ -100,7 +102,6 @@ class TrainingBackend:
         self._db_total_steps_set: bool = False
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
-        self.FLUSH_THRESHOLD = 10
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
@@ -231,7 +232,7 @@ class TrainingBackend:
         self._proc.start()
         logger.info("Training subprocess started (pid=%s)", self._proc.pid)
 
-        self._db_config = config
+        self._db_config = {k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}}
         self._db_started_at = datetime.now(timezone.utc).isoformat()
 
         # Start event pump thread
@@ -462,7 +463,7 @@ class TrainingBackend:
                 step = event.get("step", 0)
                 loss = event.get("loss", 0.0)
                 lr = event.get("learning_rate", 0.0)
-                if step >= 0 and loss > 0:
+                if step >= 0 and loss is not None and math.isfinite(loss):
                     self.loss_history.append(loss)
                     self.lr_history.append(lr)
                     self.step_history.append(step)
@@ -490,8 +491,8 @@ class TrainingBackend:
                 self._metric_buffer.append(
                     {
                         "step": step,
-                        "loss": loss if loss > 0 else None,
-                        "learning_rate": lr if lr > 0 else None,
+                        "loss": loss if (loss is not None and math.isfinite(loss)) else None,
+                        "learning_rate": lr if (lr is not None and math.isfinite(lr)) else None,
                         "grad_norm": gn,
                         "eval_loss": eval_loss,
                         "epoch": event.get("epoch"),
@@ -560,7 +561,7 @@ class TrainingBackend:
                 else:
                     db_action = "finalize"
                 db_action_kwargs = {
-                    "status": "error",
+                    "status": "stopped" if self._should_stop else "error",
                     "error_message": event.get("error", "Unknown error"),
                 }
 
@@ -646,7 +647,7 @@ class TrainingBackend:
                 status = status,
                 ended_at = datetime.now(timezone.utc).isoformat(),
                 final_step = self._progress.step,
-                final_loss = self._progress.loss if self._progress.loss > 0 else None,
+                final_loss = self._progress.loss if (self._progress.loss is not None and math.isfinite(self._progress.loss)) else None,
                 duration_seconds = self._progress.elapsed_seconds,
                 loss_sparkline = _json.dumps(sparkline),
                 output_dir = output_dir,
@@ -666,6 +667,9 @@ class TrainingBackend:
             or not self._db_run_created
         ):
             return
+        # Cap buffer to prevent unbounded memory growth
+        if len(self._metric_buffer) > 500:
+            self._metric_buffer = self._metric_buffer[-500:]
         try:
             from storage.studio_db import insert_metrics_batch, update_run_progress
 
@@ -674,7 +678,7 @@ class TrainingBackend:
             update_run_progress(
                 id = self.current_job_id,
                 step = self._progress.step,
-                loss = self._progress.loss if self._progress.loss > 0 else None,
+                loss = self._progress.loss if (self._progress.loss is not None and math.isfinite(self._progress.loss)) else None,
                 duration_seconds = self._progress.elapsed_seconds,
             )
         except Exception:

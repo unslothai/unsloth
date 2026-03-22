@@ -64,7 +64,11 @@ async def lifespan(app: FastAPI):
 
     from storage.studio_db import cleanup_orphaned_runs
 
-    cleanup_orphaned_runs()
+    try:
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        import structlog
+        structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
     # Runs in a background thread so it doesn't block server startup.

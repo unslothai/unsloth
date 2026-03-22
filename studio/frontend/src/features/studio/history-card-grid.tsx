@@ -250,8 +250,9 @@ export function HistoryCardGrid({
           const badge = statusBadge[run.status] ?? statusBadge.error;
           const isRunning = run.status === "running";
           return (
-            <button
-              type="button"
+            <div
+              role="button"
+              tabIndex={0}
               key={run.id}
               className={cn(
                 "group relative flex cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
@@ -260,6 +261,12 @@ export function HistoryCardGrid({
                   : "border-border/60",
               )}
               onClick={() => onSelectRun(run.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelectRun(run.id);
+                }
+              }}
             >
               <div className="flex items-center justify-between">
                 <span
@@ -312,7 +319,7 @@ export function HistoryCardGrid({
                   <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                 </button>
               )}
-            </button>
+            </div>
           );
         })}
       </div>

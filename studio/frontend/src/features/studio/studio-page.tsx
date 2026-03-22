@@ -70,6 +70,7 @@ export function StudioPage(): ReactElement {
   // Auto-switch to "current-run" tab when training starts
   useEffect(() => {
     if (showTrainingView || isTrainingRunning) {
+      setSelectedHistoryRunId(null);
       setActiveTab("current-run");
     }
   }, [showTrainingView, isTrainingRunning]);

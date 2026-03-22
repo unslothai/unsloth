@@ -14,6 +14,7 @@ import structlog
 from loggers import get_logger
 import asyncio
 from datetime import datetime
+import uuid as _uuid
 
 # Add backend directory to path
 # The backend code should be in the same directory structure
@@ -130,7 +131,7 @@ async def start_training(
 
         # Generate job ID — passed into start_training() which sets it on the
         # backend only after confirming the old pump thread is dead.
-        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
         # Validate dataset paths if provided
         if request.local_datasets:

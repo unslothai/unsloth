@@ -51,15 +51,17 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
         ? "stopped"
         : run.status === "error"
           ? "error"
-          : "idle";
+          : run.status === "running"
+            ? "training"
+            : "idle";
 
   return {
     phase,
     currentStep: run.final_step ?? 0,
     totalSteps: run.total_steps ?? 0,
     currentLoss: run.final_loss ?? 0,
-    currentLearningRate: 0,
-    currentGradNorm: null,
+    currentLearningRate: metrics.lr_history.at(-1) ?? 0,
+    currentGradNorm: metrics.grad_norm_history.at(-1) ?? null,
     currentEpoch: metrics.final_epoch ?? 0,
     currentNumTokens: metrics.final_num_tokens ?? null,
     progressPercent:

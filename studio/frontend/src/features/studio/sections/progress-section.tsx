@@ -443,7 +443,7 @@ function ConfigPopoverButton({
                 <div key={label} className="flex justify-between text-xs">
                   <span className="text-muted-foreground">{label}</span>
                   <span className="font-medium tabular-nums">
-                    {String(value)}
+                    {value == null || value === "" ? "--" : String(value)}
                   </span>
                 </div>
               ))}
