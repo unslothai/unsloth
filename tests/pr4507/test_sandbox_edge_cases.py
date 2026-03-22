@@ -53,7 +53,9 @@ def _create_venv():
         shutil.rmtree(_VENV_DIR)
     result = subprocess.run(
         ["uv", "venv", _VENV_DIR, "--python", sys.executable],
-        capture_output=True, text=True, timeout=60,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
     if result.returncode != 0:
         raise RuntimeError(f"uv venv creation failed: {result.stderr}")
@@ -68,8 +70,10 @@ def _run_in_sandbox(script: str) -> subprocess.CompletedProcess:
     full_script = _FIXED_FUNCTIONS + "\n" + script
     return subprocess.run(
         [_venv_python(), "-c", full_script],
-        capture_output=True, text=True, timeout=30,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
 
 
@@ -88,8 +92,11 @@ class TestSandboxEdgeCases(unittest.TestCase):
     def _assert_sandbox(self, script: str, check_fn, msg: str = ""):
         """Run script in sandbox and apply check_fn to stdout."""
         result = _run_in_sandbox(script)
-        self.assertEqual(result.returncode, 0,
-            f"Sandbox script failed (rc={result.returncode}):\nstderr: {result.stderr}\nstdout: {result.stdout}")
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Sandbox script failed (rc={result.returncode}):\nstderr: {result.stderr}\nstdout: {result.stdout}",
+        )
         check_fn(result.stdout.strip())
 
     # --- cpu_count=None scenarios ---
@@ -104,9 +111,11 @@ r = safe_num_proc()
 assert isinstance(r, int) and r >= 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
+        self._assert_sandbox(
+            script,
             lambda out: self.assertGreaterEqual(int(out), 1),
-            "cpu_count=None on linux must not crash")
+            "cpu_count=None on linux must not crash",
+        )
 
     def test_SB_2_safe_thread_num_proc_linux_cpu_none(self):
         """SB-2: safe_thread_num_proc() on linux with cpu_count=None."""
@@ -117,8 +126,7 @@ r = safe_thread_num_proc()
 assert isinstance(r, int) and r >= 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertGreaterEqual(int(out), 1))
+        self._assert_sandbox(script, lambda out: self.assertGreaterEqual(int(out), 1))
 
     def test_SB_3_dataset_map_num_proc_linux_cpu_none(self):
         """SB-3: dataset_map_num_proc() on linux with cpu_count=None."""
@@ -130,8 +138,7 @@ r = dataset_map_num_proc()
 assert isinstance(r, int) and r >= 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertGreaterEqual(int(out), 1))
+        self._assert_sandbox(script, lambda out: self.assertGreaterEqual(int(out), 1))
 
     def test_SB_4_safe_num_proc_darwin_cpu_none(self):
         """SB-4: safe_num_proc() on darwin with cpu_count=None returns 1."""
@@ -143,8 +150,7 @@ r = safe_num_proc()
 assert r == 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertEqual(out, "1"))
+        self._assert_sandbox(script, lambda out: self.assertEqual(out, "1"))
 
     def test_SB_5_dataset_map_num_proc_win32_cpu_none(self):
         """SB-5: dataset_map_num_proc() on win32 with cpu_count=None returns None."""
@@ -156,8 +162,7 @@ r = dataset_map_num_proc()
 assert r is None, f"Got {r}"
 print("None")
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertEqual(out, "None"))
+        self._assert_sandbox(script, lambda out: self.assertEqual(out, "None"))
 
     # --- desired=0 and desired=-1 scenarios ---
 
@@ -169,8 +174,7 @@ r = safe_num_proc(0)
 assert r == 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertEqual(out, "1"))
+        self._assert_sandbox(script, lambda out: self.assertEqual(out, "1"))
 
     def test_SB_7_safe_num_proc_negative(self):
         """SB-7: safe_num_proc(-1) on linux returns 1."""
@@ -180,8 +184,7 @@ r = safe_num_proc(-1)
 assert r == 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertEqual(out, "1"))
+        self._assert_sandbox(script, lambda out: self.assertEqual(out, "1"))
 
     def test_SB_8_safe_thread_num_proc_zero(self):
         """SB-8: safe_thread_num_proc(0) returns 1."""
@@ -190,8 +193,7 @@ r = safe_thread_num_proc(0)
 assert r == 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertEqual(out, "1"))
+        self._assert_sandbox(script, lambda out: self.assertEqual(out, "1"))
 
     def test_SB_9_safe_thread_num_proc_negative(self):
         """SB-9: safe_thread_num_proc(-1) returns 1."""
@@ -200,8 +202,7 @@ r = safe_thread_num_proc(-1)
 assert r == 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertEqual(out, "1"))
+        self._assert_sandbox(script, lambda out: self.assertEqual(out, "1"))
 
     def test_SB_10_safe_thread_num_proc_darwin_cpu_none(self):
         """SB-10: safe_thread_num_proc() on darwin with cpu_count=None returns >= 1."""
@@ -213,9 +214,8 @@ r = safe_thread_num_proc()
 assert isinstance(r, int) and r >= 1, f"Got {r}"
 print(r)
 """
-        self._assert_sandbox(script,
-            lambda out: self.assertGreaterEqual(int(out), 1))
+        self._assert_sandbox(script, lambda out: self.assertGreaterEqual(int(out), 1))
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main(verbosity = 2)

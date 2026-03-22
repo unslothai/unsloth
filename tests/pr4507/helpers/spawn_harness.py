@@ -33,6 +33,7 @@ def force_spawn_context():
     _orig_mp_method = None
     try:
         import multiprocess
+
         _has_multiprocess = True
         _orig_mp_method = multiprocess.get_start_method()
     except ImportError:
@@ -41,12 +42,12 @@ def force_spawn_context():
     try:
         # Force stdlib multiprocessing to spawn
         multiprocessing.context._default_context._actual_context = (
-            multiprocessing.context._concrete_contexts['spawn']
+            multiprocessing.context._concrete_contexts["spawn"]
         )
 
         # Force multiprocess (dill-based, used by datasets) to spawn
         if _has_multiprocess:
-            multiprocess.context._force_start_method('spawn')
+            multiprocess.context._force_start_method("spawn")
 
         yield
 
@@ -60,11 +61,11 @@ def force_spawn_context():
                 multiprocess.context._force_start_method(_orig_mp_method)
             else:
                 # Reset to default (fork on Linux)
-                multiprocess.context._force_start_method('fork')
+                multiprocess.context._force_start_method("fork")
 
 
 @contextlib.contextmanager
-def temp_module_in_dir(module_name="fake_module", content=None):
+def temp_module_in_dir(module_name = "fake_module", content = None):
     """Create a temporary Python module file in a temp directory.
 
     Args:
@@ -85,7 +86,7 @@ def temp_module_in_dir(module_name="fake_module", content=None):
                 return text.upper()
         """)
 
-    tmpdir = tempfile.mkdtemp(prefix="pr4507_module_")
+    tmpdir = tempfile.mkdtemp(prefix = "pr4507_module_")
     module_path = os.path.join(tmpdir, f"{module_name}.py")
     try:
         with open(module_path, "w") as f:
@@ -142,7 +143,9 @@ def sys_path_prepend(path):
             pass
 
 
-def simulate_pythonpath_propagation(platform, compile_location, current_pythonpath, cwd):
+def simulate_pythonpath_propagation(
+    platform, compile_location, current_pythonpath, cwd
+):
     """Pure-function reproduction of trainer.py lines 21-30.
 
     This extracts the PYTHONPATH propagation logic from trainer.py into a
@@ -159,7 +162,7 @@ def simulate_pythonpath_propagation(platform, compile_location, current_pythonpa
         (new_pythonpath, resolved_cache_path) tuple.
         On linux, returns (current_pythonpath, compile_location) unchanged.
     """
-    if platform not in ('win32', 'darwin'):
+    if platform not in ("win32", "darwin"):
         return current_pythonpath, compile_location
 
     cache = compile_location
@@ -168,6 +171,6 @@ def simulate_pythonpath_propagation(platform, compile_location, current_pythonpa
 
     pp = current_pythonpath
     if cache not in pp.split(os.pathsep):
-        pp = cache + (os.pathsep + pp if pp else '')
+        pp = cache + (os.pathsep + pp if pp else "")
 
     return pp, cache
