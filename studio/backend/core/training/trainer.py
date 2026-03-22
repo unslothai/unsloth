@@ -12,11 +12,12 @@ import sys
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Ensure compiled cache modules are importable by spawned dataset.map() workers.
-# On spawn-based platforms (Windows, macOS), child processes do not inherit sys.path.
-# Propagating UNSLOTH_COMPILE_LOCATION via PYTHONPATH mirrors the .venv_t5 pattern
-# in worker.py:57. Each compiled module's _license_header (compiler.py:179-181)
-# reads this env var and adds the path to sys.path on import.
+# Ensure compiled cache modules are importable by any subprocess.
+# On spawn-based platforms (Windows, macOS), spawned dataset.map() workers must
+# re-import all top-level modules. The compiled cache's trainer files import
+# torch and unsloth_zoo (which initializes CUDA), making spawn impractical.
+# Propagating UNSLOTH_COMPILE_LOCATION via PYTHONPATH ensures any subprocess
+# (not just Pool workers) can find compiled modules.
 # NOTE: Do NOT import unsloth_zoo.compiler here -- it triggers heavy torch/triton imports.
 if sys.platform in ("win32", "darwin"):
     _compile_cache = os.environ.get(
@@ -3005,7 +3006,7 @@ class UnslothTrainer:
                 "dataset_num_proc": dataset_map_num_proc(
                     1
                     if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
-                    else safe_num_proc(max(1, os.cpu_count() // 4))
+                    else max(1, (os.cpu_count() or 1) // 4)
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
             }
