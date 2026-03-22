@@ -211,10 +211,24 @@ function Install-UnslothStudio {
     }
     $TorchIndexUrl = Get-TorchIndexUrl
 
-    # ── Install PyTorch first with the explicit index, then unsloth without --torch-backend ──
-    # Splitting the install ensures uv resolves unsloth against the torch that is
-    # already present in the venv, preventing the solver from falling back to
-    # unsloth==2024.8 (a pre-CLI release that ships no unsloth.exe).
+    # ── Install PyTorch first, then unsloth separately ──
+    #
+    # Why two steps?
+    #   `uv pip install unsloth --torch-backend=cpu` on Windows resolves to
+    #   unsloth==2024.8 (a pre-CLI release with no unsloth.exe) because the
+    #   cpu-only solver cannot satisfy newer unsloth's dependencies.
+    #   Installing torch first from the explicit CUDA index, then upgrading
+    #   unsloth in a second step, avoids this solver dead-end.
+    #
+    # Why --upgrade-package instead of --upgrade?
+    #   `--upgrade unsloth` re-resolves ALL dependencies including torch,
+    #   pulling torch from default PyPI and stripping the +cuXXX suffix
+    #   that step 1 installed (e.g. torch 2.5.1+cu124 -> 2.10.0 with no
+    #   CUDA suffix).  `--upgrade-package unsloth` upgrades ONLY unsloth
+    #   to the latest version while preserving the already-pinned torch
+    #   CUDA wheels.  Missing dependencies (transformers, trl, peft, etc.)
+    #   are still pulled in because they are new, not upgrades.
+    #
     Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
     uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
     if ($LASTEXITCODE -ne 0) {
