@@ -386,10 +386,10 @@ class TestQGaLoreIntegration:
         # This tests the logic that make_q_galore_param_groups produces groups
         # that can be further split by the trainer for embedding LR.
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias=False)
+        model.q_proj = nn.Linear(64, 64, bias = False)
         model.embed = nn.Embedding(100, 64)
 
-        groups = make_q_galore_param_groups(model, rank=8, weight_quant=False)
+        groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
         # Simulate splitting non-GaLore group for embedding LR
         embed_lr = 5e-5
@@ -439,21 +439,21 @@ class TestQGaLoreIntegration:
     def test_weight_decay_uses_saved_data(self):
         """Weight decay should apply to the pre-updated weights, not post-updated."""
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
-        
+
         # We can test this logic without bitsandbytes by mocking the optimizer step
         # Create a mock parameter and group
         p = torch.nn.Parameter(torch.ones(4, 4))
         p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights
         p.data = torch.ones(4, 4) * 3.0         # Post-update weights (GaLore output)
-        
+
         group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
-        
+
         # Replicate the decoupled weight decay logic
         p.data.add_(
             p._saved_data,
             alpha = -group["lr"] * group["_wd_saved"],
         )
-        
+
         # If it used p.data (wrong), value would be 3.0 - (1.0 * 0.1 * 3.0) = 2.7
         # If it used p._saved_data (correct), value is 3.0 - (1.0 * 0.1 * 2.0) = 2.8
         assert torch.allclose(p.data, torch.tensor(2.8)), "Weight decay didn't use _saved_data!"
@@ -462,22 +462,21 @@ class TestQGaLoreIntegration:
         """After a step with weight_quant=True, parameters must remain floating point."""
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
         _projector_mod_local = sys.modules["unsloth.optimizers.q_galore_projector"]
-        
+
         _quantize = _projector_mod_local._quantize
-        
+
         p = torch.nn.Parameter(torch.randn(16, 16))
         group = {"weight_quant": True, "stochastic_round": False, "weight_group_size": 16}
-        
+
         # Replicate the re-quantize logic at the end of optimizer step
         float_data = p.data.clone()
         q, scales, zeros, shape = _quantize(float_data, q_group_size=group["weight_group_size"])
-        
+
         # The key assertion: p.data stays float, _q_data holds uint8
         p._q_data = q.to(p.data.device)
         p._q_scales = scales
         p._q_zeros = zeros
         p._q_shape = shape
-        
+
         assert p.data.is_floating_point(), "p.data was converted to uint8!"
         assert p._q_data.dtype == torch.uint8, "_q_data should be uint8!"
-
