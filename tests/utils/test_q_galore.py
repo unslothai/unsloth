@@ -344,3 +344,79 @@ class TestQGaLoreIntegration:
         assert (
             relative_error < 0.05
         ), f"Reconstruction error too high: {relative_error:.4f}"
+
+    def test_weight_quant_activates_on_first_step(self):
+        """_has_weight_quant returns True even when _q_scales is None (first step)."""
+        _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
+        QGaLoreAdamW8bit = _adamw_mod_local.QGaLoreAdamW8bit
+
+        p = torch.nn.Parameter(torch.randn(16, 16))
+        # Simulate init_weight_quantization tagging
+        p._q_scales = None
+        p._q_zeros = None
+        p._q_shape = p.data.shape
+
+        group = {"weight_quant": True}
+
+        # _has_weight_quant must return True even on first step (_q_scales=None)
+        assert QGaLoreAdamW8bit._has_weight_quant(p, group) is True
+
+        # Without the tag, it should return False
+        p2 = torch.nn.Parameter(torch.randn(16, 16))
+        assert QGaLoreAdamW8bit._has_weight_quant(p2, group) is False
+
+    def test_embedding_lr_param_group_split(self):
+        """Embedding params can be split into a separate group with custom LR."""
+        # This tests the logic that make_q_galore_param_groups produces groups
+        # that can be further split by the trainer for embedding LR.
+        model = nn.Module()
+        model.q_proj = nn.Linear(64, 64, bias=False)
+        model.embed = nn.Embedding(100, 64)
+
+        groups = make_q_galore_param_groups(model, rank=8, weight_quant=False)
+
+        # Simulate splitting non-GaLore group for embedding LR
+        embed_lr = 5e-5
+        new_groups = []
+        for group in groups:
+            if "rank" in group:
+                new_groups.append(group)
+                continue
+            embed_params = []
+            other_params = []
+            for p in group["params"]:
+                # In real usage, we'd check the name; here just split by shape
+                if p.shape[0] == 100:  # embedding
+                    embed_params.append(p)
+                else:
+                    other_params.append(p)
+            if other_params:
+                g = dict(group)
+                g["params"] = other_params
+                new_groups.append(g)
+            if embed_params:
+                g = dict(group)
+                g["params"] = embed_params
+                g["lr"] = embed_lr
+                new_groups.append(g)
+
+        # Should have 3 groups: galore, non-galore non-embed, embed
+        embed_groups = [g for g in new_groups if g.get("lr") == embed_lr]
+        assert len(embed_groups) == 1
+        assert embed_groups[0]["lr"] == embed_lr
+
+    def test_optimizer_hyperparams_forwarded(self):
+        """QGaLoreAdamW8bit accepts betas and eps keyword arguments."""
+        # Verify the constructor signature accepts these params.
+        # Without bitsandbytes we can't instantiate, but we can check the
+        # function signature.
+        import inspect
+
+        _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
+        QGaLoreAdamW8bit = _adamw_mod_local.QGaLoreAdamW8bit
+
+        sig = inspect.signature(QGaLoreAdamW8bit.__init__)
+        param_names = list(sig.parameters.keys())
+        assert "betas" in param_names, "betas not in QGaLoreAdamW8bit.__init__ params"
+        assert "eps" in param_names, "eps not in QGaLoreAdamW8bit.__init__ params"
+

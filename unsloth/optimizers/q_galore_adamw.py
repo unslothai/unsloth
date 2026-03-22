@@ -141,13 +141,15 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 # --- Dequantize weight if INT8 ---
                 if has_weight_quant:
-                    float_weight = _dequantize(
-                        p.data,
-                        p._q_scales,
-                        p._q_zeros,
-                        p._q_shape,
-                    )
-                    p.data = float_weight.clone().to(p.data.device)
+                    if p._q_scales is not None:
+                        float_weight = _dequantize(
+                            p.data,
+                            p._q_scales,
+                            p._q_zeros,
+                            p._q_shape,
+                        )
+                        p.data = float_weight.clone().to(p.data.device)
+                    # else: first step, weights are still float — skip dequantize
 
                 # --- GaLore projection ---
                 if "rank" in group:
@@ -236,8 +238,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
         """Check if this parameter uses INT8 weight quantization."""
         return (
             group.get("weight_quant", False)
-            and hasattr(p, "_q_scales")
-            and p._q_scales is not None  # None means first step (not yet quantized)
+            and hasattr(p, "_q_scales")  # tag set by init_weight_quantization()
         )
 
     @staticmethod
