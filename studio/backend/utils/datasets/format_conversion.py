@@ -127,12 +127,12 @@ def standardize_chat_format(
     }
 
     if not isinstance(dataset, IterableDataset):
-        from utils.hardware import safe_num_proc
+        from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = safe_num_proc()
+            num_proc = dataset_map_num_proc()
         else:
-            num_proc = safe_num_proc(num_proc)
+            num_proc = dataset_map_num_proc(num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
@@ -197,12 +197,12 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
     }
 
     if not isinstance(dataset, IterableDataset):
-        from utils.hardware import safe_num_proc
+        from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = safe_num_proc()
+            num_proc = dataset_map_num_proc()
         else:
-            num_proc = safe_num_proc(num_proc)
+            num_proc = dataset_map_num_proc(num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
@@ -247,12 +247,12 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
     }
 
     if not isinstance(dataset, IterableDataset):
-        from utils.hardware import safe_num_proc
+        from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = safe_num_proc()
+            num_proc = dataset_map_num_proc()
         else:
-            num_proc = safe_num_proc(num_proc)
+            num_proc = dataset_map_num_proc(num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
@@ -435,9 +435,9 @@ def convert_to_vlm_format(
     if has_urls and total > PROBE_SIZE:
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from utils.hardware import safe_num_proc
+        from utils.hardware import safe_thread_num_proc
 
-        num_workers = safe_num_proc()
+        num_workers = safe_thread_num_proc()
         _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
         logger.info(
             f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers..."
@@ -521,9 +521,9 @@ def convert_to_vlm_format(
         # Parallel conversion for URL-based datasets
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from utils.hardware import safe_num_proc
+        from utils.hardware import safe_thread_num_proc
 
-        num_workers = safe_num_proc()
+        num_workers = safe_thread_num_proc()
         batch_size = 500
         start_time = time.time()
 

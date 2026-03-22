@@ -84,6 +84,12 @@ type ChatRuntimeStore = {
   activeThreadId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
+  contextUsage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cachedTokens: number;
+  } | null;
   modelLoading: boolean;
   setModelLoading: (loading: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -107,6 +113,7 @@ type ChatRuntimeStore = {
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
+  setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
@@ -134,6 +141,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   activeThreadId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
+  contextUsage: null,
   modelLoading: false,
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setParams: (params) => set({ params }),
@@ -163,7 +171,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: ggufVariant ?? null,
     })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId }),
+  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
@@ -172,6 +180,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: null,
       ggufContextLength: null,
+      contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,
       supportsTools: false,
@@ -208,4 +217,5 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
     set({ pendingAudioBase64: null, pendingAudioName: null }),
+  setContextUsage: (contextUsage) => set({ contextUsage }),
 }));

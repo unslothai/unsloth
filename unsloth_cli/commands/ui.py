@@ -12,7 +12,7 @@ import typer
 
 def ui(
     port: int = typer.Option(
-        8000, "--port", "-p", help = "Port to run the UI server on."
+        8888, "--port", "-p", help = "Port to run the UI server on."
     ),
     host: str = typer.Option(
         "0.0.0.0", "--host", "-H", help = "Host address to bind to."
@@ -40,7 +40,7 @@ def ui(
         run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
-                typer.echo("Launching with studio venv...")
+                typer.echo("Launching Unsloth Studio... Please wait...")
             args = [
                 str(studio_python),
                 str(run_py),
@@ -80,18 +80,19 @@ def ui(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_server(
-        host = host,
-        port = port,
-        frontend_path = frontend,
-        silent = silent,
-    )
+    run_kwargs = dict(host = host, port = port, silent = silent)
+    if frontend is not None:
+        run_kwargs["frontend_path"] = frontend
+    run_server(**run_kwargs)
 
     from studio.backend.run import _shutdown_event
 
     try:
         if _shutdown_event is not None:
-            _shutdown_event.wait()
+            # NOTE: Event.wait() without a timeout blocks at the C level
+            # on Linux, preventing Python from delivering SIGINT (Ctrl+C).
+            while not _shutdown_event.is_set():
+                _shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)

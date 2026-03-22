@@ -1092,6 +1092,7 @@ async def list_checkpoints(
                 base_model = metadata.get("base_model"),
                 peft_type = metadata.get("peft_type"),
                 lora_rank = metadata.get("lora_rank"),
+                is_quantized = metadata.get("is_quantized", False),
             )
             for model_name, checkpoints, metadata in raw_models
         ]

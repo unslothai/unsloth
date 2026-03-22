@@ -333,7 +333,10 @@ export type SeedConfig = {
   hf_token?: string;
   hf_endpoint?: string;
   local_file_name?: string;
-  unstructured_file_name?: string;
+  unstructured_file_ids?: string[];
+  unstructured_file_names?: string[];
+  unstructured_file_sizes?: number[];
+  resolved_paths?: string[];
   // ui-only
   seed_preview_rows?: Record<string, unknown>[];
   // ui-only (string for input ergonomics)

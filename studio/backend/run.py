@@ -8,16 +8,20 @@ Works independently and can be moved to any directory.
 
 import os
 import sys
+from pathlib import Path
 
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-from pathlib import Path
-
-# Add the backend directory to Python path
+# Add the backend directory to Python path early so local modules are importable
 backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
+
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
 
 from loggers import get_logger
 
@@ -155,7 +159,7 @@ _shutdown_event = None
 
 def run_server(
     host: str = "0.0.0.0",
-    port: int = 8000,
+    port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
 ):
@@ -174,6 +178,14 @@ def run_server(
         Standalone callers should register handlers after calling this.
     """
     global _server, _shutdown_event
+
+    # On Windows the default console encoding (cp1252) cannot encode emoji.
+    # Reconfigure stdout to UTF-8 so startup messages do not crash the server.
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
 
     import nest_asyncio
 
@@ -226,11 +238,15 @@ def run_server(
 
         print("")
         print("=" * 50)
+        print(f"🦥 Open your web browser, and enter http://localhost:{port}")
+        print("=" * 50)
+        print("")
+        print("=" * 50)
         print(f"🦥 Unsloth Studio is running on port {port}")
-        print(f"   Local:    http://localhost:{port}")
-        print(f"   External: http://{display_host}:{port}")
-        print(f"   API:      http://{display_host}:{port}/api")
-        print(f"   Health:   http://{display_host}:{port}/api/health")
+        print(f"   Local Access:          http://localhost:{port}")
+        print(f"   Worldwide Web Address: http://{display_host}:{port}")
+        print(f"   API:                   http://{display_host}:{port}/api")
+        print(f"   Health:                http://{display_host}:{port}/api/health")
         print("=" * 50)
 
     return app
@@ -240,10 +256,18 @@ def run_server(
 if __name__ == "__main__":
     import argparse
     import signal
+    import traceback
+
+    # Ensure stderr can handle Unicode on Windows (tracebacks with non-ASCII paths)
+    if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
-    parser.add_argument("--port", type = int, default = 8000, help = "Port to bind to")
+    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
         type = str,
@@ -257,7 +281,21 @@ if __name__ == "__main__":
     kwargs = dict(host = args.host, port = args.port, silent = args.silent)
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
-    run_server(**kwargs)
+
+    try:
+        run_server(**kwargs)
+    except Exception:
+        sys.stderr.write("\n")
+        sys.stderr.write("=" * 60 + "\n")
+        sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
+        sys.stderr.write("=" * 60 + "\n")
+        traceback.print_exc(file = sys.stderr)
+        sys.stderr.write("\n")
+        sys.stderr.write(
+            "If a package is missing, try re-running: unsloth studio setup\n"
+        )
+        sys.stderr.flush()
+        sys.exit(1)
 
     # ── Signal handler — ensures subprocess cleanup on Ctrl+C ────
     def _signal_handler(signum, frame):

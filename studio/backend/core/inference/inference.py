@@ -549,10 +549,18 @@ class InferenceBackend:
                 # Clear GPU memory cache
                 clear_gpu_cache()
 
-                # Remove stale compiled cache so the next model gets a fresh one
+                # Remove stale compiled cache so the next model gets a fresh one.
+                # On spawn-based platforms, preserve trainer files so that any
+                # concurrent training dataset.map() workers can still import them.
+                import sys as _sys
                 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-                clear_unsloth_compiled_cache()
+                _preserve = (
+                    ["Unsloth*Trainer.py"]
+                    if _sys.platform in ("win32", "darwin")
+                    else None
+                )
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
