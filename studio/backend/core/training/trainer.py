@@ -19,7 +19,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # reads this env var and adds the path to sys.path on import.
 # NOTE: Do NOT import unsloth_zoo.compiler here -- it triggers heavy torch/triton imports.
 if sys.platform in ("win32", "darwin"):
-    _compile_cache = os.environ.get("UNSLOTH_COMPILE_LOCATION", "unsloth_compiled_cache")
+    _compile_cache = os.environ.get(
+        "UNSLOTH_COMPILE_LOCATION", "unsloth_compiled_cache"
+    )
     if not os.path.isabs(_compile_cache):
         _compile_cache = os.path.abspath(_compile_cache)
         os.environ["UNSLOTH_COMPILE_LOCATION"] = _compile_cache
@@ -1482,7 +1484,10 @@ class UnslothTrainer:
 
         self._update_progress(status_message = "Formatting audio VLM dataset...")
         dataset = dataset.map(
-            format_messages, batched = True, batch_size = 4, num_proc = dataset_map_num_proc(4)
+            format_messages,
+            batched = True,
+            batch_size = 4,
+            num_proc = dataset_map_num_proc(4),
         )
         logger.info(f"Audio VLM dataset formatted: {len(dataset)} examples\n")
         return dataset
@@ -2998,7 +3003,8 @@ class UnslothTrainer:
                 "report_to": _build_report_targets(training_args),
                 "include_num_input_tokens_seen": True,  # Enable token counting
                 "dataset_num_proc": dataset_map_num_proc(
-                    1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
+                    1
+                    if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
                     else safe_num_proc(max(1, os.cpu_count() // 4))
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),

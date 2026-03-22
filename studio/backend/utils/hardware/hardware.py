@@ -540,6 +540,7 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     Only ``num_proc=None`` guarantees in-process execution.
     """
     import sys
+
     if sys.platform in ("win32", "darwin"):
         return None
     return safe_num_proc(desired)
