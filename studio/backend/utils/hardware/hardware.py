@@ -543,21 +543,60 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     import os
     import sys
 
-    # Windows uses 'spawn' for multiprocessing -- the overhead of re-importing
-    # torch/transformers/unsloth per worker is typically slower than single-process.
-    if sys.platform == "win32":
+    # Windows and macOS use 'spawn' for multiprocessing -- the overhead of
+    # re-importing torch/transformers/unsloth per worker is typically slower
+    # than single-process.
+    if sys.platform in ("win32", "darwin"):
         return 1
 
     if desired is None or not isinstance(desired, int):
-        desired = max(1, os.cpu_count() // 3)
+        desired = max(1, (os.cpu_count() or 1) // 3)
 
     visible = get_visible_gpu_count()
     if visible > 1:
-        capped = min(4, desired)
+        capped = max(1, min(4, desired))
         logger.info(
             f"Multi-GPU detected ({visible} visible GPUs) -- "
             f"capping num_proc {desired} -> {capped} to avoid fork deadlocks"
         )
         return capped
 
-    return desired
+    return max(1, desired)
+
+
+def safe_thread_num_proc(desired: Optional[int] = None) -> int:
+    """
+    Return a safe worker count for ``ThreadPoolExecutor`` calls.
+
+    Unlike ``safe_num_proc()``, this does NOT cap to 1 on macOS/Windows.
+    Threads share the parent process address space and are unaffected by
+    the ``spawn`` vs ``fork`` distinction.
+
+    Args:
+        desired: The thread count you *want*. If None, auto-computes
+                 from ``os.cpu_count()``.
+
+    Returns:
+        A safe integer >= 1.
+    """
+    import os
+
+    if desired is None or not isinstance(desired, int):
+        desired = max(1, (os.cpu_count() or 1) // 3)
+
+    return max(1, desired)
+
+
+def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
+    """
+    Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
+
+    Returns ``None`` on spawn-based platforms (Windows, macOS) because
+    ``datasets`` treats ``num_proc=1`` as multiprocessing (creates ``Pool(1)``).
+    Only ``num_proc=None`` guarantees in-process execution.
+    """
+    import sys
+
+    if sys.platform in ("win32", "darwin"):
+        return None
+    return safe_num_proc(desired)

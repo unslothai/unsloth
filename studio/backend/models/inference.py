@@ -364,6 +364,8 @@ class ChatCompletionChunk(BaseModel):
     created: int = Field(default_factory = lambda: int(time.time()))
     model: str = "default"
     choices: list[ChunkChoice]
+    usage: Optional[CompletionUsage] = None
+    timings: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────

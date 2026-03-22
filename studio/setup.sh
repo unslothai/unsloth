@@ -8,20 +8,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Helper: run command quietly, show output only on failure ──
-run_quiet() {
-    local label="$1"
-    shift
+_run_quiet() {
+    local on_fail=$1
+    local label=$2
+    shift 2
+
     local tmplog
-    tmplog=$(mktemp)
-    if "$@" > "$tmplog" 2>&1; then
+    tmplog=$(mktemp) || {
+        printf '%s\n' "Failed to create temporary file" >&2
+        [ "$on_fail" = "exit" ] && exit 1 || return 1
+    }
+
+    if "$@" >"$tmplog" 2>&1; then
         rm -f "$tmplog"
+        return 0
     else
         local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
-        cat "$tmplog"
+        printf 'Failed: %s (exit code %s):\n' "$label" "$exit_code" >&2
+        cat "$tmplog" >&2
         rm -f "$tmplog"
-        exit $exit_code
+
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
     fi
+}
+
+run_quiet() {
+    _run_quiet exit "$@"
+}
+
+run_quiet_no_exit() {
+    _run_quiet return "$@"
 }
 
 echo "╔══════════════════════════════════════╗"
@@ -59,7 +79,6 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
         _NEED_FRONTEND_BUILD=false
     fi
 fi
-_NEED_FRONTEND_BUILD=true
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
@@ -160,6 +179,16 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+
+# Validate CSS output -- catch truncated Tailwind builds
+_MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+if [ -z "$_MAX_CSS" ]; then
+    echo "⚠️  WARNING: No CSS files were emitted. The frontend build may have failed."
+elif [ "$_MAX_CSS" -lt 100000 ]; then
+    echo "⚠️  WARNING: Largest CSS file is only $((_MAX_CSS / 1024))KB (expected >100KB)."
+    echo "   Tailwind may not have scanned all source files. Check for .gitignore interference."
+fi
+
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
@@ -178,9 +207,24 @@ fi
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
 MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
-BEST_MAJOR=0
 BEST_MINOR=0
 
+# If the caller (e.g. install.sh) already chose a Python, use it directly.
+if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
+    _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
+    _req_major=$(echo "$_req_ver" | cut -d. -f1)
+    _req_minor=$(echo "$_req_ver" | cut -d. -f2)
+    if [ "$_req_major" -eq 3 ] 2>/dev/null && \
+       [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
+       [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
+        BEST_PY="$REQUESTED_PYTHON_VERSION"
+        echo "Using requested Python version: $BEST_PY"
+    else
+        echo "Ignoring requested Python $REQUESTED_PYTHON_VERSION ($_req_ver) -- outside supported range"
+    fi
+fi
+
+if [ -z "$BEST_PY" ]; then
 # Collect candidate python3 binaries (python3, python3.9, python3.10, …)
 for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
     if ! command -v "$candidate" &>/dev/null; then
@@ -197,7 +241,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
 
-    # Skip versions below 3.12 (require > 3.11)
+    # Skip versions below 3.11
     if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
         continue
     fi
@@ -210,11 +254,11 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     # Keep the highest qualifying version
     if [ "$py_minor" -gt "$BEST_MINOR" ]; then
         BEST_PY="$candidate"
-        BEST_MAJOR="$py_major"
         BEST_MINOR="$py_minor"
     fi
 done
-echo "finished finding best python"
+fi
+
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
     echo "   Detected Python 3 installations:"
@@ -308,10 +352,59 @@ echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 if grep -qi microsoft /proc/version 2>/dev/null; then
     echo ""
     echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
-    echo "   You may be prompted for your password."
-    sudo apt-get update -y
-    sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-    echo "✅ GGUF build dependencies installed"
+    _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
+
+    # Try without sudo first (works when already root)
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y $_GGUF_DEPS >/dev/null 2>&1 || true
+
+    # Check which packages are still missing
+    _STILL_MISSING=""
+    for _pkg in $_GGUF_DEPS; do
+        case "$_pkg" in
+            build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+        esac
+    done
+    _STILL_MISSING=$(echo "$_STILL_MISSING" | sed 's/^ *//')
+
+    if [ -z "$_STILL_MISSING" ]; then
+        echo "✅ GGUF build dependencies installed"
+    elif command -v sudo >/dev/null 2>&1; then
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   WARNING: We require sudo elevated permissions to install:"
+        echo "   $_STILL_MISSING"
+        echo "   If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+        printf "   Accept? [Y/n] "
+        if [ -r /dev/tty ]; then
+            read -r REPLY </dev/tty || REPLY="y"
+        else
+            REPLY="y"
+        fi
+        case "$REPLY" in
+            [nN]*)
+                echo ""
+                echo "   Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "   sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                _SKIP_GGUF_BUILD=true
+                ;;
+            *)
+                sudo apt-get update -y
+                sudo apt-get install -y $_STILL_MISSING
+                echo "✅ GGUF build dependencies installed"
+                ;;
+        esac
+    else
+        echo "   sudo is not available on this system."
+        echo "   Please install as root, then re-run setup:"
+        echo "   apt-get install -y $_STILL_MISSING"
+        _SKIP_GGUF_BUILD=true
+    fi
 fi
 
 # ── 8. Build llama.cpp binaries for GGUF inference + export ──
@@ -324,6 +417,11 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
+    echo ""
+    echo "Skipping llama-server build (missing dependencies)"
+    echo "   Install the missing packages and re-run setup to enable GGUF inference."
+else
 rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
@@ -339,7 +437,7 @@ rm -rf "$LLAMA_CPP_DIR"
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)
@@ -411,16 +509,16 @@ rm -rf "$LLAMA_CPP_DIR"
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            run_quiet_no_exit "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
         # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            run_quiet_no_exit "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
@@ -442,6 +540,7 @@ rm -rf "$LLAMA_CPP_DIR"
         fi
     fi
 }
+fi  # end _SKIP_GGUF_BUILD check
 
 echo ""
 if [ "$IS_COLAB" = true ]; then
@@ -460,6 +559,6 @@ else
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
-    echo "║ unsloth studio -H 0.0.0.0 -p 8000    ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8888    ║"
     echo "╚══════════════════════════════════════╝"
 fi

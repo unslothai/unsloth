@@ -55,6 +55,7 @@ from models.inference import (
     ChoiceDelta,
     CompletionChoice,
     CompletionMessage,
+    CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
 )
@@ -1083,6 +1084,8 @@ async def openai_chat_completions(
                     # the event loop stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
                     prev_text = ""
+                    _stream_usage = None
+                    _stream_timings = None
                     while True:
                         if await request.is_disconnected():
                             cancel_event.set()
@@ -1105,6 +1108,11 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
+                        if event["type"] == "metadata":
+                            _stream_usage = event.get("usage")
+                            _stream_timings = event.get("timings")
                             continue
 
                         # "content" type -- cumulative text
@@ -1138,6 +1146,24 @@ async def openai_chat_completions(
                         ],
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    # Usage chunk (OpenAI-standard: choices=[], usage populated)
+                    if _stream_usage or _stream_timings:
+                        usage_obj = CompletionUsage(
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
+                        )
+                        usage_chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [],
+                            usage = usage_obj,
+                            timings = _stream_timings,
+                        )
+                        yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -1207,6 +1233,8 @@ async def openai_chat_completions(
                     # the event loop stays free for disconnect detection.
                     gen = gguf_generate()
                     prev_text = ""
+                    _stream_usage = None
+                    _stream_timings = None
                     while True:
                         if await request.is_disconnected():
                             cancel_event.set()
@@ -1214,6 +1242,21 @@ async def openai_chat_completions(
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
                             break
+                        # Capture server metadata for final usage chunk
+                        if isinstance(cumulative, dict):
+                            if cumulative.get("type") == "metadata":
+                                _stream_usage = cumulative.get("usage")
+                                _stream_timings = cumulative.get("timings")
+                            else:
+                                logger.warning(
+                                    "gguf_stream_chunks: unexpected dict event: %s",
+                                    {
+                                        k: v
+                                        for k, v in cumulative.items()
+                                        if k != "timings"
+                                    },
+                                )
+                            continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
@@ -1244,6 +1287,24 @@ async def openai_chat_completions(
                         ],
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    # Usage chunk (OpenAI-standard: choices=[], usage populated)
+                    if _stream_usage or _stream_timings:
+                        usage_obj = CompletionUsage(
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
+                        )
+                        usage_chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [],
+                            usage = usage_obj,
+                            timings = _stream_timings,
+                        )
+                        yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -1272,6 +1333,8 @@ async def openai_chat_completions(
             try:
                 full_text = ""
                 for token in gguf_generate():
+                    if isinstance(token, dict):
+                        continue  # skip metadata dict in non-streaming path
                     full_text = token
 
                 response = ChatCompletion(
