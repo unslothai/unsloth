@@ -131,7 +131,9 @@ async def start_training(
 
         # Generate job ID — passed into start_training() which sets it on the
         # backend only after confirming the old pump thread is dead.
-        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+        job_id = (
+            f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+        )
 
         # Validate dataset paths if provided
         if request.local_datasets:

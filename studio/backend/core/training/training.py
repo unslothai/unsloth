@@ -232,7 +232,9 @@ class TrainingBackend:
         self._proc.start()
         logger.info("Training subprocess started (pid=%s)", self._proc.pid)
 
-        self._db_config = {k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}}
+        self._db_config = {
+            k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}
+        }
         self._db_started_at = datetime.now(timezone.utc).isoformat()
 
         # Start event pump thread
@@ -491,8 +493,12 @@ class TrainingBackend:
                 self._metric_buffer.append(
                     {
                         "step": step,
-                        "loss": loss if (loss is not None and math.isfinite(loss)) else None,
-                        "learning_rate": lr if (lr is not None and math.isfinite(lr)) else None,
+                        "loss": loss
+                        if (loss is not None and math.isfinite(loss))
+                        else None,
+                        "learning_rate": lr
+                        if (lr is not None and math.isfinite(lr))
+                        else None,
                         "grad_norm": gn,
                         "eval_loss": eval_loss,
                         "epoch": event.get("epoch"),
@@ -647,7 +653,12 @@ class TrainingBackend:
                 status = status,
                 ended_at = datetime.now(timezone.utc).isoformat(),
                 final_step = self._progress.step,
-                final_loss = self._progress.loss if (self._progress.loss is not None and math.isfinite(self._progress.loss)) else None,
+                final_loss = self._progress.loss
+                if (
+                    self._progress.loss is not None
+                    and math.isfinite(self._progress.loss)
+                )
+                else None,
                 duration_seconds = self._progress.elapsed_seconds,
                 loss_sparkline = _json.dumps(sparkline),
                 output_dir = output_dir,
@@ -678,7 +689,12 @@ class TrainingBackend:
             update_run_progress(
                 id = self.current_job_id,
                 step = self._progress.step,
-                loss = self._progress.loss if (self._progress.loss is not None and math.isfinite(self._progress.loss)) else None,
+                loss = self._progress.loss
+                if (
+                    self._progress.loss is not None
+                    and math.isfinite(self._progress.loss)
+                )
+                else None,
                 duration_seconds = self._progress.elapsed_seconds,
             )
         except Exception:
