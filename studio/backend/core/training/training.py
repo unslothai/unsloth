@@ -710,7 +710,7 @@ class TrainingBackend:
             from storage.studio_db import insert_metrics_batch, update_run_progress
 
             insert_metrics_batch(self.current_job_id, batch)
-            del self._metric_buffer[:len(batch)]
+            del self._metric_buffer[: len(batch)]
             update_run_progress(
                 id = self.current_job_id,
                 step = self._progress.step,
