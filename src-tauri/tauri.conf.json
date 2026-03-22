@@ -19,7 +19,12 @@
         "minWidth": 900,
         "minHeight": 600
       }
-    ]
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "id": "main",
+      "tooltip": "Unsloth Studio"
+    }
   },
   "bundle": {
     "active": true,
