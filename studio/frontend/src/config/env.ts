@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { apiUrl } from "@/lib/api-base";
 import { create } from "zustand";
 
 export const env = {
@@ -33,7 +34,7 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   if (fetched) return usePlatformStore.getState().deviceType;
 
   try {
-    const res = await fetch("/api/health");
+    const res = await fetch(apiUrl("/api/health"));
     if (res.ok) {
       const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
       const deviceType = data.device_type ?? "linux";

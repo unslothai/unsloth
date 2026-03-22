@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { redirect } from "@tanstack/react-router";
+import { apiUrl } from "@/lib/api-base";
 import {
   getPostAuthRoute,
   hasAuthToken,
@@ -18,7 +19,7 @@ async function hasActiveSession(): Promise<boolean> {
 
 async function checkAuthInitialized(): Promise<boolean> {
   try {
-    const res = await fetch("/api/auth/status");
+    const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return true; // fallback to login on error
     const data = (await res.json()) as { initialized: boolean };
     return data.initialized;
@@ -29,7 +30,7 @@ async function checkAuthInitialized(): Promise<boolean> {
 
 async function checkPasswordChangeRequired(): Promise<boolean> {
   try {
-    const res = await fetch("/api/auth/status");
+    const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return mustChangePassword();
     const data = (await res.json()) as { requires_password_change: boolean };
     return data.requires_password_change || mustChangePassword();
