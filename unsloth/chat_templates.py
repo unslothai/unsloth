@@ -638,6 +638,31 @@ CHAT_TEMPLATES["phi-4"] = (phi4_template, phi4_template_eos_token, False, phi4_o
 DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
 
 
+# =========================================== Phi-4 Multimodal
+phi4_mm_template = \
+    "{% for message in messages %}"\
+        "{{'<|' + message['role'] + '|>\n'}}" \
+        "{% if message['content'] is string %}"\
+            "{{ message['content'] }}"\
+        "{% else %}"\
+            "{% for content in message['content'] %}"\
+                "{% if content['type'] == 'image' %}{{ '<|image_1|>' }}"\
+                "{% elif content['type'] == 'audio' %}{{ '<|audio_1|>' }}"\
+                "{% elif content['type'] == 'text' %}{{ content['text'] }}"\
+                "{% endif %}"\
+            "{% endfor %}"\
+        "{% endif %}"\
+        "{{'<|end|>\n'}}" \
+    "{% endfor %}"\
+    "{% if add_generation_prompt %}"\
+        "{{ '<|assistant|>\n' }}"\
+    "{% endif %}"
+
+phi4_mm_template_eos_token = "<|end|>"
+CHAT_TEMPLATES["phi-4-multimodal"] = (phi4_mm_template, phi4_mm_template_eos_token, False, None,)
+DEFAULT_SYSTEM_MESSAGE["phi-4-multimodal"] = None
+
+
 # =========================================== Gemma-3
 # Obtained via
 # print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
