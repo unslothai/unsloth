@@ -449,20 +449,44 @@ rm -rf "$LLAMA_CPP_DIR"
                 echo "   Using ccache for faster compilation"
             fi
 
-            # Detect CUDA: check nvcc on PATH, then common install locations
+            # Detect GPU backend: CUDA (NVIDIA) or ROCm (AMD)
+            GPU_BACKEND=""
+
+            # Check for CUDA: check nvcc on PATH, then common install locations
             NVCC_PATH=""
             if command -v nvcc &>/dev/null; then
                 NVCC_PATH="$(command -v nvcc)"
+                GPU_BACKEND="cuda"
             elif [ -x /usr/local/cuda/bin/nvcc ]; then
                 NVCC_PATH="/usr/local/cuda/bin/nvcc"
                 export PATH="/usr/local/cuda/bin:$PATH"
+                GPU_BACKEND="cuda"
             elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
                 # Pick the newest cuda-XX.X directory
                 NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
                 export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                GPU_BACKEND="cuda"
             fi
 
-            if [ -n "$NVCC_PATH" ]; then
+            # Check for ROCm (AMD) only if CUDA was not already selected
+            ROCM_PATH=""
+            if [ -z "$GPU_BACKEND" ]; then
+                if command -v hipcc &>/dev/null; then
+                    ROCM_PATH="$(command -v hipcc)"
+                    GPU_BACKEND="rocm"
+                elif [ -x /opt/rocm/bin/hipcc ]; then
+                    ROCM_PATH="/opt/rocm/bin/hipcc"
+                    export PATH="/opt/rocm/bin:$PATH"
+                    GPU_BACKEND="rocm"
+                elif ls /opt/rocm-*/bin/hipcc &>/dev/null 2>&1; then
+                    # Pick the newest rocm-X.X directory
+                    ROCM_PATH="$(ls -d /opt/rocm-*/bin/hipcc 2>/dev/null | sort -V | tail -1)"
+                    export PATH="$(dirname "$ROCM_PATH"):$PATH"
+                    GPU_BACKEND="rocm"
+                fi
+            fi
+
+            if [ "$GPU_BACKEND" = "cuda" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
@@ -494,11 +518,41 @@ rm -rf "$LLAMA_CPP_DIR"
 
                 # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+            elif [ "$GPU_BACKEND" = "rocm" ]; then
+                # Derive ROCm root from hipcc path for cmake find_package(hip)
+                ROCM_ROOT="$(cd "$(dirname "$ROCM_PATH")/.." 2>/dev/null && pwd)"
+                echo "   Building with ROCm support (AMD GPU, hipcc: $ROCM_PATH)..."
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
+                export ROCM_PATH="$ROCM_ROOT"
+
+                # Detect AMD GPU architecture (gfx target)
+                GPU_TARGETS=""
+                if command -v rocminfo &>/dev/null; then
+                    _gfx_list=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]{2,4}[a-z]?' | sort -u || true)
+                    _valid_gfx=""
+                    for _gfx in $_gfx_list; do
+                        if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
+                        fi
+                    done
+                    [ -n "$_valid_gfx" ] && GPU_TARGETS="$_valid_gfx"
+                fi
+
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=hipcc -DCMAKE_CXX_COMPILER=hipcc"
+                if [ -n "$GPU_TARGETS" ]; then
+                    echo "   AMD GPU architectures: ${GPU_TARGETS//;/, } -- limiting build to detected targets"
+                    CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
+                else
+                    echo "   Could not detect AMD GPU arch -- building for default targets (cmake will auto-detect)"
+                fi
+            elif [ -d /usr/local/cuda ] || command -v nvidia-smi &>/dev/null; then
                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+            elif [ -d /opt/rocm ] || command -v rocm-smi &>/dev/null; then
+                echo "   ROCm driver detected but hipcc not found — building CPU-only"
+                echo "   To enable GPU: install rocm-dev or add hipcc to PATH"
             else
-                echo "   Building CPU-only (no CUDA detected)..."
+                echo "   Building CPU-only (no CUDA or ROCm detected)..."
             fi
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
