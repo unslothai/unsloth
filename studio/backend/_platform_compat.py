@@ -9,12 +9,12 @@ characters, e.g. '3.12.4 | packaged by Anaconda, Inc. | (main, ...) [MSC ...]'.
 Python's platform._sys_version() has a hardcoded regex that cannot parse this,
 raising ValueError. CPython closed this as "not planned" (cpython#102396).
 
-This module patches platform._sys_version() to retry with a cleaned version
-string on ValueError, fixing the import chain:
+This module seeds platform._sys_version_cache so the stdlib parser never sees
+the problematic string, fixing the import chain:
     structlog -> rich.pretty -> attrs._compat -> platform.python_implementation()
 
 Import this module before any library imports that may trigger the above chain.
-The patch is idempotent and safe to import multiple times.
+Safe to import multiple times (no-op if cache is already seeded or no pipes).
 """
 
 import platform
@@ -22,39 +22,31 @@ import re
 import sys
 
 
-def _patch_platform_sys_version() -> None:
-    if getattr(platform, "_unsloth_sys_version_patched", False):
-        return
+def _seed_sys_version_cache() -> None:
+    """One-shot cache prime: parse a cleaned sys.version and seed the cache."""
+    raw = sys.version
 
-    _original = platform._sys_version
+    # Strip paired |...| segments (Anaconda, conda-forge metadata)
+    cleaned = re.sub(r"\s*\|[^|]*\|\s*", " ", raw).strip()
 
-    def _patched(sys_version = None):
-        try:
-            return _original(sys_version)
-        except ValueError:
-            target = sys.version if sys_version is None else sys_version
-            if "|" not in target:
-                raise
-            # Strip paired |...| segments (Anaconda, conda-forge)
-            cleaned = re.sub(r"\s*\|[^|]*\|\s*", " ", target).strip()
-            if "|" in cleaned:
-                # Unpaired pipes -- keep version + everything from "(" onward
-                m = re.match(r"([\w.+]+)\s*", cleaned)
-                p = cleaned.find("(")
-                if m and p > 0:
-                    cleaned = m.group(0) + cleaned[p:]
-            if cleaned == target:
-                raise
-            result = _original(cleaned)
-            # Cache under original key so future calls are fast
-            cache = getattr(platform, "_sys_version_cache", None)
-            if isinstance(cache, dict):
-                cache[target] = result
-            return result
+    if "|" in cleaned:
+        # Unpaired pipe remaining -- keep version + everything from "(" onward
+        m = re.match(r"([\w.+]+)\s*", cleaned)
+        p = cleaned.find("(")
+        if m and p > 0:
+            cleaned = m.group(0) + cleaned[p:]
 
-    platform._sys_version = _patched
-    platform._unsloth_sys_version_patched = True
+    if cleaned == raw:
+        return  # Nothing to fix
+
+    # Parse the cleaned string through the real stdlib parser
+    result = platform._sys_version(cleaned)
+
+    # Seed the cache so future calls with the raw string skip parsing entirely
+    cache = getattr(platform, "_sys_version_cache", None)
+    if isinstance(cache, dict):
+        cache[raw] = result
 
 
 if "|" in sys.version:
-    _patch_platform_sys_version()
+    _seed_sys_version_cache()
