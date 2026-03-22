@@ -256,9 +256,10 @@ function getConfigSummary(config: NodeConfig | undefined): string {
     }
     if (
       seedSourceType === "unstructured" &&
-      config.unstructured_file_name?.trim()
+      config.unstructured_file_names?.length
     ) {
-      return config.unstructured_file_name.trim();
+      const count = config.unstructured_file_names.length;
+      return `${count} file${count !== 1 ? "s" : ""} uploaded`;
     }
     if (config.hf_path.trim()) {
       return config.hf_path.trim();

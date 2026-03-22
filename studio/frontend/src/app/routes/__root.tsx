@@ -15,10 +15,16 @@ import { AppProvider } from "../provider";
 
 const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
 
+function isChatOnlyAllowed(pathname: string): boolean {
+  if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
+  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
+  return false;
+}
+
 export const Route = createRootRoute({
   beforeLoad: ({ location }) => {
     const chatOnly = usePlatformStore.getState().isChatOnly();
-    if (chatOnly && !CHAT_ONLY_ALLOWED.has(location.pathname)) {
+    if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
       throw redirect({ to: "/chat" });
     }
   },

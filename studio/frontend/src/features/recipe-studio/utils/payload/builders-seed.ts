@@ -71,7 +71,7 @@ export function buildSeedConfig(
             return {
               // biome-ignore lint/style/useNamingConvention: api schema
               seed_type: "unstructured",
-              path,
+              paths: config.resolved_paths?.length ? config.resolved_paths : [config.hf_path],
               // biome-ignore lint/style/useNamingConvention: api schema
               chunk_size: chunkSize,
               // biome-ignore lint/style/useNamingConvention: api schema

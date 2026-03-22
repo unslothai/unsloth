@@ -31,10 +31,26 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
 
 const DEFAULT_SUGGESTIONS = [
-  "Draw an SVG of a cute sloth",
-  "Solve the integral of x²·sin(x) step by step",
-  "Write a Python function that finds the longest palindrome in a string",
-  "Format a comparison of 3 databases as a markdown table with pros and cons",
+  {
+    title: "How do you fine-tune an audio model with Unsloth?",
+    label: "Audio fine-tuning",
+    prompt: "How do you fine-tune an audio model with Unsloth?",
+  },
+  {
+    title: "Create a live weather dashboard in HTML using no API key. Show me the code",
+    label: "Weather dashboard",
+    prompt: "Create a live weather dashboard in HTML using no API key. Show me the code",
+  },
+  {
+    title: "Solve the integral of x·sin(x), and verify it",
+    label: "Integral",
+    prompt: "Solve the integral of x·sin(x), and verify it step by step",
+  },
+  {
+    title: "Draw an SVG of a cute sloth",
+    label: "SVG sloth",
+    prompt: "Draw an SVG of a cute sloth",
+  },
 ];
 
 type TitleResponse = {
@@ -345,6 +361,8 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       metadata: { custom: {} },
     };
   }
+  const custom = (m.metadata as Record<string, unknown>) ?? {};
+  const savedTiming = custom.timing as import("@assistant-ui/react").MessageTiming | undefined;
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -352,7 +370,8 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
-      custom: (m.metadata as Record<string, unknown>) ?? {},
+      custom,
+      ...(savedTiming ? { timing: savedTiming } : {}),
       steps: [],
       unstable_annotations: [],
       unstable_data: [],
@@ -534,6 +553,21 @@ function ThreadHistoryProvider({
           if (aOrder !== bOrder) return aOrder - bOrder;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
+
+        // Restore context usage from last assistant message if model matches
+        const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
+        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)?.contextUsage as
+          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number; modelId?: string }
+          | undefined;
+        const store = useChatRuntimeStore.getState();
+        if (
+          savedUsage &&
+          store.ggufContextLength &&
+          savedUsage.totalTokens <= store.ggufContextLength &&
+          (!savedUsage.modelId || savedUsage.modelId === store.params.checkpoint)
+        ) {
+          store.setContextUsage(savedUsage);
+        }
 
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },

@@ -9,6 +9,14 @@ Uses Colab's built-in proxy - no external tunneling needed!
 from pathlib import Path
 import sys
 
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+_backend_dir = str(Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+import _platform_compat  # noqa: F401
+
 
 def _bootstrap_studio_venv() -> None:
     """Expose the Studio venv's site-packages to the current interpreter.
@@ -35,17 +43,12 @@ def _bootstrap_studio_venv() -> None:
 
 _bootstrap_studio_venv()
 
-# Add backend to path early so local modules like loggers can be imported
-backend_path = str(Path(__file__).parent)
-if backend_path not in sys.path:
-    sys.path.insert(0, backend_path)
-
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_colab_url(port: int = 8000) -> str:
+def get_colab_url(port: int = 8888) -> str:
     """
     Get the actual Colab proxy URL for a port.
     """
@@ -60,7 +63,7 @@ def get_colab_url(port: int = 8000) -> str:
         return f"http://localhost:{port}"
 
 
-def show_link(port: int = 8000):
+def show_link(port: int = 8888):
     """Display a styled clickable link to the UI."""
     from IPython.display import display, HTML
 
@@ -68,8 +71,8 @@ def show_link(port: int = 8000):
     url = get_colab_url(port)
 
     short_url = (
-        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
-        if "8000-" in url
+        url[: url.index("-", url.index(f"{port}-") + len(str(port)) + 1) + 1] + "..."
+        if f"{port}-" in url
         else url
     )
     html = f"""
@@ -96,7 +99,7 @@ def show_link(port: int = 8000):
     display(HTML(html))
 
 
-def start(port: int = 8000):
+def start(port: int = 8888):
     """
     Start Unsloth Studio server in Colab and display the URL.
 
