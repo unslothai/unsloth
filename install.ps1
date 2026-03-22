@@ -187,7 +187,7 @@ function Install-UnslothStudio {
     if (-not (Test-Path $VenvPython)) {
         if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
         Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment (${VenvName})..."
-        uv venv $VenvName --python $($DetectedPython.Path)
+        uv venv $VenvName --python "$($DetectedPython.Path)"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
             return
