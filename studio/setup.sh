@@ -170,10 +170,18 @@ trap _restore_gitignores EXIT
 
 # Use bun for install if available (faster), fall back to npm.
 # Build always uses npm (Node runtime — avoids bun runtime issues on some platforms).
+# NOTE: We intentionally avoid run_quiet for the bun install attempt because
+# run_quiet calls exit on failure, which would kill the script before the npm
+# fallback can run. Instead we capture output manually and only show it on failure.
 if command -v bun &>/dev/null; then
     echo "   Using bun for package install (faster)"
-    if ! run_quiet "bun install" bun install; then
+    _bun_log=$(mktemp)
+    if bun install >"$_bun_log" 2>&1; then
+        rm -f "$_bun_log"
+    else
         echo "   ⚠️  bun install failed, falling back to npm"
+        rm -f "$_bun_log"
+        rm -rf node_modules
         run_quiet "npm install" npm install
     fi
 else

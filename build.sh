@@ -36,6 +36,7 @@ if command -v bun &>/dev/null; then
         _install_ok=true
     else
         echo "⚠ bun install failed, falling back to npm"
+        rm -rf node_modules
     fi
 fi
 if ! $_install_ok; then
