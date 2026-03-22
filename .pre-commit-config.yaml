@@ -6,6 +6,7 @@ repos:
         args:
           - --fix
           - --exit-non-zero-on-fix
+        exclude: '\.ipynb$'
   - repo: local
     hooks:
       - id: ruff-format-with-kwargs
