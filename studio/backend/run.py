@@ -256,6 +256,14 @@ def run_server(
 if __name__ == "__main__":
     import argparse
     import signal
+    import traceback
+
+    # Ensure stderr can handle Unicode on Windows (tracebacks with non-ASCII paths)
+    if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
@@ -273,7 +281,21 @@ if __name__ == "__main__":
     kwargs = dict(host = args.host, port = args.port, silent = args.silent)
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
-    run_server(**kwargs)
+
+    try:
+        run_server(**kwargs)
+    except Exception:
+        sys.stderr.write("\n")
+        sys.stderr.write("=" * 60 + "\n")
+        sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
+        sys.stderr.write("=" * 60 + "\n")
+        traceback.print_exc(file = sys.stderr)
+        sys.stderr.write("\n")
+        sys.stderr.write(
+            "If a package is missing, try re-running: unsloth studio setup\n"
+        )
+        sys.stderr.flush()
+        sys.exit(1)
 
     # ── Signal handler — ensures subprocess cleanup on Ctrl+C ────
     def _signal_handler(signum, frame):
