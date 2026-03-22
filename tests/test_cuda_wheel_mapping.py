@@ -45,7 +45,7 @@ def parse_cuda_version(output: str):
 # ---------------------------------------------------------------------------
 
 
-def map_cuda_pr_original(major, minor, *, has_smi=True, parse_ok=True):
+def map_cuda_pr_original(major, minor, *, has_smi = True, parse_ok = True):
     """PR #4515 original setup.ps1: cu124 fallbacks, no CUDA 11.x guard."""
     if not has_smi:
         return "cu124"
@@ -60,7 +60,7 @@ def map_cuda_pr_original(major, minor, *, has_smi=True, parse_ok=True):
     return "cu124"  # BUG: 12.0-12.5 AND 11.x both land here
 
 
-def map_cuda_fixed_install(major, minor, *, has_smi=True, parse_ok=True):
+def map_cuda_fixed_install(major, minor, *, has_smi = True, parse_ok = True):
     """Fixed install.ps1: cu126 fallback, CUDA 11.x -> cpu, no smi -> cpu."""
     if not has_smi:
         return "cpu"
@@ -77,7 +77,7 @@ def map_cuda_fixed_install(major, minor, *, has_smi=True, parse_ok=True):
     return "cpu"
 
 
-def map_cuda_fixed_setup(major, minor, *, has_smi=True, parse_ok=True):
+def map_cuda_fixed_setup(major, minor, *, has_smi = True, parse_ok = True):
     """Fixed setup.ps1: cu126 fallback, CUDA 11.x -> cpu, no smi -> cu126."""
     if not has_smi:
         return "cu126"
@@ -111,9 +111,9 @@ _NVIDIA_SMI_TEMPLATE = textwrap.dedent("""\
 """)
 
 
-def _smi_output(cuda_ver, smi_ver="570.00", drv_ver="570.00"):
+def _smi_output(cuda_ver, smi_ver = "570.00", drv_ver = "570.00"):
     return _NVIDIA_SMI_TEMPLATE.format(
-        cuda_ver=cuda_ver, smi_ver=smi_ver, drv_ver=drv_ver
+        cuda_ver = cuda_ver, smi_ver = smi_ver, drv_ver = drv_ver
     )
 
 
@@ -138,8 +138,8 @@ _real_smi = shutil.which("nvidia-smi")
 if _real_smi:
     try:
         _real_output = subprocess.check_output(
-            [_real_smi], stderr=subprocess.STDOUT, timeout=5
-        ).decode("utf-8", errors="replace")
+            [_real_smi], stderr = subprocess.STDOUT, timeout = 5
+        ).decode("utf-8", errors = "replace")
         _parsed = parse_cuda_version(_real_output)
         if _parsed:
             NVIDIA_SMI_FIXTURES["real_machine"] = (_real_output, _parsed)
@@ -174,7 +174,7 @@ class TestBugDemonstration(unittest.TestCase):
 
     def test_pr_bug_vs_fix_with_smi(self):
         for label, major, minor, pr_tag, inst_tag, setup_tag in self.BUG_CASES:
-            with self.subTest(label=label):
+            with self.subTest(label = label):
                 self.assertEqual(
                     map_cuda_pr_original(major, minor),
                     pr_tag,
@@ -193,17 +193,17 @@ class TestBugDemonstration(unittest.TestCase):
 
     def test_no_smi_bug(self):
         self.assertEqual(
-            map_cuda_pr_original(0, 0, has_smi=False),
+            map_cuda_pr_original(0, 0, has_smi = False),
             "cu124",
             "PR original: no smi -> cu124 (frozen, BAD)",
         )
         self.assertEqual(
-            map_cuda_fixed_install(0, 0, has_smi=False),
+            map_cuda_fixed_install(0, 0, has_smi = False),
             "cpu",
             "Fixed install: no smi -> cpu (GOOD)",
         )
         self.assertEqual(
-            map_cuda_fixed_setup(0, 0, has_smi=False),
+            map_cuda_fixed_setup(0, 0, has_smi = False),
             "cu126",
             "Fixed setup: no smi -> cu126 (optimistic, GOOD)",
         )
@@ -235,14 +235,14 @@ class TestMappingPROriginal(unittest.TestCase):
 
     def test_version_mapping(self):
         for major, minor, expected, note in self.CASES:
-            with self.subTest(cuda=f"{major}.{minor}", note=note):
+            with self.subTest(cuda = f"{major}.{minor}", note = note):
                 self.assertEqual(map_cuda_pr_original(major, minor), expected)
 
     def test_no_smi(self):
-        self.assertEqual(map_cuda_pr_original(0, 0, has_smi=False), "cu124")
+        self.assertEqual(map_cuda_pr_original(0, 0, has_smi = False), "cu124")
 
     def test_parse_failure(self):
-        self.assertEqual(map_cuda_pr_original(0, 0, parse_ok=False), "cu124")
+        self.assertEqual(map_cuda_pr_original(0, 0, parse_ok = False), "cu124")
 
 
 class TestMappingFixedInstall(unittest.TestCase):
@@ -270,14 +270,14 @@ class TestMappingFixedInstall(unittest.TestCase):
 
     def test_version_mapping(self):
         for major, minor, expected in self.CASES:
-            with self.subTest(cuda=f"{major}.{minor}"):
+            with self.subTest(cuda = f"{major}.{minor}"):
                 self.assertEqual(map_cuda_fixed_install(major, minor), expected)
 
     def test_no_smi(self):
-        self.assertEqual(map_cuda_fixed_install(0, 0, has_smi=False), "cpu")
+        self.assertEqual(map_cuda_fixed_install(0, 0, has_smi = False), "cpu")
 
     def test_parse_failure(self):
-        self.assertEqual(map_cuda_fixed_install(0, 0, parse_ok=False), "cu126")
+        self.assertEqual(map_cuda_fixed_install(0, 0, parse_ok = False), "cu126")
 
 
 class TestMappingFixedSetup(unittest.TestCase):
@@ -305,18 +305,18 @@ class TestMappingFixedSetup(unittest.TestCase):
 
     def test_version_mapping(self):
         for major, minor, expected in self.CASES:
-            with self.subTest(cuda=f"{major}.{minor}"):
+            with self.subTest(cuda = f"{major}.{minor}"):
                 self.assertEqual(map_cuda_fixed_setup(major, minor), expected)
 
     def test_no_smi(self):
         self.assertEqual(
-            map_cuda_fixed_setup(0, 0, has_smi=False),
+            map_cuda_fixed_setup(0, 0, has_smi = False),
             "cu126",
             "setup.ps1 uses optimistic cu126 when no nvidia-smi (Studio always has a GPU)",
         )
 
     def test_parse_failure(self):
-        self.assertEqual(map_cuda_fixed_setup(0, 0, parse_ok=False), "cu126")
+        self.assertEqual(map_cuda_fixed_setup(0, 0, parse_ok = False), "cu126")
 
 
 class TestFixedScriptsConsistency(unittest.TestCase):
@@ -325,7 +325,7 @@ class TestFixedScriptsConsistency(unittest.TestCase):
     def test_cuda12_and_above_agree(self):
         for major in range(12, 21):
             for minor in range(0, 10):
-                with self.subTest(cuda=f"{major}.{minor}"):
+                with self.subTest(cuda = f"{major}.{minor}"):
                     self.assertEqual(
                         map_cuda_fixed_install(major, minor),
                         map_cuda_fixed_setup(major, minor),
@@ -333,17 +333,17 @@ class TestFixedScriptsConsistency(unittest.TestCase):
 
     def test_cuda11_and_below_agree(self):
         for major, minor in [(11, 8), (11, 0), (10, 2), (9, 0)]:
-            with self.subTest(cuda=f"{major}.{minor}"):
+            with self.subTest(cuda = f"{major}.{minor}"):
                 self.assertEqual(map_cuda_fixed_install(major, minor), "cpu")
                 self.assertEqual(map_cuda_fixed_setup(major, minor), "cpu")
 
     def test_intentional_divergence_no_smi(self):
         """install.ps1 -> cpu, setup.ps1 -> cu126 when nvidia-smi is absent."""
-        self.assertEqual(map_cuda_fixed_install(0, 0, has_smi=False), "cpu")
-        self.assertEqual(map_cuda_fixed_setup(0, 0, has_smi=False), "cu126")
+        self.assertEqual(map_cuda_fixed_install(0, 0, has_smi = False), "cpu")
+        self.assertEqual(map_cuda_fixed_setup(0, 0, has_smi = False), "cu126")
         self.assertNotEqual(
-            map_cuda_fixed_install(0, 0, has_smi=False),
-            map_cuda_fixed_setup(0, 0, has_smi=False),
+            map_cuda_fixed_install(0, 0, has_smi = False),
+            map_cuda_fixed_setup(0, 0, has_smi = False),
         )
 
 
@@ -352,14 +352,14 @@ class TestNvidiaSmiParsing(unittest.TestCase):
 
     def test_synthetic_fixtures(self):
         for label, (output, expected) in NVIDIA_SMI_FIXTURES.items():
-            with self.subTest(fixture=label):
+            with self.subTest(fixture = label):
                 result = parse_cuda_version(output)
                 self.assertIsNotNone(result, f"Should parse {label}")
                 self.assertEqual(result, expected)
 
     def test_malformed_fixtures(self):
         for label, (output, expected) in MALFORMED_FIXTURES.items():
-            with self.subTest(fixture=label):
+            with self.subTest(fixture = label):
                 self.assertIsNone(
                     parse_cuda_version(output),
                     f"Should reject malformed input: {label}",
@@ -382,7 +382,7 @@ class TestNvidiaSmiParsing(unittest.TestCase):
             "CUDA 14.0": "cu130",
         }
         for label, expected_tag in expected_tags.items():
-            with self.subTest(fixture=label):
+            with self.subTest(fixture = label):
                 output, _ = NVIDIA_SMI_FIXTURES[label]
                 parsed = parse_cuda_version(output)
                 self.assertIsNotNone(parsed)
@@ -416,14 +416,12 @@ class TestPS1FileSync(unittest.TestCase):
     def _read_ps1(self, path):
         if not os.path.isfile(path):
             self.skipTest(f"PS1 not found: {path}")
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, "r", encoding = "utf-8-sig") as f:
             return f.read()
 
     def _extract_function(self, source, func_name):
         """Extract a PS1 function body by name."""
-        pattern = re.compile(
-            rf"function\s+{re.escape(func_name)}\s*\{{", re.IGNORECASE
-        )
+        pattern = re.compile(rf"function\s+{re.escape(func_name)}\s*\{{", re.IGNORECASE)
         m = pattern.search(source)
         if not m:
             return None
@@ -486,9 +484,7 @@ class TestPS1FileSync(unittest.TestCase):
         func = self._extract_function(source, "Get-PytorchCudaTag")
         self.assertIsNotNone(func)
         fallback = self._extract_no_smi_fallback(func)
-        self.assertEqual(
-            fallback, "cu126", "setup.ps1 no-smi should fallback to cu126"
-        )
+        self.assertEqual(fallback, "cu126", "setup.ps1 no-smi should fallback to cu126")
 
     def test_pr_original_setup_ps1_has_cu124_bug(self):
         source = self._read_ps1(self._PR_SETUP_PS1)
@@ -536,10 +532,10 @@ class TestUrlValidation(unittest.TestCase):
 
         for tag in self.TAGS:
             url = f"{self.BASE}/{tag}/torch/"
-            with self.subTest(tag=tag):
-                req = urllib.request.Request(url, method="HEAD")
+            with self.subTest(tag = tag):
+                req = urllib.request.Request(url, method = "HEAD")
                 try:
-                    resp = urllib.request.urlopen(req, timeout=15)
+                    resp = urllib.request.urlopen(req, timeout = 15)
                     self.assertIn(
                         resp.status,
                         (200, 301, 302),
@@ -555,8 +551,8 @@ class TestUrlValidation(unittest.TestCase):
         url = f"{self.BASE}/cu124/torch/"
         req = urllib.request.Request(url)
         try:
-            resp = urllib.request.urlopen(req, timeout=15)
-            page = resp.read().decode("utf-8", errors="replace")
+            resp = urllib.request.urlopen(req, timeout = 15)
+            page = resp.read().decode("utf-8", errors = "replace")
         except Exception as e:
             self.skipTest(f"Could not fetch cu124 index: {e}")
 
@@ -582,12 +578,12 @@ class TestSandboxIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.makedirs(cls._SANDBOX_DIR, exist_ok=True)
+        os.makedirs(cls._SANDBOX_DIR, exist_ok = True)
 
     @classmethod
     def tearDownClass(cls):
         if os.path.isdir(cls._SANDBOX_DIR):
-            shutil.rmtree(cls._SANDBOX_DIR, ignore_errors=True)
+            shutil.rmtree(cls._SANDBOX_DIR, ignore_errors = True)
 
     def _python_exe(self, venv_dir):
         if sys.platform == "win32":
@@ -604,7 +600,7 @@ class TestSandboxIntegration(unittest.TestCase):
         # Create venv
         subprocess.check_call(
             ["uv", "venv", venv_dir, "--python", sys.executable],
-            timeout=60,
+            timeout = 60,
         )
 
         python = self._python_exe(venv_dir)
@@ -612,14 +608,18 @@ class TestSandboxIntegration(unittest.TestCase):
         # Install torch only (minimal)
         subprocess.check_call(
             ["uv", "pip", "install", "--python", python, "torch", "--index-url", url],
-            timeout=600,
+            timeout = 600,
         )
 
         # Get torch version
-        version = subprocess.check_output(
-            [python, "-c", "import torch; print(torch.__version__)"],
-            timeout=30,
-        ).decode().strip()
+        version = (
+            subprocess.check_output(
+                [python, "-c", "import torch; print(torch.__version__)"],
+                timeout = 30,
+            )
+            .decode()
+            .strip()
+        )
 
         return version
 
@@ -636,12 +636,13 @@ class TestSandboxIntegration(unittest.TestCase):
 # CLI: strip custom flags before unittest sees them
 # ---------------------------------------------------------------------------
 
+
 def main():
     custom_flags = {"--network", "--integration", "--all"}
     # Keep custom flags accessible via sys.argv for skip decorators,
     # but remove them before passing to unittest
     unittest_argv = [a for a in sys.argv if a not in custom_flags]
-    unittest.main(module=__name__, argv=unittest_argv, verbosity=2)
+    unittest.main(module = __name__, argv = unittest_argv, verbosity = 2)
 
 
 if __name__ == "__main__":
