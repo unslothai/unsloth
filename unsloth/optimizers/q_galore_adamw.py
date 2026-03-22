@@ -349,10 +349,7 @@ def make_q_galore_param_groups(
         # Check if any target module name appears as a component in the param name.
         # Exclude 1-D parameters (biases, norms) because GaLoreProjector.project
         # requires 2-D gradients.
-        is_galore = (
-            param.dim() >= 2
-            and any(t in name for t in targets)
-        )
+        is_galore = param.dim() >= 2 and any(t in name for t in targets)
 
         if is_galore:
             galore_params.append(param)
