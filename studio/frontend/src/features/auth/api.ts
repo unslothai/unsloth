@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { apiUrl } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -34,7 +35,7 @@ async function redirectToAuth(): Promise<void> {
 
   let target = "/login";
   try {
-    const res = await fetch("/api/auth/status");
+    const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
       if (data.requires_password_change || mustChangePassword()) target = "/change-password";
@@ -51,7 +52,7 @@ export async function refreshSession(): Promise<boolean> {
   if (!refreshToken) return false;
 
   try {
-    const response = await fetch("/api/auth/refresh", {
+    const response = await fetch(apiUrl("/api/auth/refresh"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -78,6 +79,7 @@ export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
+  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();
   if (accessToken) {
@@ -86,7 +88,7 @@ export async function authFetch(
 
   let response: Response;
   try {
-    response = await fetch(input, { ...init, headers });
+    response = await fetch(resolvedInput, { ...init, headers });
   } catch (err) {
     if (err instanceof TypeError) {
       throw new Error("Studio isn't running -- please relaunch it.");
@@ -119,7 +121,7 @@ export async function authFetch(
     clearAuthTokens();
   }
 
-  return fetch(input, { ...init, headers: retryHeaders });
+  return fetch(resolvedInput, { ...init, headers: retryHeaders });
 }
 
 export function logout(): void {
