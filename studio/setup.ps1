@@ -191,7 +191,7 @@ function Get-PytorchCudaTag {
             if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
             if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
             if ($major -ge 12) { return "cu126" }
-            # CUDA 11.x or older: CUDA 12.x wheels need a 12.x-compatible driver, fall back to CPU
+            if ($major -ge 11) { return "cu118" }
             return "cpu"
         }
     } catch { }

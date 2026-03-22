@@ -202,7 +202,7 @@ function Install-UnslothStudio {
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
                 if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
                 if ($major -ge 12) { return "$baseUrl/cu126" }
-                # CUDA 11.x or older: CUDA 12.x wheels need a 12.x-compatible driver, fall back to CPU
+                if ($major -ge 11) { return "$baseUrl/cu118" }
                 return "$baseUrl/cpu"
             }
         } catch {}
