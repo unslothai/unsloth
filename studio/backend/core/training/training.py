@@ -488,22 +488,10 @@ class TrainingBackend:
                 if status:
                     self._progress.status_message = status
 
-                # Update metric histories — coerce & guard like grad_norm/eval_loss
+                # Update metric histories — reuse sanitized values from above
                 step = event.get("step", 0)
-                raw_loss = event.get("loss")
-                raw_lr = event.get("learning_rate")
-                try:
-                    loss = float(raw_loss) if raw_loss is not None else None
-                except (TypeError, ValueError):
-                    loss = None
-                if loss is not None and not math.isfinite(loss):
-                    loss = None
-                try:
-                    lr = float(raw_lr) if raw_lr is not None else None
-                except (TypeError, ValueError):
-                    lr = None
-                if lr is not None and not math.isfinite(lr):
-                    lr = None
+                loss = _safe_loss
+                lr = _safe_lr
                 if step >= 0 and loss is not None:
                     self.loss_history.append(loss)
                     self.lr_history.append(lr if lr is not None else 0.0)
