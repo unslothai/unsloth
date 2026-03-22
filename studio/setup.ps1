@@ -953,8 +953,24 @@ Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 # Uses Get-Command -All to look past conda entries that shadow a valid
 # standalone Python further down PATH, and probes py.exe (the Python
 # Launcher) which reliably finds python.org installs.
+#
+# NOTE: A venv created from conda Python inherits conda's base_prefix
+# even though the venv path itself does not contain "conda". We check
+# both the executable path AND sys.base_prefix to catch this case.
 $CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 $PythonCmd = $null
+
+# Helper: check if a Python executable is conda-based by inspecting
+# both the path and sys.base_prefix (catches venvs created from conda).
+function Test-IsConda {
+    param([string]$Exe)
+    if ($Exe -match $CondaSkipPattern) { return $true }
+    try {
+        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+        if ($basePrefix -match $CondaSkipPattern) { return $true }
+    } catch { }
+    return $false
+}
 
 # 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
 #    py.exe is installed by python.org and resolves to standalone CPython.
@@ -969,7 +985,7 @@ if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
                     # Resolve the actual executable path so venv creation
                     # does not re-resolve back to a conda interpreter.
                     $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                    if ($resolvedExe -and (Test-Path $resolvedExe) -and $resolvedExe -notmatch $CondaSkipPattern) {
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
                         $PythonCmd = $resolvedExe
                         break
                     }
@@ -987,7 +1003,7 @@ if (-not $PythonCmd) {
             try {
                 if (-not $cmdInfo.Source) { continue }
                 if ($cmdInfo.Source -like "*\WindowsApps\*") { continue }
-                if ($cmdInfo.Source -match $CondaSkipPattern) {
+                if (Test-IsConda $cmdInfo.Source) {
                     Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
                     continue
                 }

@@ -48,19 +48,38 @@ function Install-UnslothStudio {
     # Skips Anaconda/Miniconda Python: conda-bundled CPython ships modified
     # DLL search paths that break torch's c10.dll loading on Windows.
     # Standalone CPython (python.org, winget, uv) does not have this issue.
+    #
+    # NOTE: A venv created from conda Python inherits conda's base_prefix
+    # even if the venv path does not contain "conda". We check both the
+    # executable path AND sys.base_prefix to catch this.
+    $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+
+    function Test-IsCondaPython {
+        param([string]$Exe)
+        if ($Exe -match $script:CondaSkipPattern) { return $true }
+        try {
+            $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+            if ($basePrefix -match $script:CondaSkipPattern) { return $true }
+        } catch { }
+        return $false
+    }
+
     function Find-CompatiblePython {
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-        if ($pyLauncher) {
-            # Skip py.exe if it lives inside a conda environment
-            if ($pyLauncher.Source -notmatch '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)') {
-                foreach ($minor in @("3.13", "3.12", "3.11")) {
-                    try {
-                        $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                        if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
-                    } catch {}
-                }
+        if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
+            foreach ($minor in @("3.13", "3.12", "3.11")) {
+                try {
+                    $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
+                    if ($out -match "Python (3\.1[1-3])\.\d+") {
+                        # Verify the resolved interpreter is not conda-based
+                        $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        if ($resolvedExe -and -not (Test-IsCondaPython $resolvedExe)) {
+                            return $Matches[1]
+                        }
+                    }
+                } catch {}
             }
         }
         # Try python3 / python via Get-Command -All to look past stubs that
@@ -69,12 +88,12 @@ function Install-UnslothStudio {
         # and can open the Microsoft Store as a side effect. Legitimate Store
         # Python is already detected via the py launcher above (Store packages
         # include py since Python 3.11).
-        # Skip Anaconda/Miniconda: their modified CPython breaks torch DLL loading.
+        # Skip Anaconda/Miniconda: check both path and sys.base_prefix.
         foreach ($name in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
                 if (-not $cmd.Source) { continue }
                 if ($cmd.Source -like "*\WindowsApps\*") { continue }
-                if ($cmd.Source -match '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)') { continue }
+                if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") { return $Matches[1] }
