@@ -51,12 +51,15 @@ export function StudioPage(): ReactElement {
   const [requestedTab, setRequestedTab] = useState("configure");
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null);
 
-  // Derive activeTab: auto-switch to "current-run" when training is active,
-  // unless the user explicitly navigated to "history".
+  // Derive activeTab: auto-switch to "current-run" only while training is
+  // genuinely running.  Once training ends, honour whatever tab the user clicks.
+  // If requestedTab is "current-run" but there's nothing to show, fall back to "configure".
   const activeTab =
-    (showTrainingView || isTrainingRunning) && requestedTab !== "history"
+    isTrainingRunning && requestedTab !== "history"
       ? "current-run"
-      : requestedTab;
+      : requestedTab === "current-run" && !showTrainingView
+        ? "configure"
+        : requestedTab;
 
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";

@@ -456,10 +456,25 @@ class TrainingBackend:
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
-                self._progress.loss = event.get("loss", self._progress.loss)
-                self._progress.learning_rate = event.get(
-                    "learning_rate", self._progress.learning_rate
-                )
+                # loss/lr are sanitized below; update progress after coercion
+                _raw_loss = event.get("loss")
+                _raw_lr = event.get("learning_rate")
+                try:
+                    _safe_loss = float(_raw_loss) if _raw_loss is not None else None
+                except (TypeError, ValueError):
+                    _safe_loss = None
+                if _safe_loss is not None and not math.isfinite(_safe_loss):
+                    _safe_loss = None
+                try:
+                    _safe_lr = float(_raw_lr) if _raw_lr is not None else None
+                except (TypeError, ValueError):
+                    _safe_lr = None
+                if _safe_lr is not None and not math.isfinite(_safe_lr):
+                    _safe_lr = None
+                if _safe_loss is not None:
+                    self._progress.loss = _safe_loss
+                if _safe_lr is not None:
+                    self._progress.learning_rate = _safe_lr
                 self._progress.total_steps = event.get(
                     "total_steps", self._progress.total_steps
                 )
@@ -473,13 +488,25 @@ class TrainingBackend:
                 if status:
                     self._progress.status_message = status
 
-                # Update metric histories
+                # Update metric histories — coerce & guard like grad_norm/eval_loss
                 step = event.get("step", 0)
-                loss = event.get("loss", 0.0)
-                lr = event.get("learning_rate", 0.0)
-                if step >= 0 and loss is not None and math.isfinite(loss):
+                raw_loss = event.get("loss")
+                raw_lr = event.get("learning_rate")
+                try:
+                    loss = float(raw_loss) if raw_loss is not None else None
+                except (TypeError, ValueError):
+                    loss = None
+                if loss is not None and not math.isfinite(loss):
+                    loss = None
+                try:
+                    lr = float(raw_lr) if raw_lr is not None else None
+                except (TypeError, ValueError):
+                    lr = None
+                if lr is not None and not math.isfinite(lr):
+                    lr = None
+                if step >= 0 and loss is not None:
                     self.loss_history.append(loss)
-                    self.lr_history.append(lr)
+                    self.lr_history.append(lr if lr is not None else 0.0)
                     self.step_history.append(step)
 
                 grad_norm = event.get("grad_norm")
@@ -508,16 +535,12 @@ class TrainingBackend:
                     else:
                         eval_loss = None
 
-                # Buffer metric for DB flush
+                # Buffer metric for DB flush (loss/lr already sanitized above)
                 self._metric_buffer.append(
                     {
                         "step": step,
-                        "loss": loss
-                        if (loss is not None and math.isfinite(loss))
-                        else None,
-                        "learning_rate": lr
-                        if (lr is not None and math.isfinite(lr))
-                        else None,
+                        "loss": loss,
+                        "learning_rate": lr,
                         "grad_norm": gn,
                         "eval_loss": eval_loss,
                         "epoch": event.get("epoch"),

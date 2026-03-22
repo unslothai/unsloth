@@ -16,6 +16,7 @@ import { TrainingStartOverlay } from "./training-start-overlay";
 export function LiveTrainingView(): ReactElement {
   const runtime = useTrainingRuntimeStore(
     useShallow((state) => ({
+      jobId: state.jobId,
       phase: state.phase,
       message: state.message,
       error: state.error,
@@ -93,7 +94,7 @@ export function LiveTrainingView(): ReactElement {
         )}
       >
         <div data-tour="studio-training-progress">
-          <ProgressSection data={viewData} />
+          <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
         </div>
         <ChartsSection
           currentStep={viewData.currentStep}
