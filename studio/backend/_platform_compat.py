@@ -44,7 +44,10 @@ def _seed_sys_version_cache() -> None:
         return  # Nothing to fix
 
     # Parse the cleaned string through the real stdlib parser
-    result = platform._sys_version(cleaned)
+    try:
+        result = platform._sys_version(cleaned)
+    except ValueError:
+        return  # Cleaning didn't produce a parseable string; don't make things worse
 
     # Seed the cache so future calls with the raw string skip parsing entirely
     cache = getattr(platform, "_sys_version_cache", None)
