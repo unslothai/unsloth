@@ -9,7 +9,6 @@ Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 import io
 import re
 import wave
-import structlog
 from loggers import get_logger
 from typing import Optional, Tuple
 

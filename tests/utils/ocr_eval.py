@@ -348,7 +348,7 @@ class OCRModelEvaluator:
         plt.savefig("ocr_model_comparison.png")
         plt.show()
 
-        print(f"\nVisualization saved to ocr_model_comparison.png")
+        print("\nVisualization saved to ocr_model_comparison.png")
 
     def get_comparison_results(self) -> Dict[str, Dict[str, float]]:
         """Get the current comparison results."""

@@ -6,7 +6,6 @@ Shared backend utilities
 """
 
 import os
-import structlog
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path

@@ -17,7 +17,6 @@ Usage:
 """
 
 import platform
-import structlog
 from loggers import get_logger
 from enum import Enum
 from typing import Optional, Dict, Any
@@ -183,7 +182,6 @@ def get_gpu_memory_info() -> Dict[str, Any]:
     # ---- MLX path (Apple Silicon) ----
     if device == DeviceType.MLX:
         try:
-            import mlx.core as mx
             import psutil
 
             # MLX uses unified memory — report system memory as the pool

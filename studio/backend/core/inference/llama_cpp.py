@@ -12,7 +12,6 @@ import atexit
 import contextlib
 import json
 import struct
-import structlog
 from loggers import get_logger
 import shutil
 import signal
@@ -1092,7 +1091,6 @@ class LlamaCppBackend:
         to avoid terminating unrelated llama-server instances on the machine.
         """
         import os
-        import signal
 
         try:
             # Use pgrep with full command match to identify studio-managed servers
@@ -1593,7 +1591,7 @@ class LlamaCppBackend:
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
-        except Exception as e:
+        except Exception:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise
@@ -2023,7 +2021,7 @@ class LlamaCppBackend:
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
-        except Exception as e:
+        except Exception:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise

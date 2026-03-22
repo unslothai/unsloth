@@ -4,7 +4,6 @@
 """Tests for transformers version detection with local checkpoint fallbacks."""
 
 import json
-import pytest
 from pathlib import Path
 from unittest.mock import patch
 

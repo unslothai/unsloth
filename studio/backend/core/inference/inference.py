@@ -7,21 +7,16 @@ Core inference backend - streamlined
 
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
-from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import json
-import sys
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
-from utils.models import ModelConfig, get_base_model_from_lora
-from utils.paths import is_model_cached
+from utils.models import ModelConfig
 from utils.utils import format_error_message
 from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
 from core.inference.audio_codecs import AudioCodecManager
-from io import StringIO
-import structlog
 from loggers import get_logger
 
 
@@ -902,7 +897,6 @@ class InferenceBackend:
         try:
             from utils.datasets import (
                 MODEL_TO_TEMPLATE_MAPPER,
-                get_tokenizer_chat_template,
             )
 
             model_name_lower = self.active_model_name.lower()
@@ -1116,7 +1110,6 @@ class InferenceBackend:
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
         """
         import threading
-        import numpy as np
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -1709,7 +1702,7 @@ class InferenceBackend:
             formatted_prompt = tokenizer.apply_chat_template(
                 chat_messages, tokenize = False, add_generation_prompt = True
             )
-            logger.info(f"Successfully applied tokenizer's native chat template")
+            logger.info("Successfully applied tokenizer's native chat template")
             return formatted_prompt
         except Exception as e:
             error_msg = str(e).lower()
@@ -1718,7 +1711,7 @@ class InferenceBackend:
                 or "no template argument" in error_msg
             ):
                 logger.info(
-                    f"Base model detected - no built-in chat template available, using fallback formatting"
+                    "Base model detected - no built-in chat template available, using fallback formatting"
                 )
             else:
                 logger.warning(f"Failed to apply tokenizer chat template: {e}")

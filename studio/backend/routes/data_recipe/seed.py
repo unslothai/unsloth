@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
+
 try:
     from data_designer_unstructured_seed.chunking import (
         build_unstructured_preview_rows,
@@ -239,7 +240,8 @@ def _read_preview_rows_from_unstructured_file(
 ) -> list[dict[str, Any]]:
     if resolve_chunking is None or build_unstructured_preview_rows is None:
         raise HTTPException(
-            500, "Unstructured seed support not available (missing data_designer_unstructured_seed)"
+            500,
+            "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
     size, overlap = resolve_chunking(chunk_size, chunk_overlap)
     try:
