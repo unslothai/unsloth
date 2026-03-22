@@ -149,6 +149,7 @@ class ExportBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
@@ -191,6 +192,7 @@ class ExportBackend:
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
 
             elif self._audio_type == "whisper":
@@ -204,6 +206,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     auto_model = WhisperForConditionalGeneration,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
 
             elif self._audio_type == "snac":
@@ -214,6 +217,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
 
             elif self._audio_type == "bicodec":
@@ -226,6 +230,7 @@ class ExportBackend:
                     dtype = torch.float32,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
 
             elif self._audio_type == "dac":
@@ -237,6 +242,7 @@ class ExportBackend:
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
 
             elif self.is_vision:
@@ -247,6 +253,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
                 tokenizer = processor  # For vision models, processor acts as tokenizer
 
@@ -258,6 +265,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = hf_token,
                 )
 
             # Check if PEFT model
