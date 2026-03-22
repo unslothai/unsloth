@@ -759,6 +759,23 @@ if ($IsPipInstall) {
     }
 
     Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
+
+    # ── bun (optional, faster package installs) ──
+    # Installed via npm — Node is already guaranteed above. Works on all platforms.
+    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        Write-Host "   Installing bun (faster frontend package installs)..." -ForegroundColor DarkGray
+        $prevEAP_bun = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        npm install -g bun 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP_bun
+        if (Get-Command bun -ErrorAction SilentlyContinue) {
+            Write-Host "[OK] bun installed ($(bun --version))" -ForegroundColor Green
+        } else {
+            Write-Host "[OK] bun install skipped (npm will be used instead)" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "[OK] bun already installed ($(bun --version))" -ForegroundColor Green
+    }
 }
 
 # ============================================
@@ -880,20 +897,35 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $WalkDir = Split-Path $WalkDir -Parent
     }
 
-    # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
-    # treat them as terminating errors (same pattern as the pip section below).
+    # Use bun if available (faster install), fall back to npm.
+    # Bun is used only as package manager; Node runs the actual build (Vite 8).
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    npm install 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        $ErrorActionPreference = $prevEAP_npm
-        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
-        exit 1
+
+    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+
+    if ($UseBun) {
+        Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
+        bun install 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "   [WARN] bun install failed, falling back to npm" -ForegroundColor Yellow
+            $UseBun = $false
+        }
     }
+    if (-not $UseBun) {
+        npm install 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_npm
+            foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
+            Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+            Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            exit 1
+        }
+    }
+
+    # Always use npm to run the build (Node runtime — avoids bun Windows runtime issues)
     npm run build 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
