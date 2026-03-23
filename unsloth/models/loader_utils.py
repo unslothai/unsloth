@@ -106,6 +106,7 @@ def __get_model_name(
     FLOAT_TO_INT_MAPPER = None,
     MAP_TO_UNSLOTH_16bit = None,
     load_in_fp8 = False,
+    fast_inference = False,
     FLOAT_TO_FP8_BLOCK_MAPPER = None,
     FLOAT_TO_FP8_ROW_MAPPER = None,
 ):
@@ -128,7 +129,7 @@ def __get_model_name(
         # For vllm >= 0.12.0, we can quantize the model to FP8 on the fly,
         # so just return the original model name. Older vllm versions will
         # fall through to offline quantization via _offline_quantize_to_fp8.
-        if importlib.util.find_spec("vllm") is not None:
+        if fast_inference and importlib.util.find_spec("vllm") is not None:
             import vllm
 
             if Version(vllm.__version__) >= Version("0.12.0"):
@@ -202,6 +203,7 @@ def _resolve_with_mappers(
     model_name,
     load_in_4bit,
     load_in_fp8,
+    fast_inference,
     int_to_float,
     float_to_int,
     map_to_unsloth_16bit,
@@ -213,6 +215,7 @@ def _resolve_with_mappers(
         FLOAT_TO_INT_MAPPER = float_to_int,
         MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
         load_in_fp8 = load_in_fp8,
+        fast_inference = fast_inference,
         FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
         FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
     )
@@ -222,6 +225,7 @@ def get_model_name(
     model_name,
     load_in_4bit = True,
     load_in_fp8 = False,
+    fast_inference = False,
     token = None,
     trust_remote_code = False,
 ):
@@ -230,6 +234,7 @@ def get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
         load_in_fp8 = load_in_fp8,
+        fast_inference = fast_inference,
         int_to_float = INT_TO_FLOAT_MAPPER,
         float_to_int = FLOAT_TO_INT_MAPPER,
         map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
@@ -245,6 +250,7 @@ def get_model_name(
 
     if (
         new_model_name is None
+        and not (load_in_fp8 != False and not fast_inference)
         and model_name.count("/") == 1
         and model_name[0].isalnum()
     ):
@@ -256,6 +262,7 @@ def get_model_name(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
             load_in_fp8 = load_in_fp8,
+            fast_inference = fast_inference,
             int_to_float = NEW_INT_TO_FLOAT_MAPPER,
             float_to_int = NEW_FLOAT_TO_INT_MAPPER,
             map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
@@ -272,6 +279,30 @@ def get_model_name(
         new_model_name = model_name
 
     return new_model_name
+
+
+def _has_prequantized_fp8_config(
+    model_name,
+    token = None,
+    trust_remote_code = False,
+) -> bool:
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(
+            model_name,
+            token = token,
+            trust_remote_code = trust_remote_code,
+        )
+    except Exception:
+        return False
+
+    quantization_config = getattr(config, "quantization_config", None)
+    if not isinstance(quantization_config, dict):
+        return False
+
+    quant_method = quantization_config.get("quant_method", None)
+    return quant_method in ("compressed-tensors", "fbgemm_fp8", "fp8")
 
 
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
@@ -306,6 +337,15 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
         config = AutoConfig.from_pretrained(model_name)
+        if fp8_mode == "block":
+            incompatible_shapes = _get_block_fp8_incompatible_shapes(config)
+            if incompatible_shapes:
+                raise ValueError(
+                    "Unsloth: Native block FP8 requires weight dimensions compatible "
+                    "with 128x128 block quantization, but this model exposes "
+                    f"incompatible dimensions: {', '.join(incompatible_shapes)}"
+                )
+            _check_block_fp8_deserialize_support()
         is_vlm = any(
             x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
             for x in config.architectures
@@ -327,6 +367,55 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
             gc.collect()
         tokenizer.save_pretrained(new_model_name)
     return new_model_name
+
+
+def _get_block_fp8_incompatible_shapes(config) -> list[str]:
+    issues = []
+
+    def add_issue(name: str, value):
+        if isinstance(value, int) and value > 0 and value % 128 != 0:
+            issues.append(f"{name}={value}")
+
+    for attr in (
+        "hidden_size",
+        "intermediate_size",
+        "moe_intermediate_size",
+        "head_dim",
+        "v_head_dim",
+        "q_lora_rank",
+        "kv_lora_rank",
+    ):
+        add_issue(attr, getattr(config, attr, None))
+
+    qk_nope_head_dim = getattr(config, "qk_nope_head_dim", None)
+    qk_rope_head_dim = getattr(config, "qk_rope_head_dim", None)
+    kv_lora_rank = getattr(config, "kv_lora_rank", None)
+    if isinstance(qk_nope_head_dim, int) and isinstance(qk_rope_head_dim, int):
+        add_issue(
+            "qk_nope_head_dim + qk_rope_head_dim",
+            qk_nope_head_dim + qk_rope_head_dim,
+        )
+    if isinstance(kv_lora_rank, int) and isinstance(qk_rope_head_dim, int):
+        add_issue(
+            "kv_lora_rank + qk_rope_head_dim",
+            kv_lora_rank + qk_rope_head_dim,
+        )
+
+    return issues
+
+
+def _check_block_fp8_deserialize_support() -> None:
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+
+        if "PerBlock" not in getattr(safetensors_utils, "ALLOWED_CLASSES", {}):
+            raise ValueError(
+                "Unsloth: This torchao build cannot deserialize block FP8 safetensors "
+                "because `PerBlock` is missing from torchao.prototype.safetensors "
+                "allowed classes. Native block FP8 loading will fail on reload."
+            )
+    except ImportError:
+        return
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
@@ -365,6 +454,8 @@ def _get_fp8_mode_and_check_settings(
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
         fp8_mode = "row"  # default
+        if not fast_inference and os.environ.get("UNSLOTH_HAS_FBGEMM", "0") != "1":
+            fp8_mode = "block"
     else:
         fp8_mode = load_in_fp8
 
