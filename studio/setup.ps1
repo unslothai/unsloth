@@ -176,7 +176,7 @@ function Get-PytorchCudaTag {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($cmd) { $cmd.Source } else { $null }
     }
-    if (-not $smiExe) { return "cu124" }
+    if (-not $smiExe) { return "cu126" }
 
     try {
         # 2>&1 | Out-String merges stderr into stdout then converts to a single
@@ -190,11 +190,13 @@ function Get-PytorchCudaTag {
             if ($major -ge 13) { return "cu130" }
             if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
             if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
-            return "cu124"
+            if ($major -ge 12) { return "cu124" }
+            if ($major -ge 11) { return "cu118" }
+            return "cpu"
         }
     } catch { }
 
-    return "cu124"
+    return "cu126"
 }
 
 # Find Visual Studio Build Tools for cmake -G flag.
@@ -944,23 +946,85 @@ if (Test-Path $OxcValidatorDir) {
 Write-Host ""
 Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 
-# Find Python
+# Find Python -- skip Anaconda/Miniconda distributions.
+# Conda-bundled CPython ships modified DLL search paths that break
+# torch's c10.dll loading on Windows. Standalone CPython (python.org,
+# winget, uv) does not have this issue.
+# Uses Get-Command -All to look past conda entries that shadow a valid
+# standalone Python further down PATH, and probes py.exe (the Python
+# Launcher) which reliably finds python.org installs.
+#
+# NOTE: A venv created from conda Python inherits conda's base_prefix
+# even though the venv path itself does not contain "conda". We check
+# both the executable path AND sys.base_prefix to catch this case.
+$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 $PythonCmd = $null
-foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
+
+# Helper: check if a Python executable is conda-based by inspecting
+# both the path and sys.base_prefix (catches venvs created from conda).
+function Test-IsConda {
+    param([string]$Exe)
+    if ($Exe -match $CondaSkipPattern) { return $true }
     try {
-        $ver = & $candidate --version 2>&1
-        if ($ver -match 'Python 3\.(\d+)') {
-            $minor = [int]$Matches[1]
-            if ($minor -ge 11 -and $minor -le 13) {
-                $PythonCmd = $candidate
-                break
-            }
-        }
+        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+        if ($basePrefix -match $CondaSkipPattern) { return $true }
     } catch { }
+    return $false
+}
+
+# 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
+#    py.exe is installed by python.org and resolves to standalone CPython.
+$pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
+    foreach ($minor in @("3.13", "3.12", "3.11")) {
+        try {
+            $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
+            if ($out -match 'Python 3\.(\d+)') {
+                $pyMinor = [int]$Matches[1]
+                if ($pyMinor -ge 11 -and $pyMinor -le 13) {
+                    # Resolve the actual executable path so venv creation
+                    # does not re-resolve back to a conda interpreter.
+                    $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
+                        $PythonCmd = $resolvedExe
+                        break
+                    }
+                }
+            }
+        } catch { }
+    }
+}
+
+# 2. Fall back to scanning python3.x / python3 / python on PATH.
+#    Use Get-Command -All to look past conda entries.
+if (-not $PythonCmd) {
+    foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
+        foreach ($cmdInfo in @(Get-Command $candidate -All -ErrorAction SilentlyContinue)) {
+            try {
+                if (-not $cmdInfo.Source) { continue }
+                if ($cmdInfo.Source -like "*\WindowsApps\*") { continue }
+                if (Test-IsConda $cmdInfo.Source) {
+                    Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
+                    continue
+                }
+                $ver = & $cmdInfo.Source --version 2>&1
+                if ($ver -match 'Python 3\.(\d+)') {
+                    $minor = [int]$Matches[1]
+                    if ($minor -ge 11 -and $minor -le 13) {
+                        $PythonCmd = $cmdInfo.Source
+                        break
+                    }
+                }
+            } catch { }
+        }
+        if ($PythonCmd) { break }
+    }
 }
 
 if (-not $PythonCmd) {
-    Write-Host "[ERROR] No Python 3.11-3.13 found." -ForegroundColor Red
+    Write-Host "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
+    Write-Host "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
+    Write-Host "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
     exit 1
 }
 
@@ -1111,6 +1175,19 @@ Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH 
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} else {
+    $CuTag = "cpu"
+}
+
+if ($CuTag -eq "cpu") {
+    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        exit 1
+    }
+} else {
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
     Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
     $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
@@ -1128,14 +1205,6 @@ if ($HasNvidiaSmi) {
         Write-Host $output -ForegroundColor Yellow
     } else {
         Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
-    }
-} else {
-    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
-    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        exit 1
     }
 }
 

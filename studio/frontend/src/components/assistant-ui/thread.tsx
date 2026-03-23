@@ -116,7 +116,7 @@ const ThreadScrollToBottom: FC = () => {
 
 const SUGGESTION_TOOLS: Record<string, Array<"thinking" | "search" | "code">> = {
   "How do you fine-tune an audio model with Unsloth?": ["thinking", "search"],
-  "Show me a live weather dashboard, no API key needed": ["thinking", "code", "search"],
+  "Create a live weather dashboard in HTML using no API key. Show me the code": ["thinking", "code", "search"],
   "Solve the integral of x·sin(x), and verify it step by step": ["thinking", "code"],
   "Draw an SVG of a cute sloth": ["thinking", "code", "search"],
 };

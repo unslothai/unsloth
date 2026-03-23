@@ -37,9 +37,9 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "How do you fine-tune an audio model with Unsloth?",
   },
   {
-    title: "Show me a live weather dashboard, no API key needed",
+    title: "Create a live weather dashboard in HTML using no API key. Show me the code",
     label: "Weather dashboard",
-    prompt: "Show me a live weather dashboard, no API key needed",
+    prompt: "Create a live weather dashboard in HTML using no API key. Show me the code",
   },
   {
     title: "Solve the integral of x·sin(x), and verify it",
