@@ -187,9 +187,10 @@ def _run_setup_script() -> None:
         raise typer.Exit(result.returncode)
 
 
-@studio_app.command()
+@studio_app.command(hidden=True)
 def setup():
-    """Run one-time Studio environment setup."""
+    """Deprecated: use 'unsloth studio update' or re-run install.sh."""
+    typer.echo("Note: 'unsloth studio setup' is deprecated. Use 'unsloth studio update' or re-run install.sh.")
     _run_setup_script()
 
 
