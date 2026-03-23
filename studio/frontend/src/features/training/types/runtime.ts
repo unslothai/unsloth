@@ -118,3 +118,32 @@ export interface TrainingRuntimeActions {
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
+
+export interface TrainingViewData {
+  // Current metrics (for ProgressSection)
+  phase: TrainingPhase;
+  currentStep: number;
+  totalSteps: number;
+  currentLoss: number;
+  currentLearningRate: number;
+  currentGradNorm: number | null;
+  currentEpoch: number;
+  currentNumTokens: number | null;
+  progressPercent: number;
+  elapsedSeconds: number | null;
+  etaSeconds: number | null;
+  evalEnabled: boolean;
+  message: string;
+  error: string | null;
+  isTrainingRunning: boolean;
+
+  // Config summary
+  modelName: string;
+  trainingMethod: string;
+
+  // Time-series (for ChartsSection)
+  lossHistory: TrainingSeriesPoint[];
+  lrHistory: TrainingSeriesPoint[];
+  gradNormHistory: TrainingSeriesPoint[];
+  evalLossHistory: TrainingSeriesPoint[];
+}
