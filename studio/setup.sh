@@ -498,12 +498,15 @@ rm -rf "$LLAMA_CPP_DIR"
 fi  # end _SKIP_GGUF_BUILD check
 
 echo ""
-_DONE_LABEL="Update"
-[ "${SKIP_STUDIO_BASE:-0}" = "1" ] && _DONE_LABEL="Setup"
+if [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
+    _DONE_LINE="║          Setup Complete!             ║"
+else
+    _DONE_LINE="║          Update Complete!            ║"
+fi
 
 if [ "$IS_COLAB" = true ]; then
     echo "╔══════════════════════════════════════╗"
-    echo "║          $_DONE_LABEL Complete!            ║"
+    echo "$_DONE_LINE"
     echo "╠══════════════════════════════════════╣"
     echo "║ Unsloth Studio is ready to start     ║"
     echo "║ in your Colab notebook!              ║"
@@ -513,7 +516,7 @@ if [ "$IS_COLAB" = true ]; then
     echo "╚══════════════════════════════════════╝"
 else
     echo "╔══════════════════════════════════════╗"
-    echo "║          $_DONE_LABEL Complete!            ║"
+    echo "$_DONE_LINE"
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
