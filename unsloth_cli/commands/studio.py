@@ -203,10 +203,8 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
-    if local:
-        os.environ["STUDIO_LOCAL_INSTALL"] = "1"
-    if package != "unsloth":
-        os.environ["STUDIO_PACKAGE_NAME"] = package
+    os.environ["STUDIO_LOCAL_INSTALL"] = "1" if local else "0"
+    os.environ["STUDIO_PACKAGE_NAME"] = package
     _run_setup_script()
 
 
