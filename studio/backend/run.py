@@ -113,10 +113,14 @@ def _is_port_free(host: str, port: int) -> bool:
     import socket
 
     # 1. Can we bind to the requested address?
+    #    Use getaddrinfo so both IPv4 ("0.0.0.0") and IPv6 ("::") hosts
+    #    resolve to the correct address family automatically.
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        family, socktype, proto, _, sockaddr = addr_info[0]
+        with socket.socket(family, socktype, proto) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((host, port))
+            s.bind(sockaddr)
     except OSError:
         return False
 
@@ -126,7 +130,7 @@ def _is_port_free(host: str, port: int) -> bool:
     if host in ("0.0.0.0", "::"):
         for loopback, family in [
             ("127.0.0.1", socket.AF_INET),
-            ("::1", socket.AF_INET6),
+            ("::1",       socket.AF_INET6),
         ]:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as s:
@@ -267,9 +271,8 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(
-                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
-                )
+                print(f"Port {original_port} is already in use by "
+                      f"{name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -281,10 +284,10 @@ def run_server(
     if frontend_path:
         if setup_frontend(app, frontend_path):
             if not silent:
-                print(f"Frontend loaded from {frontend_path}")
+                print(f"✅ Frontend loaded from {frontend_path}")
         else:
             if not silent:
-                print(f"Frontend not found at {frontend_path}")
+                print(f"⚠️ Frontend not found at {frontend_path}")
 
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
@@ -306,11 +309,11 @@ def run_server(
 
         print("")
         print("=" * 50)
-        print(f"Open your web browser, and enter http://localhost:{port}")
+        print(f"🦥 Open your web browser, and enter http://localhost:{port}")
         print("=" * 50)
         print("")
         print("=" * 50)
-        print(f"Unsloth Studio is running on port {port}")
+        print(f"🦥 Unsloth Studio is running on port {port}")
         print(f"   Local Access:          http://localhost:{port}")
         print(f"   Worldwide Web Address: http://{display_host}:{port}")
         print(f"   API:                   http://{display_host}:{port}/api")
