@@ -529,7 +529,10 @@ class UnslothTrainer:
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-            clear_unsloth_compiled_cache()
+            _preserve = (
+                ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
+            )
+            clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
             self._audio_type = detect_audio_type(model_name, hf_token)
             # audio_vlm is detected as an audio_type now, handle it separately
@@ -2718,6 +2721,15 @@ class UnslothTrainer:
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
+            # On spawn-based platforms (Windows, macOS), register all known
+            # compiled-cache directories on sys.path and PYTHONPATH before any
+            # dataset.map() call so spawned workers can import dynamically
+            # compiled modules such as UnslothSFTTrainer.
+            if sys.platform in ("win32", "darwin"):
+                from utils.cache_cleanup import register_compiled_cache_on_path
+
+                register_compiled_cache_on_path()
+
             # Store training parameters for metrics calculation
             self.batch_size = training_args.get("batch_size", 2)
             self.max_seq_length = training_args.get("max_seq_length", 2048)
