@@ -39,7 +39,7 @@ if command -v bun &>/dev/null; then
         rm -rf node_modules
     fi
 fi
-if ! $_install_ok; then
+if [ "$_install_ok" != "true" ]; then
     if ! npm install; then
         echo "❌ ERROR: package install failed" >&2
         exit 1

@@ -65,8 +65,14 @@ else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    NODE_MINOR=$(node -v | sed 's/v//' | cut -d. -f2)
     NPM_MAJOR=$(npm -v | cut -d. -f1)
-    if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
+    # Vite 8 requires Node ^20.19.0 || >=22.12.0
+    NODE_OK=false
+    if [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]; then NODE_OK=true; fi
+    if [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]; then NODE_OK=true; fi
+    if [ "$NODE_MAJOR" -ge 23 ]; then NODE_OK=true; fi
+    if [ "$NODE_OK" = true ] && [ "$NPM_MAJOR" -ge 11 ]; then
         echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements. Skipping nvm install."
         NEED_NODE=false
     else
@@ -180,6 +186,8 @@ if command -v bun &>/dev/null; then
         rm -f "$_bun_log"
     else
         echo "   ⚠️  bun install failed, falling back to npm"
+        echo "   bun install output:"
+        sed 's/^/   | /' "$_bun_log" >&2
         rm -f "$_bun_log"
         rm -rf node_modules
         run_quiet "npm install" npm install
