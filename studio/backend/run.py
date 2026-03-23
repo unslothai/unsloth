@@ -73,17 +73,72 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
+def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
+    """Return (pid, process_name) of the process listening on *port*, or None.
+
+    Uses psutil when available.  Falls back gracefully to None so callers
+    can still report the port conflict without process details.
+
+    Works on Windows, macOS, and Linux wherever psutil is installed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        for conn in psutil.net_connections(kind = "tcp"):
+            if conn.status == "LISTEN" and conn.laddr.port == port:
+                try:
+                    proc = psutil.Process(conn.pid)
+                    return (conn.pid, proc.name())
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return (conn.pid, "<unknown>")
+    except (psutil.AccessDenied, OSError):
+        # psutil.net_connections() needs elevated privileges on some platforms
+        pass
+    return None
+
+
 def _is_port_free(host: str, port: int) -> bool:
-    """Check if a port is available for binding."""
+    """Check if a port is available for binding.
+
+    When *host* is ``0.0.0.0`` (wildcard), we also check whether anything
+    is already listening on ``127.0.0.1`` (and ``::1`` when IPv6 is
+    available).  An SSH tunnel or similar process may hold the loopback
+    address while our wildcard bind still succeeds, making Unsloth Studio
+    unreachable via ``localhost``.
+
+    Works on Windows, macOS, and Linux.
+    """
     import socket
 
+    # 1. Can we bind to the requested address?
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
-            return True
     except OSError:
         return False
+
+    # 2. When binding to all interfaces, verify that localhost is not
+    #    already claimed by another process (e.g. an SSH -L tunnel).
+    #    We attempt a TCP connect -- if it succeeds something is listening.
+    if host in ("0.0.0.0", "::"):
+        for loopback, family in [
+            ("127.0.0.1", socket.AF_INET),
+            ("::1",       socket.AF_INET6),
+        ]:
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as s:
+                    s.settimeout(1)
+                    if s.connect_ex((loopback, port)) == 0:
+                        # Connection succeeded -- port is taken on loopback
+                        return False
+            except OSError:
+                # IPv6 disabled or other OS-level restriction -- skip
+                continue
+
+    return True
 
 
 def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
@@ -149,11 +204,11 @@ def _graceful_shutdown(server = None):
     logger.info("All subprocesses cleaned up")
 
 
-# The uvicorn server instance — set by run_server(), used by callers
+# The uvicorn server instance -- set by run_server(), used by callers
 # that need to tell the server to exit (e.g. signal handlers).
 _server = None
 
-# Shutdown event — used to wake the main loop on signal
+# Shutdown event -- used to wake the main loop on signal
 _shutdown_event = None
 
 
@@ -205,18 +260,30 @@ def run_server(
     # Auto-find free port if requested port is in use
     if not _is_port_free(host, port):
         original_port = port
-        port = _find_free_port(host, port)
+        blocker = _get_pid_on_port(port)
+        port = _find_free_port(host, port + 1)
         if not silent:
-            print(f"Port {original_port} is in use, using port {port} instead")
+            print("")
+            print("=" * 50)
+            if blocker:
+                pid, name = blocker
+                print(f"Port {original_port} is already in use by "
+                      f"{name} (PID {pid}).")
+            else:
+                print(f"Port {original_port} is already in use.")
+            print(f"Unsloth Studio will use port {port} instead.")
+            print(f"Open http://localhost:{port} in your browser.")
+            print("=" * 50)
+            print("")
 
     # Setup frontend if path provided
     if frontend_path:
         if setup_frontend(app, frontend_path):
             if not silent:
-                print(f"✅ Frontend loaded from {frontend_path}")
+                print(f"Frontend loaded from {frontend_path}")
         else:
             if not silent:
-                print(f"⚠️ Frontend not found at {frontend_path}")
+                print(f"Frontend not found at {frontend_path}")
 
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
@@ -238,11 +305,11 @@ def run_server(
 
         print("")
         print("=" * 50)
-        print(f"🦥 Open your web browser, and enter http://localhost:{port}")
+        print(f"Open your web browser, and enter http://localhost:{port}")
         print("=" * 50)
         print("")
         print("=" * 50)
-        print(f"🦥 Unsloth Studio is running on port {port}")
+        print(f"Unsloth Studio is running on port {port}")
         print(f"   Local Access:          http://localhost:{port}")
         print(f"   Worldwide Web Address: http://{display_host}:{port}")
         print(f"   API:                   http://{display_host}:{port}/api")
@@ -297,7 +364,7 @@ if __name__ == "__main__":
         sys.stderr.flush()
         sys.exit(1)
 
-    # ── Signal handler — ensures subprocess cleanup on Ctrl+C ────
+    # Signal handler -- ensures subprocess cleanup on Ctrl+C
     def _signal_handler(signum, frame):
         _graceful_shutdown(_server)
         _shutdown_event.set()
