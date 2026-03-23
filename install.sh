@@ -298,11 +298,17 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
-_SETUP_ENV="SKIP_STUDIO_BASE=1 STUDIO_PACKAGE_NAME=$PACKAGE_NAME"
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    _SETUP_ENV="$_SETUP_ENV STUDIO_LOCAL_INSTALL=1"
+    SKIP_STUDIO_BASE=1 \
+    STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    STUDIO_LOCAL_INSTALL=1 \
+    STUDIO_LOCAL_REPO="$_REPO_ROOT" \
+    bash "$SETUP_SH" </dev/null
+else
+    SKIP_STUDIO_BASE=1 \
+    STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    bash "$SETUP_SH" </dev/null
 fi
-env $_SETUP_ENV bash "$SETUP_SH" </dev/null
 
 # ── Make 'unsloth' available globally via ~/.local/bin ──
 mkdir -p "$HOME/.local/bin"

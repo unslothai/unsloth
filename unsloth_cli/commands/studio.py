@@ -205,6 +205,11 @@ def update(
     """Update Unsloth Studio dependencies and rebuild."""
     os.environ["STUDIO_LOCAL_INSTALL"] = "1" if local else "0"
     os.environ["STUDIO_PACKAGE_NAME"] = package
+    if local:
+        # Pass the repo root explicitly so install_python_stack.py doesn't
+        # have to guess from SCRIPT_DIR (which may be inside site-packages).
+        repo_root = Path(__file__).resolve().parents[2]
+        os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
     _run_setup_script()
 
 

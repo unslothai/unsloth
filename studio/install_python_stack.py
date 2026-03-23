@@ -337,7 +337,7 @@ def install_python_stack() -> int:
             f"Installing {package_name} from local repo",
             "--no-cache-dir",
             "-e",
-            str(SCRIPT_DIR.parent),  # repo root
+            os.environ.get("STUDIO_LOCAL_REPO", str(SCRIPT_DIR.parent)),  # repo root
         )
     elif package_name != "unsloth":
         # Custom package name (e.g. roland-sloth for testing) — install directly
