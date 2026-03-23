@@ -29,7 +29,22 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-npm install
+# Use bun for install if available (faster), fall back to npm.
+_install_ok=false
+if command -v bun &>/dev/null; then
+    if bun install; then
+        _install_ok=true
+    else
+        echo "⚠ bun install failed, falling back to npm"
+        rm -rf node_modules
+    fi
+fi
+if ! $_install_ok; then
+    if ! npm install; then
+        echo "❌ ERROR: package install failed" >&2
+        exit 1
+    fi
+fi
 npm run build       # outputs to studio/frontend/dist/
 
 _restore_gitignores

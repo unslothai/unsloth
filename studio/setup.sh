@@ -150,6 +150,20 @@ fi
 
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
+# ── Install bun (optional, faster package installs) ──
+# Uses npm to install bun globally — Node is already guaranteed above,
+# avoids platform-specific installers, PATH issues, and admin requirements.
+if ! command -v bun &>/dev/null; then
+    echo "   Installing bun (faster frontend package installs)..."
+    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
+        echo "✅ bun installed ($(bun --version))"
+    else
+        echo "   bun install skipped (npm will be used instead)"
+    fi
+else
+    echo "✅ bun already installed ($(bun --version))"
+fi
+
 # ── 5. Build frontend ──
 cd "$SCRIPT_DIR/frontend"
 
@@ -174,7 +188,25 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-run_quiet "npm install" npm install
+# Use bun for install if available (faster), fall back to npm.
+# Build always uses npm (Node runtime — avoids bun runtime issues on some platforms).
+# NOTE: We intentionally avoid run_quiet for the bun install attempt because
+# run_quiet calls exit on failure, which would kill the script before the npm
+# fallback can run. Instead we capture output manually and only show it on failure.
+if command -v bun &>/dev/null; then
+    echo "   Using bun for package install (faster)"
+    _bun_log=$(mktemp)
+    if bun install >"$_bun_log" 2>&1; then
+        rm -f "$_bun_log"
+    else
+        echo "   ⚠️  bun install failed, falling back to npm"
+        rm -f "$_bun_log"
+        rm -rf node_modules
+        run_quiet "npm install" npm install
+    fi
+else
+    run_quiet "npm install" npm install
+fi
 run_quiet "npm run build" npm run build
 
 _restore_gitignores

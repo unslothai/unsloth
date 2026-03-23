@@ -35,7 +35,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
