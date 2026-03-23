@@ -126,7 +126,7 @@ def _is_port_free(host: str, port: int) -> bool:
     if host in ("0.0.0.0", "::"):
         for loopback, family in [
             ("127.0.0.1", socket.AF_INET),
-            ("::1",       socket.AF_INET6),
+            ("::1", socket.AF_INET6),
         ]:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as s:
@@ -267,8 +267,9 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by "
-                      f"{name} (PID {pid}).")
+                print(
+                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
+                )
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
