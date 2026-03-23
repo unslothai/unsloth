@@ -7,6 +7,23 @@ import { useEffect, useRef, useState } from "react";
 export interface GpuUtilization {
     available: boolean;
     backend: string | null;
+    gpu_count: number;
+    physical_gpu_count: number;
+    visible_gpu_count: number;
+    gpus: GpuUtilizationEntry[];
+    gpu_utilization_pct: number | null;
+    temperature_c: number | null;
+    vram_used_gb: number | null;
+    vram_total_gb: number | null;
+    vram_utilization_pct: number | null;
+    power_draw_w: number | null;
+    power_limit_w: number | null;
+    power_utilization_pct: number | null;
+}
+
+export interface GpuUtilizationEntry {
+    index: number;
+    name?: string | null;
     gpu_utilization_pct: number | null;
     temperature_c: number | null;
     vram_used_gb: number | null;
@@ -20,6 +37,10 @@ export interface GpuUtilization {
 const DEFAULT: GpuUtilization = {
     available: false,
     backend: null,
+    gpu_count: 0,
+    physical_gpu_count: 0,
+    visible_gpu_count: 0,
+    gpus: [],
     gpu_utilization_pct: null,
     temperature_c: null,
     vram_used_gb: null,
