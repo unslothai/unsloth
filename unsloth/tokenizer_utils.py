@@ -658,6 +658,25 @@ def _fix_chat_template(chat_template):
 
     dash = "-" if chosen_end.startswith("{%-") else ""
 
+    # Case 1: nothing after endfor - template was saved without generation prompt
+    if (
+        not after_endfor.strip()
+        and "add_generation_prompt" not in chat_template
+        and "<|im_start|>" in chat_template
+    ):
+        after_endfor = (
+            "{%"
+            + dash
+            + " if add_generation_prompt %}"
+            + "{{ '<|im_start|>assistant\n' }}"
+            + "{%"
+            + dash
+            + " endif %}"
+        )
+        chat_template = chat_template[: where + len(chosen_end)] + after_endfor
+        return chat_template
+
+    # Case 2: original logic - something after endfor starting with {{
     if (
         "{%" + dash + " if" not in after_endfor
         and "{%" + dash + " set " not in after_endfor
@@ -731,11 +750,14 @@ def fix_chat_template(tokenizer):
                 "{% if add_generation_prompt %}" not in new_chat_template
                 and "{%- if add_generation_prompt %}" not in new_chat_template
             ):
-                raise RuntimeError(
+                # Could not auto-fix - warn but don't crash so user can still
+                # load their saved LoRA adapter for inference/chat
+                logger.warning_once(
                     f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"
-                    "does not have a {% if add_generation_prompt %} for generation purposes.\n"
-                    f"Please file a bug report to the maintainers of `{tokenizer.name_or_path}` - thanks!"
+                    "does not have a {{% if add_generation_prompt %}} for generation purposes.\n"
+                    "Generation may not work correctly. Please notify the model maintainers."
                 )
+                return chat_template
             else:
                 logger.warning_once(
                     "Unsloth: We successfully patched the tokenizer to add a {% if add_generation_prompt %} to the chat_template.\n"
