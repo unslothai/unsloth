@@ -1306,6 +1306,9 @@ $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
 $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 
+# Detect ROCm / HIP for AMD cards (via hipcc)
+$HasHipcc = $null -ne (Get-Command hipcc -ErrorAction SilentlyContinue)
+
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
@@ -1313,11 +1316,16 @@ if (Test-Path $LlamaServerBin) {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
     if (Test-Path $CmakeCacheFile) {
         $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+        $cachedHip = Select-String -Path $CmakeCacheFile -Pattern 'GGML_HIPBLAS:BOOL=ON' -Quiet
+
         if ($HasNvidiaSmi -and -not $cachedCuda) {
-            Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
+            Write-Host "   Existing llama-server is not built with CUDA but NVIDIA GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
-        } elseif (-not $HasNvidiaSmi -and $cachedCuda) {
-            Write-Host "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
+        } elseif ($HasHipcc -and -not $cachedHip) {
+            Write-Host "   Existing llama-server is not built with HIP but AMD GPU is available -- rebuilding" -ForegroundColor Yellow
+            $NeedRebuild = $true
+        } elseif (-not $HasNvidiaSmi -and -not $HasHipcc -and ($cachedCuda -or $cachedHip)) {
+            Write-Host "   Existing llama-server was built with GPU support but no GPU detected -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
         }
     }
@@ -1328,7 +1336,7 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
 } elseif (-not $HasCmakeForBuild) {
     Write-Host ""
-    if (-not $HasNvidiaSmi) {
+    if (-not $HasNvidiaSmi -and -not $HasHipcc) {
         # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
         Write-Host "[ERROR] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Red
         Write-Host "        Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
@@ -1341,8 +1349,10 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     Write-Host ""
     if ($HasNvidiaSmi) {
         Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
+    } elseif ($HasHipcc) {
+        Write-Host "Building llama.cpp with ROCm (HIP) support..." -ForegroundColor Cyan
     } else {
-        Write-Host "Building llama.cpp (CPU-only, no NVIDIA GPU detected)..." -ForegroundColor Cyan
+        Write-Host "Building llama.cpp (CPU-only, no NVIDIA/AMD GPU detected)..." -ForegroundColor Cyan
     }
     Write-Host "   This typically takes 5-10 minutes on first build." -ForegroundColor Gray
     Write-Host ""
@@ -1453,6 +1463,10 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
                     # else: omit flag entirely, let cmake pick defaults
                 }
             }
+        } elseif ($HasHipcc) {
+            $CmakeArgs += '-DGGML_HIPBLAS=ON'
+            $CmakeArgs += '-DCMAKE_C_COMPILER=hipcc'
+            $CmakeArgs += '-DCMAKE_CXX_COMPILER=hipcc'
         } else {
             $CmakeArgs += '-DGGML_CUDA=OFF'
         }
