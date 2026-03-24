@@ -1007,7 +1007,10 @@ class InferenceBackend:
             }
             if system_prompt:
                 vision_messages = [
-                    {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": system_prompt}],
+                    },
                     user_msg,
                 ]
             else:
