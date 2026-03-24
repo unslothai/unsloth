@@ -32,6 +32,7 @@ class DeviceType(str, Enum):
     """Supported compute backends. Inherits from str so it serializes cleanly in JSON."""
 
     CUDA = "cuda"
+    ROCM = "rocm"
     MLX = "mlx"
     CPU = "cpu"
 
@@ -78,22 +79,23 @@ def detect_hardware() -> DeviceType:
     Safe to call multiple times (idempotent).
 
     Detection order:
-      1. CUDA  (NVIDIA GPU, requires torch)
+      1. CUDA / ROCM (NVIDIA/AMD GPU, requires torch)
       2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
     global DEVICE, CHAT_ONLY
-    CHAT_ONLY = True  # reset -- only CUDA sets it to False
+    CHAT_ONLY = True  # reset -- only CUDA/ROCM sets it to False
 
-    # --- CUDA: try PyTorch ---
+    # --- CUDA/ROCM: try PyTorch ---
     if _has_torch():
         import torch
 
         if torch.cuda.is_available():
-            DEVICE = DeviceType.CUDA
+            is_hip = getattr(torch.version, "hip", None) is not None
+            DEVICE = DeviceType.ROCM if is_hip else DeviceType.CUDA
             CHAT_ONLY = False
             device_name = torch.cuda.get_device_properties(0).name
-            print(f"Hardware detected: CUDA — {device_name}")
+            print(f"Hardware detected: {DEVICE.value.upper()} — {device_name}")
             return DEVICE
 
     # --- MLX: Apple Silicon ---
@@ -134,7 +136,7 @@ def clear_gpu_cache():
 
     device = get_device()
 
-    if device == DeviceType.CUDA:
+    if device in (DeviceType.CUDA, DeviceType.ROCM):
         import torch
 
         torch.cuda.synchronize()
@@ -149,12 +151,12 @@ def clear_gpu_cache():
 def get_gpu_memory_info() -> Dict[str, Any]:
     """
     Get GPU memory information.
-    Supports CUDA (NVIDIA), MLX (Apple Silicon), and CPU-only environments.
+    Supports CUDA (NVIDIA), ROCM (AMD), MLX (Apple Silicon), and CPU-only environments.
     """
     device = get_device()
 
-    # ---- CUDA path ----
-    if device == DeviceType.CUDA:
+    # ---- CUDA / ROCM path ----
+    if device in (DeviceType.CUDA, DeviceType.ROCM):
         try:
             import torch
 
@@ -285,10 +287,10 @@ def get_package_versions() -> Dict[str, Optional[str]]:
 
 def get_gpu_utilization() -> Dict[str, Any]:
     """
-    Return a live snapshot of GPU utilization via ``nvidia-smi``.
+    Return a live snapshot of GPU utilization via ``nvidia-smi`` or ``rocm-smi``.
 
     Designed to be polled by the frontend during training (not streaming).
-    Uses ``nvidia-smi --query-gpu`` which is the most accurate source for
+    Uses ``nvidia-smi --query-gpu`` or ``rocm-smi`` which is the most accurate source for
     utilization %, temperature, and power draw – stats that PyTorch does
     not expose.
 
@@ -305,7 +307,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
     """
     device = get_device()
 
-    if device != DeviceType.CUDA:
+    if device not in (DeviceType.CUDA, DeviceType.ROCM):
         return {"available": False, "backend": device.value}
 
     def _parse_smi_value(raw: str):
@@ -318,43 +320,80 @@ def get_gpu_utilization() -> Dict[str, Any]:
         except (ValueError, TypeError):
             return None
 
-    # ── nvidia-smi (most complete source) ───────────────────────
+    # ── nvidia-smi / rocm-smi (most complete source) ───────────────────────
     smi_data = {}
     try:
         import subprocess
 
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu,temperature.gpu,"
-                "memory.used,memory.total,power.draw,power.limit",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
+        if device == DeviceType.ROCM:
+            # rocm-smi outputs JSON if requested
+            result = subprocess.run(
+                ["rocm-smi", "-a", "--json"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                try:
+                    rocm_json = json.loads(result.stdout.strip())
+                    # Format: {"card0": {"Temperature (Sensor edge) (C)": "...", "GPU use (%)": "...", ...}}
+                    card_data = rocm_json.get("card0", {})
+                    # Different rocm versions have different keys, we'll extract standard ones if possible
+                    temp = card_data.get("Temperature (Sensor edge) (C)")
+                    if temp is None: temp = card_data.get("Temperature (Sensor edge) (C):")
+                    util = card_data.get("GPU use (%)")
 
-        if result.returncode == 0 and result.stdout.strip():
-            # nvidia-smi outputs one line per GPU; take GPU 0
-            first_line = result.stdout.strip().splitlines()[0]
-            parts = [p.strip() for p in first_line.split(",")]
-            if len(parts) >= 6:
-                smi_data = {
-                    "gpu_util": _parse_smi_value(parts[0]),
-                    "temp": _parse_smi_value(parts[1]),
-                    "vram_used_mb": _parse_smi_value(parts[2]),
-                    "vram_total_mb": _parse_smi_value(parts[3]),
-                    "power_draw": _parse_smi_value(parts[4]),
-                    "power_limit": _parse_smi_value(parts[5]),
-                }
+                    # Memory is usually "VRAM Total Memory (B)" and "VRAM Total Used Memory (B)"
+                    vram_used_b = card_data.get("VRAM Total Used Memory (B)")
+                    vram_total_b = card_data.get("VRAM Total Memory (B)")
+
+                    power_draw = card_data.get("Average Graphics Package Power (W)")
+                    power_limit = card_data.get("Max Graphics Package Power (W)")
+
+                    smi_data = {
+                        "gpu_util": _parse_smi_value(util) if util else None,
+                        "temp": _parse_smi_value(temp) if temp else None,
+                        "vram_used_mb": float(vram_used_b) / (1024**2) if vram_used_b else None,
+                        "vram_total_mb": float(vram_total_b) / (1024**2) if vram_total_b else None,
+                        "power_draw": _parse_smi_value(power_draw) if power_draw else None,
+                        "power_limit": _parse_smi_value(power_limit) if power_limit else None,
+                    }
+                except json.JSONDecodeError:
+                    pass
+        else:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu,temperature.gpu,"
+                    "memory.used,memory.total,power.draw,power.limit",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                # nvidia-smi outputs one line per GPU; take GPU 0
+                first_line = result.stdout.strip().splitlines()[0]
+                parts = [p.strip() for p in first_line.split(",")]
+                if len(parts) >= 6:
+                    smi_data = {
+                        "gpu_util": _parse_smi_value(parts[0]),
+                        "temp": _parse_smi_value(parts[1]),
+                        "vram_used_mb": _parse_smi_value(parts[2]),
+                        "vram_total_mb": _parse_smi_value(parts[3]),
+                        "power_draw": _parse_smi_value(parts[4]),
+                        "power_limit": _parse_smi_value(parts[5]),
+                    }
 
     except FileNotFoundError:
-        logger.debug("nvidia-smi not found, falling back to torch.cuda")
+        logger.debug("nvidia-smi/rocm-smi not found, falling back to torch.cuda")
     except Exception as e:
-        logger.warning(f"nvidia-smi query failed: {e}")
+        logger.warning(f"SMI query failed: {e}")
 
-    # ── Backfill VRAM from torch.cuda if nvidia-smi returned [N/A] ──
+    # ── Backfill VRAM from torch.cuda if SMI returned [N/A] or None ──
     vram_used_mb = smi_data.get("vram_used_mb")
     vram_total_mb = smi_data.get("vram_total_mb")
 
@@ -419,9 +458,9 @@ _visible_gpu_count: Optional[int] = None
 
 def get_physical_gpu_count() -> int:
     """
-    Return the number of physical NVIDIA GPUs on the machine.
+    Return the number of physical NVIDIA/AMD GPUs on the machine.
 
-    Uses ``nvidia-smi -L`` which is NOT affected by CUDA_VISIBLE_DEVICES,
+    Uses ``nvidia-smi -L`` or ``rocm-smi -i`` which is NOT affected by CUDA_VISIBLE_DEVICES,
     so it always reflects the true hardware count.
     Result is cached after the first call.
     """
@@ -431,17 +470,38 @@ def get_physical_gpu_count() -> int:
 
     try:
         import subprocess
+        device = get_device()
 
-        result = subprocess.run(
-            ["nvidia-smi", "-L"],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            _physical_gpu_count = len(result.stdout.strip().splitlines())
+        if device == DeviceType.ROCM:
+            result = subprocess.run(
+                ["rocm-smi", "-i", "--json"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                try:
+                    rocm_json = json.loads(result.stdout.strip())
+                    # The JSON has keys like "card0", "card1", etc. and maybe a "system" key.
+                    _physical_gpu_count = len([k for k in rocm_json.keys() if k.startswith("card")])
+                    # Fallback if parsing fails to 1
+                    if _physical_gpu_count == 0: _physical_gpu_count = 1
+                except json.JSONDecodeError:
+                    _physical_gpu_count = 1
+            else:
+                _physical_gpu_count = 1
         else:
-            _physical_gpu_count = 1
+            result = subprocess.run(
+                ["nvidia-smi", "-L"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                _physical_gpu_count = len(result.stdout.strip().splitlines())
+            else:
+                _physical_gpu_count = 1
     except Exception:
         _physical_gpu_count = 1
 
