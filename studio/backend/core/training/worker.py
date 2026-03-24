@@ -36,59 +36,25 @@ def _activate_transformers_version(model_name: str) -> None:
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import needs_transformers_5, _resolve_base_model
+    from utils.transformers_version import (
+        needs_transformers_5,
+        _resolve_base_model,
+        _ensure_venv_t5_exists,
+        _VENV_T5_DIR,
+    )
 
     resolved = _resolve_base_model(model_name)
     if needs_transformers_5(resolved):
-        venv_t5 = os.path.join(
-            os.path.expanduser("~"), ".unsloth", "studio", ".venv_t5"
-        )
-        if os.path.isdir(venv_t5):
-            sys.path.insert(0, venv_t5)
-            logger.info("Activated transformers 5.x from %s", venv_t5)
-        else:
-            # Fallback: pip install at runtime (slower, ~10-15s)
-            logger.warning(".venv_t5 not found at %s — installing at runtime", venv_t5)
-            import subprocess as sp
-
-            os.makedirs(venv_t5, exist_ok = True)
-            r1 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "transformers==5.2.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
+        if not _ensure_venv_t5_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
             )
-            r2 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "huggingface_hub==1.3.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
-            )
-            if r1.returncode != 0 or r2.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to install transformers 5.x into {venv_t5}. "
-                    f"pip returncode: transformers={r1.returncode}, huggingface_hub={r2.returncode}"
-                )
-            sys.path.insert(0, venv_t5)
+        if _VENV_T5_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_DIR)
+        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
         # Propagate to child subprocesses (e.g. GGUF converter)
         _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = venv_t5 + (os.pathsep + _pp if _pp else "")
+        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
@@ -138,7 +104,79 @@ def run_training_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # ── 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models ──
+    # Some newer architectures (e.g. NemotronH) have config parsing bugs in
+    # transformers that require trust_remote_code=True as a workaround.
+    # Only auto-enable for unsloth/* prefixed models (trusted source).
+    from utils.transformers_version import needs_transformers_5
+
+    if (
+        needs_transformers_5(model_name)
+        and model_name.lower().startswith("unsloth/")
+        and not config.get("trust_remote_code", False)
+    ):
+        config["trust_remote_code"] = True
+        logger.info(
+            "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+            model_name,
+        )
+
+    # ── 1b. Auto-install mamba-ssm for SSM/hybrid models (NemotronH, Falcon-H1) ──
+    _SSM_MODEL_SUBSTRINGS = ("nemotron_h", "nemotron-3-nano", "falcon_h1", "falcon-h1")
+    if any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+        try:
+            import mamba_ssm  # noqa: F401
+
+            logger.info("mamba-ssm already installed")
+        except ImportError:
+            logger.info(
+                "SSM model detected — installing mamba-ssm and causal-conv1d (this may take several minutes)..."
+            )
+            _send_status(
+                event_queue, "Installing mamba-ssm (first time only, ~7 min)..."
+            )
+            import subprocess as _sp
+
+            # --no-build-isolation: compile against current torch (no version conflicts)
+            # --no-deps: don't pull in torch/transformers/triton (already installed)
+            for _pkg in ["causal_conv1d", "mamba_ssm"]:
+                _r = _sp.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-build-isolation",
+                        "--no-deps",
+                        "--no-cache-dir",
+                        _pkg,
+                    ],
+                    stdout = _sp.PIPE,
+                    stderr = _sp.STDOUT,
+                    text = True,
+                )
+                if _r.returncode != 0:
+                    logger.error("Failed to install %s:\n%s", _pkg, _r.stdout)
+                else:
+                    logger.info("Installed %s successfully", _pkg)
+            logger.info("mamba-ssm installation complete")
+
+    # ── 1c. Set fork start method so dataset.map() can multiprocess ──
+    # The parent launched us via spawn (clean process), but the compiled
+    # SFTTrainer checks get_start_method() and disables num_proc if not "fork".
+    # Linux only: fork is the default start method and is safe here (no CUDA
+    # context exists yet). macOS defaults to spawn since Python 3.8 because
+    # fork is unsafe with macOS frameworks (Metal/MPS, CoreFoundation) --
+    # do NOT override on macOS. Windows has no fork at all.
+    if sys.platform == "linux":
+        import multiprocessing as _mp
+
+        try:
+            _mp.set_start_method("fork", force = True)
+        except RuntimeError:
+            pass  # Already set
+
+    # ── 1c. On Windows, check Triton availability (must be before import torch) ──
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
@@ -153,7 +191,7 @@ def run_training_process(
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
-        _send_status(event_queue, "Importing ML libraries...")
+        _send_status(event_queue, "Importing Unsloth...")
 
         backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
@@ -280,6 +318,7 @@ def run_training_process(
             dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
             format_type = config.get("format_type", ""),
             local_datasets = config.get("local_datasets") or None,
+            local_eval_datasets = config.get("local_eval_datasets") or None,
             custom_format_mapping = config.get("custom_format_mapping"),
             subset = config.get("subset"),
             train_split = config.get("train_split", "train"),
@@ -298,21 +337,21 @@ def run_training_process(
         # [DEBUG] Print first sample before model is loaded
         # dataset is a dict {"dataset": <Dataset>, "detected_format": ..., ...}
         # or a raw Dataset for audio paths
-        try:
-            ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
-            print(
-                f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}",
-                flush = True,
-            )
-            print(f"[DEBUG] Columns: {ds.column_names}", flush = True)
-            sample = ds[0]
-            preview = {k: str(v)[:300] for k, v in sample.items()}
-            print(f"[DEBUG] First sample: {preview}\n", flush = True)
-        except Exception as e:
-            print(
-                f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}",
-                flush = True,
-            )
+        # try:
+        #     ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
+        #     print(
+        #         f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}",
+        #         flush = True,
+        #     )
+        #     print(f"[DEBUG] Columns: {ds.column_names}", flush = True)
+        #     sample = ds[0]
+        #     preview = {k: str(v)[:300] for k, v in sample.items()}
+        #     print(f"[DEBUG] First sample: {preview}\n", flush = True)
+        # except Exception as e:
+        #     print(
+        #         f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}",
+        #         flush = True,
+        #     )
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)
@@ -346,12 +385,41 @@ def run_training_process(
                 )
             return
 
+        # ── Start tqdm monitor early so it captures download + tokenization bars ──
+        import threading as _th
+
+        _tqdm_stop = _th.Event()
+
+        def _monitor_tqdm():
+            from tqdm.auto import tqdm as _tqdm_cls
+
+            while not _tqdm_stop.is_set():
+                for bar in list(getattr(_tqdm_cls, "_instances", set())):
+                    try:
+                        n, total = bar.n or 0, bar.total or 0
+                        desc = getattr(bar, "desc", "") or ""
+                        if total > 0 and n > 0 and desc:
+                            pct = min(int(n * 100 / total), 100)
+                            _send_status(
+                                event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})"
+                            )
+                    except (AttributeError, ReferenceError):
+                        pass
+                _tqdm_stop.wait(3)
+
+        _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
+        _tqdm_thread.start()
+
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        use_lora = training_type == "LoRA/QLoRA"
+
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
             model_name = model_name,
             max_seq_length = config["max_seq_length"],
             load_in_4bit = config["load_in_4bit"],
+            full_finetuning = not use_lora,
             hf_token = hf_token,
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
@@ -375,8 +443,6 @@ def run_training_process(
             return
 
         # ── 4d. Prepare model (LoRA or full finetuning) ──
-        training_type = config.get("training_type", "LoRA/QLoRA")
-        use_lora = training_type == "LoRA/QLoRA"
         if use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
@@ -445,7 +511,14 @@ def run_training_process(
             ensure_dir(Path(tensorboard_dir))
 
         # Start training (directly — no inner thread, we ARE the subprocess)
-        _send_status(event_queue, "Starting training...")
+        dataset_display = (
+            config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
+        )
+        _send_status(
+            event_queue,
+            f'Training "{model_name}"'
+            + (f"\nDataset = {dataset_display}" if dataset_display else ""),
+        )
         max_steps = config.get("max_steps", 0)
         save_steps = config.get("save_steps", 0)
 
@@ -475,6 +548,8 @@ def run_training_process(
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
         )
+
+        _tqdm_stop.set()
 
         # Check final state
         progress = trainer.get_training_progress()

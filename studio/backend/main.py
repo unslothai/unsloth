@@ -6,12 +6,24 @@ Main FastAPI application for Unsloth UI Backend
 """
 
 import os
+import sys
+from pathlib import Path as _Path
 
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Ensure backend dir is on sys.path so _platform_compat is importable when
+# main.py is launched directly (e.g. `uvicorn main:app`).
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
+
 import shutil
-import sys
 import warnings
 from contextlib import asynccontextmanager
 
@@ -153,6 +165,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "device_type": device_type,
+        "chat_only": _hw_module.CHAT_ONLY,
     }
 
 
@@ -255,6 +268,22 @@ async def get_hardware_info():
 # ============ Serve Frontend (Optional) ============
 
 
+def _strip_crossorigin(html_bytes: bytes) -> bytes:
+    """Remove ``crossorigin`` attributes from script/link tags.
+
+    Vite adds ``crossorigin`` by default which forces CORS mode on font
+    subresource loads.  When Studio is served over plain HTTP, Firefox
+    HTTPS-Only Mode does not exempt CORS font requests -- causing all
+    @font-face downloads to fail silently.  Stripping the attribute
+    makes them regular same-origin fetches that work on any protocol.
+    """
+    import re as _re
+
+    html = html_bytes.decode("utf-8")
+    html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
+    return html.encode("utf-8")
+
+
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
     """Inject bootstrap credentials into HTML when password change is required.
 
@@ -296,6 +325,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
     @app.get("/")
     async def serve_root():
         content = (build_path / "index.html").read_bytes()
+        content = _strip_crossorigin(content)
         content = _inject_bootstrap(content, app)
         return Response(
             content = content,
@@ -319,6 +349,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         # Serve index.html as bytes — avoids Content-Length mismatch
         content = (build_path / "index.html").read_bytes()
+        content = _strip_crossorigin(content)
         content = _inject_bootstrap(content, app)
         return Response(
             content = content,

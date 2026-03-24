@@ -5,7 +5,7 @@
 Automatic transformers version switching.
 
 Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
-tiny_qwen3_moe) require transformers>=5.2.0, while everything else needs the
+tiny_qwen3_moe) require transformers>=5.3.0, while everything else needs the
 default 4.57.x that ships with Unsloth.
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
@@ -26,6 +26,7 @@ import json
 import structlog
 from loggers import get_logger
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -48,9 +49,17 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
 )
 
+# Tokenizer classes that only exist in transformers>=5.x
+_TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
+    "TokenizersBackend",
+}
+
+# Cache for dynamic tokenizer_config.json lookups to avoid repeated fetches
+_tokenizer_class_cache: dict[str, bool] = {}
+
 # Versions
-TRANSFORMERS_5_VERSION = "5.2.0"
-TRANSFORMERS_DEFAULT_VERSION = "4.57.1"
+TRANSFORMERS_5_VERSION = "5.3.0"
+TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
 _VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
@@ -83,6 +92,24 @@ def _resolve_base_model(model_name: str) -> str:
         except Exception as exc:
             logger.debug("Could not read %s: %s", adapter_cfg_path, exc)
 
+    # --- config.json fallback (works for both LoRA and full fine-tune) ------
+    config_json_path = local_path / "config.json"
+    if config_json_path.is_file():
+        try:
+            with open(config_json_path) as f:
+                cfg = json.load(f)
+            # Unsloth writes "model_name"; HF writes "_name_or_path"
+            base = cfg.get("model_name") or cfg.get("_name_or_path")
+            if base and base != str(local_path):
+                logger.info(
+                    "Resolved checkpoint '%s' → base model '%s' (via config.json)",
+                    model_name,
+                    base,
+                )
+                return base
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", config_json_path, exc)
+
     # --- Only try the heavier fallback for local directories ----------------
     if local_path.is_dir():
         try:
@@ -107,11 +134,74 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
+def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
+    """Fetch tokenizer_config.json from HuggingFace and check if the
+    tokenizer_class requires transformers 5.x.
+
+    Results are cached in ``_tokenizer_class_cache`` to avoid repeated fetches.
+    Returns False on any network/parse error (fail-open to default version).
+    """
+    if model_name in _tokenizer_class_cache:
+        return _tokenizer_class_cache[model_name]
+
+    # --- Check local tokenizer_config.json first ---------------------------
+    local_path = Path(model_name)
+    local_tc = local_path / "tokenizer_config.json"
+    if local_tc.is_file():
+        try:
+            with open(local_tc) as f:
+                data = json.load(f)
+            tokenizer_class = data.get("tokenizer_class", "")
+            result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
+            if result:
+                logger.info(
+                    "Local check: %s uses tokenizer_class=%s (requires transformers 5.x)",
+                    model_name,
+                    tokenizer_class,
+                )
+            _tokenizer_class_cache[model_name] = result
+            return result
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", local_tc, exc)
+
+    # --- Fall back to fetching from HuggingFace ----------------------------
+    import urllib.request
+
+    url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    try:
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        with urllib.request.urlopen(req, timeout = 10) as resp:
+            data = json.loads(resp.read().decode())
+        tokenizer_class = data.get("tokenizer_class", "")
+        result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
+        if result:
+            logger.info(
+                "Dynamic check: %s uses tokenizer_class=%s (requires transformers 5.x)",
+                model_name,
+                tokenizer_class,
+            )
+        _tokenizer_class_cache[model_name] = result
+        return result
+    except Exception as exc:
+        logger.debug(
+            "Could not fetch tokenizer_config.json for '%s': %s", model_name, exc
+        )
+        _tokenizer_class_cache[model_name] = False
+        return False
+
+
 def needs_transformers_5(model_name: str) -> bool:
     """Return True if *model_name* belongs to an architecture that requires
-    ``transformers>=5.2.0``."""
+    ``transformers>=5.3.0``.
+
+    First checks the hardcoded substring list for known models, then
+    dynamically fetches ``tokenizer_config.json`` from HuggingFace to check
+    if the tokenizer_class (e.g. ``TokenizersBackend``) requires v5.
+    """
     lowered = model_name.lower()
-    return any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS)
+    if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
+        return True
+    return _check_tokenizer_config_needs_v5(model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +256,87 @@ def _purge_modules() -> int:
     return len(to_remove)
 
 
-def _ensure_venv_t5_exists() -> bool:
-    """Ensure .venv_t5/ exists. Install at runtime if missing."""
-    if os.path.isdir(_VENV_T5_DIR) and os.listdir(_VENV_T5_DIR):
-        return True
+_VENV_T5_PACKAGES = (
+    f"transformers=={TRANSFORMERS_5_VERSION}",
+    "huggingface_hub==1.7.1",
+    "hf_xet==1.4.2",
+    "tiktoken",
+)
 
-    logger.warning(".venv_t5 not found at %s — installing at runtime", _VENV_T5_DIR)
-    os.makedirs(_VENV_T5_DIR, exist_ok = True)
-    for pkg in (f"transformers=={TRANSFORMERS_5_VERSION}", "huggingface_hub==1.3.0"):
-        cmd = [
+
+def _venv_t5_is_valid() -> bool:
+    """Return True if .venv_t5/ has all required packages at the correct versions."""
+    if not os.path.isdir(_VENV_T5_DIR) or not os.listdir(_VENV_T5_DIR):
+        return False
+    # Check that the key package directories exist AND match the required version
+    for pkg_spec in _VENV_T5_PACKAGES:
+        parts = pkg_spec.split("==")
+        pkg_name = parts[0]
+        pkg_version = parts[1] if len(parts) > 1 else None
+        pkg_name_norm = pkg_name.replace("-", "_")
+        # Check directory exists
+        if not any(
+            (Path(_VENV_T5_DIR) / d).is_dir()
+            for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
+        ):
+            return False
+        # For unpinned packages, existence is enough
+        if pkg_version is None:
+            continue
+        # Check version via .dist-info metadata
+        dist_info_found = False
+        for di in Path(_VENV_T5_DIR).glob(f"{pkg_name_norm}-*.dist-info"):
+            metadata = di / "METADATA"
+            if not metadata.is_file():
+                continue
+            for line in metadata.read_text(errors = "replace").splitlines():
+                if line.startswith("Version:"):
+                    installed_ver = line.split(":", 1)[1].strip()
+                    if installed_ver != pkg_version:
+                        logger.info(
+                            ".venv_t5 has %s==%s but need %s",
+                            pkg_name,
+                            installed_ver,
+                            pkg_version,
+                        )
+                        return False
+                    dist_info_found = True
+                    break
+            if dist_info_found:
+                break
+        if not dist_info_found:
+            return False
+    return True
+
+
+def _install_to_venv_t5(pkg: str) -> bool:
+    """Install a single package into .venv_t5/, preferring uv then pip."""
+    # Try uv first (faster) if already on PATH -- do NOT install uv at runtime
+    if shutil.which("uv"):
+        result = subprocess.run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                _VENV_T5_DIR,
+                "--no-deps",
+                "--upgrade",
+                pkg,
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+        )
+        if result.returncode == 0:
+            return True
+        logger.warning("uv install of %s failed, falling back to pip", pkg)
+
+    # Fallback to pip
+    result = subprocess.run(
+        [
             sys.executable,
             "-m",
             "pip",
@@ -182,13 +344,31 @@ def _ensure_venv_t5_exists() -> bool:
             "--target",
             _VENV_T5_DIR,
             "--no-deps",
+            "--upgrade",
             pkg,
-        ]
-        result = subprocess.run(
-            cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True
-        )
-        if result.returncode != 0:
-            logger.error("pip install failed:\n%s", result.stdout)
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
+    if result.returncode != 0:
+        logger.error("install failed:\n%s", result.stdout)
+        return False
+    return True
+
+
+def _ensure_venv_t5_exists() -> bool:
+    """Ensure .venv_t5/ exists with all required packages. Install if missing."""
+    if _venv_t5_is_valid():
+        return True
+
+    logger.warning(
+        ".venv_t5 not found or incomplete at %s -- installing at runtime", _VENV_T5_DIR
+    )
+    shutil.rmtree(_VENV_T5_DIR, ignore_errors = True)
+    os.makedirs(_VENV_T5_DIR, exist_ok = True)
+    for pkg in _VENV_T5_PACKAGES:
+        if not _install_to_venv_t5(pkg):
             return False
     logger.info("Installed transformers 5.x to %s", _VENV_T5_DIR)
     return True

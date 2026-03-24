@@ -71,6 +71,8 @@ export interface ModelConfigResponse {
   is_lora: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;
+  max_position_embeddings?: number | null;
+  model_size_bytes?: number | null;
 }
 
 export interface LocalModelInfo {

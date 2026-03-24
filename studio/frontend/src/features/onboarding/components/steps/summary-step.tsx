@@ -150,7 +150,7 @@ export function SummaryStep() {
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
             <Row label="Type" value={modelType} capitalize />
-            <Row label="Method" value={trainingMethod} uppercase />
+            <Row label="Method" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"} />
           </div>
         </CardContent>
       </Card>
@@ -198,14 +198,16 @@ export function SummaryStep() {
             </div>
             <div className="flex flex-1 flex-col">
               <span className="text-xs text-muted-foreground">Training</span>
-              <span className="text-sm font-medium">{trainingMethod.toUpperCase()}</span>
+              <span className="text-sm font-medium">
+                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"}
+              </span>
             </div>
           </div>
           <Separator className="my-2" />
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
             <Row label="Epochs" value={epochs} mono />
             <Row label="Context" value={contextLength.toLocaleString()} mono />
-            <Row label="LR" value={learningRate} mono />
+            <Row label="LR" value={learningRate.toExponential()} mono />
             {showLoraParams && (
               <>
                 <Row label="Rank" value={loraRank} mono />

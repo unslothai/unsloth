@@ -16,6 +16,7 @@ export interface TrainingStartRequest {
   dataset_slice_start: number | null;
   dataset_slice_end: number | null;
   local_datasets: string[];
+  local_eval_datasets: string[];
   format_type: string;
   custom_format_mapping?: Record<string, unknown> | null;
   num_epochs: number;

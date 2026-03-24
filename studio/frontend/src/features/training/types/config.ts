@@ -37,6 +37,7 @@ export interface TrainingConfigState {
   datasetSliceStart: string | null;
   datasetSliceEnd: string | null;
   uploadedFile: string | null;
+  uploadedEvalFile: string | null;
   epochs: number;
   contextLength: number;
   learningRate: number;
@@ -79,6 +80,7 @@ export interface TrainingConfigState {
   finetuneAttentionModules: boolean;
   finetuneMLPModules: boolean;
   targetModules: string[];
+  maxPositionEmbeddings: number | null;
 }
 
 export interface TrainingConfigActions {
@@ -109,6 +111,7 @@ export interface TrainingConfigActions {
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetSliceEnd: (value: string | null) => void;
   setUploadedFile: (file: string | null) => void;
+  setUploadedEvalFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
   setLearningRate: (rate: number) => void;

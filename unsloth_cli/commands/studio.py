@@ -14,7 +14,7 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 STUDIO_HOME = Path.home() / ".unsloth" / "studio"
 
-# __file__ is cli/commands/studio.py — two parents up is the package root
+# __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
 # (either site-packages or the repo root for editable installs).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -33,7 +33,7 @@ def _find_run_py() -> Optional[Path]:
 
     No CWD dependency — works from any directory.
     Since studio/ is now a proper package (has __init__.py), it lives in
-    site-packages after pip install, right next to cli/.
+    site-packages after pip install, right next to unsloth_cli/.
     """
     # 1. Relative to __file__ (site-packages or editable repo root)
     run_py = _PACKAGE_ROOT / "studio" / "backend" / "run.py"
@@ -75,7 +75,7 @@ def _find_setup_script() -> Optional[Path]:
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
-    port: int = typer.Option(8000, "--port", "-p"),
+    port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("0.0.0.0", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
@@ -93,7 +93,7 @@ def studio_default(
         run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
-                typer.echo("Launching with studio venv...")
+                typer.echo("Launching Unsloth Studio... Please wait...")
             args = [
                 str(studio_python),
                 str(run_py),
@@ -106,7 +106,31 @@ def studio_default(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
-            os.execvp(str(studio_python), args)
+            # On Windows, os.execvp() spawns a child but the parent lingers,
+            # so Ctrl+C only kills the parent leaving the child orphaned.
+            # Use subprocess.run() on Windows so the parent waits for the child.
+            if sys.platform == "win32":
+                import subprocess as _sp
+
+                proc = _sp.Popen(args)
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    # Child has its own signal handler — let it finish
+                    rc = proc.wait()
+                if rc != 0:
+                    typer.echo(
+                        f"\nError: Studio server exited unexpectedly (code {rc}).",
+                        err = True,
+                    )
+                    typer.echo(
+                        "Check the error above. If a package is missing, "
+                        "re-run: unsloth studio setup",
+                        err = True,
+                    )
+                raise typer.Exit(rc)
+            else:
+                os.execvp(str(studio_python), args)
         else:
             typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
             raise typer.Exit(1)
@@ -119,17 +143,26 @@ def studio_default(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_server(
-        host = host,
-        port = port,
-        frontend_path = frontend,
-        silent = silent,
-    )
+    run_kwargs = dict(host = host, port = port, silent = silent)
+    if frontend is not None:
+        run_kwargs["frontend_path"] = frontend
+    run_server(**run_kwargs)
+
+    from studio.backend.run import _shutdown_event
 
     try:
-        while True:
-            time.sleep(1)
+        if _shutdown_event is not None:
+            # NOTE: Event.wait() without a timeout blocks at the C level
+            # on Linux, preventing Python from delivering SIGINT (Ctrl+C).
+            while not _shutdown_event.is_set():
+                _shutdown_event.wait(timeout = 1)
+        else:
+            while True:
+                time.sleep(1)
     except KeyboardInterrupt:
+        from studio.backend.run import _graceful_shutdown, _server
+
+        _graceful_shutdown(_server)
         typer.echo("\nShutting down...")
 
 
@@ -153,3 +186,28 @@ def setup():
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
+
+
+# ── unsloth studio reset-password ────────────────────────────────────
+
+
+@studio_app.command("reset-password")
+def reset_password():
+    """Reset the Studio admin password.
+
+    Deletes the auth database so that a fresh admin account with a new
+    random password is created on the next server start.  The Studio
+    server must be restarted after running this command.
+    """
+    auth_dir = STUDIO_HOME / "auth"
+    db_file = auth_dir / "auth.db"
+    pw_file = auth_dir / ".bootstrap_password"
+
+    if not db_file.exists():
+        typer.echo("No auth database found -- nothing to reset.")
+        raise typer.Exit(0)
+
+    db_file.unlink(missing_ok = True)
+    pw_file.unlink(missing_ok = True)
+
+    typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")

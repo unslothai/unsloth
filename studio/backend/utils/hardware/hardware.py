@@ -39,6 +39,7 @@ class DeviceType(str, Enum):
 # ========== Global State (set once by detect_hardware) ==========
 
 DEVICE: Optional[DeviceType] = None
+CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 
 
 # ========== Detection ==========
@@ -81,7 +82,8 @@ def detect_hardware() -> DeviceType:
       2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
-    global DEVICE
+    global DEVICE, CHAT_ONLY
+    CHAT_ONLY = True  # reset -- only CUDA sets it to False
 
     # --- CUDA: try PyTorch ---
     if _has_torch():
@@ -89,6 +91,7 @@ def detect_hardware() -> DeviceType:
 
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
+            CHAT_ONLY = False
             device_name = torch.cuda.get_device_properties(0).name
             print(f"Hardware detected: CUDA — {device_name}")
             return DEVICE
@@ -240,8 +243,9 @@ def get_gpu_summary() -> Dict[str, Any]:
         return {
             "gpu_name": mem.get("device_name"),
             "vram_total_gb": round(mem.get("total_gb", 0), 2),
+            "vram_free_gb": round(mem.get("free_gb", 0), 2),
         }
-    return {"gpu_name": None, "vram_total_gb": None}
+    return {"gpu_name": None, "vram_total_gb": None, "vram_free_gb": None}
 
 
 def get_package_versions() -> Dict[str, Optional[str]]:
@@ -410,6 +414,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
 # ========== Multi-GPU Detection & Safe num_proc ==========
 
 _physical_gpu_count: Optional[int] = None
+_visible_gpu_count: Optional[int] = None
 
 
 def get_physical_gpu_count() -> int:
@@ -443,21 +448,57 @@ def get_physical_gpu_count() -> int:
     return _physical_gpu_count
 
 
+def get_visible_gpu_count() -> int:
+    """
+    Return the number of GPUs visible to this process.
+
+    Respects ``CUDA_VISIBLE_DEVICES`` -- if set, only those GPUs count.
+    Falls back to physical count if the env var is unset or torch is
+    unavailable.  Result is cached after the first call.
+    """
+    global _visible_gpu_count
+    if _visible_gpu_count is not None:
+        return _visible_gpu_count
+
+    import os
+
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible is not None:
+        # "" means zero GPUs, "0" means 1, "0,1,2" means 3
+        cuda_visible = cuda_visible.strip()
+        if cuda_visible == "" or cuda_visible == "-1":
+            _visible_gpu_count = 0
+        else:
+            _visible_gpu_count = len([x for x in cuda_visible.split(",") if x.strip()])
+        return _visible_gpu_count
+
+    # CUDA_VISIBLE_DEVICES not set -- try torch, fall back to physical count
+    try:
+        import torch
+
+        _visible_gpu_count = torch.cuda.device_count()
+    except Exception:
+        _visible_gpu_count = get_physical_gpu_count()
+
+    return _visible_gpu_count
+
+
 def safe_num_proc(desired: Optional[int] = None) -> int:
     """
     Return a safe ``num_proc`` for ``dataset.map()`` calls.
 
     On Windows, always returns 1 because Python uses ``spawn`` instead of
-    ``fork`` for multiprocessing — the overhead of re-importing torch,
+    ``fork`` for multiprocessing -- the overhead of re-importing torch,
     transformers, unsloth etc. per worker is typically slower than
     single-process for normal dataset sizes.
 
-    On multi-GPU machines the NVIDIA driver spawns extra background threads,
-    making ``os.fork()`` prone to deadlocks when many workers are created.
+    On multi-GPU machines (where multiple GPUs are *visible* to this
+    process) the NVIDIA driver spawns extra background threads, making
+    ``os.fork()`` prone to deadlocks when many workers are created.
     This helper caps ``num_proc`` to 4 on such machines.
 
-    On single-GPU (or CPU-only) machines the original value is returned
-    unchanged.
+    When ``CUDA_VISIBLE_DEVICES`` restricts to a single GPU, the cap
+    does not apply.
 
     Args:
         desired: The num_proc you *want*. If None, auto-computes from
@@ -469,20 +510,60 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     import os
     import sys
 
-    # Windows uses 'spawn' for multiprocessing — the overhead of re-importing
-    # torch/transformers/unsloth per worker is typically slower than single-process.
-    if sys.platform == "win32":
+    # Windows and macOS use 'spawn' for multiprocessing -- the overhead of
+    # re-importing torch/transformers/unsloth per worker is typically slower
+    # than single-process.
+    if sys.platform in ("win32", "darwin"):
         return 1
 
     if desired is None or not isinstance(desired, int):
-        desired = max(1, os.cpu_count() // 3)
+        desired = max(1, (os.cpu_count() or 1) // 3)
 
-    if get_physical_gpu_count() > 1:
-        capped = min(4, desired)
+    visible = get_visible_gpu_count()
+    if visible > 1:
+        capped = max(1, min(4, desired))
         logger.info(
-            f"⚙️ Multi-GPU detected ({get_physical_gpu_count()} GPUs) — "
-            f"capping num_proc {desired} → {capped} to avoid fork deadlocks"
+            f"Multi-GPU detected ({visible} visible GPUs) -- "
+            f"capping num_proc {desired} -> {capped} to avoid fork deadlocks"
         )
         return capped
 
-    return desired
+    return max(1, desired)
+
+
+def safe_thread_num_proc(desired: Optional[int] = None) -> int:
+    """
+    Return a safe worker count for ``ThreadPoolExecutor`` calls.
+
+    Unlike ``safe_num_proc()``, this does NOT cap to 1 on macOS/Windows.
+    Threads share the parent process address space and are unaffected by
+    the ``spawn`` vs ``fork`` distinction.
+
+    Args:
+        desired: The thread count you *want*. If None, auto-computes
+                 from ``os.cpu_count()``.
+
+    Returns:
+        A safe integer >= 1.
+    """
+    import os
+
+    if desired is None or not isinstance(desired, int):
+        desired = max(1, (os.cpu_count() or 1) // 3)
+
+    return max(1, desired)
+
+
+def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
+    """
+    Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
+
+    Returns ``None`` on spawn-based platforms (Windows, macOS) because
+    ``datasets`` treats ``num_proc=1`` as multiprocessing (creates ``Pool(1)``).
+    Only ``num_proc=None`` guarantees in-process execution.
+    """
+    import sys
+
+    if sys.platform in ("win32", "darwin"):
+        return None
+    return safe_num_proc(desired)

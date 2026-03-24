@@ -23,7 +23,10 @@ const INITIAL: HfTokenValidationState = {
  * Returns validation state: isValid (null = not checked), error message, and isChecking.
  */
 export function useHfTokenValidation(token: string): HfTokenValidationState {
-  const debouncedToken = useDebouncedValue(token.trim(), 500);
+  const debouncedToken = useDebouncedValue(
+    token.trim().replace(/^["']+|["']+$/g, ""),
+    500,
+  );
   const [state, setState] = useState<HfTokenValidationState>(INITIAL);
   const versionRef = useRef(0);
 

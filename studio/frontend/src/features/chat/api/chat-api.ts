@@ -117,10 +117,40 @@ export async function getGgufDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
+export async function getDownloadProgress(
+  repoId: string,
+): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/models/download-progress?${params}`);
+  return parseJsonOrThrow(response);
+}
+
 export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
   const response = await authFetch("/api/models/cached-gguf");
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
+}
+
+export interface CachedModelRepo {
+  repo_id: string;
+  size_bytes: number;
+}
+
+export async function listCachedModels(): Promise<CachedModelRepo[]> {
+  const response = await authFetch("/api/models/cached-models");
+  const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
+  return data.cached;
+}
+
+export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+  const payload: Record<string, string> = { repo_id: repoId };
+  if (variant) payload.variant = variant;
+  const response = await authFetch("/api/models/delete-cached", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
 }
 
 export async function listGgufVariants(
@@ -194,9 +224,21 @@ export async function* streamChatCompletions(
 
       const parsed = JSON.parse(dataText) as
         | OpenAIChatChunk
-        | { error?: { message?: string } };
+        | { type?: string; content?: string; error?: { message?: string } };
       if ("error" in parsed && parsed.error) {
         throw new Error(parsed.error.message || "Stream error");
+      }
+      // Tool status events are custom SSE payloads, not OpenAI chunks
+      if ("type" in parsed && parsed.type === "tool_status") {
+        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
+      }
+      // Tool start/end events carry full input/output for the tool outputs panel
+      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+        yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
       }
       yield parsed as OpenAIChatChunk;
       separatorIndex = buffer.search(/\r?\n\r?\n/);

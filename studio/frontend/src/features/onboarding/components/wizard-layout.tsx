@@ -27,9 +27,15 @@ export function WizardLayout() {
   const hasFiredRef = useRef(false);
   const isFinalStep = currentStep === STEPS.length;
 
+  // Only redirect on initial mount — not on re-renders after markOnboardingDone()
+  // which would override explicit /chat navigation from skip buttons.
+  const checkedRef = useRef(false);
   useEffect(() => {
-    if (isOnboardingDone()) {
-      navigate({ to: "/studio" });
+    if (!checkedRef.current) {
+      checkedRef.current = true;
+      if (isOnboardingDone()) {
+        navigate({ to: "/studio" });
+      }
     }
   }, [navigate]);
 
@@ -63,7 +69,7 @@ export function WizardLayout() {
           onStartOnboarding={() => setShowSplash(false)}
           onGoToStudio={() => {
             markOnboardingDone();
-            navigate({ to: "/studio" });
+            window.location.href = "/studio";
           }}
         />
       )}
@@ -88,7 +94,7 @@ export function WizardLayout() {
             <WizardSidebar />
             <div className="flex-1 flex flex-col">
               <WizardContent />
-              <WizardFooter />
+              <WizardFooter onBackToSplash={() => setShowSplash(true)} />
             </div>
           </Card>
         </motion.div>

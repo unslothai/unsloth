@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 const PREV_MAX_STEPS_KEY = "unsloth_prev_max_steps";
 const PREV_SAVE_STEPS_KEY = "unsloth_prev_save_steps";
-const DEFAULT_MAX_STEPS = 30;
+const DEFAULT_MAX_STEPS = 60;
 const DEFAULT_EPOCHS = 3;
 
 function readStoredNumber(key: string, fallback: number): number {
@@ -97,7 +97,6 @@ export function useMaxStepsEpochsToggle({
 
     setMaxSteps(0);
     setEpochs(epochs || defaultEpochs);
-    setSaveSteps(0);
   }, [
     defaultEpochs,
     epochs,

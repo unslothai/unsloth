@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
 import {
+  BubbleChatIcon,
   Database02Icon,
   ImageIcon,
   InformationCircleIcon,
@@ -21,7 +22,7 @@ import {
   VoiceIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const TYPE_ICONS: Record<ModelType, typeof ImageIcon> = {
@@ -47,28 +48,30 @@ export function ModelTypeStep(): ReactElement {
       setModelType: s.setModelType,
     })),
   );
+  const [chatOnlySelected, setChatOnlySelected] = useState(false);
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h2 className="text-lg font-semibold">Welcome to Unsloth Studio</h2>
         <p className="text-sm text-muted-foreground">
-          Fine-tune LLMs 2x faster with 70% less VRAM. Pick a model type to get
-          started.{" "}
+          Choose a path - fine-tune LLMs, vision, embedding, audio models or just chat.{" "}
           <a
-            href="https://unsloth.ai/docs"
+            href="https://unsloth.ai/docs/new/studio/start"
             target="_blank"
             rel="noreferrer"
             className="text-primary underline"
           >
-            Watch video guide
+            Get started with our guide
           </a>
         </p>
       </div>
       <RadioGroup
-        value={modelType ?? ""}
+        value={chatOnlySelected ? "" : (modelType ?? "")}
         onValueChange={(v) => {
           if (!COMING_SOON.includes(v as ModelType)) {
+            setChatOnlySelected(false);
+            sessionStorage.removeItem("unsloth_chat_only");
             setModelType(v as ModelType);
           }
         }}
@@ -76,7 +79,7 @@ export function ModelTypeStep(): ReactElement {
       >
         {MODEL_TYPES.map((type) => {
           const Icon = TYPE_ICONS[type.value];
-          const isSelected = modelType === type.value;
+          const isSelected = !chatOnlySelected && modelType === type.value;
           const isDisabled = COMING_SOON.includes(type.value);
           const inputId = `model-type-${type.value}`;
 
@@ -172,6 +175,71 @@ export function ModelTypeStep(): ReactElement {
             </label>
           );
         })}
+        <div
+          className="cursor-pointer"
+          onClick={() => {
+            setChatOnlySelected(true);
+            setModelType("text" as ModelType);
+            sessionStorage.setItem("unsloth_chat_only", "1");
+          }}
+        >
+          <Card
+            size="sm"
+            className={cn(
+              "relative shadow-primary/30 transition-all duration-150 ease-out",
+              "hover:ring-primary/40 hover:-translate-y-0.5 hover:shadow-sm",
+              chatOnlySelected && "ring-2 ring-primary -translate-y-0.5 shadow-sm",
+            )}
+          >
+            <CardContent className="flex items-center gap-4 py-4">
+              {/* Invisible spacer matching RadioGroupItem (size-4 flex) in other cards */}
+              <div className="size-4 shrink-0" aria-hidden="true" />
+              <div
+                className={cn(
+                  "size-10 rounded-xl corner-squircle flex items-center justify-center shrink-0",
+                  "transition-all duration-100 ease-out",
+                  chatOnlySelected
+                    ? "bg-primary/10 text-primary scale-105"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={BubbleChatIcon}
+                  className={cn(
+                    "size-5 transition-transform duration-100 ease-out",
+                    chatOnlySelected && "scale-110",
+                  )}
+                  strokeWidth={chatOnlySelected ? 2.5 : 2}
+                />
+              </div>
+              <div className="flex flex-col gap-0.5 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">Chat</span>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-muted-foreground/50 hover:text-muted-foreground"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3.5"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Chat with any model. Has tool calling, web search and more.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Chat with LLMs & vision models + audio generation.
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </RadioGroup>
     </div>
   );

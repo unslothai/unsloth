@@ -12,7 +12,7 @@ import typer
 
 def ui(
     port: int = typer.Option(
-        8000, "--port", "-p", help = "Port to run the UI server on."
+        8888, "--port", "-p", help = "Port to run the UI server on."
     ),
     host: str = typer.Option(
         "0.0.0.0", "--host", "-H", help = "Host address to bind to."
@@ -25,7 +25,11 @@ def ui(
     ),
 ):
     """Launch the Unsloth web UI backend server (alias for 'unsloth studio')."""
-    from cli.commands.studio import _studio_venv_python, _find_run_py, STUDIO_HOME
+    from unsloth_cli.commands.studio import (
+        _studio_venv_python,
+        _find_run_py,
+        STUDIO_HOME,
+    )
 
     # Re-execute in studio venv if available and not already inside it
     studio_venv_dir = STUDIO_HOME / ".venv"
@@ -36,7 +40,7 @@ def ui(
         run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
-                typer.echo("Launching with studio venv...")
+                typer.echo("Launching Unsloth Studio... Please wait...")
             args = [
                 str(studio_python),
                 str(run_py),
@@ -49,7 +53,21 @@ def ui(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
-            os.execvp(str(studio_python), args)
+            # On Windows, os.execvp() spawns a child but the parent lingers,
+            # so Ctrl+C only kills the parent leaving the child orphaned.
+            # Use subprocess.run() on Windows so the parent waits for the child.
+            if sys.platform == "win32":
+                import subprocess as _sp
+
+                proc = _sp.Popen(args)
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    # Child has its own signal handler — let it finish
+                    rc = proc.wait()
+                raise typer.Exit(rc)
+            else:
+                os.execvp(str(studio_python), args)
         else:
             typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
             raise typer.Exit(1)
@@ -62,15 +80,24 @@ def ui(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_server(
-        host = host,
-        port = port,
-        frontend_path = frontend,
-        silent = silent,
-    )
+    run_kwargs = dict(host = host, port = port, silent = silent)
+    if frontend is not None:
+        run_kwargs["frontend_path"] = frontend
+    run_server(**run_kwargs)
+
+    from studio.backend.run import _shutdown_event
 
     try:
-        while True:
-            time.sleep(1)
+        if _shutdown_event is not None:
+            # NOTE: Event.wait() without a timeout blocks at the C level
+            # on Linux, preventing Python from delivering SIGINT (Ctrl+C).
+            while not _shutdown_event.is_set():
+                _shutdown_event.wait(timeout = 1)
+        else:
+            while True:
+                time.sleep(1)
     except KeyboardInterrupt:
+        from studio.backend.run import _graceful_shutdown, _server
+
+        _graceful_shutdown(_server)
         typer.echo("\nShutting down...")

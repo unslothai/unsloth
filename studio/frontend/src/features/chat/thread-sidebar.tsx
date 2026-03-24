@@ -3,6 +3,7 @@
 
 import {
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -13,8 +14,10 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import {
+  BookOpen02Icon,
   ColumnInsertIcon,
   Delete02Icon,
+  NewReleasesIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -47,7 +50,7 @@ function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         title: t.title,
         createdAt: t.createdAt,
       });
-    } else if (t.modelType === "base") {
+    } else if (!t.pairId) {
       items.push({
         type: "single",
         id: t.id,
@@ -158,6 +161,26 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="space-y-1 px-4 pb-3">
+        <a
+          href="https://unsloth.ai/docs/new/studio/chat"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+        >
+          <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
+          <span>Learn more in docs</span>
+        </a>
+        <a
+          href="https://unsloth.ai/blog"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <HugeiconsIcon icon={NewReleasesIcon} className="size-4 shrink-0" strokeWidth={2} />
+          <span>What&apos;s new</span>
+        </a>
+      </SidebarFooter>
     </>
   );
 }

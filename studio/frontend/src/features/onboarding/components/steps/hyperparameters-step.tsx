@@ -7,7 +7,6 @@ import {
   FieldLegend,
   FieldSet,
 } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -26,7 +25,39 @@ import { CONTEXT_LENGTHS } from "@/config/training";
 import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
+
+/** Format a number in scientific notation like 2e-4, 5e-3, etc. */
+function formatLR(value: number): string {
+  if (value <= 0) return "0";
+  const exp = Math.floor(Math.log10(value));
+  const mantissa = value / 10 ** exp;
+  const rounded = Math.round(mantissa * 10) / 10;
+  if (rounded === 10) return `1e${exp + 1}`;
+  if (rounded === Math.round(rounded)) return `${Math.round(rounded)}e${exp}`;
+  return `${rounded}e${exp}`;
+}
+
+/**
+ * Step learning rate up in a scientific-notation-friendly sequence:
+ * 1e-4 -> 2e-4 -> 3e-4 -> ... -> 9e-4 -> 1e-3 -> 2e-3 -> ...
+ */
+function stepLR(value: number, direction: 1 | -1): number {
+  if (value <= 0) return 1e-5;
+  const exp = Math.floor(Math.log10(value) + 1e-9);
+  const mantissa = Math.round(value / 10 ** exp);
+  let newMantissa = mantissa + direction;
+  let newExp = exp;
+  if (newMantissa > 9) {
+    newMantissa = 1;
+    newExp = exp + 1;
+  } else if (newMantissa < 1) {
+    newMantissa = 9;
+    newExp = exp - 1;
+  }
+  return newMantissa * 10 ** newExp;
+}
 
 export function HyperparametersStep() {
   const {
@@ -47,6 +78,7 @@ export function HyperparametersStep() {
     setLoraAlpha,
     loraDropout,
     setLoraDropout,
+    maxPositionEmbeddings,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       trainingMethod: s.trainingMethod,
@@ -66,6 +98,7 @@ export function HyperparametersStep() {
       setLoraAlpha: s.setLoraAlpha,
       loraDropout: s.loraDropout,
       setLoraDropout: s.setLoraDropout,
+      maxPositionEmbeddings: s.maxPositionEmbeddings,
     })),
   );
 
@@ -83,10 +116,18 @@ export function HyperparametersStep() {
   const maxStepsSliderMax = Math.max(500, maxSteps, 30);
   const epochsSliderMax = Math.max(10, epochs, 1);
 
+  // Use model's max_position_embeddings to cap context length options.
+  // Fall back to 65536 (64K) if not available.
+  const maxCtx = maxPositionEmbeddings ?? 65536;
+  const contextLengthOptions = useMemo(
+    () => CONTEXT_LENGTHS.filter((len) => len <= maxCtx),
+    [maxCtx],
+  );
+
   return (
     <FieldGroup>
       <FieldSet>
-        <FieldLegend variant="label">Training</FieldLegend>
+        <FieldLegend variant="label">Choose your training parameters</FieldLegend>
         <div className="flex flex-col gap-4">
           <div
             key={useEpochs ? "epochs" : "steps"}
@@ -205,7 +246,7 @@ export function HyperparametersStep() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {CONTEXT_LENGTHS.map((len) => (
+                {contextLengthOptions.map((len) => (
                   <SelectItem key={len} value={String(len)}>
                     {len.toLocaleString()}
                   </SelectItem>
@@ -242,13 +283,25 @@ export function HyperparametersStep() {
                 </TooltipContent>
               </Tooltip>
             </FieldLabel>
-            <Input
-              type="number"
-              step="0.00001"
-              value={learningRate}
-              onChange={(e) => setLearningRate(Number(e.target.value))}
-              className="w-32 font-mono"
-            />
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted cursor-pointer"
+                onClick={() => setLearningRate(stepLR(learningRate, -1))}
+              >
+                -
+              </button>
+              <span className="w-16 text-center font-mono text-sm">
+                {formatLR(learningRate)}
+              </span>
+              <button
+                type="button"
+                className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted cursor-pointer"
+                onClick={() => setLearningRate(stepLR(learningRate, 1))}
+              >
+                +
+              </button>
+            </div>
           </div>
 
         </div>

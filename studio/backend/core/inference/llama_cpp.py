@@ -9,7 +9,9 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 """
 
 import atexit
+import contextlib
 import json
+import struct
 import structlog
 from loggers import get_logger
 import shutil
@@ -45,6 +47,12 @@ class LlamaCppBackend:
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
+        self._context_length: Optional[int] = None
+        self._chat_template: Optional[str] = None
+        self._supports_reasoning: bool = False
+        self._supports_tools: bool = False
+        self._cache_type_kv: Optional[str] = None
+        self._reasoning_default: bool = True
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -79,6 +87,30 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return self._context_length
+
+    @property
+    def chat_template(self) -> Optional[str]:
+        return self._chat_template
+
+    @property
+    def supports_reasoning(self) -> bool:
+        return self._supports_reasoning
+
+    @property
+    def reasoning_default(self) -> bool:
+        return self._reasoning_default
+
+    @property
+    def supports_tools(self) -> bool:
+        return self._supports_tools
+
+    @property
+    def cache_type_kv(self) -> Optional[str]:
+        return self._cache_type_kv
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -366,10 +398,137 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
-                    logger.info(f"[llama-server] {line}")
+                    logger.debug(f"[llama-server] {line}")
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
+
+    # GGUF KV type sizes for fast skipping
+    _GGUF_TYPE_SIZE = {
+        0: 1,
+        1: 1,
+        2: 2,
+        3: 2,
+        4: 4,
+        5: 4,
+        6: 4,
+        7: 1,
+        10: 8,
+        11: 8,
+        12: 8,
+    }
+
+    @staticmethod
+    def _gguf_skip_value(f, vtype: int) -> None:
+        """Skip a GGUF KV value without reading it."""
+        sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(vtype)
+        if sz is not None:
+            f.seek(sz, 1)
+        elif vtype == 8:  # STRING
+            slen = struct.unpack("<Q", f.read(8))[0]
+            f.seek(slen, 1)
+        elif vtype == 9:  # ARRAY
+            atype = struct.unpack("<I", f.read(4))[0]
+            alen = struct.unpack("<Q", f.read(8))[0]
+            elem_sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(atype)
+            if elem_sz is not None:
+                f.seek(elem_sz * alen, 1)
+            elif atype == 8:
+                for _ in range(alen):
+                    slen = struct.unpack("<Q", f.read(8))[0]
+                    f.seek(slen, 1)
+            else:
+                for _ in range(alen):
+                    LlamaCppBackend._gguf_skip_value(f, atype)
+
+    def _read_gguf_metadata(self, gguf_path: str) -> None:
+        """Read context_length and chat_template from a GGUF file's KV header.
+
+        Parses only the KV pairs we need (~30ms even for multi-GB files).
+        For split GGUFs, metadata is always in shard 1.
+        """
+        # Reset metadata from any previously loaded model so stale flags
+        # (eg _supports_reasoning) do not carry over when switching models.
+        self._context_length = None
+        self._chat_template = None
+        self._supports_reasoning = False
+        self._supports_tools = False
+
+        try:
+            WANTED = {"general.architecture", "tokenizer.chat_template"}
+            arch = None
+            ctx_key = None
+
+            with open(gguf_path, "rb") as f:
+                magic = struct.unpack("<I", f.read(4))[0]
+                if magic != 0x46554747:  # b"GGUF" as little-endian u32
+                    return
+                _version = struct.unpack("<I", f.read(4))[0]
+                _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+
+                for _ in range(kv_count):
+                    key_len = struct.unpack("<Q", f.read(8))[0]
+                    key = f.read(key_len).decode("utf-8")
+                    vtype = struct.unpack("<I", f.read(4))[0]
+
+                    if key in WANTED or (ctx_key and key == ctx_key):
+                        # Read this value
+                        if vtype == 8:  # STRING
+                            slen = struct.unpack("<Q", f.read(8))[0]
+                            val_s = f.read(slen).decode("utf-8")
+                            if key == "general.architecture":
+                                arch = val_s
+                                ctx_key = f"{arch}.context_length"
+                            elif key == "tokenizer.chat_template":
+                                self._chat_template = val_s
+                        elif vtype == 4:  # UINT32
+                            val_i = struct.unpack("<I", f.read(4))[0]
+                            if ctx_key and key == ctx_key:
+                                self._context_length = val_i
+                        elif vtype == 10:  # UINT64
+                            val_i = struct.unpack("<Q", f.read(8))[0]
+                            if ctx_key and key == ctx_key:
+                                self._context_length = val_i
+                        else:
+                            self._gguf_skip_value(f, vtype)
+                    else:
+                        self._gguf_skip_value(f, vtype)
+
+            if self._context_length:
+                logger.info(f"GGUF metadata: context_length={self._context_length}")
+            if self._chat_template:
+                logger.info(
+                    f"GGUF metadata: chat_template={len(self._chat_template)} chars"
+                )
+                # Detect thinking/reasoning support from chat template
+                tpl = self._chat_template
+                if "enable_thinking" in tpl:
+                    self._supports_reasoning = True
+                    logger.info(
+                        "GGUF metadata: model supports reasoning (enable_thinking)"
+                    )
+                elif "thinking" in tpl:
+                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
+                    normalized_id = (self._model_identifier or "").lower()
+                    if "deepseek" in normalized_id:
+                        self._supports_reasoning = True
+                        logger.info(
+                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
+                        )
+                # Detect tool calling support from chat template
+                tool_markers = [
+                    "{%- if tools %}",
+                    "{% if tools %}",
+                    '"role" == "tool"',
+                    "'role' == 'tool'",
+                    'message.role == "tool"',
+                    "message.role == 'tool'",
+                ]
+                if any(marker in tpl for marker in tool_markers):
+                    self._supports_tools = True
+                    logger.info("GGUF metadata: model supports tool calling")
+        except Exception as e:
+            logger.warning(f"Failed to read GGUF metadata: {e}")
 
     # ── HF download (no lock held) ───────────────────────────────
 
@@ -500,13 +659,14 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Could not check disk space: {e}")
 
-        logger.info(
-            f"Downloading GGUF: {hf_repo}/{gguf_filename}"
-            + (f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else "")
+        gguf_label = f"{hf_repo}/{gguf_filename}" + (
+            f" (+{len(gguf_extra_shards)} shards)" if gguf_extra_shards else ""
         )
+        logger.info(f"Resolving GGUF: {gguf_label}")
         try:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
+            dl_start = time.monotonic()
             local_path = hf_hub_download(
                 repo_id = hf_repo,
                 filename = gguf_filename,
@@ -515,7 +675,7 @@ class LlamaCppBackend:
             for shard in gguf_extra_shards:
                 if self._cancel_event.is_set():
                     raise RuntimeError("Cancelled")
-                logger.info(f"Downloading GGUF shard: {shard}")
+                logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download(
                     repo_id = hf_repo,
                     filename = shard,
@@ -532,8 +692,53 @@ class LlamaCppBackend:
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
             )
 
-        logger.info(f"GGUF downloaded to: {local_path}")
+        dl_elapsed = time.monotonic() - dl_start
+        if dl_elapsed < 2.0:
+            logger.info(f"GGUF resolved from cache: {local_path}")
+        else:
+            logger.info(f"GGUF downloaded in {dl_elapsed:.1f}s: {local_path}")
         return local_path
+
+    def _download_mmproj(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download the mmproj (vision projection) file from a GGUF repo.
+
+        Prefers mmproj-F16.gguf, falls back to any mmproj*.gguf file.
+        Returns the local path, or None if no mmproj file exists.
+        """
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files
+
+            files = list_repo_files(hf_repo, token = hf_token)
+            mmproj_files = sorted(
+                f for f in files if f.endswith(".gguf") and "mmproj" in f.lower()
+            )
+            if not mmproj_files:
+                return None
+
+            # Prefer F16 variant
+            target = None
+            for f in mmproj_files:
+                if "f16" in f.lower():
+                    target = f
+                    break
+            if target is None:
+                target = mmproj_files[0]
+
+            logger.info(f"Downloading mmproj: {hf_repo}/{target}")
+            local_path = hf_hub_download(
+                repo_id = hf_repo,
+                filename = target,
+                token = hf_token,
+            )
+            return local_path
+        except Exception as e:
+            logger.warning(f"Could not download mmproj: {e}")
+            return None
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -552,6 +757,8 @@ class LlamaCppBackend:
         model_identifier: str,
         is_vision: bool = False,
         n_ctx: int = 4096,
+        chat_template_override: Optional[str] = None,
+        cache_type_kv: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -588,12 +795,24 @@ class LlamaCppBackend:
                 hf_variant = hf_variant,
                 hf_token = hf_token,
             )
+            # Auto-download mmproj for vision models
+            if is_vision and not mmproj_path:
+                mmproj_path = self._download_mmproj(
+                    hf_repo = hf_repo,
+                    hf_token = hf_token,
+                )
         elif gguf_path:
             if not Path(gguf_path).is_file():
                 raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
             model_path = gguf_path
         else:
             raise ValueError("Either gguf_path or hf_repo must be provided")
+
+        # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
+        self._model_identifier = model_identifier
+
+        # Read GGUF metadata (context_length, chat_template) -- fast, header only
+        self._read_gguf_metadata(model_path)
 
         # Check cancel after download
         if self._cancel_event.is_set():
@@ -629,7 +848,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                str(n_ctx),
+                "0",  # 0 = use model's native context size
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
@@ -641,6 +860,73 @@ class LlamaCppBackend:
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
+
+            # Always enable Jinja chat template rendering for proper template support
+            cmd.extend(["--jinja"])
+
+            # KV cache data type
+            _valid_cache_types = {
+                "f16",
+                "bf16",
+                "q8_0",
+                "q4_0",
+                "q4_1",
+                "q5_0",
+                "q5_1",
+                "iq4_nl",
+                "f32",
+            }
+            if cache_type_kv and cache_type_kv in _valid_cache_types:
+                cmd.extend(
+                    ["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv]
+                )
+                self._cache_type_kv = cache_type_kv
+                logger.info(f"KV cache type: {cache_type_kv}")
+            else:
+                self._cache_type_kv = None
+
+            # Apply custom chat template override if provided
+            if chat_template_override:
+                import tempfile
+
+                self._chat_template_file = tempfile.NamedTemporaryFile(
+                    mode = "w",
+                    suffix = ".jinja",
+                    delete = False,
+                    prefix = "unsloth_chat_template_",
+                )
+                self._chat_template_file.write(chat_template_override)
+                self._chat_template_file.close()
+                cmd.extend(["--chat-template-file", self._chat_template_file.name])
+                logger.info(
+                    f"Using custom chat template file: {self._chat_template_file.name}"
+                )
+
+            # For reasoning models, set default thinking mode.
+            # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Only 9B and larger enable thinking.
+            if self._supports_reasoning:
+                import re
+
+                thinking_default = True
+                mid = (model_identifier or "").lower()
+                if "qwen3.5" in mid:
+                    # Extract size like "0.8b", "4b", "35b" etc.
+                    size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
+                    if size_match:
+                        size_val = float(size_match.group(1))
+                        if size_val < 9:
+                            thinking_default = False
+                self._reasoning_default = thinking_default
+                cmd.extend(
+                    [
+                        "--chat-template-kwargs",
+                        json.dumps({"enable_thinking": thinking_default}),
+                    ]
+                )
+                logger.info(
+                    f"Reasoning model: enable_thinking={thinking_default} by default"
+                )
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -675,9 +961,28 @@ class LlamaCppBackend:
                 env["PATH"] = ";".join(path_dirs) + ";" + existing_path
             else:
                 # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                # and CUDA runtime libs (libcudart, libcublas, etc.)
+                import platform
+
+                lib_dirs = [binary_dir]
+                _arch = platform.machine()  # x86_64, aarch64, etc.
+                for cuda_lib in [
+                    "/usr/local/cuda/lib64",
+                    f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                    # Fallback CUDA compat paths (e.g. binary built with
+                    # CUDA 12 on a system where default /usr/local/cuda
+                    # points to CUDA 13+).
+                    "/usr/local/cuda-12/lib64",
+                    "/usr/local/cuda-12.8/lib64",
+                    f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                    f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+                ]:
+                    if os.path.isdir(cuda_lib):
+                        lib_dirs.append(cuda_lib)
                 existing_ld = env.get("LD_LIBRARY_PATH", "")
+                new_ld = ":".join(lib_dirs)
                 env["LD_LIBRARY_PATH"] = (
-                    f"{binary_dir}:{existing_ld}" if existing_ld else binary_dir
+                    f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
             # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
@@ -732,8 +1037,32 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._hf_variant = None
             self._is_vision = False
+            self._is_audio = False
+            self._audio_type = None
             self._port = None
             self._healthy = False
+            self._context_length = None
+            self._chat_template = None
+            self._supports_reasoning = False
+            self._supports_tools = False
+            self._cache_type_kv = None
+            # Clean up temp chat template file
+            if hasattr(self, "_chat_template_file") and self._chat_template_file:
+                try:
+                    import os
+
+                    os.unlink(self._chat_template_file.name)
+                except Exception:
+                    pass
+                self._chat_template_file = None
+            # Free audio codec GPU memory
+            if LlamaCppBackend._codec_mgr is not None:
+                LlamaCppBackend._codec_mgr.unload()
+                LlamaCppBackend._codec_mgr = None
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             return True
 
     def _kill_process(self):
@@ -837,6 +1166,133 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
+    def _parse_tool_calls_from_text(content: str) -> list[dict]:
+        """
+        Parse tool calls from XML markup in content text.
+
+        Handles formats like:
+          <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
+          <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
+        Closing tags (</tool_call>, </function>, </parameter>) are all optional
+        since models frequently omit them.
+        """
+        import re
+
+        tool_calls = []
+
+        # Pattern 1: JSON inside <tool_call> tags.
+        # Use balanced-brace extraction that skips braces inside JSON strings.
+        for m in re.finditer(r"<tool_call>\s*\{", content):
+            brace_start = m.end() - 1  # position of the opening {
+            depth, i = 0, brace_start
+            in_string = False
+            while i < len(content):
+                ch = content[i]
+                if in_string:
+                    if ch == "\\" and i + 1 < len(content):
+                        i += 2  # skip escaped character
+                        continue
+                    if ch == '"':
+                        in_string = False
+                elif ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            if depth == 0:
+                json_str = content[brace_start : i + 1]
+                try:
+                    obj = json.loads(json_str)
+                    tc = {
+                        "id": f"call_{len(tool_calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": obj.get("name", ""),
+                            "arguments": obj.get("arguments", {}),
+                        },
+                    }
+                    if isinstance(tc["function"]["arguments"], dict):
+                        tc["function"]["arguments"] = json.dumps(
+                            tc["function"]["arguments"]
+                        )
+                    tool_calls.append(tc)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+        # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
+        # All closing tags optional -- models frequently omit </parameter>,
+        # </function>, and/or </tool_call>.
+        if not tool_calls:
+            # Step 1: Find all <function=name> positions and extract their bodies.
+            # Body boundary: use only </tool_call> or next <function= as hard
+            # boundaries.  We avoid using </function> as a boundary because
+            # code parameter values can contain that literal string.
+            # After extracting, we trim a trailing </function> if present.
+            func_starts = list(re.finditer(r"<function=(\w+)>\s*", content))
+            for idx, fm in enumerate(func_starts):
+                func_name = fm.group(1)
+                body_start = fm.end()
+                # Hard boundaries: next <function= tag or </tool_call>
+                next_func = (
+                    func_starts[idx + 1].start()
+                    if idx + 1 < len(func_starts)
+                    else len(content)
+                )
+                end_tag = re.search(r"</tool_call>", content[body_start:])
+                if end_tag:
+                    body_end = body_start + end_tag.start()
+                else:
+                    body_end = len(content)
+                body_end = min(body_end, next_func)
+                body = content[body_start:body_end]
+                # Trim trailing </function> if present (it's the real closing tag)
+                body = re.sub(r"\s*</function>\s*$", "", body)
+
+                # Step 2: Extract parameters from body.
+                # For single-parameter functions (the common case: code, command,
+                # query), use body end as the only boundary to avoid false matches
+                # on </parameter> inside code strings.
+                arguments = {}
+                param_starts = list(re.finditer(r"<parameter=(\w+)>\s*", body))
+                if len(param_starts) == 1:
+                    # Single parameter: value is everything from after the tag
+                    # to end of body, trimming any trailing </parameter>.
+                    pm = param_starts[0]
+                    val = body[pm.end() :]
+                    val = re.sub(r"\s*</parameter>\s*$", "", val)
+                    arguments[pm.group(1)] = val.strip()
+                else:
+                    for pidx, pm in enumerate(param_starts):
+                        param_name = pm.group(1)
+                        val_start = pm.end()
+                        # Value ends at next <parameter= or end of body
+                        next_param = (
+                            param_starts[pidx + 1].start()
+                            if pidx + 1 < len(param_starts)
+                            else len(body)
+                        )
+                        val = body[val_start:next_param]
+                        # Trim trailing </parameter> if present
+                        val = re.sub(r"\s*</parameter>\s*$", "", val)
+                        arguments[param_name] = val.strip()
+
+                tc = {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": json.dumps(arguments),
+                    },
+                }
+                tool_calls.append(tc)
+
+        return tool_calls
+
+    @staticmethod
     def _build_openai_messages(
         messages: list[dict],
         image_b64: Optional[str] = None,
@@ -873,19 +1329,137 @@ class LlamaCppBackend:
 
     # ── Generation (proxy to llama-server) ────────────────────────
 
+    @staticmethod
+    def _iter_text_cancellable(
+        response: "httpx.Response",
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Generator[str, None, None]:
+        """Iterate over an httpx streaming response with cancel support.
+
+        Checks cancel_event between chunks and on ReadTimeout.  The
+        cancel watcher in _stream_with_retry also calls response.close()
+        on cancel, which unblocks iter_text() once the response exists.
+        During normal streaming llama-server sends tokens frequently,
+        so the cancel check between chunks is the primary mechanism.
+        """
+        text_iter = response.iter_text()
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                response.close()
+                return
+            try:
+                chunk = next(text_iter)
+                yield chunk
+            except StopIteration:
+                return
+            except httpx.ReadTimeout:
+                # No data within the timeout window -- just loop back
+                # and re-check cancel_event.
+                continue
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _stream_with_retry(
+        client: "httpx.Client",
+        url: str,
+        payload: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ):
+        """Open an httpx streaming POST with cancel support.
+
+        Sends the request once with a long read timeout (120 s) so
+        prompt processing (prefill) can finish without triggering a
+        retry storm.  The previous 0.5 s timeout caused duplicate POST
+        requests every half second, forcing llama-server to restart
+        processing each time.
+
+        A background watcher thread provides cancel by closing the
+        response when cancel_event is set.  Limitation: httpx does not
+        allow interrupting a blocked read from another thread before
+        the response object exists, so cancel during the initial
+        header wait (prefill phase) only takes effect once headers
+        arrive.  After that, response.close() unblocks reads promptly.
+        In practice llama-server prefill is 1-5 s for typical prompts,
+        during which cancel is deferred -- still much better than the
+        old retry storm which made prefill slower.
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            raise GeneratorExit
+
+        # Background watcher: close the response if cancel is requested.
+        # Only effective after response headers arrive (httpx limitation).
+        _cancel_closed = threading.Event()
+        _response_ref: list = [None]
+
+        def _cancel_watcher():
+            while not _cancel_closed.is_set():
+                if cancel_event.wait(timeout = 0.3):
+                    # Cancel requested. Keep polling until the response object
+                    # exists so we can close it, or until the main thread
+                    # finishes on its own (_cancel_closed is set in finally).
+                    while not _cancel_closed.is_set():
+                        r = _response_ref[0]
+                        if r is not None:
+                            try:
+                                r.close()
+                                return
+                            except Exception as e:
+                                logger.debug(
+                                    f"Error closing response in cancel watcher: {e}"
+                                )
+                        # Response not created yet -- wait briefly and retry
+                        _cancel_closed.wait(timeout = 0.1)
+                    return
+
+        watcher = None
+        if cancel_event is not None:
+            watcher = threading.Thread(
+                target = _cancel_watcher, daemon = True, name = "prefill-cancel"
+            )
+            watcher.start()
+
+        try:
+            # Long read timeout so prefill (prompt processing) can finish
+            # without triggering a retry storm.  Cancel during both
+            # prefill and streaming is handled by the watcher thread
+            # which closes the response, unblocking any httpx read.
+            prefill_timeout = httpx.Timeout(
+                connect = 30,
+                read = 120.0,
+                write = 10,
+                pool = 10,
+            )
+            with client.stream(
+                "POST", url, json = payload, timeout = prefill_timeout
+            ) as response:
+                _response_ref[0] = response
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GeneratorExit
+                yield response
+                return
+        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.CloseError):
+            # Response was closed by the cancel watcher
+            if cancel_event is not None and cancel_event.is_set():
+                raise GeneratorExit
+            raise
+        finally:
+            _cancel_closed.set()
+
     def generate_chat_completion(
         self,
         messages: list[dict],
         image_b64: Optional[str] = None,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 40,
-        min_p: float = 0.0,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 20,
+        min_p: float = 0.01,
         max_tokens: Optional[int] = None,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
-    ) -> Generator[str, None, None]:
+        enable_thinking: Optional[bool] = None,
+    ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
 
@@ -907,19 +1481,33 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
+        # Pass enable_thinking per-request for reasoning models
+        if self._supports_reasoning and enable_thinking is not None:
+            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if stop:
             payload["stop"] = stop
+        payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
         in_thinking = False
+        _stream_done = False
+        _metadata_usage = None
+        _metadata_timings = None
 
         try:
-            with httpx.Client(timeout = None) as client:
-                with client.stream("POST", url, json = payload) as response:
+            # _stream_with_retry uses a 120 s read timeout so prefill
+            # can finish.  Cancel during streaming is handled by the
+            # watcher thread (closes the response on cancel_event).
+            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            with httpx.Client(timeout = stream_timeout) as client:
+                with self._stream_with_retry(
+                    client, url, payload, cancel_event
+                ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
                         raise RuntimeError(
@@ -927,10 +1515,11 @@ class LlamaCppBackend:
                         )
 
                     buffer = ""
-                    for raw_chunk in response.iter_text():
-                        if cancel_event is not None and cancel_event.is_set():
-                            break
-
+                    has_content_tokens = False
+                    reasoning_text = ""
+                    for raw_chunk in self._iter_text_cancellable(
+                        response, cancel_event
+                    ):
                         buffer += raw_chunk
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
@@ -940,14 +1529,31 @@ class LlamaCppBackend:
                                 continue
                             if line == "data: [DONE]":
                                 if in_thinking:
-                                    cumulative += "</think>"
-                                    yield cumulative
-                                return
+                                    if has_content_tokens:
+                                        # Real thinking + content: close the tag
+                                        cumulative += "</think>"
+                                        yield cumulative
+                                    else:
+                                        # Only reasoning_content, no content tokens:
+                                        # the model put its entire reply in reasoning
+                                        # (e.g. Qwen3 always-think mode). Show it
+                                        # as the main response, not as a thinking block.
+                                        cumulative = reasoning_text
+                                        yield cumulative
+                                _stream_done = True
+                                break  # exit inner while
                             if not line.startswith("data: "):
                                 continue
 
                             try:
                                 data = json.loads(line[6:])
+                                # Capture server timings/usage from final chunks
+                                _chunk_timings = data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -957,6 +1563,7 @@ class LlamaCppBackend:
                                     # Wrap in <think> tags for the frontend parser
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
+                                        reasoning_text += reasoning
                                         if not in_thinking:
                                             cumulative += "<think>"
                                             in_thinking = True
@@ -965,6 +1572,7 @@ class LlamaCppBackend:
 
                                     token = delta.get("content", "")
                                     if token:
+                                        has_content_tokens = True
                                         if in_thinking:
                                             cumulative += "</think>"
                                             in_thinking = False
@@ -974,6 +1582,14 @@ class LlamaCppBackend:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
                                 )
+                        if _stream_done:
+                            break  # exit outer for
+                    if _metadata_usage or _metadata_timings:
+                        yield {
+                            "type": "metadata",
+                            "usage": _metadata_usage,
+                            "timings": _metadata_timings,
+                        }
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
@@ -981,3 +1597,579 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise
+
+    # ── Tool-calling agentic loop ──────────────────────────────
+
+    def generate_chat_completion_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 20,
+        min_p: float = 0.01,
+        max_tokens: Optional[int] = None,
+        repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
+        stop: Optional[list[str]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        enable_thinking: Optional[bool] = None,
+        max_tool_iterations: int = 10,
+        auto_heal_tool_calls: bool = True,
+        tool_call_timeout: int = 300,
+        session_id: Optional[str] = None,
+    ) -> Generator[dict, None, None]:
+        """
+        Agentic loop: let the model call tools, execute them, and continue.
+
+        Yields dicts with:
+          {"type": "status", "text": "Searching: ..."}   -- tool status updates
+          {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
+          {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
+        """
+        from core.inference.tools import execute_tool
+
+        if not self.is_loaded:
+            raise RuntimeError("llama-server is not loaded")
+
+        conversation = list(messages)
+        url = f"{self.base_url}/v1/chat/completions"
+        _accumulated_completion_tokens = 0
+        _accumulated_predicted_ms = 0.0
+        _accumulated_predicted_n = 0
+
+        for iteration in range(max_tool_iterations):
+            if cancel_event is not None and cancel_event.is_set():
+                return
+
+            # Build payload for non-streaming tool detection pass
+            payload = {
+                "messages": conversation,
+                "stream": False,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k if top_k >= 0 else 0,
+                "min_p": min_p,
+                "repeat_penalty": repetition_penalty,
+                "presence_penalty": presence_penalty,
+                "tools": tools,
+                "tool_choice": "auto",
+            }
+            if self._supports_reasoning and enable_thinking is not None:
+                payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+            if max_tokens is not None:
+                payload["max_tokens"] = max_tokens
+            if stop:
+                payload["stop"] = stop
+
+            try:
+                with httpx.Client(timeout = None) as client:
+                    resp = client.post(url, json = payload)
+                    if resp.status_code != 200:
+                        raise RuntimeError(
+                            f"llama-server returned {resp.status_code}: {resp.text}"
+                        )
+                    data = resp.json()
+            except httpx.ConnectError:
+                raise RuntimeError("Lost connection to llama-server")
+
+            choices = data.get("choices", [])
+            if not choices:
+                return
+
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason", "")
+            message = choice.get("message", {})
+
+            # If model wants to call tools
+            tool_calls = message.get("tool_calls")
+
+            # Fallback: detect tool calls embedded as XML/text in content
+            # Some models output <tool_call> XML instead of structured tool_calls,
+            # or bare <function=...> tags without <tool_call> wrapper.
+            content_text = message.get("content", "") or ""
+            if (
+                auto_heal_tool_calls
+                and not tool_calls
+                and ("<tool_call>" in content_text or "<function=" in content_text)
+            ):
+                tool_calls = self._parse_tool_calls_from_text(content_text)
+                if tool_calls:
+                    # Strip the tool call markup from content.
+                    # Use greedy match within <tool_call> blocks since they
+                    # can contain arbitrary content including code.
+                    import re
+
+                    # Strip <tool_call>...</tool_call> blocks (greedy inside)
+                    content_text = re.sub(
+                        r"<tool_call>.*?</tool_call>",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip unterminated <tool_call>... to end
+                    content_text = re.sub(
+                        r"<tool_call>.*$",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip bare <function=...>...</function> blocks
+                    content_text = re.sub(
+                        r"<function=\w+>.*?</function>",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    )
+                    # Strip unterminated bare <function=...> to end
+                    content_text = re.sub(
+                        r"<function=\w+>.*$",
+                        "",
+                        content_text,
+                        flags = re.DOTALL,
+                    ).strip()
+                    logger.info(
+                        f"Parsed {len(tool_calls)} tool call(s) from content text"
+                    )
+
+            if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
+                # Only accumulate metrics for responses that are actually used
+                _accumulated_completion_tokens += data.get("usage", {}).get(
+                    "completion_tokens", 0
+                )
+                _iter_timings = data.get("timings", {})
+                _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
+                _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
+                # Append the assistant message with tool_calls to conversation
+                assistant_msg = {"role": "assistant", "content": content_text}
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                conversation.append(assistant_msg)
+
+                # Execute each tool call
+                for tc in tool_calls or []:
+                    func = tc.get("function", {})
+                    tool_name = func.get("name", "")
+                    raw_args = func.get("arguments", {})
+
+                    # Handle arguments as either string or dict
+                    if isinstance(raw_args, str):
+                        try:
+                            arguments = json.loads(raw_args)
+                        except (json.JSONDecodeError, ValueError):
+                            if auto_heal_tool_calls:
+                                arguments = {"query": raw_args}
+                            else:
+                                arguments = {"raw": raw_args}
+                    else:
+                        arguments = raw_args
+
+                    # Yield status update
+                    if tool_name == "web_search":
+                        status_text = f"Searching: {arguments.get('query', '')}"
+                    elif tool_name == "python":
+                        preview = (
+                            (arguments.get("code") or "").strip().split("\n")[0][:60]
+                        )
+                        status_text = (
+                            f"Running Python: {preview}"
+                            if preview
+                            else "Running Python..."
+                        )
+                    elif tool_name == "terminal":
+                        cmd_preview = (arguments.get("command") or "")[:60]
+                        status_text = (
+                            f"Running: {cmd_preview}"
+                            if cmd_preview
+                            else "Running command..."
+                        )
+                    else:
+                        status_text = f"Calling: {tool_name}"
+                    yield {"type": "status", "text": status_text}
+
+                    # Emit tool_start so the frontend can record inputs
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "arguments": arguments,
+                    }
+
+                    # Execute the tool
+                    _effective_timeout = (
+                        None if tool_call_timeout >= 9999 else tool_call_timeout
+                    )
+                    result = execute_tool(
+                        tool_name,
+                        arguments,
+                        cancel_event = cancel_event,
+                        timeout = _effective_timeout,
+                        session_id = session_id,
+                    )
+
+                    # Emit tool_end so the frontend can record outputs
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "result": result,
+                    }
+
+                    # Append tool result to conversation
+                    tool_msg = {
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": result,
+                    }
+                    tool_call_id = tc.get("id")
+                    if tool_call_id:
+                        tool_msg["tool_call_id"] = tool_call_id
+                    conversation.append(tool_msg)
+
+                # Continue the loop to let model respond with context
+                continue
+
+            # No tool calls -- model answered directly.
+            # If no tools were executed at all, just yield the content
+            # from this response instead of making a redundant second request.
+            if iteration == 0 and content_text:
+                yield {"type": "status", "text": ""}
+                yield {"type": "content", "text": content_text}
+                _direct_usage = data.get("usage")
+                _direct_timings = data.get("timings")
+                if _direct_usage or _direct_timings:
+                    yield {
+                        "type": "metadata",
+                        "usage": _direct_usage,
+                        "timings": _direct_timings,
+                    }
+                return
+
+            # Tools were called in previous iterations; do a final
+            # streaming pass so the model can synthesize a response
+            # incorporating the tool results.
+            break
+
+        # Clear status
+        yield {"type": "status", "text": ""}
+
+        # Final streaming pass with the full conversation context
+        stream_payload = {
+            "messages": conversation,
+            "stream": True,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
+            "repeat_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
+        }
+        if self._supports_reasoning and enable_thinking is not None:
+            stream_payload["chat_template_kwargs"] = {
+                "enable_thinking": enable_thinking
+            }
+        if max_tokens is not None:
+            stream_payload["max_tokens"] = max_tokens
+        if stop:
+            stream_payload["stop"] = stop
+        stream_payload["stream_options"] = {"include_usage": True}
+
+        import re as _re_final
+
+        # Closed blocks only -- safe to strip mid-stream without shrinking later.
+        _TOOL_CLOSED_PATTERNS = [
+            _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
+            _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
+        ]
+        # Open-ended patterns strip from an opening tag to end-of-string.
+        # Only applied on the final flush to avoid non-monotonic shrinking.
+        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
+            _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
+            _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
+        ]
+
+        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
+            if not auto_heal_tool_calls:
+                return text
+            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
+            for pat in patterns:
+                text = pat.sub("", text)
+            return text.strip() if final else text
+
+        cumulative = ""
+        _last_emitted = ""
+        in_thinking = False
+        has_content_tokens = False
+        reasoning_text = ""
+        _metadata_usage = None
+        _metadata_timings = None
+        _stream_done = False
+
+        try:
+            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            with httpx.Client(timeout = stream_timeout) as client:
+                with self._stream_with_retry(
+                    client, url, stream_payload, cancel_event
+                ) as response:
+                    if response.status_code != 200:
+                        error_body = response.read().decode()
+                        raise RuntimeError(
+                            f"llama-server returned {response.status_code}: {error_body}"
+                        )
+
+                    buffer = ""
+                    for raw_chunk in self._iter_text_cancellable(
+                        response, cancel_event
+                    ):
+                        buffer += raw_chunk
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+
+                            if not line:
+                                continue
+                            if line == "data: [DONE]":
+                                if in_thinking:
+                                    if has_content_tokens:
+                                        cumulative += "</think>"
+                                        yield {
+                                            "type": "content",
+                                            "text": _strip_tool_markup(
+                                                cumulative, final = True
+                                            ),
+                                        }
+                                    else:
+                                        cumulative = reasoning_text
+                                        yield {"type": "content", "text": cumulative}
+                                _stream_done = True
+                                break  # exit inner while
+                            if not line.startswith("data: "):
+                                continue
+
+                            try:
+                                chunk_data = json.loads(line[6:])
+                                # Capture server timings/usage from final chunks
+                                _chunk_timings = chunk_data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = chunk_data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
+                                choices = chunk_data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+
+                                    reasoning = delta.get("reasoning_content", "")
+                                    if reasoning:
+                                        reasoning_text += reasoning
+                                        if not in_thinking:
+                                            cumulative += "<think>"
+                                            in_thinking = True
+                                        cumulative += reasoning
+                                        yield {"type": "content", "text": cumulative}
+
+                                    token = delta.get("content", "")
+                                    if token:
+                                        has_content_tokens = True
+                                        if in_thinking:
+                                            cumulative += "</think>"
+                                            in_thinking = False
+                                        cumulative += token
+                                        cleaned = _strip_tool_markup(cumulative)
+                                        # Only emit when cleaned text grows (monotonic).
+                                        if len(cleaned) > len(_last_emitted):
+                                            _last_emitted = cleaned
+                                            yield {"type": "content", "text": cleaned}
+                            except json.JSONDecodeError:
+                                logger.debug(
+                                    f"Skipping malformed SSE line: {line[:100]}"
+                                )
+                        if _stream_done:
+                            break  # exit outer for
+                    _final_usage = _metadata_usage or {}
+                    _final_completion = _final_usage.get("completion_tokens", 0)
+                    _final_prompt = _final_usage.get("prompt_tokens", 0)
+                    _total_completion = (
+                        _final_completion + _accumulated_completion_tokens
+                    )
+                    if _metadata_usage or _metadata_timings:
+                        _merged_timings = (
+                            dict(_metadata_timings) if _metadata_timings else {}
+                        )
+                        if _accumulated_predicted_ms or _accumulated_predicted_n:
+                            _merged_timings["predicted_ms"] = (
+                                _merged_timings.get("predicted_ms", 0)
+                                + _accumulated_predicted_ms
+                            )
+                            _total_predicted_n = (
+                                _merged_timings.get("predicted_n", 0)
+                                + _accumulated_predicted_n
+                            )
+                            _merged_timings["predicted_n"] = _total_predicted_n
+                            _total_predicted_ms = _merged_timings["predicted_ms"]
+                            if _total_predicted_ms > 0:
+                                _merged_timings["predicted_per_second"] = (
+                                    _total_predicted_n / (_total_predicted_ms / 1000.0)
+                                )
+                        yield {
+                            "type": "metadata",
+                            "usage": {
+                                "prompt_tokens": _final_prompt,
+                                "completion_tokens": _total_completion,
+                                "total_tokens": _final_prompt + _total_completion,
+                            },
+                            "timings": _merged_timings,
+                        }
+
+        except httpx.ConnectError:
+            raise RuntimeError("Lost connection to llama-server")
+        except Exception as e:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            raise
+
+    # ── TTS support ────────────────────────────────────────────
+
+    def detect_audio_type(self) -> Optional[str]:
+        """Detect audio/TTS codec by probing the loaded model's vocabulary."""
+        if not self.is_loaded:
+            return None
+        try:
+            with httpx.Client(timeout = 10) as client:
+
+                def _detok(tid: int) -> str:
+                    r = client.post(
+                        f"{self.base_url}/detokenize", json = {"tokens": [tid]}
+                    )
+                    return r.json().get("content", "") if r.status_code == 200 else ""
+
+                def _tok(text: str) -> list[int]:
+                    r = client.post(
+                        f"{self.base_url}/tokenize",
+                        json = {"content": text, "add_special": False},
+                    )
+                    return r.json().get("tokens", []) if r.status_code == 200 else []
+
+                # Check codec-specific tokens (not generic ones that may exist in non-audio models)
+                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
+                    128259
+                ):
+                    return "snac"
+                if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
+                    return "csm"
+                if len(_tok("<|startoftranscript|>")) == 1:
+                    return "whisper"
+                if (
+                    len(_tok("<|bicodec_semantic_0|>")) == 1
+                    and len(_tok("<|bicodec_global_0|>")) == 1
+                ):
+                    return "bicodec"
+                if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
+                    return "dac"
+        except Exception as e:
+            logger.debug(f"Audio type detection failed: {e}")
+        return None
+
+    # Prompt format per codec: (template, stop_tokens, needs_token_ids)
+    # Matches prompts in InferenceBackend._generate_snac/bicodec/dac
+    _TTS_PROMPTS = {
+        "snac": (
+            "<custom_token_3>{text}<|eot_id|><custom_token_4>",
+            ["<custom_token_2>"],
+            True,
+        ),
+        "bicodec": (
+            "<|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>",
+            ["<|im_end|>", "</s>"],
+            False,
+        ),
+        "dac": (
+            "<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|><|global_features_start|>\n",
+            ["<|im_end|>", "<|audio_end|>"],
+            False,
+        ),
+    }
+
+    _codec_mgr = None  # Shared AudioCodecManager instance
+
+    def init_audio_codec(self, audio_type: str) -> None:
+        """Load the audio codec at model load time (mirrors non-GGUF path)."""
+        import torch
+        from core.inference.audio_codecs import AudioCodecManager
+
+        if LlamaCppBackend._codec_mgr is None:
+            LlamaCppBackend._codec_mgr = AudioCodecManager()
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_repo_path = None
+
+        # BiCodec needs a repo with BiCodec/ weights — download canonical SparkTTS
+        if audio_type == "bicodec":
+            from huggingface_hub import snapshot_download
+            import os
+
+            repo_path = snapshot_download(
+                "unsloth/Spark-TTS-0.5B", local_dir = "Spark-TTS-0.5B"
+            )
+            model_repo_path = os.path.abspath(repo_path)
+
+        LlamaCppBackend._codec_mgr.load_codec(
+            audio_type, device, model_repo_path = model_repo_path
+        )
+        logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
+
+    def generate_audio_response(
+        self,
+        text: str,
+        audio_type: str,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.1,
+    ) -> tuple:
+        """
+        Generate TTS audio via llama-server /completion + codec decoding.
+        Returns (wav_bytes, sample_rate).
+        """
+        if audio_type not in self._TTS_PROMPTS:
+            raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
+
+        tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
+
+        payload: dict = {
+            "prompt": tpl.format(text = text),
+            "stream": False,
+            "n_predict": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
+            "repeat_penalty": repetition_penalty,
+        }
+        if stop:
+            payload["stop"] = stop
+        if need_ids:
+            payload["n_probs"] = 1
+
+        with httpx.Client(timeout = httpx.Timeout(300, connect = 10)) as client:
+            resp = client.post(f"{self.base_url}/completion", json = payload)
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"llama-server returned {resp.status_code}: {resp.text}"
+                )
+
+        data = resp.json()
+        token_ids = (
+            [p["id"] for p in data.get("completion_probabilities", []) if "id" in p]
+            if need_ids
+            else None
+        )
+
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        return LlamaCppBackend._codec_mgr.decode(
+            audio_type, device, token_ids = token_ids, text = data.get("content", "")
+        )

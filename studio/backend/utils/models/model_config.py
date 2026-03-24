@@ -473,10 +473,10 @@ try:
 
     model_type = getattr(config, "model_type", "unknown")
     archs = getattr(config, "architectures", [])
-    logger.info(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
 except Exception as exc:
-    logger.info(json.dumps({"error": str(exc)}))
+    print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
 
@@ -630,7 +630,10 @@ _AUDIO_TOKEN_PATTERNS = {
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: "<|audio_start|>" in tokens and "<|audio_end|>" in tokens,
+    "dac": lambda tokens: "<|audio_start|>" in tokens
+    and "<|audio_end|>" in tokens
+    and "<|text_start|>" in tokens
+    and "<|text_end|>" in tokens,
     "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_"))
     > 10000,
 }

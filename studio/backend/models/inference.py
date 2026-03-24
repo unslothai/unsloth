@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Annotated, Literal, Optional, List, Union
+from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag
 
@@ -32,6 +32,14 @@ class LoadRequest(BaseModel):
     trust_remote_code: bool = Field(
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
+    )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Custom Jinja2 chat template to use instead of the model's default",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
 
 
@@ -81,18 +89,17 @@ class GenerateRequest(BaseModel):
     """Request for text generation (legacy /generate/stream endpoint)"""
 
     messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
-    system_prompt: str = Field(
-        "You are a helpful AI assistant.", description = "System prompt"
-    )
-    temperature: float = Field(0.7, ge = 0.0, le = 2.0, description = "Sampling temperature")
-    top_p: float = Field(0.9, ge = 0.0, le = 1.0, description = "Top-p sampling")
-    top_k: int = Field(40, ge = -1, le = 100, description = "Top-k sampling")
+    system_prompt: str = Field("", description = "System prompt")
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
+    top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
     max_new_tokens: int = Field(
         2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
     )
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"
     )
@@ -118,6 +125,25 @@ class LoadResponse(BaseModel):
     )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Model's native context length (from GGUF metadata)"
+    )
+    supports_reasoning: bool = Field(
+        False,
+        description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+    )
+    supports_tools: bool = Field(
+        False,
+        description = "Whether model supports tool calling (web search, etc.)",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
     )
 
 
@@ -157,6 +183,18 @@ class InferenceStatusResponse(BaseModel):
     )
     loaded: List[str] = Field(
         default_factory = list, description = "Models currently loaded"
+    )
+    inference: Optional[Dict[str, Any]] = Field(
+        None, description = "Recommended inference parameters for the active model"
+    )
+    supports_reasoning: bool = Field(
+        False, description = "Whether the active model supports reasoning/thinking mode"
+    )
+    supports_tools: bool = Field(
+        False, description = "Whether the active model supports tool calling"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Context length of the active model"
     )
 
 
@@ -237,16 +275,17 @@ class ChatCompletionRequest(BaseModel):
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
     stream: bool = Field(True, description = "Whether to stream the response via SSE")
-    temperature: float = Field(0.7, ge = 0.0, le = 2.0)
-    top_p: float = Field(0.9, ge = 0.0, le = 1.0)
+    temperature: float = Field(0.6, ge = 0.0, le = 2.0)
+    top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
+    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
-    top_k: int = Field(40, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
+    top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
     min_p: float = Field(
-        0.0, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
         1.1, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
@@ -266,6 +305,36 @@ class ChatCompletionRequest(BaseModel):
             "true = enable the current adapter, "
             "string = enable a specific adapter by name."
         ),
+    )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+    )
+    enable_tools: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        True,
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    max_tool_calls_per_message: Optional[int] = Field(
+        10,
+        ge = 0,
+        description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
+    )
+    tool_call_timeout: Optional[int] = Field(
+        300,
+        ge = 1,
+        description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
 
 
@@ -295,6 +364,8 @@ class ChatCompletionChunk(BaseModel):
     created: int = Field(default_factory = lambda: int(time.time()))
     model: str = "default"
     choices: list[ChunkChoice]
+    usage: Optional[CompletionUsage] = None
+    timings: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────

@@ -1119,14 +1119,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "dataset_num_proc" in call_args:
         num_proc_check = (
             "import multiprocessing as _mp\n"
-            "if _mp.get_start_method() != 'fork':\n"
-            "    dataset_num_proc = None\n"
-            "elif dataset_num_proc is None:\n"
-            "    import psutil\n"
-            "    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
-            "    memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "    if memory_gb_left <= 2: dataset_num_proc = 1\n"
-            "    else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
+            "if dataset_num_proc is None:\n"
+            "    if _mp.get_start_method() != 'fork':\n"
+            "        dataset_num_proc = None\n"
+            "    else:\n"
+            "        import psutil\n"
+            "        dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
+            "        memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
+            "        if memory_gb_left <= 2: dataset_num_proc = 1\n"
+            "        else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
         )
         extra_args += num_proc_check
 
@@ -1232,7 +1233,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Unsloth gradient checkpointing requires use_reentrant=True, so we remove
     # the setting after super().__init__() when it gets auto-applied.
     RLConfig_post = ""
-    if trl_version >= Version("0.27.0") and RLConfig_name == "GRPOConfig":
+    if trl_version >= Version("0.27.0"):
         RLConfig_post = (
             "        # Unsloth: Remove use_reentrant=False forced by TRL 0.27.0+\n"
             "        if getattr(self, 'gradient_checkpointing_kwargs', None) is not None:\n"

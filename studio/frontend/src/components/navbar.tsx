@@ -66,7 +66,7 @@ export function Navbar() {
     <header className="relative top-0 z-40 h-16 w-full">
       <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 sm:px-6">
         {/* Left: logo */}
-        <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center justify-self-start select-none">
+        <Link to={chatOnly ? "/chat" : "/studio"} className="flex items-center gap-1.5 justify-self-start select-none">
           <img
             src="/blacklogo.png"
             alt="Unsloth"
@@ -77,7 +77,7 @@ export function Navbar() {
             alt="Unsloth"
             className="hidden h-9 w-auto dark:block"
           />
-          <span className="text-[10px] font-extrabold tracking-[0.12em] text-primary">
+          <span className="relative -top-[1px] inline-flex items-center text-[10px] font-extrabold leading-none tracking-[0.12em] text-primary">
             BETA
           </span>
         </Link>
@@ -93,7 +93,7 @@ export function Navbar() {
             const disabledByTraining =
               isTrainingRunning && item.href !== "/studio";
             const disabledByDevice =
-              chatOnly && item.href !== "/chat";
+              chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
             if (!item.enabled || disabledByTraining || disabledByDevice) {
               return (
                 <span
@@ -209,7 +209,7 @@ export function Navbar() {
         </div>
 
         {/* Right: mobile */}
-        <div className="flex items-center gap-2 md:hidden">
+        <div className="col-start-3 flex items-center gap-2 justify-self-end md:hidden">
           {tourId ? (
             <button
               type="button"
@@ -240,13 +240,14 @@ export function Navbar() {
                   const disabledByTraining =
                     isTrainingRunning && item.href !== "/studio";
                   const disabledByDevice =
-                    chatOnly && item.href !== "/chat";
+                    chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
                   if (disabledByTraining || disabledByDevice) {
                     return (
                       <span
                         key={item.href}
-                        className="rounded-md border border-border px-3 py-2 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
+                        className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
                       >
+                        <HugeiconsIcon icon={item.icon} className="size-4" />
                         {item.label}
                       </span>
                     );
@@ -257,12 +258,13 @@ export function Navbar() {
                       to={item.href}
                       onClick={() => setMobileOpen(false)}
                       className={cn(
-                        "rounded-md border px-3 py-2 text-sm font-medium",
+                        "flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium",
                         active
                           ? "border-foreground bg-foreground text-background"
                           : "border-border text-foreground hover:bg-accent",
                       )}
                     >
+                      <HugeiconsIcon icon={item.icon} className="size-4" />
                       {item.label}
                     </Link>
                   );
@@ -271,23 +273,33 @@ export function Navbar() {
                   href="https://unsloth.ai/docs"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="mt-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                  className="mt-2 flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                   onClick={() => setMobileOpen(false)}
                 >
+                  <HugeiconsIcon icon={Book03Icon} className="size-4" />
                   Learn more (Docs)
                 </a>
                 {tourId ? (
                   <button
                     type="button"
-                    className="rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
+                    className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
                     onClick={() => {
                       openTour();
                       setMobileOpen(false);
                     }}
                   >
+                    <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
                     Start tour
                   </button>
                 ) : null}
+                <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
+                  <span className="text-sm font-medium text-foreground">Theme</span>
+                  <AnimatedThemeToggler
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
+                    title="Toggle theme"
+                    aria-label="Toggle theme"
+                  />
+                </div>
               </div>
             </SheetContent>
           </Sheet>

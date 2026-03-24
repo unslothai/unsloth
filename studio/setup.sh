@@ -8,20 +8,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Helper: run command quietly, show output only on failure ──
-run_quiet() {
-    local label="$1"
-    shift
+_run_quiet() {
+    local on_fail=$1
+    local label=$2
+    shift 2
+
     local tmplog
-    tmplog=$(mktemp)
-    if "$@" > "$tmplog" 2>&1; then
+    tmplog=$(mktemp) || {
+        printf '%s\n' "Failed to create temporary file" >&2
+        [ "$on_fail" = "exit" ] && exit 1 || return 1
+    }
+
+    if "$@" >"$tmplog" 2>&1; then
         rm -f "$tmplog"
+        return 0
     else
         local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
-        cat "$tmplog"
+        printf 'Failed: %s (exit code %s):\n' "$label" "$exit_code" >&2
+        cat "$tmplog" >&2
         rm -f "$tmplog"
-        exit $exit_code
+
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
     fi
+}
+
+run_quiet() {
+    _run_quiet exit "$@"
+}
+
+run_quiet_no_exit() {
+    _run_quiet return "$@"
 }
 
 echo "╔══════════════════════════════════════╗"
@@ -41,13 +61,26 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Only skip when BOTH conditions are true:
-#   1. We're inside site-packages (PyPI / pip install, not editable)
-#   2. dist/ already exists (pre-built in the wheel)
-# Otherwise always (re)build — handles upgrades, editable installs, and
-# pip-from-source where dist/ was never built.
-if [[ "$SCRIPT_DIR" == */site-packages/* ]] && [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-    echo "✅ Frontend pre-built (PyPI) — skipping Node/npm check."
+# Skip if dist/ exists AND no tracked input is newer than dist/.
+# Checks top-level config/entry files and src/, public/ recursively.
+# This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
+# and upgrades/pulls (source newer than dist/ triggers rebuild).
+_NEED_FRONTEND_BUILD=true
+if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
+    # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
+    _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
+        -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+    # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
+    if [ -z "$_changed" ]; then
+        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
+            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null) || true
+    fi
+    if [ -z "$_changed" ]; then
+        _NEED_FRONTEND_BUILD=false
+    fi
+fi
+if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
@@ -118,36 +151,88 @@ fi
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
 # ── 5. Build frontend ──
-echo ""
-echo "Building frontend..."
 cd "$SCRIPT_DIR/frontend"
+
+# Tailwind v4's oxide scanner respects .gitignore in parent directories.
+# Python venvs create a .gitignore with "*" (ignore everything), which
+# prevents Tailwind from scanning .tsx source files for class names.
+# Temporarily hide any such .gitignore during the build, then restore it.
+_HIDDEN_GITIGNORES=()
+_dir="$(pwd)"
+while [ "$_dir" != "/" ]; do
+    _dir="$(dirname "$_dir")"
+    if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+        mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+        _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+    fi
+done
+
+_restore_gitignores() {
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+    done
+}
+trap _restore_gitignores EXIT
+
 run_quiet "npm install" npm install
 run_quiet "npm run build" npm run build
-cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-run_quiet "npm install (oxc validator runtime)" npm install
+
+_restore_gitignores
+trap - EXIT
+
+# Validate CSS output -- catch truncated Tailwind builds
+_MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+if [ -z "$_MAX_CSS" ]; then
+    echo "⚠️  WARNING: No CSS files were emitted. The frontend build may have failed."
+elif [ "$_MAX_CSS" -lt 100000 ]; then
+    echo "⚠️  WARNING: Largest CSS file is only $((_MAX_CSS / 1024))KB (expected >100KB)."
+    echo "   Tailwind may not have scanned all source files. Check for .gitignore interference."
+fi
+
 cd "$SCRIPT_DIR"
 echo "✅ Frontend built to frontend/dist"
 
-fi  # end frontend dist check
+fi  # end frontend build check
+
+# ── oxc-validator runtime (needs npm -- skip if not available) ──
+if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
+    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+    run_quiet "npm install (oxc validator runtime)" npm install
+    cd "$SCRIPT_DIR"
+fi
 
 # ── 6. Python venv + deps ──
-echo ""
-echo "Setting up Python environment..."
 
 # ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
 MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
-BEST_MAJOR=0
 BEST_MINOR=0
 
+# If the caller (e.g. install.sh) already chose a Python, use it directly.
+if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
+    _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
+    _req_major=$(echo "$_req_ver" | cut -d. -f1)
+    _req_minor=$(echo "$_req_ver" | cut -d. -f2)
+    if [ "$_req_major" -eq 3 ] 2>/dev/null && \
+       [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
+       [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
+        BEST_PY="$REQUESTED_PYTHON_VERSION"
+        echo "Using requested Python version: $BEST_PY"
+    else
+        echo "Ignoring requested Python $REQUESTED_PYTHON_VERSION ($_req_ver) -- outside supported range"
+    fi
+fi
+
+if [ -z "$BEST_PY" ]; then
 # Collect candidate python3 binaries (python3, python3.9, python3.10, …)
 for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
     if ! command -v "$candidate" &>/dev/null; then
         continue
     fi
     # Get version string, e.g. "Python 3.12.5"
-    ver_str=$("$candidate" --version 2>&1 | awk '{print $2}')
+    ver_str=$("$candidate" --version 2>&1) || continue
+    ver_str=$(echo "$ver_str" | awk '{print $2}')
     py_major=$(echo "$ver_str" | cut -d. -f1)
     py_minor=$(echo "$ver_str" | cut -d. -f2)
 
@@ -156,7 +241,7 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
         continue
     fi
 
-    # Skip versions below 3.12 (require > 3.11)
+    # Skip versions below 3.11
     if [ "$py_minor" -lt "$MIN_PY_MINOR" ] 2>/dev/null; then
         continue
     fi
@@ -169,10 +254,10 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     # Keep the highest qualifying version
     if [ "$py_minor" -gt "$BEST_MINOR" ]; then
         BEST_PY="$candidate"
-        BEST_MAJOR="$py_major"
         BEST_MINOR="$py_minor"
     fi
 done
+fi
 
 if [ -z "$BEST_PY" ]; then
     echo "❌ ERROR: No Python version between 3.${MIN_PY_MINOR} and 3.${MAX_PY_MINOR} found on this system."
@@ -201,49 +286,124 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
-if [ "$IS_COLAB" = true ]; then
-    # Colab: install packages directly without venv
-    install_python_stack
-else
-    # Local: create venv under ~/.unsloth/studio/ (shared location, not in repo)
-    STUDIO_HOME="$HOME/.unsloth/studio"
-    VENV_DIR="$STUDIO_HOME/.venv"
-    VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
-    mkdir -p "$STUDIO_HOME"
+# Create venv under ~/.unsloth/studio/ (shared location, not in repo).
+# All platforms (including Colab) use the same isolated venv so that
+# studio dependencies are never installed into the system Python.
+STUDIO_HOME="$HOME/.unsloth/studio"
+VENV_DIR="$STUDIO_HOME/.venv"
+VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
+mkdir -p "$STUDIO_HOME"
 
-    # Clean up legacy in-repo venvs if they exist
-    [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
-    [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
-    [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+# Clean up legacy in-repo venvs if they exist
+[ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
+[ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
+[ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
 
-    rm -rf "$VENV_DIR"
-    rm -rf "$VENV_T5_DIR"
-    "$BEST_PY" -m venv "$VENV_DIR"
+rm -rf "$VENV_DIR"
+rm -rf "$VENV_T5_DIR"
+# Try creating venv with pip; fall back to --without-pip + bootstrap
+# (some environments like Colab have broken ensurepip)
+if ! "$BEST_PY" -m venv "$VENV_DIR" 2>/dev/null; then
+    "$BEST_PY" -m venv --without-pip "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
-    cd "$SCRIPT_DIR"
-    install_python_stack
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python > /dev/null
+else
+    source "$VENV_DIR/bin/activate"
+fi
 
-    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
-    # Models like GLM-4.7-Flash need transformers>=5.2.0. Instead of pip-installing
-    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
-    # The training subprocess just prepends .venv_t5/ to sys.path — instant switch.
+# ── Ensure uv is available (much faster than pip) ──
+USE_UV=false
+if command -v uv &>/dev/null; then
+    USE_UV=true
+elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
+    export PATH="$HOME/.local/bin:$PATH"
+    command -v uv &>/dev/null && USE_UV=true
+fi
+
+# Helper: install a package, preferring uv with pip fallback
+fast_install() {
+    if [ "$USE_UV" = true ]; then
+        uv pip install --python "$(command -v python)" "$@" && return 0
+    fi
+    python -m pip install "$@"
+}
+
+cd "$SCRIPT_DIR"
+install_python_stack
+
+# ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
+# Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
+# at runtime (slow, ~10-15s), we pre-install into a separate directory.
+# The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
+echo ""
+echo "   Pre-installing transformers 5.x for newer model support..."
+mkdir -p "$VENV_T5_DIR"
+run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
+run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
+run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
+# tiktoken is needed by Qwen-family tokenizers. Install with deps since
+# regex/requests may be missing on Windows.
+run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
+echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+
+# ── 7. WSL: pre-install GGUF build dependencies ──
+# On WSL, sudo requires a password and can't be entered during GGUF export
+# (runs in a non-interactive subprocess). Install build deps here instead.
+if grep -qi microsoft /proc/version 2>/dev/null; then
     echo ""
-    echo "   Pre-installing transformers 5.x for newer model support..."
-    mkdir -p "$VENV_T5_DIR"
-    run_quiet "pip install transformers 5.x" pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.2.0"
-    run_quiet "pip install huggingface_hub for t5" pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.3.0"
-    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+    echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
+    _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
 
-    # ── 7. WSL: pre-install GGUF build dependencies ──
-    # On WSL, sudo requires a password and can't be entered during GGUF export
-    # (runs in a non-interactive subprocess). Install build deps here instead.
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo ""
-        echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
-        echo "   You may be prompted for your password."
-        sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
+    # Try without sudo first (works when already root)
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y $_GGUF_DEPS >/dev/null 2>&1 || true
+
+    # Check which packages are still missing
+    _STILL_MISSING=""
+    for _pkg in $_GGUF_DEPS; do
+        case "$_pkg" in
+            build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+        esac
+    done
+    _STILL_MISSING=$(echo "$_STILL_MISSING" | sed 's/^ *//')
+
+    if [ -z "$_STILL_MISSING" ]; then
         echo "✅ GGUF build dependencies installed"
+    elif command -v sudo >/dev/null 2>&1; then
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   WARNING: We require sudo elevated permissions to install:"
+        echo "   $_STILL_MISSING"
+        echo "   If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+        printf "   Accept? [Y/n] "
+        if [ -r /dev/tty ]; then
+            read -r REPLY </dev/tty || REPLY="y"
+        else
+            REPLY="y"
+        fi
+        case "$REPLY" in
+            [nN]*)
+                echo ""
+                echo "   Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "   sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                _SKIP_GGUF_BUILD=true
+                ;;
+            *)
+                sudo apt-get update -y
+                sudo apt-get install -y $_STILL_MISSING
+                echo "✅ GGUF build dependencies installed"
+                ;;
+        esac
+    else
+        echo "   sudo is not available on this system."
+        echo "   Please install as root, then re-run setup:"
+        echo "   apt-get install -y $_STILL_MISSING"
+        _SKIP_GGUF_BUILD=true
     fi
 fi
 
@@ -257,6 +417,11 @@ UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
+    echo ""
+    echo "Skipping llama-server build (missing dependencies)"
+    echo "   Install the missing packages and re-run setup to enable GGUF inference."
+else
 rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
@@ -272,10 +437,18 @@ rm -rf "$LLAMA_CPP_DIR"
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
-            CMAKE_ARGS=""
+            # Skip tests/examples we don't need (faster build)
+            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+
+            # Use ccache if available (dramatically faster rebuilds)
+            if command -v ccache &>/dev/null; then
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
+                echo "   Using ccache for faster compilation"
+            fi
+
             # Detect CUDA: check nvcc on PATH, then common install locations
             NVCC_PATH=""
             if command -v nvcc &>/dev/null; then
@@ -291,7 +464,7 @@ rm -rf "$LLAMA_CPP_DIR"
 
             if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
-                CMAKE_ARGS="-DGGML_CUDA=ON"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                 # Detect GPU compute capability and limit CUDA architectures
                 # Without this, cmake builds for ALL default archs (very slow)
@@ -336,16 +509,16 @@ rm -rf "$LLAMA_CPP_DIR"
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
+            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            run_quiet_no_exit "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
         # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            run_quiet_no_exit "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
             # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
@@ -367,14 +540,18 @@ rm -rf "$LLAMA_CPP_DIR"
         fi
     fi
 }
+fi  # end _SKIP_GGUF_BUILD check
 
 echo ""
 if [ "$IS_COLAB" = true ]; then
     echo "╔══════════════════════════════════════╗"
     echo "║           Setup Complete!            ║"
     echo "╠══════════════════════════════════════╣"
-    echo "║ Unsloth Studio is ready to start    ║"
+    echo "║ Unsloth Studio is ready to start     ║"
     echo "║ in your Colab notebook!              ║"
+    echo "║                                      ║"
+    echo "║ from colab import start              ║"
+    echo "║ start()                              ║"
     echo "╚══════════════════════════════════════╝"
 else
     echo "╔══════════════════════════════════════╗"
@@ -382,6 +559,6 @@ else
     echo "╠══════════════════════════════════════╣"
     echo "║ Launch with:                         ║"
     echo "║                                      ║"
-    echo "║ unsloth studio -H 0.0.0.0 -p 8000   ║"
+    echo "║ unsloth studio -H 0.0.0.0 -p 8888    ║"
     echo "╚══════════════════════════════════════╝"
 fi

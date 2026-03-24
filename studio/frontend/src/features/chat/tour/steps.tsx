@@ -71,8 +71,8 @@ export function buildChatTourSteps({
         title: "Compare mode",
         body: (
           <>
-            When a LoRA is selected, compare base vs fine-tuned side-by-side.
-            This is the fastest way to sanity-check your training.
+            Compare any two models side-by-side.
+            Pick a different model for each side and see how they respond to the same prompt.
           </>
         ),
         onEnter: openSidebar,

@@ -13,7 +13,7 @@
     "biome:fix": "biome check . --write"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.12.17",
+    "@assistant-ui/react": "^0.12.19",
     "@assistant-ui/react-markdown": "^0.12.3",
     "@assistant-ui/react-streamdown": "^0.1.2",
     "@base-ui/react": "^1.2.0",
@@ -51,7 +51,7 @@
     "framer-motion": "^11.18.2",
     "js-yaml": "^4.1.1",
     "katex": "^0.16.28",
-    "lucide-react": "^0.575.0",
+    "lucide-react": "^0.577.0",
     "mammoth": "^1.11.0",
     "motion": "^12.34.0",
     "next": "^16.1.6",

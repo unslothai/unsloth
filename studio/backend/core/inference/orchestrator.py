@@ -78,7 +78,8 @@ class InferenceOrchestrator:
 
         self._static_models = get_default_models()
         self._top_gguf_cache: Optional[list[str]] = None
-        self._top_gguf_fetched = False
+        self._top_hub_cache: Optional[list[str]] = None
+        self._top_models_ready = threading.Event()
 
         # Version tracking for subprocess reuse
         self._current_transformers_major: Optional[str] = None  # "4" or "5"
@@ -86,9 +87,9 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        # Kick off background fetch of top GGUF models
+        # Kick off background fetch of top models from HF
         threading.Thread(
-            target = self._fetch_top_gguf, daemon = True, name = "top-gguf"
+            target = self._fetch_top_models, daemon = True, name = "top-models"
         ).start()
 
     # ------------------------------------------------------------------
@@ -97,12 +98,23 @@ class InferenceOrchestrator:
 
     @property
     def default_models(self) -> list[str]:
-        top = self._top_gguf_cache or []
-        seen = set(top)
-        return top + [m for m in self._static_models if m not in seen]
+        # Wait up to 5s for background HF fetch to finish
+        self._top_models_ready.wait(timeout = 5)
+        top_gguf = self._top_gguf_cache or []
+        top_hub = self._top_hub_cache or []
+        # GGUFs first, then hub models, then static fallbacks.
+        # Send extras so the frontend still has 4 per category
+        # after removing already-downloaded models.
+        result: list[str] = []
+        seen: set[str] = set()
+        for m in top_gguf + top_hub + self._static_models:
+            if m not in seen:
+                result.append(m)
+                seen.add(m)
+        return result
 
-    def _fetch_top_gguf(self) -> None:
-        """Fetch top 4 GGUF repos from unsloth by downloads (background)."""
+    def _fetch_top_models(self) -> None:
+        """Fetch top GGUF and non-GGUF repos from unsloth by downloads."""
         try:
             import httpx
 
@@ -112,22 +124,33 @@ class InferenceOrchestrator:
                     "author": "unsloth",
                     "sort": "downloads",
                     "direction": "-1",
-                    "limit": "40",
+                    "limit": "80",
                 },
                 timeout = 15,
             )
             if resp.status_code == 200:
                 models = resp.json()
+                # Top 40 GGUFs - frontend pages through them on-demand via
+                # infinite scroll, so we send a deep pool.
                 gguf_ids = [
                     m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
-                ][:4]
+                ][:40]
+                # Top 40 non-GGUF hub models
+                hub_ids = [
+                    m["id"]
+                    for m in models
+                    if not m.get("id", "").upper().endswith("-GGUF")
+                ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
                     logger.info("Top GGUF models: %s", gguf_ids)
+                if hub_ids:
+                    self._top_hub_cache = hub_ids
+                    logger.info("Top hub models: %s", hub_ids)
         except Exception as e:
-            logger.warning("Failed to fetch top GGUF models: %s", e)
+            logger.warning("Failed to fetch top models: %s", e)
         finally:
-            self._top_gguf_fetched = True
+            self._top_models_ready.set()
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
@@ -395,7 +418,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
@@ -666,7 +689,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess."""
@@ -712,7 +735,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
@@ -763,7 +786,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
@@ -862,7 +885,7 @@ class InferenceOrchestrator:
         top_k: int = 50,
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
@@ -949,7 +972,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 512,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
@@ -978,7 +1001,7 @@ class InferenceOrchestrator:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 512,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""

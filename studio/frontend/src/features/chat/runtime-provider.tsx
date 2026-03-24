@@ -11,7 +11,6 @@ import {
   type PendingAttachment,
   RuntimeAdapterProvider,
   Suggestions,
-  SimpleTextAttachmentAdapter,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -32,10 +31,26 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
 
 const DEFAULT_SUGGESTIONS = [
-  "Draw an ASCII art of a cute sloth",
-  "Solve the integral of x²·sin(x) step by step",
-  "Write a Python function that finds the longest palindrome in a string",
-  "Format a comparison of 3 databases as a markdown table with pros and cons",
+  {
+    title: "How do you fine-tune an audio model with Unsloth?",
+    label: "Audio fine-tuning",
+    prompt: "How do you fine-tune an audio model with Unsloth?",
+  },
+  {
+    title: "Create a live weather dashboard in HTML using no API key. Show me the code",
+    label: "Weather dashboard",
+    prompt: "Create a live weather dashboard in HTML using no API key. Show me the code",
+  },
+  {
+    title: "Solve the integral of x·sin(x), and verify it",
+    label: "Integral",
+    prompt: "Solve the integral of x·sin(x), and verify it step by step",
+  },
+  {
+    title: "Draw an SVG of a cute sloth",
+    label: "SVG sloth",
+    prompt: "Draw an SVG of a cute sloth",
+  },
 ];
 
 type TitleResponse = {
@@ -119,6 +134,77 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
       name: attachment.name,
       contentType: attachment.contentType,
       content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class TextAttachmentAdapter implements AttachmentAdapter {
+  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const text = await attachment.file.text();
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `<attachment name=${attachment.name}>\n${text}\n</attachment>` },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class HtmlAttachmentAdapter implements AttachmentAdapter {
+  accept = "text/html";
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    return {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const html = await attachment.file.text();
+    // Strip HTML tags to extract readable text
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    // Remove script and style elements
+    for (const el of doc.querySelectorAll("script, style")) el.remove();
+    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `[HTML: ${attachment.name}]\n${text}` },
+      ],
       status: { type: "complete" },
     };
   }
@@ -214,8 +300,8 @@ async function generateTitleWithModel(payload: {
       temperature: 0.2,
       top_p: 0.9,
       max_tokens: 24,
-      top_k: 40,
-      repetition_penalty: 1.05,
+      top_k: 20,
+      repetition_penalty: 1.0,
       messages: [
         {
           role: "system",
@@ -275,6 +361,8 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       metadata: { custom: {} },
     };
   }
+  const custom = (m.metadata as Record<string, unknown>) ?? {};
+  const savedTiming = custom.timing as import("@assistant-ui/react").MessageTiming | undefined;
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -282,7 +370,8 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
-      custom: (m.metadata as Record<string, unknown>) ?? {},
+      custom,
+      ...(savedTiming ? { timing: savedTiming } : {}),
       steps: [],
       unstable_annotations: [],
       unstable_data: [],
@@ -465,6 +554,21 @@ function ThreadHistoryProvider({
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
 
+        // Restore context usage from last assistant message if model matches
+        const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
+        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)?.contextUsage as
+          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number; modelId?: string }
+          | undefined;
+        const store = useChatRuntimeStore.getState();
+        if (
+          savedUsage &&
+          store.ggufContextLength &&
+          savedUsage.totalTokens <= store.ggufContextLength &&
+          (!savedUsage.modelId || savedUsage.modelId === store.params.checkpoint)
+        ) {
+          store.setContextUsage(savedUsage);
+        }
+
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
 
@@ -504,7 +608,8 @@ function ThreadHistoryProvider({
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
-        new SimpleTextAttachmentAdapter(),
+        new TextAttachmentAdapter(),
+        new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
       ]),
@@ -559,6 +664,22 @@ function ThreadNewChatSwitch({
   return null;
 }
 
+function ActiveThreadSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const setActiveThreadId = useChatRuntimeStore((state) => state.setActiveThreadId);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveThreadId(mainThreadId ?? null);
+  }, [enabled, mainThreadId, setActiveThreadId]);
+
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -586,6 +707,7 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
+      <ActiveThreadSync enabled={modelType === "base" && !pairId} />
       {initialThreadId && <ThreadAutoSwitch threadId={initialThreadId} />}
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />

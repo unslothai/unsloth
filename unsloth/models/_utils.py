@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.3.4"
+__version__ = "2026.3.11"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -242,8 +242,12 @@ def prefer_flex_attn_if_supported(model_class, config):
         # decode q_len=1, causing ValueError. Needs transformers update.
         # Gemma3N: timm vision wrappers (eg Gemma3nVisionConfig) do not
         # support flex_attention.
+        # NemotronH: hybrid Mamba-2 + Transformer model that does not
+        # support flex_attention (raises NotImplementedError from transformers).
         model_type = getattr(config, "model_type", "") if config else ""
-        if model_type in ("gpt_oss", "mllama") or str(model_type).startswith("gemma3n"):
+        if model_type in ("gpt_oss", "mllama", "nemotron_h") or str(
+            model_type
+        ).startswith("gemma3n"):
             return None
         if config is not None:
             setattr(config, "_attn_implementation", "flex_attention")
@@ -973,20 +977,25 @@ except:
 try:
     from xformers import __version__ as xformers_version
 
-    # [TODO] Xformers does NOT work on RTX 50x (12), B200 (10), Jetson (11)
+    # Xformers <= 0.0.32.post2 has a broken FA3 dispatch on Blackwell/RTX 50x GPUs.
+    # The FA3 check used `capability >= (9, 0)` which matches SM 10.0/11.0/12.0,
+    # causing sm_90a kernels to be attempted on non-Hopper GPUs (CUDA error in
+    # flash_fwd_launch_template.h:188). Fixed in 0.0.33 with `<= (9, 0)`.
     # See https://github.com/facebookresearch/xformers/issues/1329
-    # CUDA error (/workspace/xfrm2/third_party/flash-attention/hopper/flash_fwd_launch_template.h:188)
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
-        Version(xformers_version) in (Version("0.0.32.post2"),)
-    ):
-        raise NotImplementedError(
-            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"
-            "```\n"
-            "pip install ninja\n"
-            "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
-            "```\n"
-        )
+    if DEVICE_TYPE == "cuda":
+        major_version, minor_version = torch.cuda.get_device_capability()
+        if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
+            Version(xformers_version) <= Version("0.0.32.post2")
+        ):
+            raise NotImplementedError(
+                f"Unsloth: Xformers {xformers_version} has a broken FA3 dispatch on "
+                f"SM {major_version}.{minor_version} GPUs. Please upgrade to >= 0.0.33 or build from source via\n"
+                "```\n"
+                "pip install ninja\n"
+                "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
+                "```\n"
+            )
+
     # Temporarily disable 0.0.27 and higher - inference issues
     if False:  # Version(xformers_version) >= Version("0.0.27"):
         raise ImportError(
