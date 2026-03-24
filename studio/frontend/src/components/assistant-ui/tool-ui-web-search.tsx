@@ -87,9 +87,9 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
           </div>
         ) : sources.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
-            {sources.map((source) => (
+            {sources.map((source, i) => (
               <Source
-                key={source.url}
+                key={`${source.url}-${i}`}
                 href={source.url}
                 variant="outline"
                 size="sm"
