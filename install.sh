@@ -248,11 +248,25 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# ── Create venv (always start fresh) ──
+# ── Create venv (migrate old layout if possible, otherwise fresh) ──
 mkdir -p "$STUDIO_HOME"
-[ -e "$VENV_DIR" ] && rm -rf "$VENV_DIR"
-echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
-uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+
+if [ -x "$VENV_DIR/bin/python" ]; then
+    # New layout already exists — nuke for fresh install
+    rm -rf "$VENV_DIR"
+elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
+    # Old layout exists — migrate by renaming (saves full reinstall)
+    echo "==> Migrating legacy Studio environment..."
+    mv "$STUDIO_HOME/.venv" "$VENV_DIR"
+    echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
+fi
+
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
+    uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+else
+    echo "==> Using migrated environment at ${VENV_DIR}"
+fi
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"

@@ -219,8 +219,7 @@ VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
-# Clean up old .venv path (replaced by unsloth_studio)
-[ -d "$STUDIO_HOME/.venv" ] && rm -rf "$STUDIO_HOME/.venv"
+# Note: do NOT delete $STUDIO_HOME/.venv here — install.sh handles migration
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
