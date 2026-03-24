@@ -38,6 +38,7 @@ import {
 import { toast } from "sonner";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
@@ -423,6 +424,8 @@ export function ChatPage(): ReactElement {
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore((state) => state.activeGgufVariant);
+  const ggufContextLength = useChatRuntimeStore((state) => state.ggufContextLength);
+  const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
@@ -503,7 +506,10 @@ export function ChatPage(): ReactElement {
     [],
   );
   const handleNewCompare = useCallback(
-    () => setView({ mode: "compare", pairId: crypto.randomUUID() }),
+    () => {
+      setView({ mode: "compare", pairId: crypto.randomUUID() });
+      useChatRuntimeStore.getState().setContextUsage(null);
+    },
     [],
   );
 
@@ -531,12 +537,28 @@ export function ChatPage(): ReactElement {
   const enterCompare = useCallback(() => {
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    useChatRuntimeStore.getState().setContextUsage(null);
   }, [view]);
 
   const exitCompare = useCallback(() => {
     if (!viewBeforeCompare) return;
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
+    // Restore context usage from the active thread's last assistant message
+    const store = useChatRuntimeStore.getState();
+    const threadId = store.activeThreadId;
+    if (threadId) {
+      void db.messages
+        .where("threadId")
+        .equals(threadId)
+        .reverse()
+        .first()
+        .then((msg) => {
+          const saved = msg?.metadata as Record<string, unknown> | undefined;
+          const usage = saved?.contextUsage as typeof store.contextUsage | undefined;
+          if (usage) store.setContextUsage(usage);
+        });
+    }
   }, [viewBeforeCompare]);
 
   const handleThreadSelect = useCallback(
@@ -599,6 +621,7 @@ export function ChatPage(): ReactElement {
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
           setView({ mode: "compare", pairId: crypto.randomUUID() });
+          useChatRuntimeStore.getState().setContextUsage(null);
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
           return;
@@ -744,6 +767,15 @@ export function ChatPage(): ReactElement {
               </div>
             )}
             <div className="flex-1" />
+            {view.mode === "single" && ggufContextLength && contextUsage ? (
+              <ContextUsageBar
+                used={contextUsage.totalTokens}
+                total={ggufContextLength}
+                cached={contextUsage.cachedTokens}
+                promptTokens={contextUsage.promptTokens}
+                completionTokens={contextUsage.completionTokens}
+              />
+            ) : null}
             <button
               type="button"
               onClick={() => setSettingsOpen((o) => !o)}

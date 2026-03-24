@@ -28,23 +28,45 @@ fi
 step()    { printf "  ${C_DIM}%-15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
 
-run_quiet() {
-    local label="$1"; shift
-    local tmplog; tmplog=$(mktemp)
-    if "$@" > "$tmplog" 2>&1; then
+# ── Helper: run command quietly, show output only on failure ──
+_run_quiet() {
+    local on_fail=$1
+    local label=$2
+    shift 2
+
+    local tmplog
+    tmplog=$(mktemp) || {
+        step "error" "Failed to create temporary file" "$C_ERR"
+        [ "$on_fail" = "exit" ] && exit 1 || return 1
+    }
+
+    if "$@" >"$tmplog" 2>&1; then
         rm -f "$tmplog"
+        return 0
     else
         local exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR"
-        cat "$tmplog"
+        cat "$tmplog" >&2
         rm -f "$tmplog"
-        exit $exit_code
+
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
     fi
 }
 
-# Like run_quiet but returns the exit code instead of dying.
-# With UNSLOTH_VERBOSE=1 (e.g. unsloth studio setup --verbose), print captured
-# output on failure so optional-step errors (llama.cpp cmake, etc.) are visible.
+run_quiet() {
+    _run_quiet exit "$@"
+}
+
+run_quiet_no_exit() {
+    _run_quiet return "$@"
+}
+
+# Like run_quiet_no_exit but only prints output on failure when UNSLOTH_VERBOSE=1.
+# Used for truly optional steps (e.g. llama-quantize) where failure is expected.
 try_quiet() {
     local label="$1"; shift
     local tmplog; tmplog=$(mktemp)
@@ -199,9 +221,24 @@ fi
 MIN_PY_MINOR=11
 MAX_PY_MINOR=13
 BEST_PY=""
-BEST_MAJOR=0
 BEST_MINOR=0
 
+# If the caller (e.g. install.sh) already chose a Python, use it directly.
+if [ -n "${REQUESTED_PYTHON_VERSION:-}" ] && [ -x "$REQUESTED_PYTHON_VERSION" ]; then
+    _req_ver=$("$REQUESTED_PYTHON_VERSION" --version 2>&1 | awk '{print $2}')
+    _req_major=$(echo "$_req_ver" | cut -d. -f1)
+    _req_minor=$(echo "$_req_ver" | cut -d. -f2)
+    if [ "$_req_major" -eq 3 ] 2>/dev/null && \
+       [ "$_req_minor" -ge "$MIN_PY_MINOR" ] 2>/dev/null && \
+       [ "$_req_minor" -le "$MAX_PY_MINOR" ] 2>/dev/null; then
+        BEST_PY="$REQUESTED_PYTHON_VERSION"
+        substep "using requested Python: $BEST_PY"
+    else
+        substep "ignoring requested Python $REQUESTED_PYTHON_VERSION ($_req_ver) -- outside range"
+    fi
+fi
+
+if [ -z "$BEST_PY" ]; then
 for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?$' | sort -u); do
     if ! command -v "$candidate" &>/dev/null; then continue; fi
     ver_str=$("$candidate" --version 2>&1) || continue
@@ -213,10 +250,10 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
     [ "$py_minor" -gt "$MAX_PY_MINOR" ] 2>/dev/null && continue
     if [ "$py_minor" -gt "$BEST_MINOR" ]; then
         BEST_PY="$candidate"
-        BEST_MAJOR="$py_major"
         BEST_MINOR="$py_minor"
     fi
 done
+fi
 
 if [ -z "$BEST_PY" ]; then
     step "python" "no compatible version found (need 3.${MIN_PY_MINOR}–3.${MAX_PY_MINOR})" "$C_ERR"
@@ -350,7 +387,7 @@ rm -rf "$LLAMA_CPP_DIR"
         step "llama.cpp" "skipped (git not found)" "$C_WARN"
     else
         BUILD_OK=true
-        run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR"
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
@@ -409,15 +446,16 @@ rm -rf "$LLAMA_CPP_DIR"
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS
+            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU"
+            run_quiet_no_exit "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            try_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            run_quiet_no_exit "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
