@@ -47,7 +47,12 @@ function Install-UnslothStudio {
         # This prevents runtime variable expansion for paths containing '$'.
         $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
 
-        $appDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $localAppDataDir = $env:LOCALAPPDATA
+        if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
+            Write-Host "[WARN] LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
+            return
+        }
+        $appDir = Join-Path $localAppDataDir "Unsloth Studio"
         $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
         $launcherVbs = Join-Path $appDir "launch-studio.vbs"
         $desktopDir = [Environment]::GetFolderPath("Desktop")
