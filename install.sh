@@ -251,14 +251,31 @@ fi
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 mkdir -p "$STUDIO_HOME"
 
+_MIGRATED=false
+
 if [ -x "$VENV_DIR/bin/python" ]; then
     # New layout already exists — nuke for fresh install
     rm -rf "$VENV_DIR"
 elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
-    # Old layout exists — migrate by renaming (saves full reinstall)
-    echo "==> Migrating legacy Studio environment..."
-    mv "$STUDIO_HOME/.venv" "$VENV_DIR"
-    echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
+    # Old layout exists — validate before migrating
+    echo "==> Found legacy Studio environment, validating..."
+    if "$STUDIO_HOME/.venv/bin/python" -c "
+import torch
+A = torch.ones((10, 10), device='cuda')
+B = torch.ones((10, 10), device='cuda')
+C = torch.ones((10, 10), device='cuda')
+D = A + B
+E = D @ C
+torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
+" >/dev/null 2>&1; then
+        echo "✅ Legacy environment is healthy — migrating..."
+        mv "$STUDIO_HOME/.venv" "$VENV_DIR"
+        echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
+        _MIGRATED=true
+    else
+        echo "⚠️  Legacy environment failed validation — creating fresh environment"
+        rm -rf "$STUDIO_HOME/.venv"
+    fi
 fi
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
@@ -366,7 +383,19 @@ echo ""
 if [ -t 1 ]; then
     echo "==> Launching Unsloth Studio..."
     echo ""
-    exec "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
+    "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
+    _LAUNCH_EXIT=$?
+    if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
+        echo ""
+        echo "⚠️  Unsloth Studio failed to start after migration."
+        echo "   Your migrated environment may be incompatible."
+        echo "   To fix, remove the environment and reinstall:"
+        echo ""
+        echo "   rm -rf $VENV_DIR"
+        echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
+        echo ""
+    fi
+    exit "$_LAUNCH_EXIT"
 else
     echo "  To launch, run:"
     echo ""
