@@ -462,12 +462,14 @@ class TrainingBackend:
                 try:
                     _safe_loss = float(_raw_loss) if _raw_loss is not None else None
                 except (TypeError, ValueError):
+                    logger.debug("Could not convert loss to float: %s", _raw_loss)
                     _safe_loss = None
                 if _safe_loss is not None and not math.isfinite(_safe_loss):
                     _safe_loss = None
                 try:
                     _safe_lr = float(_raw_lr) if _raw_lr is not None else None
                 except (TypeError, ValueError):
+                    logger.debug("Could not convert learning_rate to float: %s", _raw_lr)
                     _safe_lr = None
                 if _safe_lr is not None and not math.isfinite(_safe_lr):
                     _safe_lr = None
@@ -504,7 +506,7 @@ class TrainingBackend:
                         gn = float(grad_norm)
                     except (TypeError, ValueError):
                         gn = None
-                    if gn is not None and math.isfinite(gn):
+                    if step > 0 and gn is not None and math.isfinite(gn):
                         self.grad_norm_history.append(gn)
                         self.grad_norm_step_history.append(step)
                     else:
@@ -515,8 +517,9 @@ class TrainingBackend:
                     try:
                         eval_loss = float(eval_loss)
                     except (TypeError, ValueError):
+                        logger.debug("Could not convert eval_loss to float: %s", eval_loss)
                         eval_loss = None
-                    if eval_loss is not None and math.isfinite(eval_loss):
+                    if step > 0 and eval_loss is not None and math.isfinite(eval_loss):
                         self.eval_loss_history.append(eval_loss)
                         self.eval_step_history.append(step)
                         self.eval_enabled = True
@@ -544,7 +547,7 @@ class TrainingBackend:
                         "job_id": self.current_job_id,
                         "model_name": self._db_config["model_name"],
                         "dataset_name": self._db_config.get("hf_dataset")
-                        or (self._db_config.get("local_datasets") or ["unknown"])[0],
+                        or next(iter(self._db_config.get("local_datasets") or []), "unknown"),
                         "config_json": _json.dumps(self._db_config),
                         "started_at": self._db_started_at
                         or datetime.now(timezone.utc).isoformat(),
@@ -646,7 +649,7 @@ class TrainingBackend:
 
             dataset_name = (
                 self._db_config.get("hf_dataset")
-                or (self._db_config.get("local_datasets") or ["unknown"])[0]
+                or next(iter(self._db_config.get("local_datasets") or []), "unknown")
             )
             create_run(
                 id = self.current_job_id,

@@ -11,8 +11,11 @@ raw sqlite3, per-function connections. Enhancements over auth:
 """
 
 import json
+import logging
 import sqlite3
 import threading
+
+logger = logging.getLogger(__name__)
 from typing import Optional
 
 from utils.paths import studio_db_path, ensure_dir
@@ -236,6 +239,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
                 try:
                     run["loss_sparkline"] = json.loads(sparkline)
                 except (json.JSONDecodeError, TypeError):
+                    logger.debug("Failed to parse loss_sparkline for run %s", run.get("id"))
                     run["loss_sparkline"] = None
             runs.append(run)
         return {"runs": runs, "total": total}
@@ -255,6 +259,7 @@ def get_run(id: str) -> Optional[dict]:
             try:
                 run["loss_sparkline"] = json.loads(sparkline)
             except (json.JSONDecodeError, TypeError):
+                logger.debug("Failed to parse loss_sparkline for run %s", id)
                 run["loss_sparkline"] = None
         return run
     finally:
@@ -297,10 +302,10 @@ def get_run_metrics(id: str) -> dict:
             if step > 0 and row["learning_rate"] is not None:
                 lr_history.append(row["learning_rate"])
                 lr_step_history.append(step)
-            if row["grad_norm"] is not None:
+            if step > 0 and row["grad_norm"] is not None:
                 grad_norm_history.append(row["grad_norm"])
                 grad_norm_step_history.append(step)
-            if row["eval_loss"] is not None:
+            if step > 0 and row["eval_loss"] is not None:
                 eval_loss_history.append(row["eval_loss"])
                 eval_step_history.append(step)
             if row["epoch"] is not None:

@@ -226,7 +226,7 @@ export function ProgressSection({
               {phaseLabel[data.phase]}
             </span>
             <span className="text-[10px] tabular-nums text-muted-foreground">
-              Epoch {data.currentEpoch.toFixed(2)}
+              Epoch {formatNumber(data.currentEpoch, 2)}
             </span>
             <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
               {pct}% complete
@@ -593,7 +593,7 @@ function lastValue(points: { value: number }[]): number | null {
 
 function getDisplayMetric(
   isTrainingRunning: boolean,
-  currentValue: number,
+  currentValue: number | null,
   history: { value: number }[],
 ): number | null {
   if (isTrainingRunning) {

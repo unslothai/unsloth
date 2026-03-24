@@ -124,10 +124,10 @@ export interface TrainingViewData {
   phase: TrainingPhase;
   currentStep: number;
   totalSteps: number;
-  currentLoss: number;
-  currentLearningRate: number;
+  currentLoss: number | null;
+  currentLearningRate: number | null;
   currentGradNorm: number | null;
-  currentEpoch: number;
+  currentEpoch: number | null;
   currentNumTokens: number | null;
   progressPercent: number;
   elapsedSeconds: number | null;

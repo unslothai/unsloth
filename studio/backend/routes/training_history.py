@@ -52,6 +52,7 @@ async def get_training_run_detail(
     try:
         config = json.loads(run.get("config_json", "{}"))
     except (json.JSONDecodeError, TypeError):
+        logger.debug("Failed to parse config_json for run %s", run_id)
         config = {}
 
     metrics_data = get_run_metrics(run_id)

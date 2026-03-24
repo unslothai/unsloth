@@ -683,7 +683,9 @@ async def stream_training_progress(
                     )
                 else:
                     yield format_sse(
-                        build_progress(-1, None, None, 0, progress = tp).model_dump_json(),
+                        build_progress(
+                            -1, None, None, 0, progress = tp
+                        ).model_dump_json(),
                         event = "complete",
                         event_id = 0,
                     )

@@ -24,25 +24,21 @@ function normalizeTrainingMethod(config: Record<string, unknown>): string {
 function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
   const { run, metrics } = detail;
 
-  const lossHistory = metrics.loss_step_history.map((step, i) => ({
-    step,
-    value: metrics.loss_history[i] ?? 0,
-  }));
+  const lossHistory = metrics.loss_step_history
+    .map((step, i) => ({ step, value: metrics.loss_history[i] }))
+    .filter((p): p is { step: number; value: number } => p.value != null);
 
-  const lrHistory = metrics.lr_step_history.map((step, i) => ({
-    step,
-    value: metrics.lr_history[i] ?? 0,
-  }));
+  const lrHistory = metrics.lr_step_history
+    .map((step, i) => ({ step, value: metrics.lr_history[i] }))
+    .filter((p): p is { step: number; value: number } => p.value != null);
 
-  const gradNormHistory = metrics.grad_norm_step_history.map((step, i) => ({
-    step,
-    value: metrics.grad_norm_history[i] ?? 0,
-  }));
+  const gradNormHistory = metrics.grad_norm_step_history
+    .map((step, i) => ({ step, value: metrics.grad_norm_history[i] }))
+    .filter((p): p is { step: number; value: number } => p.value != null);
 
-  const evalLossHistory = metrics.eval_step_history.map((step, i) => ({
-    step,
-    value: metrics.eval_loss_history[i] ?? 0,
-  }));
+  const evalLossHistory = metrics.eval_step_history
+    .map((step, i) => ({ step, value: metrics.eval_loss_history[i] }))
+    .filter((p): p is { step: number; value: number } => p.value != null);
 
   const phase =
     run.status === "completed"
@@ -59,10 +55,10 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     phase,
     currentStep: run.final_step ?? 0,
     totalSteps: run.total_steps ?? 0,
-    currentLoss: run.final_loss ?? 0,
-    currentLearningRate: metrics.lr_history.at(-1) ?? 0,
+    currentLoss: run.final_loss,
+    currentLearningRate: metrics.lr_history.at(-1) ?? null,
     currentGradNorm: metrics.grad_norm_history.at(-1) ?? null,
-    currentEpoch: metrics.final_epoch ?? 0,
+    currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
     progressPercent:
       run.total_steps && run.final_step
