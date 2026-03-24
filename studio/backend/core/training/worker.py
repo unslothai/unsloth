@@ -82,13 +82,18 @@ def _probe_causal_conv1d_env() -> dict[str, str] | None:
         text = True,
     )
     if probe.returncode != 0:
-        logger.warning("Failed to probe torch environment for causal-conv1d wheel:\n%s", probe.stdout)
+        logger.warning(
+            "Failed to probe torch environment for causal-conv1d wheel:\n%s",
+            probe.stdout,
+        )
         return None
 
     try:
         return json.loads(probe.stdout.strip())
     except json.JSONDecodeError:
-        logger.warning("Failed to parse torch environment probe output: %s", probe.stdout)
+        logger.warning(
+            "Failed to parse torch environment probe output: %s", probe.stdout
+        )
         return None
 
 
@@ -177,7 +182,9 @@ def _install_package_wheel_first(
                 text = True,
             )
             if result.returncode != 0:
-                logger.warning("uv failed to install %s wheel:\n%s", display_name, result.stdout)
+                logger.warning(
+                    "uv failed to install %s wheel:\n%s", display_name, result.stdout
+                )
                 pip_cmd = [
                     sys.executable,
                     "-m",
@@ -195,7 +202,9 @@ def _install_package_wheel_first(
                 if result.returncode == 0:
                     logger.info("Installed prebuilt %s wheel", display_name)
                     return
-                logger.warning("pip failed to install %s wheel:\n%s", display_name, result.stdout)
+                logger.warning(
+                    "pip failed to install %s wheel:\n%s", display_name, result.stdout
+                )
             else:
                 logger.info("Installed prebuilt %s wheel", display_name)
                 return
