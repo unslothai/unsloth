@@ -167,6 +167,48 @@ def test_probe_p1_fix():
         return None
 
 
+def test_probe_string_corrupt():
+    """Verify all-corrupt probe path also handles non-list values like strings
+    (previously has_list_values guard would skip those columns)."""
+    section("P1 Fix Verification — all-corrupt probe with non-list string values")
+
+    string_rows = [{"messages": "this is a string, not a list"}] * 5
+    mock_ds = _MockDataset(string_rows, ["messages"])
+
+    print(f"  Rows under test: {len(string_rows)} rows all with messages='string'")
+    try:
+        stats = scan_dataset(mock_ds, fmt="auto")
+        print_report(stats, stats.get("format", "?"))
+        bad = len(stats.get("bad_row_indices", []))
+        status = "PASS" if bad == len(string_rows) else "FAIL"
+        print(f"  [{status}] String-corrupt probe fix: {bad}/{len(string_rows)} rows caught via auto-detect")
+        return stats
+    except ValueError as exc:
+        print(f"  [FAIL] scan_dataset raised ValueError (string-corrupt probe NOT fixed): {exc}")
+        return None
+
+
+def test_explicit_fmt_corrupt():
+    """Verify that scan_dataset(fmt='chatml') on an all-corrupt column returns
+    findings instead of raising ValueError (explicit format + all_corrupt path)."""
+    section("P1 Fix Verification — explicit fmt='chatml' on all-corrupt column")
+
+    all_corrupt_rows = [{"messages": None}] * 4 + [{"messages": "not a list"}] * 3
+    mock_ds = _MockDataset(all_corrupt_rows, ["messages"])
+
+    print(f"  Rows under test: {len(all_corrupt_rows)} rows (4×None, 3×string)")
+    try:
+        stats = scan_dataset(mock_ds, fmt="chatml")
+        print_report(stats, stats.get("format", "?"))
+        bad = len(stats.get("bad_row_indices", []))
+        status = "PASS" if bad == len(all_corrupt_rows) else "FAIL"
+        print(f"  [{status}] Explicit-fmt P1 fix: {bad}/{len(all_corrupt_rows)} rows caught with fmt='chatml'")
+        return stats
+    except ValueError as exc:
+        print(f"  [FAIL] scan_dataset raised ValueError (explicit-fmt P1 NOT fixed): {exc}")
+        return None
+
+
 def test_synthetic():
     section("1. Synthetic Datasets (generated in-memory)")
 
@@ -269,6 +311,8 @@ def main():
 
         all_results["p1_fix"] = test_p1_fix()
         all_results["probe_p1_fix"] = test_probe_p1_fix()
+        all_results["probe_string_corrupt"] = test_probe_string_corrupt()
+        all_results["explicit_fmt_corrupt"] = test_explicit_fmt_corrupt()
         all_results["synthetic"] = test_synthetic()
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()
