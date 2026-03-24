@@ -25,7 +25,7 @@ fi
 # ── Output helpers ──
 # Consistent column layout: 2-space indent, 15-char label (fits llama-quantize), then value.
 # Usage: step <label> <message> [color]   (color defaults to C_OK)
-step()    { printf "  ${C_DIM}%-15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
+step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
 
 # ── Helper: run command quietly, show output only on failure ──
