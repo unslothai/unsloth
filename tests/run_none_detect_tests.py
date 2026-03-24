@@ -308,6 +308,37 @@ def test_p2_explicit_fmt_col_priority():
     return stats
 
 
+def test_p2_gptoss_col_priority():
+    """P2 fix: fmt='gptoss' must scan 'messages' only, not fall through to
+    a clean 'conversations' column when messages is corrupt."""
+    section("P2 Fix Verification — fmt='gptoss' scans messages only, not conversations")
+
+    # messages is all-None (corrupt); conversations is clean sharegpt.
+    rows = [
+        {
+            "messages": None,
+            "conversations": [{"from": "human", "value": "Hello"}, {"from": "gpt", "value": "Hi!"}],
+        }
+    ] * 5
+    mock_ds = _MockDataset(rows, ["messages", "conversations"])
+
+    print(f"  Rows: {len(rows)} — messages=None (corrupt), conversations=clean sharegpt")
+    try:
+        stats = scan_dataset(mock_ds, fmt="gptoss")
+        col = stats.get("column", "?")
+        bad = len(stats.get("bad_row_indices", []))
+        correct_col = col == "messages"
+        correct_bad = bad == 5
+        status = "PASS" if (correct_col and correct_bad) else "FAIL"
+        print(f"  [{status}] gptoss P2 fix: col={col!r} bad_rows={bad} "
+              f"(expected col='messages' bad=5)")
+        print_report(stats, "gptoss")
+        return stats
+    except ValueError as exc:
+        print(f"  [FAIL] scan_dataset raised ValueError: {exc}")
+        return None
+
+
 def test_synthetic():
     section("1. Synthetic Datasets (generated in-memory)")
 
@@ -416,6 +447,7 @@ def main():
             test_p2_probe_skips_corrupt_prefers_valid()
         )
         all_results["p2_explicit_col_priority"] = test_p2_explicit_fmt_col_priority()
+        all_results["p2_gptoss_col_priority"] = test_p2_gptoss_col_priority()
         all_results["synthetic"] = test_synthetic()
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()
