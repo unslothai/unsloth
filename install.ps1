@@ -40,9 +40,13 @@ function Install-UnslothStudio {
             Write-Host "[WARN] Cannot create shortcuts: unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
             return
         }
+        # Persist an absolute path in launcher scripts so shortcut working
+        # directory changes do not break process startup.
+        $UnslothExePath = (Resolve-Path $UnslothExePath).Path
 
         $appDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
         $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
+        $launcherVbs = Join-Path $appDir "launch-studio.vbs"
         $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Unsloth Studio.lnk"
         $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
         $startMenuLink = Join-Path $startMenuDir "Unsloth Studio.lnk"
@@ -59,24 +63,109 @@ function Install-UnslothStudio {
 
         $launcherContent = @"
 `$ErrorActionPreference = 'Stop'
-`$healthUrl = 'http://127.0.0.1:8888/api/health'
-`$studioUrl = 'http://localhost:8888'
+`$basePort = 8888
+`$maxPortOffset = 19
+`$timeoutSec = 60
+`$pollIntervalMs = 1000
 
-# If Studio is already healthy on 8888, just open it and exit.
-try {
-    `$resp = Invoke-RestMethod -Uri `$healthUrl -TimeoutSec 2 -Method Get
-    if (`$resp -and `$resp.status -eq 'healthy') {
-        Start-Process `$studioUrl
-        exit 0
+function Test-StudioHealth {
+    param([Parameter(Mandatory = `$true)][int]`$Port)
+    try {
+        `$url = "http://127.0.0.1:`$Port/api/health"
+        `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
+        return (`$resp -and `$resp.status -eq 'healthy')
+    } catch {
+        return `$false
     }
-} catch {
-    # Not running/healthy on 8888 -> launch a new Studio process.
 }
 
-Start-Process -FilePath `"$UnslothExePath`" -ArgumentList 'studio', '-H', '0.0.0.0', '-p', '8888'
+function Get-CandidatePorts {
+    # Fast path: only probe base port + currently listening ports in range.
+    `$ports = @(`$basePort)
+    try {
+        `$maxPort = `$basePort + `$maxPortOffset
+        `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
+            Select-Object -ExpandProperty LocalPort -Unique |
+            Sort-Object
+        foreach (`$p in `$listening) {
+            if (`$ports -notcontains `$p) { `$ports += `$p }
+        }
+    } catch {
+        # Fallback when Get-NetTCPConnection is unavailable/restricted.
+        for (`$offset = 1; `$offset -le `$maxPortOffset; `$offset++) {
+            `$ports += (`$basePort + `$offset)
+        }
+    }
+    return `$ports
+}
+
+function Find-HealthyStudioPort {
+    foreach (`$candidate in (Get-CandidatePorts)) {
+        if (Test-StudioHealth -Port `$candidate) {
+            return `$candidate
+        }
+    }
+    return `$null
+}
+
+# If Studio is already healthy on any expected port, just open it and exit.
+`$existingPort = Find-HealthyStudioPort
+if (`$existingPort) {
+    Start-Process "http://localhost:`$existingPort"
+    exit 0
+}
+
+`$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+`$studioCommand = "& `"$UnslothExePath`" studio -H 0.0.0.0 -p `$basePort"
+`$launchArgs = @(
+    '-NoExit',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    `$studioCommand
+)
+
+try {
+    `$proc = Start-Process -FilePath `$powershellExe -ArgumentList `$launchArgs -WorkingDirectory `$env:USERPROFILE -PassThru
+} catch {
+    `$msg = "Could not launch Unsloth Studio terminal.`n`nError: `$(`$_.Exception.Message)"
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+    } catch {}
+    exit 1
+}
+
+`$browserOpened = `$false
+`$deadline = (Get-Date).AddSeconds(`$timeoutSec)
+while ((Get-Date) -lt `$deadline) {
+    `$healthyPort = Find-HealthyStudioPort
+    if (`$healthyPort) {
+        Start-Process "http://localhost:`$healthyPort"
+        `$browserOpened = `$true
+        break
+    }
+    if (`$proc.HasExited) { break }
+    Start-Sleep -Milliseconds `$pollIntervalMs
+}
+if (-not `$browserOpened -and `$proc.HasExited) {
+    `$msg = "Unsloth Studio exited before becoming healthy. Check terminal output for errors."
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+    } catch {}
+}
+exit 0
 "@
 
         Set-Content -Path $launcherPs1 -Value $launcherContent -Encoding ASCII -Force
+        $vbsContent = @"
+Set shell = CreateObject("WScript.Shell")
+cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
+shell.Run cmd, 0, False
+"@
+        Set-Content -Path $launcherVbs -Value $vbsContent -Encoding ASCII -Force
 
         # Prefer bundled icon from local clone/dev installs.
         # If not available, best-effort download from raw GitHub.
@@ -111,15 +200,15 @@ Start-Process -FilePath `"$UnslothExePath`" -ArgumentList 'studio', '-H', '0.0.0
             }
         }
 
-        $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-        $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
+        $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+        $shortcutArgs = "//B //Nologo `"$launcherVbs`""
 
         $wshell = New-Object -ComObject WScript.Shell
         foreach ($linkPath in @($desktopLink, $startMenuLink)) {
             $shortcut = $wshell.CreateShortcut($linkPath)
-            $shortcut.TargetPath = $powershellExe
+            $shortcut.TargetPath = $wscriptExe
             $shortcut.Arguments = $shortcutArgs
-            $shortcut.WorkingDirectory = $env:USERPROFILE
+            $shortcut.WorkingDirectory = $appDir
             $shortcut.Description = "Launch Unsloth Studio"
             if ($hasValidIcon) {
                 $shortcut.IconLocation = "$iconPath,0"
