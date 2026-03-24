@@ -261,9 +261,10 @@ elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
     echo "==> Found legacy Studio environment, validating..."
     if "$STUDIO_HOME/.venv/bin/python" -c "
 import torch
-A = torch.ones((10, 10), device='cuda')
-B = torch.ones((10, 10), device='cuda')
-C = torch.ones((10, 10), device='cuda')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+A = torch.ones((10, 10), device=device)
+B = torch.ones((10, 10), device=device)
+C = torch.ones((10, 10), device=device)
 D = A + B
 E = D @ C
 torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
