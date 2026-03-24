@@ -241,6 +241,7 @@ class UnslothTrainer(SFTTrainer):
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
             make_q_galore_param_groups,
+            install_weight_quant_hooks,
         )
 
         lr = self.args.learning_rate
@@ -319,6 +320,10 @@ class UnslothTrainer(SFTTrainer):
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
+            # Forward pre-hooks dequantize INT8 weights to float before each
+            # forward pass, allowing the optimizer to free float weight memory
+            # between steps.
+            install_weight_quant_hooks(self.model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
         n_other = sum(len(g["params"]) for g in param_groups if "rank" not in g)

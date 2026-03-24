@@ -26,7 +26,7 @@ from .q_galore_projector import (
     _dequantize,
 )
 
-__all__ = ["QGaLoreAdamW8bit"]
+__all__ = ["QGaLoreAdamW8bit", "install_weight_quant_hooks"]
 
 try:
     import bitsandbytes.functional as bnb_F
@@ -194,16 +194,17 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 if "rank" in group:
                     # p.data now holds the weight update in low-rank space
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
-                    del p._saved_data
 
                     # Re-apply decoupled weight decay using pre-update weights
                     if "_wd_saved" in group:
                         p.data.add_(
-                            p._saved_data,
+                            p.data,
                             alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
+
+                    del p._saved_data
 
                 # --- Re-quantize weight to INT8 ---
                 if has_weight_quant:
@@ -212,12 +213,14 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     gsize = group.get("weight_group_size", 128)
                     quant_fn = _quantize_stochastic if stochastic else _quantize
                     q, scales, zeros, shape = quant_fn(float_data, q_group_size = gsize)
-                    # Keep p.data as float for the next forward/backward pass.
-                    # Store quantized representation in _q_data for compressed storage.
                     p._q_data = q.to(p.data.device)
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
+                    # Replace p.data with a scalar placeholder to free float memory.
+                    # A forward pre-hook (install_weight_quant_hooks) will
+                    # dequantize back to float before the next forward pass.
+                    p.data = torch.zeros(1, dtype=p.data.dtype, device=p.data.device)
 
                 state["step"] += 1
 
@@ -275,6 +278,33 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 p._q_shape = p.data.shape
                 p._stochastic_round = stochastic
                 p._weight_group_size = group_size
+
+
+def _weight_quant_pre_hook(module, args):
+    """Forward pre-hook: dequantize INT8 weights to float before forward."""
+    for p in module.parameters(recurse=False):
+        if hasattr(p, "_q_scales") and p._q_scales is not None:
+            float_weight = _dequantize(
+                p._q_data, p._q_scales, p._q_zeros, p._q_shape,
+            )
+            p.data = float_weight.to(p.data.device)
+
+
+def install_weight_quant_hooks(model: torch.nn.Module) -> list:
+    """Register forward pre-hooks on modules whose weights are INT8-quantized.
+
+    Returns a list of hook handles so the caller can remove them if needed.
+    """
+    handles = []
+    for module in model.modules():
+        has_quant_param = any(
+            hasattr(p, "_q_scales")
+            for p in module.parameters(recurse=False)
+        )
+        if has_quant_param:
+            h = module.register_forward_pre_hook(_weight_quant_pre_hook)
+            handles.append(h)
+    return handles
 
 
 # ======================================================================
@@ -353,7 +383,8 @@ def make_q_galore_param_groups(
         # Check if any target module name appears as a component in the param name.
         # Exclude 1-D parameters (biases, norms) because GaLoreProjector.project
         # requires 2-D gradients.
-        is_galore = param.dim() >= 2 and any(t in name for t in targets)
+        name_parts = name.split(".")
+        is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)
 
         if is_galore:
             galore_params.append(param)

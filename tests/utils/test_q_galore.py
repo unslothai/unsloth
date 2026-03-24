@@ -439,28 +439,29 @@ class TestQGaLoreIntegration:
         assert "eps" in param_names, "eps not in QGaLoreAdamW8bit.__init__ params"
 
     def test_weight_decay_uses_saved_data(self):
-        """Weight decay should apply to the pre-updated weights, not post-updated."""
+        """Weight decay should apply standard decoupled AdamW decay on current weights."""
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
 
-        # We can test this logic without bitsandbytes by mocking the optimizer step
         # Create a mock parameter and group
         p = torch.nn.Parameter(torch.ones(4, 4))
         p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights
-        p.data = torch.ones(4, 4) * 3.0  # Post-update weights (GaLore output)
+        # Simulate project-back: p.data = p._saved_data + projected update
+        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)  # p.data is now 3.0
 
         group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
 
-        # Replicate the decoupled weight decay logic
+        # Replicate the fixed decoupled weight decay logic (uses p.data, not p._saved_data)
         p.data.add_(
-            p._saved_data,
+            p.data,
             alpha = -group["lr"] * group["_wd_saved"],
         )
 
-        # If it used p.data (wrong), value would be 3.0 - (1.0 * 0.1 * 3.0) = 2.7
-        # If it used p._saved_data (correct), value is 3.0 - (1.0 * 0.1 * 2.0) = 2.8
+        del p._saved_data  # Clean up after all uses, matching fixed code
+
+        # Decoupled weight decay: 3.0 - (1.0 * 0.1 * 3.0) = 2.7
         assert torch.allclose(
-            p.data, torch.tensor(2.8)
-        ), "Weight decay didn't use _saved_data!"
+            p.data, torch.tensor(2.7)
+        ), "Weight decay didn't use p.data for decoupled decay!"
 
     def test_params_float_after_weight_quant_step(self):
         """After a step with weight_quant=True, parameters must remain floating point."""
@@ -490,3 +491,37 @@ class TestQGaLoreIntegration:
 
         assert p.data.is_floating_point(), "p.data was converted to uint8!"
         assert p._q_data.dtype == torch.uint8, "_q_data should be uint8!"
+
+    def test_weight_quant_hook_restores_float(self):
+        """Forward pre-hook should dequantize INT8 weights before forward pass."""
+        _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
+        _projector_mod_local = sys.modules["unsloth.optimizers.q_galore_projector"]
+        install_hook = _adamw_mod_local.install_weight_quant_hooks
+
+        linear = nn.Linear(16, 8, bias=False)
+        original = linear.weight.data.clone()
+
+        # Quantize the weight and replace with placeholder (simulates post-step)
+        q, scales, zeros, shape = _projector_mod_local._quantize(
+            linear.weight.data.clone(), q_group_size=16
+        )
+        linear.weight._q_data = q
+        linear.weight._q_scales = scales
+        linear.weight._q_zeros = zeros
+        linear.weight._q_shape = shape
+        linear.weight.data = torch.zeros(1, dtype=linear.weight.dtype)
+        assert linear.weight.data.numel() == 1, "placeholder should be 1 element"
+
+        # Install hook and run forward -- should restore float weights
+        handles = install_hook(linear)
+        x = torch.randn(2, 16)
+        out = linear(x)  # triggers pre-hook
+
+        assert linear.weight.data.shape == (8, 16), "weight shape not restored"
+        assert linear.weight.data.is_floating_point(), "weight not float after hook"
+        # Check values are close to original (quantization introduces small error)
+        assert torch.allclose(linear.weight.data, original, atol=0.15), \
+            "dequantized weight too far from original"
+
+        for h in handles:
+            h.remove()
