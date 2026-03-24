@@ -299,7 +299,7 @@ fi
 
 echo "==> Running unsloth setup..."
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    SKIP_STUDIO_BASE=1 \
+    # Don't skip base — editable install doesn't bring full deps (unsloth-zoo, etc.)
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
