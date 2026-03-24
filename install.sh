@@ -290,7 +290,16 @@ fi
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 
 # ── Install unsloth directly into the venv (no activation needed) ──
-if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+if [ "$_MIGRATED" = true ]; then
+    # Migrated env: upgrade unsloth + unsloth-zoo while preserving existing torch/CUDA
+    echo "==> Upgrading unsloth in migrated environment..."
+    uv pip install --python "$VENV_DIR/bin/python" unsloth-zoo unsloth --torch-backend=auto \
+        --reinstall-package unsloth --reinstall-package unsloth-zoo
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto --no-deps
+    fi
+elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     echo "==> Installing unsloth + unsloth-zoo (full deps)..."
     uv pip install --python "$VENV_DIR/bin/python" unsloth-zoo unsloth --torch-backend=auto
     echo "==> Overlaying local repo (editable)..."
