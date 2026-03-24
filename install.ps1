@@ -40,53 +40,54 @@ function Install-UnslothStudio {
             Write-Host "[WARN] Cannot create shortcuts: unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
             return
         }
-        # Persist an absolute path in launcher scripts so shortcut working
-        # directory changes do not break process startup.
-        $UnslothExePath = (Resolve-Path $UnslothExePath).Path
-        # Escape for single-quoted embedding in generated launcher script.
-        # This prevents runtime variable expansion for paths containing '$'.
-        $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
+        try {
+            # Persist an absolute path in launcher scripts so shortcut working
+            # directory changes do not break process startup.
+            $UnslothExePath = (Resolve-Path $UnslothExePath).Path
+            # Escape for single-quoted embedding in generated launcher script.
+            # This prevents runtime variable expansion for paths containing '$'.
+            $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
 
-        $localAppDataDir = $env:LOCALAPPDATA
-        if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
-            Write-Host "[WARN] LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
-            return
-        }
-        $appDir = Join-Path $localAppDataDir "Unsloth Studio"
-        $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
-        $launcherVbs = Join-Path $appDir "launch-studio.vbs"
-        $desktopDir = [Environment]::GetFolderPath("Desktop")
-        $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
-            Join-Path $desktopDir "Unsloth Studio.lnk"
-        } else {
-            $null
-        }
-        $startMenuDir = if ($env:APPDATA -and $env:APPDATA.Trim()) {
-            Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-        } else {
-            $null
-        }
-        $startMenuLink = if ($startMenuDir -and $startMenuDir.Trim()) {
-            Join-Path $startMenuDir "Unsloth Studio.lnk"
-        } else {
-            $null
-        }
-        if (-not $desktopLink) {
-            Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
-        }
-        if (-not $startMenuLink) {
-            Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
-        }
-        $iconPath = Join-Path $appDir "unsloth.ico"
-        $bundledIcon = $null
-        if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
-            $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
-        }
-        $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
+            $localAppDataDir = $env:LOCALAPPDATA
+            if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
+                Write-Host "[WARN] LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
+                return
+            }
+            $appDir = Join-Path $localAppDataDir "Unsloth Studio"
+            $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
+            $launcherVbs = Join-Path $appDir "launch-studio.vbs"
+            $desktopDir = [Environment]::GetFolderPath("Desktop")
+            $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
+                Join-Path $desktopDir "Unsloth Studio.lnk"
+            } else {
+                $null
+            }
+            $startMenuDir = if ($env:APPDATA -and $env:APPDATA.Trim()) {
+                Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+            } else {
+                $null
+            }
+            $startMenuLink = if ($startMenuDir -and $startMenuDir.Trim()) {
+                Join-Path $startMenuDir "Unsloth Studio.lnk"
+            } else {
+                $null
+            }
+            if (-not $desktopLink) {
+                Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
+            }
+            if (-not $startMenuLink) {
+                Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
+            }
+            $iconPath = Join-Path $appDir "unsloth.ico"
+            $bundledIcon = $null
+            if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
+                $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
+            }
+            $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
 
-        if (-not (Test-Path $appDir)) {
-            New-Item -ItemType Directory -Path $appDir -Force | Out-Null
-        }
+            if (-not (Test-Path $appDir)) {
+                New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+            }
 
         $launcherContent = @"
 `$ErrorActionPreference = 'Stop'
@@ -241,27 +242,36 @@ shell.Run cmd, 0, False
         $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
         $shortcutArgs = "//B //Nologo `"$launcherVbs`""
 
-        try {
-            $wshell = New-Object -ComObject WScript.Shell
-            foreach ($linkPath in @($desktopLink, $startMenuLink)) {
-                if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
-                try {
-                    $shortcut = $wshell.CreateShortcut($linkPath)
-                    $shortcut.TargetPath = $wscriptExe
-                    $shortcut.Arguments = $shortcutArgs
-                    $shortcut.WorkingDirectory = $appDir
-                    $shortcut.Description = "Launch Unsloth Studio"
-                    if ($hasValidIcon) {
-                        $shortcut.IconLocation = "$iconPath,0"
+            try {
+                $wshell = New-Object -ComObject WScript.Shell
+                $createdShortcutCount = 0
+                foreach ($linkPath in @($desktopLink, $startMenuLink)) {
+                    if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
+                    try {
+                        $shortcut = $wshell.CreateShortcut($linkPath)
+                        $shortcut.TargetPath = $wscriptExe
+                        $shortcut.Arguments = $shortcutArgs
+                        $shortcut.WorkingDirectory = $appDir
+                        $shortcut.Description = "Launch Unsloth Studio"
+                        if ($hasValidIcon) {
+                            $shortcut.IconLocation = "$iconPath,0"
+                        }
+                        $shortcut.Save()
+                        $createdShortcutCount++
+                    } catch {
+                        Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
                     }
-                    $shortcut.Save()
-                } catch {
-                    Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
                 }
+                if ($createdShortcutCount -gt 0) {
+                    Write-Host "[OK] Created Unsloth Studio shortcut(s): $createdShortcutCount" -ForegroundColor Green
+                } else {
+                    Write-Host "[WARN] No Unsloth Studio shortcuts were created" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "[WARN] Shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
             }
-            Write-Host "[OK] Created Unsloth Studio desktop and Start menu shortcuts" -ForegroundColor Green
         } catch {
-            Write-Host "[WARN] Shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "[WARN] Shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 
