@@ -542,10 +542,11 @@ const MessageError: FC = () => {
 };
 
 const GeneratingIndicator: FC = () => {
-  const isEmpty = useAuiState(
-    ({ message }) => message.content.length === 0,
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 && message.status.type === "running",
   );
-  if (!isEmpty) return null;
+  if (!show) return null;
   return (
     <AnimatedShinyText className="text-sm">Generating...</AnimatedShinyText>
   );
