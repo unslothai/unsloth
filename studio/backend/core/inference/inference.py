@@ -1020,11 +1020,11 @@ class InferenceBackend:
                 input_text = processor.apply_chat_template(
                     vision_messages, add_generation_prompt = True, tokenize = False
                 )
-            except Exception:
+            except Exception as e:
                 if system_prompt:
                     logger.warning(
-                        f"Vision processor for '{self.active_model_name}' does not support "
-                        f"system messages — dropping system prompt for this request."
+                        f"Vision processor for '{self.active_model_name}' may not support "
+                        f"system messages; retrying without. Original error: {e}"
                     )
                     vision_messages = [user_msg]
                     input_text = processor.apply_chat_template(
