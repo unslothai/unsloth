@@ -49,9 +49,9 @@ function Install-UnslothStudio {
         $iconPath = Join-Path $appDir "sloth.ico"
         $bundledIcon = $null
         if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
-            $bundledIcon = Join-Path $PSScriptRoot "images\sloth.ico"
+            $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\sloth.ico"
         }
-        $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/images/sloth.ico"
+        $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/studio/frontend/public/sloth.ico"
 
         if (-not (Test-Path $appDir)) {
             New-Item -ItemType Directory -Path $appDir -Force | Out-Null
