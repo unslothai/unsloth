@@ -19,10 +19,173 @@ import os
 import sys
 import time
 import traceback
+import json
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.request
 
 logger = get_logger(__name__)
+
+
+_CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
+_CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+
+
+def _model_wants_causal_conv1d(model_name: str) -> bool:
+    name = model_name.lower()
+    return any(
+        key in name
+        for key in (
+            "qwen3.5",
+            "qwen3_5",
+            "qwen3-next",
+            "qwen3_next",
+            "nemotron_h",
+            "nemotron-3-nano",
+            "falcon_h1",
+            "falcon-h1",
+        )
+    )
+
+
+def _causal_conv1d_platform_tag() -> str | None:
+    if sys.platform.startswith("linux"):
+        return "linux_x86_64"
+    if sys.platform == "darwin":
+        return None
+    if sys.platform == "win32":
+        return "win_amd64"
+    return None
+
+
+def _probe_causal_conv1d_env() -> dict[str, str] | None:
+    import subprocess as _sp
+
+    probe = _sp.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys, torch; "
+                "print(json.dumps({"
+                "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
+                "'torch_mm': '.'.join(torch.__version__.split('+', 1)[0].split('.')[:2]), "
+                "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
+                "}))"
+            ),
+        ],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    if probe.returncode != 0:
+        logger.warning("Failed to probe torch environment for causal-conv1d wheel:\n%s", probe.stdout)
+        return None
+
+    try:
+        return json.loads(probe.stdout.strip())
+    except Exception:
+        logger.warning("Failed to parse torch environment probe output: %s", probe.stdout)
+        return None
+
+
+def _causal_conv1d_direct_wheel_url() -> str | None:
+    env = _probe_causal_conv1d_env()
+    platform_tag = _causal_conv1d_platform_tag()
+    if env is None or platform_tag is None or not env.get("cuda_major"):
+        return None
+
+    filename = (
+        f"causal_conv1d-{_CAUSAL_CONV1D_PACKAGE_VERSION}"
+        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"cxx11abi{env['cxx11abi']}-{env['python_tag']}-{env['python_tag']}-{platform_tag}.whl"
+    )
+    return (
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download/"
+        f"{_CAUSAL_CONV1D_RELEASE_TAG}/{filename}"
+    )
+
+
+def _url_exists(url: str) -> bool:
+    try:
+        request = urllib.request.Request(url, method = "HEAD")
+        with urllib.request.urlopen(request, timeout = 10):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        logger.warning("Unexpected HTTP error while probing %s: %s", url, exc)
+        return False
+    except Exception as exc:
+        logger.warning("Failed to probe %s: %s", url, exc)
+        return False
+
+
+def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
+    if not _model_wants_causal_conv1d(model_name):
+        return
+
+    try:
+        import causal_conv1d  # noqa: F401
+
+        logger.info("causal-conv1d already installed")
+        return
+    except Exception:
+        pass
+
+    wheel_url = _causal_conv1d_direct_wheel_url()
+    if wheel_url is None:
+        logger.info("No compatible causal-conv1d wheel candidate for this environment")
+        return
+
+    if not _url_exists(wheel_url):
+        logger.info("No published causal-conv1d wheel found for this environment: %s", wheel_url)
+        return
+
+    _send_status(event_queue, "Installing prebuilt causal-conv1d wheel...")
+    logger.info("Installing causal-conv1d from direct wheel URL: %s", wheel_url)
+
+    import subprocess as _sp
+
+    uv_cmd = [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "--torch-backend=auto",
+        "--no-deps",
+        wheel_url,
+    ]
+    result = _sp.run(
+        uv_cmd,
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    if result.returncode != 0:
+        logger.warning("uv failed to install causal-conv1d wheel, falling back to pip:\n%s", result.stdout)
+        pip_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            wheel_url,
+        ]
+        result = _sp.run(
+            pip_cmd,
+            stdout = _sp.PIPE,
+            stderr = _sp.STDOUT,
+            text = True,
+        )
+        if result.returncode != 0:
+            logger.error("Failed to install causal-conv1d wheel:\n%s", result.stdout)
+            return
+
+    logger.info("Installed prebuilt causal-conv1d wheel successfully")
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -121,7 +284,10 @@ def run_training_process(
             model_name,
         )
 
-    # ── 1b. Auto-install mamba-ssm for SSM/hybrid models (NemotronH, Falcon-H1) ──
+    # ── 1b. Opportunistically install a matching prebuilt causal-conv1d wheel ──
+    _ensure_causal_conv1d_fast_path(event_queue, model_name)
+
+    # ── 1b. Do not block startup on PyPI source builds for optional SSM kernels ──
     _SSM_MODEL_SUBSTRINGS = ("nemotron_h", "nemotron-3-nano", "falcon_h1", "falcon-h1")
     if any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
         try:
@@ -130,36 +296,16 @@ def run_training_process(
             logger.info("mamba-ssm already installed")
         except ImportError:
             logger.info(
-                "SSM model detected — installing mamba-ssm and causal-conv1d (this may take several minutes)..."
+                "SSM model detected, but skipping blocking PyPI install for mamba-ssm. "
+                "causal-conv1d prebuilt wheel installation was already attempted above. "
+                "The model will rely on Transformers lazy kernel loading when available, "
+                "or fall back to the native slow path."
             )
             _send_status(
-                event_queue, "Installing mamba-ssm (first time only, ~7 min)..."
+                event_queue,
+                "Optional mamba-ssm kernels are not preinstalled; continuing without blocking install.",
             )
-            import subprocess as _sp
-
-            # --no-build-isolation: compile against current torch (no version conflicts)
-            # --no-deps: don't pull in torch/transformers/triton (already installed)
-            for _pkg in ["causal_conv1d", "mamba_ssm"]:
-                _r = _sp.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--no-build-isolation",
-                        "--no-deps",
-                        "--no-cache-dir",
-                        _pkg,
-                    ],
-                    stdout = _sp.PIPE,
-                    stderr = _sp.STDOUT,
-                    text = True,
-                )
-                if _r.returncode != 0:
-                    logger.error("Failed to install %s:\n%s", _pkg, _r.stdout)
-                else:
-                    logger.info("Installed %s successfully", _pkg)
-            logger.info("mamba-ssm installation complete")
+            logger.info("Continuing without eager mamba-ssm installation")
 
     # ── 1c. Set fork start method so dataset.map() can multiprocess ──
     # The parent launched us via spawn (clean process), but the compiled
