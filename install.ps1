@@ -55,7 +55,7 @@ function Install-UnslothStudio {
         if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
             $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
         }
-        $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/studio/frontend/public/unsloth.ico"
+        $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
 
         if (-not (Test-Path $appDir)) {
             New-Item -ItemType Directory -Path $appDir -Force | Out-Null
@@ -159,13 +159,15 @@ if (-not `$browserOpened -and `$proc.HasExited) {
 exit 0
 "@
 
-        Set-Content -Path $launcherPs1 -Value $launcherContent -Encoding ASCII -Force
+        # Use Unicode-safe encoding: launcher paths can contain non-ASCII characters.
+        Set-Content -Path $launcherPs1 -Value $launcherContent -Encoding UTF8 -Force
         $vbsContent = @"
 Set shell = CreateObject("WScript.Shell")
 cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
 shell.Run cmd, 0, False
 "@
-        Set-Content -Path $launcherVbs -Value $vbsContent -Encoding ASCII -Force
+        # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
+        Set-Content -Path $launcherVbs -Value $vbsContent -Encoding Unicode -Force
 
         # Prefer bundled icon from local clone/dev installs.
         # If not available, best-effort download from raw GitHub.
@@ -203,20 +205,28 @@ shell.Run cmd, 0, False
         $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
         $shortcutArgs = "//B //Nologo `"$launcherVbs`""
 
-        $wshell = New-Object -ComObject WScript.Shell
-        foreach ($linkPath in @($desktopLink, $startMenuLink)) {
-            $shortcut = $wshell.CreateShortcut($linkPath)
-            $shortcut.TargetPath = $wscriptExe
-            $shortcut.Arguments = $shortcutArgs
-            $shortcut.WorkingDirectory = $appDir
-            $shortcut.Description = "Launch Unsloth Studio"
-            if ($hasValidIcon) {
-                $shortcut.IconLocation = "$iconPath,0"
+        try {
+            $wshell = New-Object -ComObject WScript.Shell
+            foreach ($linkPath in @($desktopLink, $startMenuLink)) {
+                if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
+                try {
+                    $shortcut = $wshell.CreateShortcut($linkPath)
+                    $shortcut.TargetPath = $wscriptExe
+                    $shortcut.Arguments = $shortcutArgs
+                    $shortcut.WorkingDirectory = $appDir
+                    $shortcut.Description = "Launch Unsloth Studio"
+                    if ($hasValidIcon) {
+                        $shortcut.IconLocation = "$iconPath,0"
+                    }
+                    $shortcut.Save()
+                } catch {
+                    Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
             }
-            $shortcut.Save()
+            Write-Host "[OK] Created Unsloth Studio desktop and Start menu shortcuts" -ForegroundColor Green
+        } catch {
+            Write-Host "[WARN] Shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
         }
-
-        Write-Host "[OK] Created Unsloth Studio desktop and Start menu shortcuts" -ForegroundColor Green
     }
 
     # ── Check winget ──
