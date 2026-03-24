@@ -366,8 +366,10 @@ def install_python_stack() -> int:
         pip_install(
             "Updating base packages",
             "--no-cache-dir",
-            "--upgrade-package", "unsloth",
-            "--upgrade-package", "unsloth-zoo",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
 
