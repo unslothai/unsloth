@@ -95,8 +95,9 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
                     return (conn.pid, proc.name())
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     return (conn.pid, "<unknown>")
-    except (psutil.AccessDenied, OSError):
+    except (psutil.AccessDenied, OSError) as e:
         # psutil.net_connections() needs elevated privileges on some platforms
+        logger.debug("Failed to scan network connections for port %s: %s", port, e)
         pass
     return None
 
