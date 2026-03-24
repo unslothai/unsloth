@@ -111,7 +111,10 @@ def _maybe_prepare_vllm_for_resume(trainer):
     if not getattr(model_config, "enable_sleep_mode", False):
         return
 
-    llm.sleep(1)
+    try:
+        llm.sleep(1)
+    except Exception:
+        pass
 
     import gc
 
@@ -129,6 +132,8 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
 
     def _unsloth_train_with_resume_guard(self, *args, **kwargs):
         resume_from_checkpoint = kwargs.get("resume_from_checkpoint", None)
+        if resume_from_checkpoint is None:
+            resume_from_checkpoint = kwargs.get("model_path", None)
         if resume_from_checkpoint is None and len(args) != 0:
             resume_from_checkpoint = args[0]
 
