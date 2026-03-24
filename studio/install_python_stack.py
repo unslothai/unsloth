@@ -110,7 +110,8 @@ def _step(label: str, value: str, color_fn = None) -> None:
     """Print a single step line in the column format."""
     if color_fn is None:
         color_fn = _green
-    print(f"  {_dim(label)}{' ' * (_COL - len(label))}{color_fn(value)}")
+    padded = label[:_COL]
+    print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
 
 
 def _progress(label: str) -> None:

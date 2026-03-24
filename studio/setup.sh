@@ -77,7 +77,7 @@ try_quiet() {
         local exit_code=$?
         if [ "${UNSLOTH_VERBOSE:-0}" = "1" ]; then
             step "error" "$label failed (exit code $exit_code)" "$C_ERR"
-            cat "$tmplog"
+            cat "$tmplog" >&2
         fi
         rm -f "$tmplog"
         return $exit_code

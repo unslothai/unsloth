@@ -57,7 +57,10 @@ def print_studio_access_banner(
     else:
         local_url = f"http://127.0.0.1:{port}"
         alt_local = f"http://localhost:{port}"
-    external_url = f"http://{display_host}:{port}"
+    if ":" in display_host:
+        external_url = f"http://[{display_host}]:{port}"
+    else:
+        external_url = f"http://{display_host}:{port}"
     listen_all = bind_host in ("0.0.0.0", "::")
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
     api_base = local_url if listen_all or loopback_bind else external_url
