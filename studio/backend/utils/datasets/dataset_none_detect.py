@@ -79,7 +79,20 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             if first_turn is not None:
                 first = first_turn
                 break
-        if first is None:  # no usable turn found in first 100 rows
+        if first is None:
+            # P1 fix: no usable dict turn found in the first 100 rows, which
+            # means the dataset is heavily corrupted (e.g. every turn is None
+            # or every messages value is None/non-list).  Don't skip the column
+            # — accept it with empty turn_keys so find_none_chatml can report
+            # the bad rows.  We still require the column to exist and contain
+            # at least one list-typed value (or None/non-list) to avoid
+            # treating a completely unrelated column as a chat column.
+            has_list_values = any(
+                isinstance(dataset[i][col], list) or dataset[i][col] is None
+                for i in range(min(len(dataset), 100))
+            )
+            if has_list_values:
+                return {"column": col, "turn_keys": set(), "roles": set(), "all_corrupt": True}
             continue
 
         # Use the same 100-row window to gather keys/roles.
@@ -216,6 +229,24 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
     for i, row in enumerate(dataset):
         conversation = row[col]
         if not isinstance(conversation, list):
+            # P1 fix: record non-list conversation rows as bad instead of
+            # silently skipping them.  These rows are unusable for training
+            # and would produce a false-clean report if ignored.
+            vtype = "None" if conversation is None else "invalid_type"
+            stats["bad_row_indices"].append(i)
+            stats["rows_with_none_turns"] += 1
+            stats["total_none_turns"] += 1
+            stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+            stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
+            stats["findings"].append(
+                {
+                    "row_index": i,
+                    "turn_index": 0,
+                    "role": "unknown",
+                    "value_type": vtype,
+                    "raw_value": repr(conversation),
+                }
+            )
             continue
 
         row_findings = []
@@ -357,7 +388,11 @@ FORMAT_REGISTRY = [
     {
         "name": "chatml",
         "match": lambda ds, conv: (
-            conv is not None and {"role", "content"} <= conv["turn_keys"]
+            conv is not None
+            and (
+                {"role", "content"} <= conv["turn_keys"]
+                or conv.get("all_corrupt")  # P1 fix: probe found the col but all rows are corrupt
+            )
         ),
         "scan": find_none_chatml,
     },
