@@ -308,17 +308,10 @@ def install_python_stack() -> int:
     # When called from "unsloth studio update", it is NOT set so base packages
     # (unsloth + unsloth-zoo) are always reinstalled to pick up new versions.
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
-    # When --local is used, install from the local repo in editable mode
-    local_install = os.environ.get("STUDIO_LOCAL_INSTALL", "0") == "1"
     # When --package is used, install a different package name (e.g. roland-sloth for testing)
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     base_total = 10 if IS_WINDOWS else 11
-    if local_install:
-        _TOTAL = base_total + 1  # extra step for editable overlay
-    elif skip_base:
-        _TOTAL = base_total - 1
-    else:
-        _TOTAL = base_total
+    _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
     #    because uv venvs don't include pip by default)
@@ -347,21 +340,6 @@ def install_python_stack() -> int:
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
         print(_green(f"✅ {package_name} already installed — skipping base packages"))
-    elif local_install:
-        # Install base.txt first (gets unsloth-zoo), then overlay with editable unsloth
-        _progress("base packages")
-        pip_install(
-            "Installing base packages",
-            "--no-cache-dir",
-            req = REQ_ROOT / "base.txt",
-        )
-        _progress("local editable install")
-        pip_install(
-            f"Installing {package_name} from local repo (editable)",
-            "--no-cache-dir",
-            "-e",
-            os.environ.get("STUDIO_LOCAL_REPO", str(SCRIPT_DIR.parent)),  # repo root
-        )
     elif package_name != "unsloth":
         # Custom package name (e.g. roland-sloth for testing) — install directly
         _progress("base packages")

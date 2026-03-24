@@ -259,8 +259,10 @@ _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 
 # ── Install unsloth directly into the venv (no activation needed) ──
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    echo "==> Installing unsloth from local repo (editable)..."
-    uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto
+    echo "==> Installing unsloth + unsloth-zoo (full deps)..."
+    uv pip install --python "$VENV_DIR/bin/python" unsloth-zoo unsloth --torch-backend=auto
+    echo "==> Overlaying local repo (editable)..."
+    uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto --no-deps
 else
     echo "==> Installing unsloth (this may take a few minutes)..."
     uv pip install --python "$VENV_DIR/bin/python" "$PACKAGE_NAME" --torch-backend=auto
@@ -299,7 +301,7 @@ fi
 
 echo "==> Running unsloth setup..."
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    # Don't skip base — editable install doesn't bring full deps (unsloth-zoo, etc.)
+    SKIP_STUDIO_BASE=1 \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
