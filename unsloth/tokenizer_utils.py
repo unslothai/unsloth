@@ -985,7 +985,7 @@ def patch_sft_trainer_tokenizer():
             "    test_text = None\n"
             "chat_template = getattr(tokenizer, 'chat_template', None)\n"
             "chat_template = '' if chat_template is None else chat_template\n"
-            "has_bos_token_already = (test_text is not None and (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template)) "
+            "has_bos_token_already = ((test_text is not None and test_text.startswith(tokenizer.bos_token)) or tokenizer.bos_token in chat_template) "
             "if getattr(tokenizer, 'bos_token', None) is not None else False\n"
             "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"
             "    from functools import partial\n"
