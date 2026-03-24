@@ -8,7 +8,7 @@ import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
+import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -16,7 +16,26 @@ import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 
+const math = createMathPlugin({ singleDollarTextMath: true });
 const { withSmoothContextProvider } = INTERNAL;
+
+const STREAMDOWN_COMPONENTS = {
+  a: ({
+    href,
+    children,
+    ...props
+  }: React.ComponentProps<"a">) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors"
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+};
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
@@ -387,6 +406,7 @@ const MarkdownTextImpl = () => {
         mode="streaming"
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
+        components={STREAMDOWN_COMPONENTS}
         controls={{
           code: false,
           mermaid: {
