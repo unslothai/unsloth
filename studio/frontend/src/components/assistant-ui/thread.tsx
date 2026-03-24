@@ -72,7 +72,6 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
       }}
     >
       <ThreadPrimitive.Viewport
-        autoScroll={false}
         className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
       >
         {!hideWelcome && (

@@ -335,6 +335,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   const [manualOpen, setManualOpen] = useState(false);
+  const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -350,19 +351,28 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
+  // Reset dismissed flag when a new stream starts
   useEffect(() => {
     if (isReasoningStreaming) {
-      setManualOpen(true);
+      setDismissedWhileStreaming(false);
     }
   }, [isReasoningStreaming]);
 
-  const isOpen = manualOpen;
-
+  // Derived: open during streaming (unless dismissed), or if user manually opened after
+  const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
   const variant = isOpen ? "outline" : "ghost";
 
-  const handleOpenChange = useCallback((open: boolean) => {
-    setManualOpen(open);
-  }, []);
+  // Allow closing during streaming (matches ChatGPT)
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (isReasoningStreaming) {
+        setDismissedWhileStreaming(!open);
+      } else {
+        setManualOpen(open);
+      }
+    },
+    [isReasoningStreaming],
+  );
 
   return (
     <ReasoningRoot
