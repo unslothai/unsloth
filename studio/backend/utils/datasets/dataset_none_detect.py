@@ -65,6 +65,11 @@ def _probe_conversation(dataset: Dataset, candidates = None):
     if candidates is None:
         candidates = CONVERSATION_COLUMNS
     columns = set(dataset.column_names)
+    # Keep the first all-corrupt candidate as a fallback in case no healthy
+    # column is found.  This avoids returning all_corrupt prematurely and
+    # skipping a valid second candidate (e.g. messages is garbage but
+    # conversations is fine).
+    all_corrupt_fallback = None
     for col in candidates:
         if col not in columns:
             continue
@@ -80,19 +85,17 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                 first = first_turn
                 break
         if first is None:
-            # P1 fix: no usable dict turn found in the first 100 rows — the
-            # dataset is heavily corrupted (every turn is None, a non-dict
-            # scalar, or every messages value is a non-list type such as a
-            # string).  We are already iterating over known CONVERSATION_COLUMNS
-            # (messages / conversations / texts), so any column that reaches
-            # this point is a legitimate candidate; accept it with empty
-            # turn_keys so find_none_chatml can diagnose and report every row.
-            return {
-                "column": col,
-                "turn_keys": set(),
-                "roles": set(),
-                "all_corrupt": True,
-            }
+            # No usable dict turn in the first 100 rows — record as fallback
+            # and continue probing the remaining candidates.  A later column
+            # may be healthy and should take priority.
+            if all_corrupt_fallback is None:
+                all_corrupt_fallback = {
+                    "column": col,
+                    "turn_keys": set(),
+                    "roles": set(),
+                    "all_corrupt": True,
+                }
+            continue
 
         # Use the same 100-row window to gather keys/roles.
         turn_keys = set()
@@ -110,10 +113,8 @@ def _probe_conversation(dataset: Dataset, candidates = None):
         if not any(keys <= turn_keys for keys in _CHAT_KEY_SETS):
             continue
         return {"column": col, "turn_keys": turn_keys, "roles": roles}
-    return None
-
-
-# ---------------------------------------------------------------------------
+    # No healthy column found; return the all_corrupt fallback if any.
+    return all_corrupt_fallback
 # None-detection helpers
 # ---------------------------------------------------------------------------
 
@@ -235,9 +236,7 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             stats["bad_row_indices"].append(i)
             stats["rows_with_none_turns"] += 1
             stats["total_none_turns"] += 1
-            stats["none_by_role"]["unknown"] = (
-                stats["none_by_role"].get("unknown", 0) + 1
-            )
+            stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
             stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
             stats["findings"].append(
                 {
@@ -392,9 +391,7 @@ FORMAT_REGISTRY = [
             conv is not None
             and (
                 {"role", "content"} <= conv["turn_keys"]
-                or conv.get(
-                    "all_corrupt"
-                )  # P1 fix: probe found the col but all rows are corrupt
+                or conv.get("all_corrupt")  # P1 fix: probe found the col but all rows are corrupt
             )
         ),
         "scan": find_none_chatml,
@@ -446,12 +443,20 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     scanner = get_scanner(fmt)
     if scanner is None:
         raise ValueError(f"Unknown or unsupported format: '{fmt}'")
-    # Forward the already-probed column to the scanner whenever available.
-    # This matters for both auto and explicit non-alpaca formats: without it,
-    # the scanner re-probes internally and raises ValueError on fully-corrupt
-    # columns (all_corrupt=True) because it finds no usable dict turn either.
-    if conv_info is not None and fmt != "alpaca":
-        stats = scanner(dataset, col = conv_info["column"])
+    # Column forwarding rules:
+    # - auto-detect: always pass the probed column (probe already chose best)
+    # - explicit format + all_corrupt probe: pass probed column so the scanner
+    #   doesn't re-probe and raise ValueError on the corrupt column
+    # - explicit format + healthy probe: let the scanner use its own per-format
+    #   column priority (e.g. find_none_sharegpt prefers 'conversations' over
+    #   'messages' even if probe landed on 'messages')
+    use_probed_col = (
+        conv_info is not None
+        and fmt != "alpaca"
+        and (was_auto or conv_info.get("all_corrupt"))
+    )
+    if use_probed_col:
+        stats = scanner(dataset, col=conv_info["column"])
     else:
         stats = scanner(dataset)
     stats["format"] = fmt
