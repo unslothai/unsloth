@@ -47,7 +47,10 @@ function Install-UnslothStudio {
         $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
         $startMenuLink = Join-Path $startMenuDir "Unsloth Studio.lnk"
         $iconPath = Join-Path $appDir "sloth.ico"
-        $bundledIcon = Join-Path $PSScriptRoot "images\sloth.ico"
+        $bundledIcon = $null
+        if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
+            $bundledIcon = Join-Path $PSScriptRoot "images\sloth.ico"
+        }
         $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/images/sloth.ico"
 
         if (-not (Test-Path $appDir)) {
@@ -79,7 +82,7 @@ Start-Process -FilePath `"$UnslothExePath`" -ArgumentList 'studio', '-H', '0.0.0
         # If not available, best-effort download from raw GitHub.
         # We only attach the icon if the resulting file has a valid ICO header.
         $hasValidIcon = $false
-        if (Test-Path $bundledIcon) {
+        if ($bundledIcon -and (Test-Path $bundledIcon)) {
             try {
                 Copy-Item -Path $bundledIcon -Destination $iconPath -Force
             } catch { }
