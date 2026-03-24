@@ -12,6 +12,7 @@ match `triton-windows`. This script only needs torch + triton + the RMS kernel f
 Usage (NVIDIA CUDA required):
   python scripts/verify_rms_layernorm_grads_standalone.py
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -44,7 +45,7 @@ def _install_minimal_transformers_stub_for_llama_rms() -> None:
         def forward(self, hidden_states):
             input_dtype = hidden_states.dtype
             hidden_states = hidden_states.to(torch.float32)
-            variance = hidden_states.pow(2).mean(-1, keepdim=True)
+            variance = hidden_states.pow(2).mean(-1, keepdim = True)
             hidden_states = hidden_states * torch.rsqrt(
                 variance + self.variance_epsilon
             )
@@ -106,14 +107,14 @@ def _load_rms_layernorm_module():
 
     unsloth_pkg = types.ModuleType("unsloth")
     unsloth_pkg.__path__ = [str(repo / "unsloth")]
-    _us = ModuleSpec("unsloth", None, is_package=True)
+    _us = ModuleSpec("unsloth", None, is_package = True)
     _us.submodule_search_locations = [str(repo / "unsloth")]
     unsloth_pkg.__spec__ = _us
     sys.modules.setdefault("unsloth", unsloth_pkg)
 
     kernels_pkg = types.ModuleType("unsloth.kernels")
     kernels_pkg.__path__ = [str(kernels_dir)]
-    _ks = ModuleSpec("unsloth.kernels", None, is_package=True)
+    _ks = ModuleSpec("unsloth.kernels", None, is_package = True)
     _ks.submodule_search_locations = [str(kernels_dir)]
     kernels_pkg.__spec__ = _ks
     sys.modules.setdefault("unsloth.kernels", kernels_pkg)
@@ -136,19 +137,19 @@ def main() -> None:
     import torch
 
     if not torch.cuda.is_available():
-        print("CUDA required for this check.", file=sys.stderr)
+        print("CUDA required for this check.", file = sys.stderr)
         sys.exit(1)
 
     _install_minimal_transformers_stub_for_llama_rms()
     rms = _load_rms_layernorm_module()
 
     rms.test_rms_layernorm(
-        dim=128,
-        eps=1e-5,
-        dtype=torch.bfloat16,
-        bsz=2,
-        seqlen=64,
-        random_state=0,
+        dim = 128,
+        eps = 1e-5,
+        dtype = torch.bfloat16,
+        bsz = 2,
+        seqlen = 64,
+        random_state = 0,
     )
     print("verify_rms_layernorm_grads_standalone: OK")
 
