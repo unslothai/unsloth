@@ -31,6 +31,63 @@ function Install-UnslothStudio {
         $env:Path = $unique -join ";"
     }
 
+    function New-StudioShortcuts {
+        param(
+            [Parameter(Mandatory = $true)][string]$UnslothExePath
+        )
+
+        if (-not (Test-Path $UnslothExePath)) {
+            Write-Host "[WARN] Cannot create shortcuts: unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
+            return
+        }
+
+        $appDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+        $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
+        $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Unsloth Studio.lnk"
+        $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+        $startMenuLink = Join-Path $startMenuDir "Unsloth Studio.lnk"
+
+        if (-not (Test-Path $appDir)) {
+            New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+        }
+
+        $launcherContent = @"
+`$ErrorActionPreference = 'Stop'
+`$healthUrl = 'http://127.0.0.1:8888/api/health'
+`$studioUrl = 'http://localhost:8888'
+
+# If Studio is already healthy on 8888, just open it and exit.
+try {
+    `$resp = Invoke-RestMethod -Uri `$healthUrl -TimeoutSec 2 -Method Get
+    if (`$resp -and `$resp.status -eq 'healthy') {
+        Start-Process `$studioUrl
+        exit 0
+    }
+} catch {
+    # Not running/healthy on 8888 -> launch a new Studio process.
+}
+
+Start-Process -FilePath `"$UnslothExePath`" -ArgumentList 'studio', '-H', '0.0.0.0', '-p', '8888'
+"@
+
+        Set-Content -Path $launcherPs1 -Value $launcherContent -Encoding ASCII -Force
+
+        $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
+
+        $wshell = New-Object -ComObject WScript.Shell
+        foreach ($linkPath in @($desktopLink, $startMenuLink)) {
+            $shortcut = $wshell.CreateShortcut($linkPath)
+            $shortcut.TargetPath = $powershellExe
+            $shortcut.Arguments = $shortcutArgs
+            $shortcut.WorkingDirectory = $env:USERPROFILE
+            $shortcut.Description = "Launch Unsloth Studio"
+            $shortcut.Save()
+        }
+
+        Write-Host "[OK] Created Unsloth Studio desktop and Start menu shortcuts" -ForegroundColor Green
+    }
+
     # ── Check winget ──
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host "Error: winget is not available." -ForegroundColor Red
@@ -298,6 +355,8 @@ function Install-UnslothStudio {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
+
+    New-StudioShortcuts -UnslothExePath $UnslothExe
 
     Write-Host ""
     Write-Host "========================================="
