@@ -220,25 +220,35 @@ def test_explicit_fmt_corrupt():
 def test_p2_probe_skips_corrupt_prefers_valid():
     """P2 fix: probe must continue past a corrupt 'messages' column and find
     a valid 'conversations' column rather than returning all_corrupt immediately."""
-    section("P2 Fix Verification — probe continues past corrupt first column to valid second")
+    section(
+        "P2 Fix Verification — probe continues past corrupt first column to valid second"
+    )
 
     # messages column is all-None; conversations is a valid ShareGPT column.
     rows = [
         {
             "messages": None,
-            "conversations": [{"from": "human", "value": "Hello"}, {"from": "gpt", "value": "Hi!"}],
+            "conversations": [
+                {"from": "human", "value": "Hello"},
+                {"from": "gpt", "value": "Hi!"},
+            ],
         }
     ] * 5 + [
         {
             "messages": None,
-            "conversations": [{"from": "human", "value": ""}, {"from": "gpt", "value": "OK"}],
+            "conversations": [
+                {"from": "human", "value": ""},
+                {"from": "gpt", "value": "OK"},
+            ],
         }
     ] * 2
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
-    print(f"  Rows: {len(rows)} — messages=None, conversations=valid ShareGPT (2 bad value='')")
+    print(
+        f"  Rows: {len(rows)} — messages=None, conversations=valid ShareGPT (2 bad value='')"
+    )
     try:
-        stats = scan_dataset(mock_ds, fmt="auto")
+        stats = scan_dataset(mock_ds, fmt = "auto")
         fmt = stats.get("format", "?")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
@@ -247,8 +257,10 @@ def test_p2_probe_skips_corrupt_prefers_valid():
         correct_fmt = fmt == "sharegpt"
         correct_bad = bad == 2
         status = "PASS" if (correct_col and correct_fmt and correct_bad) else "FAIL"
-        print(f"  [{status}] Probe P2 fix: fmt={fmt!r} col={col!r} bad_rows={bad} "
-              f"(expected fmt='sharegpt' col='conversations' bad=2)")
+        print(
+            f"  [{status}] Probe P2 fix: fmt={fmt!r} col={col!r} bad_rows={bad} "
+            f"(expected fmt='sharegpt' col='conversations' bad=2)"
+        )
         print_report(stats, fmt)
         return stats
     except ValueError as exc:
@@ -259,27 +271,39 @@ def test_p2_probe_skips_corrupt_prefers_valid():
 def test_p2_explicit_fmt_col_priority():
     """P2 fix: explicit fmt='sharegpt' must let find_none_sharegpt choose its own
     column (conversations) rather than being forced onto the probe's column (messages)."""
-    section("P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority")
+    section(
+        "P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority"
+    )
 
     # messages has valid role/content turns (chatml-ish); conversations has bad sharegpt turns.
     rows = [
         {
-            "messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}],
-            "conversations": [{"from": "human", "value": None}, {"from": "gpt", "value": "OK"}],
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello"},
+            ],
+            "conversations": [
+                {"from": "human", "value": None},
+                {"from": "gpt", "value": "OK"},
+            ],
         }
     ] * 5
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
-    print(f"  Rows: {len(rows)} — messages=clean chatml, conversations=bad sharegpt (value=None)")
-    stats = scan_dataset(mock_ds, fmt="sharegpt")
+    print(
+        f"  Rows: {len(rows)} — messages=clean chatml, conversations=bad sharegpt (value=None)"
+    )
+    stats = scan_dataset(mock_ds, fmt = "sharegpt")
     col = stats.get("column", "?")
     bad = len(stats.get("bad_row_indices", []))
     # fmt='sharegpt' should scan 'conversations', find 5 bad rows.
     correct_col = col == "conversations"
     correct_bad = bad == 5
     status = "PASS" if (correct_col and correct_bad) else "FAIL"
-    print(f"  [{status}] Explicit-fmt P2 fix: col={col!r} bad_rows={bad} "
-          f"(expected col='conversations' bad=5)")
+    print(
+        f"  [{status}] Explicit-fmt P2 fix: col={col!r} bad_rows={bad} "
+        f"(expected col='conversations' bad=5)"
+    )
     print_report(stats, "sharegpt")
     return stats
 
@@ -388,7 +412,9 @@ def main():
         all_results["probe_p1_fix"] = test_probe_p1_fix()
         all_results["probe_string_corrupt"] = test_probe_string_corrupt()
         all_results["explicit_fmt_corrupt"] = test_explicit_fmt_corrupt()
-        all_results["p2_probe_valid_fallback"] = test_p2_probe_skips_corrupt_prefers_valid()
+        all_results["p2_probe_valid_fallback"] = (
+            test_p2_probe_skips_corrupt_prefers_valid()
+        )
         all_results["p2_explicit_col_priority"] = test_p2_explicit_fmt_col_priority()
         all_results["synthetic"] = test_synthetic()
         all_results["dataclaw"] = test_dataclaw()
