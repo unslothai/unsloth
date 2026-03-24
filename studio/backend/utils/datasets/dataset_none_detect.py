@@ -330,14 +330,14 @@ def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
         # gptoss data always lives in 'messages'; probing 'conversations' as a
         # fallback can silently scan the wrong column and return false-clean
         # results when messages is corrupt but conversations exists and is valid.
-        conv_info = _probe_conversation(dataset, candidates=("messages",))
+        conv_info = _probe_conversation(dataset, candidates = ("messages",))
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
                 "Expected a 'messages' column with 'role'/'content' turn keys."
             )
         col = conv_info["column"]
-    return find_none_chatml(dataset, col=col)
+    return find_none_chatml(dataset, col = col)
 
 
 # ---------------------------------------------------------------------------

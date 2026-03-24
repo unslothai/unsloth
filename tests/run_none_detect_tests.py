@@ -317,21 +317,28 @@ def test_p2_gptoss_col_priority():
     rows = [
         {
             "messages": None,
-            "conversations": [{"from": "human", "value": "Hello"}, {"from": "gpt", "value": "Hi!"}],
+            "conversations": [
+                {"from": "human", "value": "Hello"},
+                {"from": "gpt", "value": "Hi!"},
+            ],
         }
     ] * 5
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
-    print(f"  Rows: {len(rows)} — messages=None (corrupt), conversations=clean sharegpt")
+    print(
+        f"  Rows: {len(rows)} — messages=None (corrupt), conversations=clean sharegpt"
+    )
     try:
-        stats = scan_dataset(mock_ds, fmt="gptoss")
+        stats = scan_dataset(mock_ds, fmt = "gptoss")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
         correct_col = col == "messages"
         correct_bad = bad == 5
         status = "PASS" if (correct_col and correct_bad) else "FAIL"
-        print(f"  [{status}] gptoss P2 fix: col={col!r} bad_rows={bad} "
-              f"(expected col='messages' bad=5)")
+        print(
+            f"  [{status}] gptoss P2 fix: col={col!r} bad_rows={bad} "
+            f"(expected col='messages' bad=5)"
+        )
         print_report(stats, "gptoss")
         return stats
     except ValueError as exc:
