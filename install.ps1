@@ -147,7 +147,7 @@ if (`$existingPort) {
 
 `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 `$studioExe = '$SingleQuotedExePath'
-`$studioCommand = "& `"`$studioExe`" studio -H 0.0.0.0 -p `$basePort"
+`$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
 `$launchArgs = @(
     '-NoExit',
     '-ExecutionPolicy',
