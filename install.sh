@@ -1,7 +1,7 @@
 #!/bin/sh
 # Unsloth Studio Installer
-# Usage (curl):  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
-# Usage (wget):  wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+# Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
+# Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
 # Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 set -e
