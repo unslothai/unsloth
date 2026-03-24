@@ -92,7 +92,12 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                 for i in range(min(len(dataset), 100))
             )
             if has_list_values:
-                return {"column": col, "turn_keys": set(), "roles": set(), "all_corrupt": True}
+                return {
+                    "column": col,
+                    "turn_keys": set(),
+                    "roles": set(),
+                    "all_corrupt": True,
+                }
             continue
 
         # Use the same 100-row window to gather keys/roles.
@@ -236,7 +241,9 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             stats["bad_row_indices"].append(i)
             stats["rows_with_none_turns"] += 1
             stats["total_none_turns"] += 1
-            stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+            stats["none_by_role"]["unknown"] = (
+                stats["none_by_role"].get("unknown", 0) + 1
+            )
             stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
             stats["findings"].append(
                 {
@@ -391,7 +398,9 @@ FORMAT_REGISTRY = [
             conv is not None
             and (
                 {"role", "content"} <= conv["turn_keys"]
-                or conv.get("all_corrupt")  # P1 fix: probe found the col but all rows are corrupt
+                or conv.get(
+                    "all_corrupt"
+                )  # P1 fix: probe found the col but all rows are corrupt
             )
         ),
         "scan": find_none_chatml,

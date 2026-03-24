@@ -25,10 +25,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "studio" / "backend"))
 
-from utils.datasets.dataset_none_detect import find_none_chatml, print_report, scan_dataset
+from utils.datasets.dataset_none_detect import (
+    find_none_chatml,
+    print_report,
+    scan_dataset,
+)
 
 LOG_DIR = REPO_ROOT / "tests" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents = True, exist_ok = True)
 LOG_PATH = LOG_DIR / "none_detect_results.log"
 
 # ---------------------------------------------------------------------------
@@ -62,7 +66,7 @@ def section(title: str):
 def run_scan(dataset, label: str, fmt: str = "auto") -> dict | None:
     print(f"\n--- Scanning: {label} (fmt={fmt}) ---")
     try:
-        stats = scan_dataset(dataset, fmt=fmt)
+        stats = scan_dataset(dataset, fmt = fmt)
         print_report(stats, stats["format"])
         return stats
     except Exception as exc:
@@ -87,6 +91,7 @@ def assert_bad_rows(stats: dict, expected_min: int, label: str):
 # Minimal mock so find_none_chatml can be called with hand-crafted rows that
 # pyarrow can't represent (e.g. messages=None, messages="not a list").
 # ---------------------------------------------------------------------------
+
 
 class _MockDataset:
     """Behaves like an HF Dataset for iteration, len(), and index access."""
@@ -117,13 +122,15 @@ def test_p1_fix():
     mock_ds = _MockDataset(p1_rows, ["messages"])
 
     print(f"  Rows under test: {p1_rows}")
-    stats = find_none_chatml(mock_ds, col="messages")
+    stats = find_none_chatml(mock_ds, col = "messages")
     print_report(stats, "chatml")
 
     expected_bad = set(range(len(p1_rows)))
     actual_bad = set(stats.get("bad_row_indices", []))
     all_caught = expected_bad.issubset(actual_bad)
-    print(f"  [{'PASS' if all_caught else 'FAIL'}] P1 fix: all {len(expected_bad)} non-list rows caught")
+    print(
+        f"  [{'PASS' if all_caught else 'FAIL'}] P1 fix: all {len(expected_bad)} non-list rows caught"
+    )
 
     for row in stats.get("findings", []):
         vtype = row.get("value_type", "?")
@@ -145,14 +152,18 @@ def test_probe_p1_fix():
 
     print(f"  Rows under test: {len(all_corrupt_rows)} rows all with messages=None")
     try:
-        stats = scan_dataset(mock_ds, fmt="auto")
+        stats = scan_dataset(mock_ds, fmt = "auto")
         print_report(stats, stats.get("format", "?"))
         bad = len(stats.get("bad_row_indices", []))
         status = "PASS" if bad == len(all_corrupt_rows) else "FAIL"
-        print(f"  [{status}] Probe P1 fix: {bad}/{len(all_corrupt_rows)} all-corrupt rows caught via auto-detect")
+        print(
+            f"  [{status}] Probe P1 fix: {bad}/{len(all_corrupt_rows)} all-corrupt rows caught via auto-detect"
+        )
         return stats
     except ValueError as exc:
-        print(f"  [FAIL] scan_dataset raised ValueError (probe P1 bug NOT fixed): {exc}")
+        print(
+            f"  [FAIL] scan_dataset raised ValueError (probe P1 bug NOT fixed): {exc}"
+        )
         return None
 
 
@@ -202,8 +213,8 @@ def test_dataclaw():
         print("  Loading dataset (streaming first 500 rows for speed)...")
         ds = load_dataset(
             "peteromallet/dataclaw-peteromallet",
-            split="train",
-            streaming=False,
+            split = "train",
+            streaming = False,
         )
         print(f"  Loaded {len(ds)} rows, columns: {ds.column_names}")
         stats = run_scan(ds, "dataclaw-peteromallet")
@@ -227,7 +238,7 @@ def test_codex_data():
         print("  Loading dataset...")
         ds = load_dataset(
             "peteromallet/my-personal-codex-data",
-            split="train",
+            split = "train",
         )
         print(f"  Loaded {len(ds)} rows, columns: {ds.column_names}")
         stats = run_scan(ds, "my-personal-codex-data")
@@ -246,7 +257,7 @@ def test_codex_data():
 def main():
     started = datetime.now().isoformat()
 
-    with open(LOG_PATH, "w", encoding="utf-8") as log_file:
+    with open(LOG_PATH, "w", encoding = "utf-8") as log_file:
         sys.stdout = Tee(log_file)
 
         print(f"dataset_none_detect.py — Test Run")
@@ -308,21 +319,29 @@ def main():
                 # Flatten synthetic sub-keys
                 if key == "synthetic":
                     for subkey, subval in val.items():
-                        summary[f"synthetic_{subkey}"] = {
-                            "format": subval.get("format"),
-                            "total_rows": subval.get("total_rows"),
-                            "bad_row_count": len(subval.get("bad_row_indices", [])),
-                            "bad_turn_count": subval.get("total_none_turns", len(subval.get("findings", []))),
-                        } if subval else None
+                        summary[f"synthetic_{subkey}"] = (
+                            {
+                                "format": subval.get("format"),
+                                "total_rows": subval.get("total_rows"),
+                                "bad_row_count": len(subval.get("bad_row_indices", [])),
+                                "bad_turn_count": subval.get(
+                                    "total_none_turns", len(subval.get("findings", []))
+                                ),
+                            }
+                            if subval
+                            else None
+                        )
                 else:
                     summary[key] = {
                         "format": val.get("format"),
                         "total_rows": val.get("total_rows"),
                         "bad_row_count": len(val.get("bad_row_indices", [])),
-                        "bad_turn_count": val.get("total_none_turns", len(val.get("findings", []))),
+                        "bad_turn_count": val.get(
+                            "total_none_turns", len(val.get("findings", []))
+                        ),
                     }
 
-        json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        json_path.write_text(json.dumps(summary, indent = 2), encoding = "utf-8")
 
         finished = datetime.now().isoformat()
         print(f"\nFinished: {finished}")
