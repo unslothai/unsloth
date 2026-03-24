@@ -976,7 +976,7 @@ def patch_sft_trainer_tokenizer():
             "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"
             "if 'dataset_text_field' not in locals(): dataset_text_field = None\n"
             "if formatting_func is None and dataset_text_field is None and 'prompt' in dataset[0] and 'completion' in dataset[0]:\n"
-            "    test_text = dataset[0]['prompt'] + dataset[0]['completion']\n"
+            "    test_text = (dataset[0]['prompt'] + dataset[0]['completion']) if (isinstance(dataset[0]['prompt'], str) and isinstance(dataset[0]['completion'], str)) else None\n"
             "elif formatting_func is None and dataset_text_field is not None:\n"
             "    test_text = dataset[0][dataset_text_field]\n"
             "elif formatting_func is not None:\n"
