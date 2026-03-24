@@ -50,9 +50,22 @@ function Install-UnslothStudio {
         $appDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
         $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
         $launcherVbs = Join-Path $appDir "launch-studio.vbs"
-        $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Unsloth Studio.lnk"
-        $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-        $startMenuLink = Join-Path $startMenuDir "Unsloth Studio.lnk"
+        $desktopDir = [Environment]::GetFolderPath("Desktop")
+        $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
+            Join-Path $desktopDir "Unsloth Studio.lnk"
+        } else {
+            $null
+        }
+        $startMenuDir = if ($env:APPDATA -and $env:APPDATA.Trim()) {
+            Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+        } else {
+            $null
+        }
+        $startMenuLink = if ($startMenuDir -and $startMenuDir.Trim()) {
+            Join-Path $startMenuDir "Unsloth Studio.lnk"
+        } else {
+            $null
+        }
         $iconPath = Join-Path $appDir "unsloth.ico"
         $bundledIcon = $null
         if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
@@ -228,6 +241,12 @@ shell.Run cmd, 0, False
                 } catch {
                     Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
                 }
+            }
+            if (-not $desktopLink) {
+                Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
+            }
+            if (-not $startMenuLink) {
+                Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
             }
             Write-Host "[OK] Created Unsloth Studio desktop and Start menu shortcuts" -ForegroundColor Green
         } catch {
