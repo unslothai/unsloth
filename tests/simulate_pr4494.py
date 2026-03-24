@@ -40,6 +40,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 class C:
     """Thin ANSI color wrapper, toggled by --no-color / NO_COLOR."""
+
     on = True
 
     @staticmethod
@@ -68,7 +69,7 @@ class C:
 
 def create_sandbox(verbose: bool) -> tuple[Path, Path]:
     """Create isolated venv + importable package tree.  Returns (dir, python)."""
-    sdir = Path(tempfile.mkdtemp(prefix="sim_pr4494_"))
+    sdir = Path(tempfile.mkdtemp(prefix = "sim_pr4494_"))
     vdir = sdir / "venv"
 
     uv = shutil.which("uv")
@@ -76,7 +77,8 @@ def create_sandbox(verbose: bool) -> tuple[Path, Path]:
     if uv:
         r = subprocess.run(
             [uv, "venv", str(vdir), "--python", sys.executable],
-            capture_output=True, text=True,
+            capture_output = True,
+            text = True,
         )
         ok = r.returncode == 0
         if not ok and verbose:
@@ -84,12 +86,14 @@ def create_sandbox(verbose: bool) -> tuple[Path, Path]:
     if not ok:
         subprocess.run(
             [sys.executable, "-m", "venv", str(vdir)],
-            capture_output=True, text=True, check=True,
+            capture_output = True,
+            text = True,
+            check = True,
         )
 
     # Mirror the package layout so `import studio.backend.startup_banner` works
     pkg = sdir / "studio" / "backend"
-    pkg.mkdir(parents=True)
+    pkg.mkdir(parents = True)
     (sdir / "studio" / "__init__.py").touch()
     (pkg / "__init__.py").touch()
     shutil.copy2(REPO / "studio" / "backend" / "startup_banner.py", pkg)
@@ -103,7 +107,7 @@ def cleanup_sandbox(sdir: Path, keep: bool) -> None:
     if keep:
         print(f"  Sandbox kept at: {sdir}")
     else:
-        shutil.rmtree(sdir, ignore_errors=True)
+        shutil.rmtree(sdir, ignore_errors = True)
 
 
 # ── Subprocess runner ─────────────────────────────────────────────────
@@ -116,7 +120,9 @@ def _run_script(python: Path, script: str, verbose: bool) -> list[Result]:
     try:
         r = subprocess.run(
             [str(python), "-c", script],
-            capture_output=True, text=True, timeout=60,
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
     except subprocess.TimeoutExpired:
         return [("timeout", False, "subprocess timed out after 60s")]
@@ -149,21 +155,33 @@ def _run_script(python: Path, script: str, verbose: bool) -> list[Result]:
 
 FIX1_CASES: list[tuple[str, str, int, str, str]] = [
     # (display_host, bind_host, port, expected_fragment, name)
-    ("2001:db8::1",          "::",      8888, "http://[2001:db8::1]:8888",          "1:std_ipv6"),
-    ("::1",                  "::",      8888, "http://[::1]:8888",                   "2:loopback_v6"),
-    ("2001:0db8:85a3::7334", "::",      8888, "http://[2001:0db8:85a3::7334]:8888", "3:long_ipv6"),
-    ("::ffff:192.168.1.1",   "::",      8888, "http://[::ffff:192.168.1.1]:8888",   "4:v4_mapped"),
-    ("fe80::1%eth0",         "::",      8888, "http://[fe80::1%eth0]:8888",          "5:link_local"),
-    ("192.168.1.100",        "0.0.0.0", 8888, "http://192.168.1.100:8888",          "6:ipv4"),
-    ("10.0.0.1",             "0.0.0.0", 9000, "http://10.0.0.1:9000",               "7:v4_alt_port"),
-    ("myhost.local",         "0.0.0.0", 8888, "http://myhost.local:8888",           "8:hostname"),
-    ("localhost",            "0.0.0.0", 8888, "http://localhost:8888",               "9:localhost"),
-    ("",                     "0.0.0.0", 8888, "http://:8888",                        "10:empty_host"),
-    ("[::1]",                "::",      8888, "http://[[::1]]:8888",                  "11:pre_bracketed"),
+    ("2001:db8::1", "::", 8888, "http://[2001:db8::1]:8888", "1:std_ipv6"),
+    ("::1", "::", 8888, "http://[::1]:8888", "2:loopback_v6"),
+    (
+        "2001:0db8:85a3::7334",
+        "::",
+        8888,
+        "http://[2001:0db8:85a3::7334]:8888",
+        "3:long_ipv6",
+    ),
+    (
+        "::ffff:192.168.1.1",
+        "::",
+        8888,
+        "http://[::ffff:192.168.1.1]:8888",
+        "4:v4_mapped",
+    ),
+    ("fe80::1%eth0", "::", 8888, "http://[fe80::1%eth0]:8888", "5:link_local"),
+    ("192.168.1.100", "0.0.0.0", 8888, "http://192.168.1.100:8888", "6:ipv4"),
+    ("10.0.0.1", "0.0.0.0", 9000, "http://10.0.0.1:9000", "7:v4_alt_port"),
+    ("myhost.local", "0.0.0.0", 8888, "http://myhost.local:8888", "8:hostname"),
+    ("localhost", "0.0.0.0", 8888, "http://localhost:8888", "9:localhost"),
+    ("", "0.0.0.0", 8888, "http://:8888", "10:empty_host"),
+    ("[::1]", "::", 8888, "http://[[::1]]:8888", "11:pre_bracketed"),
     # Full-banner checks
-    ("2001:db8::1",          "::",      8888, "[2001:db8::1]",                       "B1:banner_v6_ext"),
-    ("192.168.1.5",          "0.0.0.0", 8888, "192.168.1.5",                         "B2:banner_v4_ext"),
-    ("::1",                  "::1",     8888, "[::1]",                                "B3:banner_v6_lo"),
+    ("2001:db8::1", "::", 8888, "[2001:db8::1]", "B1:banner_v6_ext"),
+    ("192.168.1.5", "0.0.0.0", 8888, "192.168.1.5", "B2:banner_v4_ext"),
+    ("::1", "::1", 8888, "[::1]", "B3:banner_v6_lo"),
 ]
 
 
@@ -174,11 +192,11 @@ def visual_demo_fix1() -> None:
     row = "  {:<34s}{:<30s}{:<30s}"
     print(hdr.format("Host", "BEFORE (broken)", "AFTER (fixed)"))
     demos = [
-        ("2001:db8::1",        8888),
-        ("::1",                8888),
+        ("2001:db8::1", 8888),
+        ("::1", 8888),
         ("::ffff:192.168.1.1", 8888),
-        ("192.168.1.100",      8888),
-        ("myhost.local",       8888),
+        ("192.168.1.100", 8888),
+        ("myhost.local", 8888),
     ]
     for host, port in demos:
         broken = f"http://{host}:{port}"
@@ -190,7 +208,8 @@ def visual_demo_fix1() -> None:
 
 
 def _fix1_script(sandbox_dir: str) -> str:
-    return textwrap.dedent("""\
+    return (
+        textwrap.dedent("""\
         import sys, io
         sys.path.insert(0, __SANDBOX__)
 
@@ -216,7 +235,10 @@ def _fix1_script(sandbox_dir: str) -> str:
                 print("FAIL:" + name + ":expected " + repr(expected) + " not found in banner output")
                 failed += 1
         sys.exit(1 if failed else 0)
-    """).replace("__SANDBOX__", repr(str(sandbox_dir))).replace("__CASES__", repr(FIX1_CASES))
+    """)
+        .replace("__SANDBOX__", repr(str(sandbox_dir)))
+        .replace("__CASES__", repr(FIX1_CASES))
+    )
 
 
 def test_fix1(python: Path, sandbox_dir: Path, verbose: bool) -> list[Result]:
@@ -232,8 +254,12 @@ def test_fix1(python: Path, sandbox_dir: Path, verbose: bool) -> list[Result]:
 def visual_demo_fix2() -> None:
     print(f"\n  {C.b('Fix 2: try_quiet stderr redirect')}")
     print(f"  {C.d(chr(0x2500) * 52)}")
-    print(f"  {C.r('BEFORE')}: failure log appears on {C.r('STDOUT')} (mixed with step output)")
-    print(f"  {C.g('AFTER')}:  failure log appears on {C.g('STDERR')} (clean stream separation)")
+    print(
+        f"  {C.r('BEFORE')}: failure log appears on {C.r('STDOUT')} (mixed with step output)"
+    )
+    print(
+        f"  {C.g('AFTER')}:  failure log appears on {C.g('STDERR')} (clean stream separation)"
+    )
     print(f"  {C.d('          (step status line still goes to stdout as intended)')}")
     print()
 
@@ -241,7 +267,9 @@ def visual_demo_fix2() -> None:
 def test_fix2(skip_bash: bool, verbose: bool) -> list[Result]:
     visual_demo_fix2()
     if skip_bash or not HAS_BASH:
-        reason = "skipped (--no-bash)" if skip_bash else "skipped (no bash on this platform)"
+        reason = (
+            "skipped (--no-bash)" if skip_bash else "skipped (no bash on this platform)"
+        )
         return [
             ("1:success", True, reason),
             ("2:fail_quiet", True, reason),
@@ -260,7 +288,9 @@ def test_fix2(skip_bash: bool, verbose: bool) -> list[Result]:
     try:
         r = subprocess.run(
             ["bash", str(script_path)],
-            capture_output=True, text=True, timeout=30,
+            capture_output = True,
+            text = True,
+            timeout = 30,
         )
     except subprocess.TimeoutExpired:
         return [("fix2", False, "bash tests timed out")]
@@ -293,14 +323,14 @@ _COL = 15  # must match install_python_stack._COL
 
 FIX3_CASES: list[tuple[str, str, str, str]] = [
     # (label, value, expected_output, name)
-    ("deps",           "ok",  "  deps"           + " " * 11 + "ok",  "1:short_4"),
-    ("error",          "bad", "  error"          + " " * 10 + "bad", "2:short_5"),
-    ("llama-quantize", "ok",  "  llama-quantize" + " " * 1  + "ok",  "3:len_14"),
-    ("",               "v",   "  "               + " " * 15 + "v",   "4:empty"),
-    ("x" * 15,         "v",   "  " + "x" * 15   + "v",              "5:exact_15"),
-    ("x" * 16,         "v",   "  " + "x" * 15   + "v",              "6:trunc_16"),
-    ("x" * 20,         "v",   "  " + "x" * 15   + "v",              "7:trunc_20"),
-    ("x" * 50,         "v",   "  " + "x" * 15   + "v",              "8:trunc_50"),
+    ("deps", "ok", "  deps" + " " * 11 + "ok", "1:short_4"),
+    ("error", "bad", "  error" + " " * 10 + "bad", "2:short_5"),
+    ("llama-quantize", "ok", "  llama-quantize" + " " * 1 + "ok", "3:len_14"),
+    ("", "v", "  " + " " * 15 + "v", "4:empty"),
+    ("x" * 15, "v", "  " + "x" * 15 + "v", "5:exact_15"),
+    ("x" * 16, "v", "  " + "x" * 15 + "v", "6:trunc_16"),
+    ("x" * 20, "v", "  " + "x" * 15 + "v", "7:trunc_20"),
+    ("x" * 50, "v", "  " + "x" * 15 + "v", "8:trunc_50"),
     ("toolonglabel!!!!", "v", "  " + "toolonglabel!!!!"[:_COL] + "v", "9:readable"),
 ]
 
@@ -316,9 +346,9 @@ def visual_demo_fix3() -> None:
     row = "  {:<20s}{:<32s}{:<32s}"
     print(hdr.format("Label", "BEFORE (broken)", "AFTER (fixed)"))
     demos = [
-        ("deps",    "ok"),
-        ("x" * 20,  "v"),
-        ("x" * 50,  "v"),
+        ("deps", "ok"),
+        ("x" * 20, "v"),
+        ("x" * 50, "v"),
     ]
     for label, val in demos:
         # Broken: no truncation, negative padding becomes empty
@@ -328,17 +358,22 @@ def visual_demo_fix3() -> None:
         padded = label[:_COL]
         fixed_out = f"  {padded}{' ' * (_COL - len(padded))}{val}"
         tag = C.d(" (same)") if broken_out == fixed_out else C.d(" (truncated!)")
-        disp_label = repr(label) if len(label) <= 16 else f"'{'x' * 5}...' ({len(label)}c)"
-        print(row.format(
-            disp_label,
-            C.r(repr(broken_out)),
-            C.g(repr(fixed_out)) + tag,
-        ))
+        disp_label = (
+            repr(label) if len(label) <= 16 else f"'{'x' * 5}...' ({len(label)}c)"
+        )
+        print(
+            row.format(
+                disp_label,
+                C.r(repr(broken_out)),
+                C.g(repr(fixed_out)) + tag,
+            )
+        )
     print()
 
 
 def _fix3_script(sandbox_dir: str) -> str:
-    return textwrap.dedent("""\
+    return (
+        textwrap.dedent("""\
         import sys, io
         sys.path.insert(0, __SANDBOX__)
 
@@ -387,7 +422,10 @@ def _fix3_script(sandbox_dir: str) -> str:
             failed += 1
 
         sys.exit(1 if failed else 0)
-    """).replace("__SANDBOX__", repr(str(sandbox_dir))).replace("__CASES__", repr(FIX3_CASES))
+    """)
+        .replace("__SANDBOX__", repr(str(sandbox_dir)))
+        .replace("__CASES__", repr(FIX3_CASES))
+    )
 
 
 def test_fix3(python: Path, sandbox_dir: Path, verbose: bool) -> list[Result]:
@@ -455,13 +493,17 @@ def print_summary(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="PR #4494 simulation harness")
-    ap.add_argument("--fix", type=int, choices=[1, 2, 3], help="run only this fix")
-    ap.add_argument("--no-sandbox", action="store_true", help="skip venv, use current Python")
-    ap.add_argument("--keep-sandbox", action="store_true", help="do not delete sandbox on exit")
-    ap.add_argument("--no-bash", action="store_true", help="skip bash tests (Fix 2)")
-    ap.add_argument("--no-color", action="store_true", help="disable ANSI colors")
-    ap.add_argument("--verbose", action="store_true", help="show subprocess output")
+    ap = argparse.ArgumentParser(description = "PR #4494 simulation harness")
+    ap.add_argument("--fix", type = int, choices = [1, 2, 3], help = "run only this fix")
+    ap.add_argument(
+        "--no-sandbox", action = "store_true", help = "skip venv, use current Python"
+    )
+    ap.add_argument(
+        "--keep-sandbox", action = "store_true", help = "do not delete sandbox on exit"
+    )
+    ap.add_argument("--no-bash", action = "store_true", help = "skip bash tests (Fix 2)")
+    ap.add_argument("--no-color", action = "store_true", help = "disable ANSI colors")
+    ap.add_argument("--verbose", action = "store_true", help = "show subprocess output")
     args = ap.parse_args()
 
     if args.no_color or os.environ.get("NO_COLOR", "").strip():
@@ -477,7 +519,7 @@ def main() -> int:
         python = Path(sys.executable)
         print(C.d(f"  (no-sandbox mode, using {python})"))
     else:
-        print(C.d("  Creating sandbox..."), end="", flush=True)
+        print(C.d("  Creating sandbox..."), end = "", flush = True)
         sandbox_dir, python = create_sandbox(args.verbose)
         print(C.d(f" {sandbox_dir}"))
 
