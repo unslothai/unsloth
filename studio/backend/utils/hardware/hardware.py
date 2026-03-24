@@ -335,13 +335,15 @@ def get_gpu_utilization() -> Dict[str, Any]:
             )
             if result.returncode == 0 and result.stdout.strip():
                 import json
+
                 try:
                     rocm_json = json.loads(result.stdout.strip())
                     # Format: {"card0": {"Temperature (Sensor edge) (C)": "...", "GPU use (%)": "...", ...}}
                     card_data = rocm_json.get("card0", {})
                     # Different rocm versions have different keys, we'll extract standard ones if possible
                     temp = card_data.get("Temperature (Sensor edge) (C)")
-                    if temp is None: temp = card_data.get("Temperature (Sensor edge) (C):")
+                    if temp is None:
+                        temp = card_data.get("Temperature (Sensor edge) (C):")
                     util = card_data.get("GPU use (%)")
 
                     # Memory is usually "VRAM Total Memory (B)" and "VRAM Total Used Memory (B)"
@@ -354,10 +356,18 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     smi_data = {
                         "gpu_util": _parse_smi_value(util) if util else None,
                         "temp": _parse_smi_value(temp) if temp else None,
-                        "vram_used_mb": float(vram_used_b) / (1024**2) if vram_used_b else None,
-                        "vram_total_mb": float(vram_total_b) / (1024**2) if vram_total_b else None,
-                        "power_draw": _parse_smi_value(power_draw) if power_draw else None,
-                        "power_limit": _parse_smi_value(power_limit) if power_limit else None,
+                        "vram_used_mb": float(vram_used_b) / (1024**2)
+                        if vram_used_b
+                        else None,
+                        "vram_total_mb": float(vram_total_b) / (1024**2)
+                        if vram_total_b
+                        else None,
+                        "power_draw": _parse_smi_value(power_draw)
+                        if power_draw
+                        else None,
+                        "power_limit": _parse_smi_value(power_limit)
+                        if power_limit
+                        else None,
                     }
                 except json.JSONDecodeError:
                     pass
@@ -470,6 +480,7 @@ def get_physical_gpu_count() -> int:
 
     try:
         import subprocess
+
         device = get_device()
 
         if device == DeviceType.ROCM:
@@ -481,12 +492,16 @@ def get_physical_gpu_count() -> int:
             )
             if result.returncode == 0 and result.stdout.strip():
                 import json
+
                 try:
                     rocm_json = json.loads(result.stdout.strip())
                     # The JSON has keys like "card0", "card1", etc. and maybe a "system" key.
-                    _physical_gpu_count = len([k for k in rocm_json.keys() if k.startswith("card")])
+                    _physical_gpu_count = len(
+                        [k for k in rocm_json.keys() if k.startswith("card")]
+                    )
                     # Fallback if parsing fails to 1
-                    if _physical_gpu_count == 0: _physical_gpu_count = 1
+                    if _physical_gpu_count == 0:
+                        _physical_gpu_count = 1
                 except json.JSONDecodeError:
                     _physical_gpu_count = 1
             else:
