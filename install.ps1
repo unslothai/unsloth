@@ -43,6 +43,9 @@ function Install-UnslothStudio {
         # Persist an absolute path in launcher scripts so shortcut working
         # directory changes do not break process startup.
         $UnslothExePath = (Resolve-Path $UnslothExePath).Path
+        # Escape for single-quoted embedding in generated launcher script.
+        # This prevents runtime variable expansion for paths containing '$'.
+        $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
 
         $appDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio"
         $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
@@ -117,7 +120,8 @@ if (`$existingPort) {
 }
 
 `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-`$studioCommand = "& `"$UnslothExePath`" studio -H 0.0.0.0 -p `$basePort"
+`$studioExe = '$SingleQuotedExePath'
+`$studioCommand = "& `"`$studioExe`" studio -H 0.0.0.0 -p `$basePort"
 `$launchArgs = @(
     '-NoExit',
     '-ExecutionPolicy',
@@ -159,8 +163,10 @@ if (-not `$browserOpened -and `$proc.HasExited) {
 exit 0
 "@
 
-        # Use Unicode-safe encoding: launcher paths can contain non-ASCII characters.
-        Set-Content -Path $launcherPs1 -Value $launcherContent -Encoding UTF8 -Force
+        # Write UTF-8 with BOM for reliable decoding by Windows PowerShell 5.1,
+        # even when install.ps1 is executed from PowerShell 7.
+        $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
         $vbsContent = @"
 Set shell = CreateObject("WScript.Shell")
 cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
