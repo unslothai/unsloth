@@ -191,17 +191,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       defaultChatTemplate: null,
       chatTemplateOverride: null,
     })),
-  setReasoningEnabled: (reasoningEnabled) =>
-    set((state) => {
-      const cp = state.params.checkpoint?.toLowerCase() ?? "";
-      if (cp.includes("qwen3")) {
-        const p = reasoningEnabled
-          ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-          : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-        return { reasoningEnabled, params: { ...state.params, ...p } };
-      }
-      return { reasoningEnabled };
-    }),
+  setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
   setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
   setToolStatus: (toolStatus) => set({ toolStatus }),

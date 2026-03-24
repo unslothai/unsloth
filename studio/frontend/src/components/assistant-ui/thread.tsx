@@ -140,9 +140,13 @@ const SuggestionItem: FC = () => {
       onClick={() => {
         if (!isDisabled && !isRunning) {
           const store = useChatRuntimeStore.getState();
-          store.setReasoningEnabled(tools.includes("thinking"));
-          store.setToolsEnabled(tools.includes("search"));
-          store.setCodeToolsEnabled(tools.includes("code"));
+          if (store.supportsReasoning) {
+            store.setReasoningEnabled(tools.includes("thinking"));
+          }
+          if (store.supportsTools) {
+            store.setToolsEnabled(tools.includes("search"));
+            store.setCodeToolsEnabled(tools.includes("code"));
+          }
           aui.thread().append(prompt);
           aui.composer().setText("");
           return;
@@ -320,6 +324,17 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
+/** Qwen3/3.5 recommended params differ between thinking on/off. */
+function applyQwenThinkingParams(thinkingOn: boolean): void {
+  const store = useChatRuntimeStore.getState();
+  const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
+  if (!checkpoint.includes("qwen3")) return;
+  const params = thinkingOn
+    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+  store.setParams({ ...store.params, ...params });
+}
+
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -333,7 +348,11 @@ const ReasoningToggle: FC = () => {
     <button
       type="button"
       disabled={disabled}
-      onClick={() => setReasoningEnabled(!reasoningEnabled)}
+      onClick={() => {
+        const next = !reasoningEnabled;
+        setReasoningEnabled(next);
+        applyQwenThinkingParams(next);
+      }}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
         disabled
