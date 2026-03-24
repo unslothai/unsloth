@@ -28,6 +28,8 @@ import {
   PencilEdit01Icon,
   Settings02Icon,
   SlidersHorizontalIcon,
+  UserSettings01Icon,
+  Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
@@ -421,6 +423,69 @@ export function ChatSettingsPanel({
             />
           </div>
 
+          <CollapsibleSection icon={Settings02Icon} label="Model">
+            <div className="flex flex-col gap-3 py-1">
+              {isGguf && (
+                <>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium">Context Length</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Set before loading model (coming soon)
+                      </div>
+                    </div>
+                    <Input
+                      value={ggufContextLength ?? ""}
+                      placeholder="Loading..."
+                      disabled={true}
+                      className="h-7 w-[90px] text-xs opacity-50 cursor-not-allowed"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium">KV Cache Dtype</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Quantize KV cache to reduce VRAM. Reload to apply.
+                      </div>
+                    </div>
+                    <Select
+                      value={kvCacheDtype ?? "f16"}
+                      onValueChange={(v) => {
+                        setKvCacheDtype(v === "f16" ? null : v);
+                        onReloadModel?.();
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-[90px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="f16">f16</SelectItem>
+                        <SelectItem value="bf16">bf16</SelectItem>
+                        <SelectItem value="q8_0">q8_0</SelectItem>
+                        <SelectItem value="q5_1">q5_1</SelectItem>
+                        <SelectItem value="q4_1">q4_1</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              )}
+              {!isGguf && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">Trust remote code</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Allow models with custom code (e.g. Nemotron). Only enable for repos you trust.
+                    </div>
+                  </div>
+                  <Switch
+                    checked={params.trustRemoteCode ?? false}
+                    onCheckedChange={set("trustRemoteCode")}
+                  />
+                </div>
+              )}
+            </div>
+          </CollapsibleSection>
+
           <CollapsibleSection
             icon={SlidersHorizontalIcon}
             label="Sampling"
@@ -505,7 +570,15 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection icon={Settings02Icon} label="Settings" defaultOpen={true}>
+          <CollapsibleSection icon={Wrench01Icon} label="Tools">
+            <div className="flex flex-col gap-3 py-1">
+              <AutoHealToolCallsToggle />
+              <MaxToolCallsSlider />
+              <ToolCallTimeoutSlider />
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection icon={UserSettings01Icon} label="Preferences">
             <div className="flex flex-col gap-3 py-1">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -519,49 +592,6 @@ export function ChatSettingsPanel({
                   onCheckedChange={onAutoTitleChange}
                 />
               </div>
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium">Trust remote code</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Allow models with custom code (e.g. Nemotron). Only enable for repos you trust.
-                  </div>
-                </div>
-                <Switch
-                  checked={params.trustRemoteCode ?? false}
-                  onCheckedChange={set("trustRemoteCode")}
-                />
-              </div>
-              {isGguf && (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">KV Cache Dtype</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Quantize KV cache to reduce VRAM. Reload to apply.
-                    </div>
-                  </div>
-                  <Select
-                    value={kvCacheDtype ?? "f16"}
-                    onValueChange={(v) => {
-                      setKvCacheDtype(v === "f16" ? null : v);
-                      onReloadModel?.();
-                    }}
-                  >
-                    <SelectTrigger className="h-7 w-[90px] text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="f16">f16</SelectItem>
-                      <SelectItem value="bf16">bf16</SelectItem>
-                      <SelectItem value="q8_0">q8_0</SelectItem>
-                      <SelectItem value="q5_1">q5_1</SelectItem>
-                      <SelectItem value="q4_1">q4_1</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              <AutoHealToolCallsToggle />
-              <MaxToolCallsSlider />
-              <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
 
