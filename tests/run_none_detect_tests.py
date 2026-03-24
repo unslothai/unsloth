@@ -177,14 +177,18 @@ def test_probe_string_corrupt():
 
     print(f"  Rows under test: {len(string_rows)} rows all with messages='string'")
     try:
-        stats = scan_dataset(mock_ds, fmt="auto")
+        stats = scan_dataset(mock_ds, fmt = "auto")
         print_report(stats, stats.get("format", "?"))
         bad = len(stats.get("bad_row_indices", []))
         status = "PASS" if bad == len(string_rows) else "FAIL"
-        print(f"  [{status}] String-corrupt probe fix: {bad}/{len(string_rows)} rows caught via auto-detect")
+        print(
+            f"  [{status}] String-corrupt probe fix: {bad}/{len(string_rows)} rows caught via auto-detect"
+        )
         return stats
     except ValueError as exc:
-        print(f"  [FAIL] scan_dataset raised ValueError (string-corrupt probe NOT fixed): {exc}")
+        print(
+            f"  [FAIL] scan_dataset raised ValueError (string-corrupt probe NOT fixed): {exc}"
+        )
         return None
 
 
@@ -198,14 +202,18 @@ def test_explicit_fmt_corrupt():
 
     print(f"  Rows under test: {len(all_corrupt_rows)} rows (4×None, 3×string)")
     try:
-        stats = scan_dataset(mock_ds, fmt="chatml")
+        stats = scan_dataset(mock_ds, fmt = "chatml")
         print_report(stats, stats.get("format", "?"))
         bad = len(stats.get("bad_row_indices", []))
         status = "PASS" if bad == len(all_corrupt_rows) else "FAIL"
-        print(f"  [{status}] Explicit-fmt P1 fix: {bad}/{len(all_corrupt_rows)} rows caught with fmt='chatml'")
+        print(
+            f"  [{status}] Explicit-fmt P1 fix: {bad}/{len(all_corrupt_rows)} rows caught with fmt='chatml'"
+        )
         return stats
     except ValueError as exc:
-        print(f"  [FAIL] scan_dataset raised ValueError (explicit-fmt P1 NOT fixed): {exc}")
+        print(
+            f"  [FAIL] scan_dataset raised ValueError (explicit-fmt P1 NOT fixed): {exc}"
+        )
         return None
 
 

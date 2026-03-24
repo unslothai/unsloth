@@ -87,7 +87,12 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             # (messages / conversations / texts), so any column that reaches
             # this point is a legitimate candidate; accept it with empty
             # turn_keys so find_none_chatml can diagnose and report every row.
-            return {"column": col, "turn_keys": set(), "roles": set(), "all_corrupt": True}
+            return {
+                "column": col,
+                "turn_keys": set(),
+                "roles": set(),
+                "all_corrupt": True,
+            }
 
         # Use the same 100-row window to gather keys/roles.
         turn_keys = set()
@@ -230,7 +235,9 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             stats["bad_row_indices"].append(i)
             stats["rows_with_none_turns"] += 1
             stats["total_none_turns"] += 1
-            stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+            stats["none_by_role"]["unknown"] = (
+                stats["none_by_role"].get("unknown", 0) + 1
+            )
             stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
             stats["findings"].append(
                 {
@@ -385,7 +392,9 @@ FORMAT_REGISTRY = [
             conv is not None
             and (
                 {"role", "content"} <= conv["turn_keys"]
-                or conv.get("all_corrupt")  # P1 fix: probe found the col but all rows are corrupt
+                or conv.get(
+                    "all_corrupt"
+                )  # P1 fix: probe found the col but all rows are corrupt
             )
         ),
         "scan": find_none_chatml,
@@ -442,7 +451,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # the scanner re-probes internally and raises ValueError on fully-corrupt
     # columns (all_corrupt=True) because it finds no usable dict turn either.
     if conv_info is not None and fmt != "alpaca":
-        stats = scanner(dataset, col=conv_info["column"])
+        stats = scanner(dataset, col = conv_info["column"])
     else:
         stats = scanner(dataset)
     stats["format"] = fmt
