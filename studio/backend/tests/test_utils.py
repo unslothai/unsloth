@@ -85,7 +85,12 @@ class TestGetDevice:
 
     def test_returns_valid_device_type(self):
         result = get_device()
-        assert result in (DeviceType.CUDA, DeviceType.MLX, DeviceType.CPU)
+        assert result in (
+            DeviceType.CUDA,
+            DeviceType.ROCM,
+            DeviceType.MLX,
+            DeviceType.CPU,
+        )
 
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
@@ -97,8 +102,26 @@ class TestGetDevice:
         with (
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
+            patch(
+                "torch.cuda.get_device_properties",
+                return_value = type("Prop", (), {"name": "Test GPU"}),
+            ),
+            patch("torch.version", create = True, hip = None),
         ):
             assert _reset_and_detect() == DeviceType.CUDA
+
+    @needs_torch
+    def test_returns_rocm_when_hip_available(self):
+        with (
+            patch("utils.hardware.hardware._has_torch", return_value = True),
+            patch("torch.cuda.is_available", return_value = True),
+            patch(
+                "torch.cuda.get_device_properties",
+                return_value = type("Prop", (), {"name": "Test GPU"}),
+            ),
+            patch("torch.version", create = True, hip = "5.6"),
+        ):
+            assert _reset_and_detect() == DeviceType.ROCM
 
     @needs_mlx
     def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
@@ -160,6 +183,7 @@ class TestClearGpuCache:
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch("torch.cuda.empty_cache") as mock_empty,
             patch("torch.cuda.ipc_collect") as mock_ipc,
+            patch("torch.cuda.synchronize") as mock_sync,
         ):
             clear_gpu_cache()
             mock_empty.assert_called_once()
@@ -296,34 +320,36 @@ class TestLogGpuMemory:
             "free_gb": 14.0,
         }
         import structlog
+        import logging
         from loggers import get_logger
 
-        with (
-            patch(
-                "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-            ),
-            caplog.at_level(logging.INFO, logger = "utils.hardware.hardware"),
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
         ):
-            log_gpu_memory("unit-test")
+            with patch("utils.hardware.hardware.logger.info") as mock_info:
+                log_gpu_memory("unit-test")
 
-        assert "unit-test" in caplog.text
-        assert "CUDA" in caplog.text
-        assert "FakeGPU" in caplog.text
+        assert mock_info.call_args is not None
+        log_msg = mock_info.call_args[0][0]
+        assert "unit-test" in log_msg
+        assert "CUDA" in log_msg
+        assert "FakeGPU" in log_msg
 
     def test_logs_cpu_fallback_when_no_gpu(self, caplog):
         fake_info = {"available": False, "backend": "cpu"}
         import structlog
+        import logging
         from loggers import get_logger
 
-        with (
-            patch(
-                "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-            ),
-            caplog.at_level(logging.INFO, logger = "utils.hardware.hardware"),
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
         ):
-            log_gpu_memory("cpu-test")
+            with patch("utils.hardware.hardware.logger.info") as mock_info:
+                log_gpu_memory("cpu-test")
 
-        assert "No GPU available" in caplog.text
+        assert mock_info.call_args is not None
+        log_msg = mock_info.call_args[0][0]
+        assert "No GPU available" in log_msg
 
 
 # ========== format_error_message() ==========

@@ -462,6 +462,14 @@ rm -rf "$LLAMA_CPP_DIR"
                 export PATH="$(dirname "$NVCC_PATH"):$PATH"
             fi
 
+            HIPCC_PATH=""
+            if command -v hipcc &>/dev/null; then
+                HIPCC_PATH="$(command -v hipcc)"
+            elif [ -x /opt/rocm/bin/hipcc ]; then
+                HIPCC_PATH="/opt/rocm/bin/hipcc"
+                export PATH="/opt/rocm/bin:$PATH"
+            fi
+
             if [ -n "$NVCC_PATH" ]; then
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
@@ -494,11 +502,27 @@ rm -rf "$LLAMA_CPP_DIR"
 
                 # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+            elif [ -n "$HIPCC_PATH" ]; then
+                echo "   Building with HIP/ROCm support (hipcc: $HIPCC_PATH)..."
+                # For AMD GPUs, GGML_HIPBLAS handles the HIP backend compilation.
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIPBLAS=ON -DCMAKE_C_COMPILER=hipcc -DCMAKE_CXX_COMPILER=hipcc"
+
+                AMDGPU_TARGETS=""
+                if command -v rocm-smi &>/dev/null; then
+                    # Determine AMD architecture (e.g. gfx1201 for RX 9070 XT)
+                    # rocm-smi sometimes outputs it or we can fallback to letting cmake decide.
+                    # Alternatively, rocminfo gives full details.
+                    # If we don't supply CMAKE_HIP_ARCHITECTURES, cmake builds defaults.
+                    echo "   Letting CMake determine AMD GPU architectures automatically."
+                fi
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
                 echo "   CUDA driver detected but nvcc not found — building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
+            elif [ -d /opt/rocm ] || rocm-smi &>/dev/null; then
+                echo "   ROCm driver detected but hipcc not found — building CPU-only"
+                echo "   To enable AMD GPU: install rocm toolkit or add hipcc to PATH"
             else
-                echo "   Building CPU-only (no CUDA detected)..."
+                echo "   Building CPU-only (no CUDA or ROCm detected)..."
             fi
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
