@@ -346,10 +346,93 @@ run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps
 run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
 echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
-# ── 7. WSL: pre-install GGUF build dependencies ──
+# ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
+UNSLOTH_HOME="$HOME/.unsloth"
+mkdir -p "$UNSLOTH_HOME"
+LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
+LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
+_NEED_LLAMA_SOURCE_BUILD=false
+_LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
+_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-latest}"
+_HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
+_RESOLVE_LLAMA_LOG="$(mktemp)"
+set +e
+python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+    --resolve-install-tag "$_REQUESTED_LLAMA_TAG" \
+    --published-repo "$_HELPER_RELEASE_REPO" >"$_RESOLVE_LLAMA_LOG" 2>&1
+_RESOLVE_LLAMA_STATUS=$?
+set -e
+if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
+    _RESOLVED_LLAMA_TAG="$(tail -n 1 "$_RESOLVE_LLAMA_LOG" | tr -d '\r')"
+else
+    _RESOLVED_LLAMA_TAG=""
+fi
+if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+    echo ""
+    echo "⚠️  Failed to resolve an installable prebuilt llama.cpp tag via $_HELPER_RELEASE_REPO"
+    cat "$_RESOLVE_LLAMA_LOG" >&2 || true
+    set +e
+    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" 2>/dev/null)"
+    _RESOLVE_UPSTREAM_STATUS=$?
+    set -e
+    if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+        if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+            _RESOLVED_LLAMA_TAG="latest"
+        else
+            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+        fi
+    fi
+    _NEED_LLAMA_SOURCE_BUILD=true
+    _SKIP_PREBUILT_INSTALL=true
+fi
+rm -f "$_RESOLVE_LLAMA_LOG"
+
+echo ""
+echo "Resolved llama.cpp release tag: $_RESOLVED_LLAMA_TAG"
+
+if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+    echo ""
+    echo "⚠️  UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install"
+    _NEED_LLAMA_SOURCE_BUILD=true
+else
+    echo ""
+    echo "Installing prebuilt llama.cpp bundle (preferred path)..."
+    if [ -d "$LLAMA_CPP_DIR" ]; then
+        echo "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
+    fi
+    if [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
+        echo "⚠️  Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build"
+    else
+        _PREBUILT_CMD=(
+            python "$SCRIPT_DIR/install_llama_prebuilt.py"
+            --install-dir "$LLAMA_CPP_DIR"
+            --llama-tag "$_RESOLVED_LLAMA_TAG"
+            --published-repo "$_HELPER_RELEASE_REPO"
+        )
+        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+            _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+        fi
+        set +e
+        "${_PREBUILT_CMD[@]}"
+        _PREBUILT_STATUS=$?
+        set -e
+
+        if [ "$_PREBUILT_STATUS" -eq 0 ]; then
+            echo "✅ Prebuilt llama.cpp installed and validated"
+        else
+            if [ -d "$LLAMA_CPP_DIR" ]; then
+                echo "⚠️  Prebuilt update failed; existing install was restored or cleaned before source build fallback"
+            fi
+            echo "⚠️  Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
+    fi
+fi
+
+# ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
 # On WSL, sudo requires a password and can't be entered during GGUF export
 # (runs in a non-interactive subprocess). Install build deps here instead.
-if grep -qi microsoft /proc/version 2>/dev/null; then
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>/dev/null; then
     echo ""
     echo "⚠️  WSL detected -- installing build dependencies for GGUF export..."
     _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
@@ -407,17 +490,15 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     fi
 fi
 
-# ── 8. Build llama.cpp binaries for GGUF inference + export ──
+# ── 9. Build llama.cpp binaries for GGUF inference + export when prebuilt install fails ──
 # Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
 # export pipeline (unsloth-zoo).
 #   - llama-server: for GGUF model inference
 #   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
-UNSLOTH_HOME="$HOME/.unsloth"
-mkdir -p "$UNSLOTH_HOME"
-LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
-LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
-if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = false ]; then
+    :
+elif [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
     echo ""
     echo "Skipping llama-server build (missing dependencies)"
     echo "   Install the missing packages and re-run setup to enable GGUF inference."
