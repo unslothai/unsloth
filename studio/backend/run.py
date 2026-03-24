@@ -88,6 +88,8 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     try:
         for conn in psutil.net_connections(kind = "tcp"):
             if conn.status == "LISTEN" and conn.laddr.port == port:
+                if conn.pid is None:
+                    return None
                 try:
                     proc = psutil.Process(conn.pid)
                     return (conn.pid, proc.name())
