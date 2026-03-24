@@ -235,7 +235,7 @@ fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
 echo "==> Installing unsloth (this may take a few minutes)..."
-uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
+uv pip install --python "$VENV_NAME/bin/python" "unsloth>=2026.3.11" --torch-backend=auto
 
 # ── Run studio setup ──
 # Ensure the venv's Python is on PATH for setup.sh's Python discovery.
