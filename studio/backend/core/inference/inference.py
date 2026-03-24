@@ -1007,15 +1007,28 @@ class InferenceBackend:
             }
             if system_prompt:
                 vision_messages = [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
                     user_msg,
                 ]
             else:
                 vision_messages = [user_msg]
 
-            input_text = processor.apply_chat_template(
-                vision_messages, add_generation_prompt = True, tokenize = False
-            )
+            try:
+                input_text = processor.apply_chat_template(
+                    vision_messages, add_generation_prompt = True, tokenize = False
+                )
+            except Exception:
+                if system_prompt:
+                    logger.warning(
+                        f"Vision processor for '{self.active_model_name}' does not support "
+                        f"system messages — dropping system prompt for this request."
+                    )
+                    vision_messages = [user_msg]
+                    input_text = processor.apply_chat_template(
+                        vision_messages, add_generation_prompt = True, tokenize = False
+                    )
+                else:
+                    raise
             inputs = processor(
                 image,
                 input_text,
