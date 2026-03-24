@@ -313,7 +313,12 @@ def install_python_stack() -> int:
     # When --package is used, install a different package name (e.g. roland-sloth for testing)
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     base_total = 10 if IS_WINDOWS else 11
-    _TOTAL = (base_total - 1) if skip_base else base_total
+    if local_install:
+        _TOTAL = base_total + 1  # extra step for editable overlay
+    elif skip_base:
+        _TOTAL = base_total - 1
+    else:
+        _TOTAL = base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
     #    because uv venvs don't include pip by default)
@@ -343,9 +348,16 @@ def install_python_stack() -> int:
     if skip_base:
         print(_green(f"✅ {package_name} already installed — skipping base packages"))
     elif local_install:
-        _progress("base packages (local)")
+        # Install base.txt first (gets unsloth-zoo), then overlay with editable unsloth
+        _progress("base packages")
         pip_install(
-            f"Installing {package_name} from local repo",
+            "Installing base packages",
+            "--no-cache-dir",
+            req = REQ_ROOT / "base.txt",
+        )
+        _progress("local editable install")
+        pip_install(
+            f"Installing {package_name} from local repo (editable)",
             "--no-cache-dir",
             "-e",
             os.environ.get("STUDIO_LOCAL_REPO", str(SCRIPT_DIR.parent)),  # repo root
