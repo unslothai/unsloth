@@ -219,14 +219,31 @@ VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
-# Clean up old .venv path (replaced by unsloth_studio)
-[ -d "$STUDIO_HOME/.venv" ] && rm -rf "$STUDIO_HOME/.venv"
 
-if [ ! -x "$VENV_DIR/bin/python" ]; then
+# ── Venv discovery (with migration from old layouts) ──
+if [ -x "$VENV_DIR/bin/python" ]; then
+    # 1. New install: ~/.unsloth/studio/unsloth_studio exists
+    echo "==> Using existing Studio environment at $VENV_DIR"
+elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
+    # 2. Legacy: ~/.unsloth/studio/.venv exists → migrate by renaming
+    echo "==> Migrating legacy Studio environment..."
+    mv "$STUDIO_HOME/.venv" "$VENV_DIR"
+    echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
+elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+    # 3. Active venv (old CWD-based install, user activated it)
+    VENV_DIR="$VIRTUAL_ENV"
+    echo "==> Using activated virtual environment at $VENV_DIR"
+else
+    # 4. Nothing found
     echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
     echo "   Run install.sh first to create the environment:"
     echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
     exit 1
+fi
+
+# Clean up old .venv if migration already happened (both paths exist)
+if [ -d "$STUDIO_HOME/.venv" ] && [ "$VENV_DIR" != "$STUDIO_HOME/.venv" ]; then
+    rm -rf "$STUDIO_HOME/.venv"
 fi
 
 source "$VENV_DIR/bin/activate"
