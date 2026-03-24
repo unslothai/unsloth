@@ -85,7 +85,12 @@ class TestGetDevice:
 
     def test_returns_valid_device_type(self):
         result = get_device()
-        assert result in (DeviceType.CUDA, DeviceType.ROCM, DeviceType.MLX, DeviceType.CPU)
+        assert result in (
+            DeviceType.CUDA,
+            DeviceType.ROCM,
+            DeviceType.MLX,
+            DeviceType.CPU,
+        )
 
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
@@ -97,8 +102,11 @@ class TestGetDevice:
         with (
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
-            patch("torch.cuda.get_device_properties", return_value=type("Prop", (), {"name": "Test GPU"})),
-            patch("torch.version", create=True, hip=None),
+            patch(
+                "torch.cuda.get_device_properties",
+                return_value = type("Prop", (), {"name": "Test GPU"}),
+            ),
+            patch("torch.version", create = True, hip = None),
         ):
             assert _reset_and_detect() == DeviceType.CUDA
 
@@ -107,8 +115,11 @@ class TestGetDevice:
         with (
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
-            patch("torch.cuda.get_device_properties", return_value=type("Prop", (), {"name": "Test GPU"})),
-            patch("torch.version", create=True, hip="5.6"),
+            patch(
+                "torch.cuda.get_device_properties",
+                return_value = type("Prop", (), {"name": "Test GPU"}),
+            ),
+            patch("torch.version", create = True, hip = "5.6"),
         ):
             assert _reset_and_detect() == DeviceType.ROCM
 
@@ -312,7 +323,9 @@ class TestLogGpuMemory:
         import logging
         from loggers import get_logger
 
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
+        ):
             with patch("utils.hardware.hardware.logger.info") as mock_info:
                 log_gpu_memory("unit-test")
 
@@ -328,7 +341,9 @@ class TestLogGpuMemory:
         import logging
         from loggers import get_logger
 
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
+        ):
             with patch("utils.hardware.hardware.logger.info") as mock_info:
                 log_gpu_memory("cpu-test")
 
