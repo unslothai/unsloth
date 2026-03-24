@@ -10,6 +10,16 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   ArrowDown01Icon,
   CodeIcon,
@@ -30,7 +40,7 @@ import {
 } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
@@ -71,6 +81,52 @@ const BUILTIN_PRESETS: Preset[] = [
     },
   },
 ];
+
+const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
+const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
+
+function canUseStorage(): boolean {
+  return typeof window !== "undefined";
+}
+
+function loadSavedCustomPresets(): Preset[] {
+  if (!canUseStorage()) return [];
+  try {
+    const raw = localStorage.getItem(CHAT_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Preset => {
+        if (!item || typeof item !== "object") return false;
+        const maybe = item as Partial<Preset>;
+        return typeof maybe.name === "string" && !!maybe.params;
+      })
+      .map((preset) => ({
+        name: preset.name.trim(),
+        params: {
+          ...defaultInferenceParams,
+          ...preset.params,
+        },
+      }))
+      .filter(
+        (preset) =>
+          preset.name.length > 0 &&
+          !BUILTIN_PRESETS.some((builtin) => builtin.name === preset.name),
+      );
+  } catch {
+    return [];
+  }
+}
+
+function loadSavedActivePreset(): string {
+  if (!canUseStorage()) return "Default";
+  try {
+    return localStorage.getItem(CHAT_ACTIVE_PRESET_KEY) ?? "Default";
+  } catch {
+    return "Default";
+  }
+}
 
 function ParamSlider({
   label,
@@ -181,8 +237,16 @@ export function ChatSettingsPanel({
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
-  const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
-  const [activePreset, setActivePreset] = useState("Default");
+  const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
+    loadSavedCustomPresets(),
+  );
+  const [activePreset, setActivePreset] = useState(() => loadSavedActivePreset());
+  const [savePresetOpen, setSavePresetOpen] = useState(false);
+  const [presetNameDraft, setPresetNameDraft] = useState("");
+  const presets = useMemo(
+    () => [...BUILTIN_PRESETS, ...customPresets],
+    [customPresets],
+  );
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
 
   function set<K extends keyof InferenceParams>(key: K) {
@@ -199,31 +263,92 @@ export function ChatSettingsPanel({
         trustRemoteCode: params.trustRemoteCode,
       });
       setActivePreset(name);
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, name);
+        } catch {
+          // ignore
+        }
+      }
     }
   }
 
-  function savePreset() {
-    const name = prompt("Preset name:");
-    if (!name?.trim()) {
+  function openSavePresetDialog() {
+    setPresetNameDraft(activePreset === "Default" ? "" : activePreset);
+    setSavePresetOpen(true);
+  }
+
+  function savePresetWithName(rawName: string) {
+    const trimmed = rawName.trim();
+    if (!trimmed) {
       return;
     }
-    const trimmed = name.trim();
-    setPresets((prev) => [
-      ...prev.filter((p) => p.name !== trimmed),
-      { name: trimmed, params: { ...params } },
-    ]);
+    if (BUILTIN_PRESETS.some((preset) => preset.name === trimmed)) {
+      return;
+    }
+    setCustomPresets((prev) => {
+      const next = [
+        ...prev.filter((preset) => preset.name !== trimmed),
+        { name: trimmed, params: { ...params } },
+      ];
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }
+      return next;
+    });
+    if (canUseStorage()) {
+      try {
+        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, trimmed);
+      } catch {
+        // ignore
+      }
+    }
     setActivePreset(trimmed);
+    setSavePresetOpen(false);
   }
 
   function deletePreset(name: string) {
     if (BUILTIN_PRESETS.some((p) => p.name === name)) {
       return;
     }
-    setPresets((prev) => prev.filter((p) => p.name !== name));
+    setCustomPresets((prev) => {
+      const next = prev.filter((preset) => preset.name !== name);
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }
+      return next;
+    });
     if (activePreset === name) {
       setActivePreset("Default");
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
+        } catch {
+          // ignore
+        }
+      }
     }
   }
+
+  useEffect(() => {
+    if (presets.some((preset) => preset.name === activePreset)) return;
+    setActivePreset("Default");
+    if (canUseStorage()) {
+      try {
+        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
+      } catch {
+        // ignore
+      }
+    }
+  }, [activePreset, presets]);
 
   const settingsContent = (
     <>
@@ -255,7 +380,7 @@ export function ChatSettingsPanel({
               </Select>
               <button
                 type="button"
-                onClick={savePreset}
+                onClick={openSavePresetDialog}
                 className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
                 title="Save preset"
               >
@@ -442,6 +567,51 @@ export function ChatSettingsPanel({
 
           <ChatTemplateSection onReloadModel={onReloadModel} />
         </div>
+        <Dialog
+          open={savePresetOpen}
+          onOpenChange={(nextOpen) => {
+            setSavePresetOpen(nextOpen);
+            if (!nextOpen) {
+              setPresetNameDraft("");
+            }
+          }}
+        >
+          <DialogContent className="corner-squircle sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Save Preset</DialogTitle>
+              <DialogDescription>
+                Enter a name for this inference preset.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                savePresetWithName(presetNameDraft);
+              }}
+              className="space-y-4"
+            >
+              <Input
+                autoFocus={true}
+                value={presetNameDraft}
+                onChange={(event) => setPresetNameDraft(event.target.value)}
+                placeholder="Preset name"
+                maxLength={80}
+              />
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSavePresetOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={presetNameDraft.trim().length === 0}>
+                  Save
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </>
   );
 
