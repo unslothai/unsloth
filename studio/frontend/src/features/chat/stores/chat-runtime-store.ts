@@ -99,7 +99,7 @@ function loadInferenceParams(): InferenceParams {
       ),
       maxTokens: asFiniteNumber(parsed.maxTokens, DEFAULT_INFERENCE_PARAMS.maxTokens),
       systemPrompt: asString(parsed.systemPrompt, DEFAULT_INFERENCE_PARAMS.systemPrompt),
-      checkpoint: asString(parsed.checkpoint, DEFAULT_INFERENCE_PARAMS.checkpoint),
+      checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
       trustRemoteCode: asBoolean(
         parsed.trustRemoteCode,
         DEFAULT_INFERENCE_PARAMS.trustRemoteCode ?? false,
@@ -113,7 +113,8 @@ function loadInferenceParams(): InferenceParams {
 function saveInferenceParams(params: InferenceParams): boolean {
   if (!canUseStorage()) return false;
   try {
-    localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(params));
+    const { checkpoint: _, ...rest } = params;
+    localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
     return true;
   } catch {
     return false;
