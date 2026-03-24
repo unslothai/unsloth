@@ -92,7 +92,7 @@ function Install-UnslothStudio {
         $launcherContent = @"
 `$ErrorActionPreference = 'Stop'
 `$basePort = 8888
-`$maxPortOffset = 19
+`$maxPortOffset = 20
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 
