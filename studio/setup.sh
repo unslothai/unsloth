@@ -225,7 +225,7 @@ VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
     echo "   Run install.sh first to create the environment:"
-    echo "   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh"
+    echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
     exit 1
 fi
 
