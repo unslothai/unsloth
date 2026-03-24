@@ -66,6 +66,12 @@ function Install-UnslothStudio {
         } else {
             $null
         }
+        if (-not $desktopLink) {
+            Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
+        }
+        if (-not $startMenuLink) {
+            Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
+        }
         $iconPath = Join-Path $appDir "unsloth.ico"
         $bundledIcon = $null
         if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
@@ -108,6 +114,7 @@ function Get-CandidatePorts {
             if (`$ports -notcontains `$p) { `$ports += `$p }
         }
     } catch {
+        Write-Host "[DEBUG] Get-NetTCPConnection failed: `$(`$_.Exception.Message). Falling back to full port scan." -ForegroundColor DarkGray
         # Fallback when Get-NetTCPConnection is unavailable/restricted.
         for (`$offset = 1; `$offset -le `$maxPortOffset; `$offset++) {
             `$ports += (`$basePort + `$offset)
@@ -195,11 +202,15 @@ shell.Run cmd, 0, False
         if ($bundledIcon -and (Test-Path $bundledIcon)) {
             try {
                 Copy-Item -Path $bundledIcon -Destination $iconPath -Force
-            } catch { }
+            } catch {
+                Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
         } elseif (-not (Test-Path $iconPath)) {
             try {
                 Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
-            } catch { }
+            } catch {
+                Write-Host "[DEBUG] Error downloading icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
         }
 
         if (Test-Path $iconPath) {
@@ -217,6 +228,7 @@ shell.Run cmd, 0, False
                     Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
                 }
             } catch {
+                Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
             }
         }
@@ -241,12 +253,6 @@ shell.Run cmd, 0, False
                 } catch {
                     Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
                 }
-            }
-            if (-not $desktopLink) {
-                Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
-            }
-            if (-not $startMenuLink) {
-                Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
             }
             Write-Host "[OK] Created Unsloth Studio desktop and Start menu shortcuts" -ForegroundColor Green
         } catch {
