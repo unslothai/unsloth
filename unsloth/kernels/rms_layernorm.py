@@ -70,7 +70,6 @@ def _rms_layernorm_backward(
     W_row_stride: tl.constexpr,
     r,
     r_row_stride: tl.constexpr,
-    # dW, dW_row_stride,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
@@ -208,8 +207,17 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows: int
         n_cols: int
         n_rows, n_cols = dY.shape
-        # dW = X
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
+
+        # When not GEMMA, dX aliases dY and the Triton kernel overwrites dY with dX. Compute dW
+        # from grad_output (∂L/∂Y) before that write.
+        inv = r.unsqueeze(1)
+        normed_fp32 = X.to(torch.float32) * inv
+        if ctx.GEMMA:
+            chain = normed_fp32
+        else:
+            chain = normed_fp32.to(W.dtype).to(torch.float32)
+        dW = (dY.to(torch.float32) * chain).sum(dim = 0)
 
         with torch_gpu_device(dY.device):
             _rms_layernorm_backward[(n_rows,)](
@@ -223,15 +231,16 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 W.stride(0),
                 r,
                 r.stride(0),
-                # dW, dW.stride(0),
                 n_cols,
                 ctx.eps,
                 GEMMA = ctx.GEMMA,
                 BLOCK_SIZE = ctx.BLOCK_SIZE,
                 num_warps = ctx.num_warps,
             )
+
         dX = dX.view(*shape)
-        return dX, None, None, None
+        dW = dW.to(dtype = W.dtype)
+        return dX, dW, None, None
 
 
 # [TODO] Unsure why RMS Layernorm is not torch.compiling properly
@@ -309,18 +318,24 @@ def test_rms_layernorm(
     torch.cuda.manual_seed(random_state)
     torch.manual_seed(random_state)
     torch.nn.init.uniform_(layernorm.weight)
+    layernorm.weight.requires_grad_(True)
     X = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda")
-    XX = X.clone()
     X.requires_grad_(True)
-    XX.requires_grad_(True)
+    # detach().clone() so XX is a true leaf; X.clone() alone is non-leaf and won't get .grad.
+    XX = X.detach().clone().requires_grad_(True)
     Y = layernorm(X)
-    YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
+    YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda")
     Y.backward(YY)
     correct_grad = X.grad.clone()
-    # from unsloth.kernels import fast_rms_layernorm
+    correct_w_grad = layernorm.weight.grad.clone()
+    layernorm.zero_grad(set_to_none = True)
+    XX.grad = None
     Y = fast_rms_layernorm(layernorm, XX)
     Y.backward(YY)
     assert torch.amax(correct_grad - XX.grad).item() <= 0.05
+    # HF reference forward (LlamaRMSNorm) vs Triton fast_rms differ slightly in bf16/fp16;
+    # weight gradients are a bit more sensitive than activations.
+    assert torch.amax(correct_w_grad - layernorm.weight.grad).item() <= 0.08
 
 
 def testing_suite_layernorm():
