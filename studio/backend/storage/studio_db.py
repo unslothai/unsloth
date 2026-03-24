@@ -291,10 +291,10 @@ def get_run_metrics(id: str) -> dict:
         for row in rows:
             step = row["step"]
             step_history.append(step)
-            if row["loss"] is not None:
+            if step > 0 and row["loss"] is not None:
                 loss_history.append(row["loss"])
                 loss_step_history.append(step)
-            if row["learning_rate"] is not None:
+            if step > 0 and row["learning_rate"] is not None:
                 lr_history.append(row["learning_rate"])
                 lr_step_history.append(step)
             if row["grad_norm"] is not None:

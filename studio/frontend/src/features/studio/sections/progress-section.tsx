@@ -149,7 +149,7 @@ export function ProgressSection({
   );
   const stoppedGradNorm = data.isTrainingRunning
     ? data.currentGradNorm
-    : (lastNonZeroValue(data.gradNormHistory) ?? data.currentGradNorm);
+    : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
   const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
   const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
@@ -262,9 +262,9 @@ export function ProgressSection({
               label="Loss"
               valueClassName="text-2xl font-bold tracking-tight"
             >
-              {stoppedLoss.toFixed(4)}
+              {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
             </MetricStat>
-            <MetricStat label="LR">{stoppedLr.toExponential(2)}</MetricStat>
+            <MetricStat label="LR">{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
             <MetricStat label="Grad Norm">
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
@@ -585,25 +585,21 @@ function MetricStat({
   );
 }
 
-function lastNonZeroValue(points: { value: number }[]): number | null {
-  for (let i = points.length - 1; i >= 0; i -= 1) {
-    const value = points[i]?.value;
-    if (Number.isFinite(value) && value !== 0) {
-      return value;
-    }
-  }
-  return null;
+function lastValue(points: { value: number }[]): number | null {
+  if (points.length === 0) return null;
+  const v = points[points.length - 1]?.value;
+  return v != null && Number.isFinite(v) ? v : null;
 }
 
 function getDisplayMetric(
   isTrainingRunning: boolean,
   currentValue: number,
   history: { value: number }[],
-): number {
+): number | null {
   if (isTrainingRunning) {
-    return currentValue;
+    return currentValue != null ? currentValue : null;
   }
-  return lastNonZeroValue(history) ?? currentValue;
+  return lastValue(history) ?? (currentValue != null ? currentValue : null);
 }
 
 function GpuStat({

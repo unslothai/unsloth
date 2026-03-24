@@ -46,8 +46,8 @@ class TrainingProgress:
     epoch: float = 0
     step: int = 0
     total_steps: int = 0
-    loss: float = 0.0
-    learning_rate: float = 0.0
+    loss: Optional[float] = None
+    learning_rate: Optional[float] = None
     is_training: bool = False
     is_completed: bool = False
     error: Optional[str] = None
@@ -492,7 +492,7 @@ class TrainingBackend:
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
-                if step >= 0 and loss is not None and loss > 0:
+                if step > 0 and loss is not None:
                     self.loss_history.append(loss)
                     self.lr_history.append(lr if lr is not None else 0.0)
                     self.step_history.append(step)
@@ -835,11 +835,13 @@ class TrainingBackend:
             if progress.error:
                 title = f"Error: {progress.error}"
             elif progress.is_completed:
-                title = f"Training completed! Final loss: {progress.loss:.4f}"
+                loss_str = f"{progress.loss:.4f}" if progress.loss is not None else "--"
+                title = f"Training completed! Final loss: {loss_str}"
             elif progress.status_message:
                 title = progress.status_message
             elif progress.step > 0:
-                title = f"Epoch: {progress.epoch} | Step: {progress.step}/{progress.total_steps} | Loss: {progress.loss:.4f}"
+                loss_str = f"{progress.loss:.4f}" if progress.loss is not None else "--"
+                title = f"Epoch: {progress.epoch} | Step: {progress.step}/{progress.total_steps} | Loss: {loss_str}"
             else:
                 title = "Training Loss"
 

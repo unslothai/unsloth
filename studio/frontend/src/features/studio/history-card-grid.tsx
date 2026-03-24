@@ -48,6 +48,25 @@ const statusBadge: Record<
   },
 };
 
+function catmullRomPath(points: { x: number; y: number }[]): string {
+  if (points.length < 2) return "";
+  const d = [`M${points[0]!.x.toFixed(1)},${points[0]!.y.toFixed(1)}`];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(i - 1, 0)]!;
+    const p1 = points[i]!;
+    const p2 = points[i + 1]!;
+    const p3 = points[Math.min(i + 2, points.length - 1)]!;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d.push(
+      `C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`,
+    );
+  }
+  return d.join(" ");
+}
+
 function Sparkline({ values, id }: { values: number[]; id: string }): ReactElement | null {
   if (!values || values.length < 2) return null;
   let min = values[0]!;
@@ -57,35 +76,42 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
     if (values[i]! > max) max = values[i]!;
   }
   const range = max - min || 1;
+  const pad = 1.5; // half stroke-width so peaks aren't clipped
   const h = 32;
   const w = 120;
   const gradientId = `sparkFill-${id}`;
-  const points = values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * w;
-      const y = h - ((v - min) / range) * h;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+
+  // Build points with vertical padding so the stroke isn't clipped
+  const pts = values.map((v, i) => ({
+    x: (i / (values.length - 1)) * w,
+    y: pad + (1 - (v - min) / range) * (h - pad * 2),
+  }));
+
+  const linePath = catmullRomPath(pts);
+  const last = pts[pts.length - 1]!;
+  const first = pts[0]!;
+  const fillPath = `${linePath} L${last.x.toFixed(1)},${h} L${first.x.toFixed(1)},${h} Z`;
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="h-8 w-full" preserveAspectRatio="none" role="img" aria-label="Loss trend sparkline">
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="currentColor" stopOpacity="0.15" />
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0.12" />
           <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <polygon
-        points={`0,${h} ${points} ${w},${h}`}
+      <path
+        d={fillPath}
         fill={`url(#${gradientId})`}
         className="text-emerald-500"
       />
-      <polyline
-        points={points}
+      <path
+        d={linePath}
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         className="text-emerald-500"
       />
     </svg>
@@ -268,7 +294,7 @@ export function HistoryCardGrid({
                 }
               }}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between pr-6">
                 <span
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold",

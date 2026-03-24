@@ -348,7 +348,7 @@ async def reset_training(
             error = None,
             status_message = "Ready to train",
             step = 0,
-            loss = 0.0,
+            loss = None,
             epoch = 0,
             total_steps = 0,
         )
@@ -422,8 +422,8 @@ async def get_training_status(
                 "epoch": getattr(progress, "epoch", 0),
                 "step": getattr(progress, "step", 0),
                 "total_steps": getattr(progress, "total_steps", 0),
-                "loss": getattr(progress, "loss", 0.0),
-                "learning_rate": getattr(progress, "learning_rate", 0.0),
+                "loss": getattr(progress, "loss", None),
+                "learning_rate": getattr(progress, "learning_rate", None),
             }
 
         # Build metric history for chart recovery after SSE reconnection
@@ -529,8 +529,8 @@ async def stream_training_progress(
         # ── Helpers ──────────────────────────────────────────────
         def build_progress(
             step: int,
-            loss: float,
-            learning_rate: float,
+            loss: Optional[float],
+            learning_rate: Optional[float],
             total_steps: int,
             epoch: Optional[float] = None,
             progress: Optional[Any] = None,
@@ -607,10 +607,10 @@ async def stream_training_progress(
                     loss_val = (
                         backend.loss_history[i]
                         if i < len(backend.loss_history)
-                        else 0.0
+                        else None
                     )
                     lr_val = (
-                        backend.lr_history[i] if i < len(backend.lr_history) else 0.0
+                        backend.lr_history[i] if i < len(backend.lr_history) else None
                     )
                     tp_replay = getattr(
                         getattr(backend, "trainer", None), "training_progress", None
@@ -648,8 +648,8 @@ async def stream_training_progress(
 
             initial_progress = build_progress(
                 step = 0,
-                loss = 0.0,
-                learning_rate = 0.0,
+                loss = None,
+                learning_rate = None,
                 total_steps = initial_total_steps,
                 epoch = initial_epoch,
                 progress = tp,
@@ -663,9 +663,9 @@ async def stream_training_progress(
                 if backend.step_history:
                     final_step = backend.step_history[-1]
                     final_loss = (
-                        backend.loss_history[-1] if backend.loss_history else 0.0
+                        backend.loss_history[-1] if backend.loss_history else None
                     )
-                    final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+                    final_lr = backend.lr_history[-1] if backend.lr_history else None
                     final_total_steps = (
                         getattr(tp, "total_steps", final_step) if tp else final_step
                     )
@@ -683,7 +683,7 @@ async def stream_training_progress(
                     )
                 else:
                     yield format_sse(
-                        build_progress(-1, 0.0, 0.0, 0, progress = tp).model_dump_json(),
+                        build_progress(-1, None, None, 0, progress = tp).model_dump_json(),
                         event = "complete",
                         event_id = 0,
                     )
@@ -701,9 +701,9 @@ async def stream_training_progress(
                 if backend.step_history:
                     current_step = backend.step_history[-1]
                     current_loss = (
-                        backend.loss_history[-1] if backend.loss_history else 0.0
+                        backend.loss_history[-1] if backend.loss_history else None
                     )
-                    current_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+                    current_lr = backend.lr_history[-1] if backend.lr_history else None
                     tp_inner = getattr(
                         getattr(backend, "trainer", None), "training_progress", None
                     )
@@ -766,8 +766,8 @@ async def stream_training_progress(
                         )
                         preparing_payload = build_progress(
                             0,
-                            0.0,
-                            0.0,
+                            None,
+                            None,
                             prep_total,
                             progress = tp_prep,
                         )
@@ -784,7 +784,7 @@ async def stream_training_progress(
                         getattr(backend, "trainer", None), "training_progress", None
                     )
                     timeout_payload = build_progress(
-                        last_step, 0.0, 0.0, 0, progress = tp_timeout
+                        last_step, None, None, 0, progress = tp_timeout
                     )
                     yield format_sse(
                         timeout_payload.model_dump_json(),
@@ -800,7 +800,7 @@ async def stream_training_progress(
                 tp_error = getattr(
                     getattr(backend, "trainer", None), "training_progress", None
                 )
-                error_payload = build_progress(0, 0.0, 0.0, 0, progress = tp_error)
+                error_payload = build_progress(0, None, None, 0, progress = tp_error)
                 yield format_sse(
                     error_payload.model_dump_json(),
                     event = "error",
@@ -810,8 +810,8 @@ async def stream_training_progress(
 
         # ── Final "complete" event ───────────────────────────────
         final_step = backend.step_history[-1] if backend.step_history else last_step
-        final_loss = backend.loss_history[-1] if backend.loss_history else 0.0
-        final_lr = backend.lr_history[-1] if backend.lr_history else 0.0
+        final_loss = backend.loss_history[-1] if backend.loss_history else None
+        final_lr = backend.lr_history[-1] if backend.lr_history else None
         final_tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
         final_total_steps = (
             getattr(final_tp, "total_steps", final_step) if final_tp else final_step

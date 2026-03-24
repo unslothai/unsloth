@@ -177,8 +177,8 @@ class TrainingProgress(BaseModel):
     job_id: str = Field(..., description = "Training job identifier")
     step: int = Field(..., description = "Current training step")
     total_steps: int = Field(..., description = "Total training steps")
-    loss: float = Field(..., description = "Current loss value")
-    learning_rate: float = Field(..., description = "Current learning rate")
+    loss: Optional[float] = Field(None, description = "Current loss value")
+    learning_rate: Optional[float] = Field(None, description = "Current learning rate")
     progress_percent: float = Field(
         ..., description = "Progress percentage (0.0 to 100.0)"
     )

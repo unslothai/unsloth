@@ -77,6 +77,15 @@ export function StudioPage(): ReactElement {
     setTourOpen(false);
   }, [activeTab, setTourOpen]);
 
+  // When training auto-switches us to "current-run", persist that in
+  // requestedTab so the user stays on results after training ends.
+  useEffect(() => {
+    if (isTrainingRunning && requestedTab !== "history" && requestedTab !== "current-run") {
+      setRequestedTab("current-run");
+      setSelectedHistoryRunId(null);
+    }
+  }, [isTrainingRunning, requestedTab]);
+
   useEffect(() => {
     ensureModelDefaultsLoaded();
     ensureDatasetChecked();
@@ -173,7 +182,7 @@ export function StudioPage(): ReactElement {
               ) : (
                 <HistoryCardGrid onSelectRun={(runId) => {
                   if (runId === currentJobId && isTrainingRunning) {
-                    setRequestedTab("current-run");
+                    handleTabChange("current-run");
                   } else {
                     setSelectedHistoryRunId(runId);
                   }

@@ -53,8 +53,8 @@ export interface TrainingProgressPayload {
   job_id: string;
   step: number;
   total_steps: number;
-  loss: number;
-  learning_rate: number;
+  loss: number | null;
+  learning_rate: number | null;
   progress_percent: number;
   epoch: number | null;
   elapsed_seconds: number | null;
