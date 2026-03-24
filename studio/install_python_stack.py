@@ -291,7 +291,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL
     _STEP = 0
-    _TOTAL = 11 if IS_WINDOWS else 12
+    _TOTAL = 10 if IS_WINDOWS else 11
 
     # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
     _progress("pip upgrade")
@@ -300,18 +300,7 @@ def install_python_stack() -> int:
     # Try to use uv for faster installs
     USE_UV = _bootstrap_uv()
 
-    # 2. Preinstall torch to a wheel-friendly line for causal-conv1d happy-path testing
-    _progress("torch pin")
-    pip_install(
-        "Installing pinned torch stack",
-        "--no-cache-dir",
-        "torch<2.10.0",
-        "torchvision",
-        "torchaudio",
-        constrain = False,
-    )
-
-    # 3. Core packages: unsloth-zoo + unsloth
+    # 2. Core packages: unsloth-zoo + unsloth
     _progress("base packages")
     pip_install(
         "Installing base packages",
@@ -319,7 +308,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "base.txt",
     )
 
-    # 4. Extra dependencies
+    # 3. Extra dependencies
     _progress("unsloth extras")
     pip_install(
         "Installing additional unsloth dependencies",
@@ -327,7 +316,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras.txt",
     )
 
-    # 4b. Extra dependencies (no-deps) — audio model support etc.
+    # 3b. Extra dependencies (no-deps) — audio model support etc.
     _progress("extra codecs")
     pip_install(
         "Installing extras (no-deps)",
@@ -336,7 +325,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 5. Overrides (torchao, transformers) — force-reinstall
+    # 4. Overrides (torchao, transformers) — force-reinstall
     _progress("dependency overrides")
     pip_install(
         "Installing dependency overrides",
@@ -345,7 +334,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "overrides.txt",
     )
 
-    # 6. Triton kernels (no-deps, from source)
+    # 5. Triton kernels (no-deps, from source)
     if not IS_WINDOWS:
         _progress("triton kernels")
         pip_install(
@@ -377,7 +366,7 @@ def install_python_stack() -> int:
     #     "https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/unsloth/save.py",
     # )
 
-    # 9. Studio dependencies
+    # 8. Studio dependencies
     _progress("studio deps")
     pip_install(
         "Installing studio dependencies",
@@ -385,7 +374,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "studio.txt",
     )
 
-    # 10. Data-designer dependencies
+    # 9. Data-designer dependencies
     _progress("data designer deps")
     pip_install(
         "Installing data-designer base dependencies",
@@ -393,7 +382,7 @@ def install_python_stack() -> int:
         req = SINGLE_ENV / "data-designer-deps.txt",
     )
 
-    # 11. Data-designer packages (no-deps to avoid conflicts)
+    # 10. Data-designer packages (no-deps to avoid conflicts)
     _progress("data designer")
     pip_install(
         "Installing data-designer",
@@ -402,7 +391,7 @@ def install_python_stack() -> int:
         req = SINGLE_ENV / "data-designer.txt",
     )
 
-    # 12. Local Data Designer seed plugin
+    # 11. Local Data Designer seed plugin
     if not LOCAL_DD_UNSTRUCTURED_PLUGIN.is_dir():
         print(
             _red(
@@ -419,7 +408,7 @@ def install_python_stack() -> int:
         constrain = False,
     )
 
-    # 13. Patch metadata for single-env compatibility
+    # 12. Patch metadata for single-env compatibility
     _progress("finalizing")
     run(
         "Patching single-env metadata",
