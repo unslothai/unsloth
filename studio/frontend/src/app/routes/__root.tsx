@@ -17,12 +17,15 @@ const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-p
 
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
-  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
   return false;
 }
 
 export const Route = createRootRoute({
   beforeLoad: ({ location }) => {
+    // Recipes disabled while litellm is quarantined on PyPI
+    if (location.pathname.startsWith("/data-recipes")) {
+      throw redirect({ to: "/studio" });
+    }
     const chatOnly = usePlatformStore.getState().isChatOnly();
     if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
       throw redirect({ to: "/chat" });

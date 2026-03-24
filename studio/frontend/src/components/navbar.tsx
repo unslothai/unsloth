@@ -34,7 +34,7 @@ import { TOUR_OPEN_EVENT } from "@/features/tour";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
-  { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: true },
+  { label: "Recipes", href: "/data-recipes", icon: ChefHatIcon, enabled: false },
   { label: "Export", href: "/export", icon: PackageIcon, enabled: true },
   { label: "Chat", href: "/chat", icon: BubbleChatIcon, enabled: true },
 ];
@@ -93,7 +93,7 @@ export function Navbar() {
             const disabledByTraining =
               isTrainingRunning && item.href !== "/studio";
             const disabledByDevice =
-              chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
+              chatOnly && item.href !== "/chat";
             if (!item.enabled || disabledByTraining || disabledByDevice) {
               return (
                 <span
@@ -240,7 +240,7 @@ export function Navbar() {
                   const disabledByTraining =
                     isTrainingRunning && item.href !== "/studio";
                   const disabledByDevice =
-                    chatOnly && item.href !== "/chat" && item.href !== "/data-recipes";
+                    chatOnly && item.href !== "/chat";
                   if (disabledByTraining || disabledByDevice) {
                     return (
                       <span
