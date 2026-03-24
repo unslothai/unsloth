@@ -239,7 +239,9 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
                 try:
                     run["loss_sparkline"] = json.loads(sparkline)
                 except (json.JSONDecodeError, TypeError):
-                    logger.debug("Failed to parse loss_sparkline for run %s", run.get("id"))
+                    logger.debug(
+                        "Failed to parse loss_sparkline for run %s", run.get("id")
+                    )
                     run["loss_sparkline"] = None
             runs.append(run)
         return {"runs": runs, "total": total}

@@ -469,7 +469,9 @@ class TrainingBackend:
                 try:
                     _safe_lr = float(_raw_lr) if _raw_lr is not None else None
                 except (TypeError, ValueError):
-                    logger.debug("Could not convert learning_rate to float: %s", _raw_lr)
+                    logger.debug(
+                        "Could not convert learning_rate to float: %s", _raw_lr
+                    )
                     _safe_lr = None
                 if _safe_lr is not None and not math.isfinite(_safe_lr):
                     _safe_lr = None
@@ -517,7 +519,9 @@ class TrainingBackend:
                     try:
                         eval_loss = float(eval_loss)
                     except (TypeError, ValueError):
-                        logger.debug("Could not convert eval_loss to float: %s", eval_loss)
+                        logger.debug(
+                            "Could not convert eval_loss to float: %s", eval_loss
+                        )
                         eval_loss = None
                     if step > 0 and eval_loss is not None and math.isfinite(eval_loss):
                         self.eval_loss_history.append(eval_loss)
@@ -547,7 +551,9 @@ class TrainingBackend:
                         "job_id": self.current_job_id,
                         "model_name": self._db_config["model_name"],
                         "dataset_name": self._db_config.get("hf_dataset")
-                        or next(iter(self._db_config.get("local_datasets") or []), "unknown"),
+                        or next(
+                            iter(self._db_config.get("local_datasets") or []), "unknown"
+                        ),
                         "config_json": _json.dumps(self._db_config),
                         "started_at": self._db_started_at
                         or datetime.now(timezone.utc).isoformat(),
@@ -647,9 +653,8 @@ class TrainingBackend:
         try:
             from storage.studio_db import create_run
 
-            dataset_name = (
-                self._db_config.get("hf_dataset")
-                or next(iter(self._db_config.get("local_datasets") or []), "unknown")
+            dataset_name = self._db_config.get("hf_dataset") or next(
+                iter(self._db_config.get("local_datasets") or []), "unknown"
             )
             create_run(
                 id = self.current_job_id,
