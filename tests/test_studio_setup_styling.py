@@ -136,16 +136,16 @@ def _run_bash(
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env
+        ["bash", "-c", script], capture_output = True, text = True, env = env
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
     """Remove colour / verbosity env vars before every test."""
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("UNSLOTH_VERBOSE", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising = False)
+    monkeypatch.delenv("FORCE_COLOR", raising = False)
+    monkeypatch.delenv("UNSLOTH_VERBOSE", raising = False)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -163,47 +163,47 @@ class TestBannerSupportsColor:
         return stdout_supports_color()
 
     def test_no_tty_no_env(self):
-        with patch("sys.stdout.isatty", return_value=False):
+        with patch("sys.stdout.isatty", return_value = False):
             assert self._call() is False
 
     def test_tty_returns_true(self):
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert self._call() is True
 
     def test_no_color_disables_with_tty(self, monkeypatch):
         monkeypatch.setenv("NO_COLOR", "1")
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert self._call() is False
 
     def test_force_color_enables_no_tty(self, monkeypatch):
         monkeypatch.setenv("FORCE_COLOR", "1")
-        with patch("sys.stdout.isatty", return_value=False):
+        with patch("sys.stdout.isatty", return_value = False):
             assert self._call() is True
 
     def test_force_color_zero_truthy(self, monkeypatch):
         monkeypatch.setenv("FORCE_COLOR", "0")
-        with patch("sys.stdout.isatty", return_value=False):
+        with patch("sys.stdout.isatty", return_value = False):
             assert self._call() is True
 
     def test_force_color_empty_falsy(self, monkeypatch):
         monkeypatch.setenv("FORCE_COLOR", "")
-        with patch("sys.stdout.isatty", return_value=False):
+        with patch("sys.stdout.isatty", return_value = False):
             assert self._call() is False
 
     def test_no_color_empty_no_disable(self, monkeypatch):
         monkeypatch.setenv("NO_COLOR", "")
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert self._call() is True
 
     def test_no_color_whitespace_no_disable(self, monkeypatch):
         monkeypatch.setenv("NO_COLOR", "   ")
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert self._call() is True
 
     def test_no_color_overrides_force(self, monkeypatch):
         monkeypatch.setenv("NO_COLOR", "1")
         monkeypatch.setenv("FORCE_COLOR", "1")
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert self._call() is False
 
 
@@ -213,12 +213,11 @@ class TestBannerSupportsColor:
 
 
 class TestPortInUseNotice:
-
     def test_contains_both_ports(self, capsys):
         from studio.backend.startup_banner import print_port_in_use_notice
 
         with patch(
-            "studio.backend.startup_banner.stdout_supports_color", return_value=False
+            "studio.backend.startup_banner.stdout_supports_color", return_value = False
         ):
             print_port_in_use_notice(8888, 8889)
         out = capsys.readouterr().out
@@ -229,7 +228,7 @@ class TestPortInUseNotice:
         from studio.backend.startup_banner import print_port_in_use_notice
 
         with patch(
-            "studio.backend.startup_banner.stdout_supports_color", return_value=False
+            "studio.backend.startup_banner.stdout_supports_color", return_value = False
         ):
             print_port_in_use_notice(8888, 8889)
         assert "\033[" not in capsys.readouterr().out
@@ -238,7 +237,7 @@ class TestPortInUseNotice:
         from studio.backend.startup_banner import print_port_in_use_notice
 
         with patch(
-            "studio.backend.startup_banner.stdout_supports_color", return_value=True
+            "studio.backend.startup_banner.stdout_supports_color", return_value = True
         ):
             print_port_in_use_notice(8888, 8889)
         assert "\033[" in capsys.readouterr().out
@@ -250,19 +249,18 @@ class TestPortInUseNotice:
 
 
 class TestStudioAccessBanner:
-
     PORT = 8888
 
     @staticmethod
-    def _call(*, bind_host, display_host, port=8888, color=False):
+    def _call(*, bind_host, display_host, port = 8888, color = False):
         from studio.backend.startup_banner import print_studio_access_banner
 
         with patch(
             "studio.backend.startup_banner.stdout_supports_color",
-            return_value=color,
+            return_value = color,
         ):
             print_studio_access_banner(
-                port=port, bind_host=bind_host, display_host=display_host
+                port = port, bind_host = bind_host, display_host = display_host
             )
 
     @pytest.mark.parametrize(
@@ -277,7 +275,7 @@ class TestStudioAccessBanner:
             ("localhost", "localhost", "127.0.0.1", False, False, "127.0.0.1"),
             ("192.168.1.5", "192.168.1.5", "127.0.0.1", False, True, "192.168.1.5"),
         ],
-        ids=[
+        ids = [
             "wildcard_v4_ext",
             "wildcard_v4_loop",
             "wildcard_v4_self",
@@ -298,7 +296,7 @@ class TestStudioAccessBanner:
         bound_addr,
         api_host,
     ):
-        self._call(bind_host=bind_host, display_host=display_host, color=False)
+        self._call(bind_host = bind_host, display_host = display_host, color = False)
         out = capsys.readouterr().out
         assert f"http://{expect_local}:{self.PORT}" in out
         assert ("From another device" in out) == from_another
@@ -306,15 +304,15 @@ class TestStudioAccessBanner:
         assert f"http://{api_host}:{self.PORT}/api" in out
 
     def test_color_on_has_ansi(self, capsys):
-        self._call(bind_host="127.0.0.1", display_host="127.0.0.1", color=True)
+        self._call(bind_host = "127.0.0.1", display_host = "127.0.0.1", color = True)
         assert "\033[" in capsys.readouterr().out
 
     def test_color_off_no_ansi(self, capsys):
-        self._call(bind_host="127.0.0.1", display_host="127.0.0.1", color=False)
+        self._call(bind_host = "127.0.0.1", display_host = "127.0.0.1", color = False)
         assert "\033[" not in capsys.readouterr().out
 
     def test_api_urls_present(self, capsys):
-        self._call(bind_host="0.0.0.0", display_host="10.0.0.1", color=False)
+        self._call(bind_host = "0.0.0.0", display_host = "10.0.0.1", color = False)
         out = capsys.readouterr().out
         assert "/api" in out
         assert "/api/health" in out
@@ -326,7 +324,6 @@ class TestStudioAccessBanner:
 
 
 class TestInstallColorDetect:
-
     @staticmethod
     def _mod():
         import studio.install_python_stack as ips
@@ -335,13 +332,13 @@ class TestInstallColorDetect:
 
     def test_no_tty(self):
         ips = self._mod()
-        with patch("sys.stdout.isatty", return_value=False):
+        with patch("sys.stdout.isatty", return_value = False):
             assert ips._stdout_supports_color() is False
 
     def test_tty_linux(self, monkeypatch):
         ips = self._mod()
         monkeypatch.setattr(ips, "IS_WINDOWS", False)
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert ips._stdout_supports_color() is True
 
     def test_force_color(self, monkeypatch):
@@ -350,13 +347,13 @@ class TestInstallColorDetect:
 
     def test_no_color(self, monkeypatch):
         monkeypatch.setenv("NO_COLOR", "1")
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             assert self._mod()._stdout_supports_color() is False
 
     def test_windows_ctypes_fail(self, monkeypatch):
         ips = self._mod()
         monkeypatch.setattr(ips, "IS_WINDOWS", True)
-        with patch("sys.stdout.isatty", return_value=True):
+        with patch("sys.stdout.isatty", return_value = True):
             # ctypes.windll does not exist on Linux, so the except branch fires
             assert ips._stdout_supports_color() is False
 
@@ -367,7 +364,6 @@ class TestInstallColorDetect:
 
 
 class TestInstallStep:
-
     @staticmethod
     def _mod():
         import studio.install_python_stack as ips
@@ -409,7 +405,7 @@ class TestInstallStep:
     def test_custom_color_fn(self, monkeypatch, capsys):
         ips = self._mod()
         monkeypatch.setattr(ips, "_HAS_COLOR", True)
-        ips._step("err", "fail", color_fn=ips._red)
+        ips._step("err", "fail", color_fn = ips._red)
         assert "\033[91m" in capsys.readouterr().out
 
     def test_no_color_no_ansi(self, monkeypatch, capsys):
@@ -425,7 +421,6 @@ class TestInstallStep:
 
 
 class TestInstallProgress:
-
     @staticmethod
     def _mod():
         import studio.install_python_stack as ips
@@ -479,7 +474,6 @@ class TestInstallProgress:
 
 
 class TestBashColorInit:
-
     _SCRIPT = _BASH_COLOR_INIT + '\necho "DIM=${C_DIM}END"'
 
     def test_no_env_empty(self):
@@ -510,7 +504,6 @@ class TestBashColorInit:
 
 
 class TestBashStep:
-
     _PRE = _BASH_COLOR_INIT + _BASH_HELPERS
 
     def test_step_padding(self):
@@ -541,7 +534,6 @@ class TestBashStep:
 
 
 class TestBashRunQuiet:
-
     _PRE = _BASH_COLOR_INIT + _BASH_HELPERS + _BASH_RUN_QUIET
 
     def test_no_exit_success(self):
@@ -566,13 +558,16 @@ class TestBashRunQuiet:
         assert "log_data" in r.stderr
 
     def test_run_quiet_failure_exits(self):
-        script = self._PRE + """
+        script = (
+            self._PRE
+            + """
 (
     run_quiet "bad" false
     echo "SHOULD_NOT_REACH"
 )
 echo "OUTER=$?"
 """
+        )
         r = _run_bash(script)
         assert "SHOULD_NOT_REACH" not in r.stdout
 
@@ -587,7 +582,6 @@ echo "OUTER=$?"
 
 
 class TestBashTryQuiet:
-
     _PRE = _BASH_COLOR_INIT + _BASH_HELPERS + _BASH_TRY_QUIET
 
     def test_success_rc0(self):
@@ -616,9 +610,7 @@ class TestBashTryQuiet:
 
     def test_preserves_exit_code(self):
         r = _run_bash(
-            self._PRE
-            + "\ntry_quiet \"cmd\" bash -c 'exit 42'"
-            + '\necho "RC=$?"'
+            self._PRE + "\ntry_quiet \"cmd\" bash -c 'exit 42'" + '\necho "RC=$?"'
         )
         assert "RC=42" in r.stdout
 
@@ -637,10 +629,9 @@ class TestBashTryQuiet:
 
 
 class TestBashRequestedPython:
-
     _PY_MINOR = sys.version_info.minor
 
-    def _block(self, *, requested="", min_minor=None, max_minor=None):
+    def _block(self, *, requested = "", min_minor = None, max_minor = None):
         if min_minor is None:
             min_minor = self._PY_MINOR - 1
         if max_minor is None:
@@ -652,28 +643,28 @@ class TestBashRequestedPython:
         )
 
     def test_unset_skipped(self):
-        r = _run_bash(self._block(requested=""))
+        r = _run_bash(self._block(requested = ""))
         assert r.stdout.strip().endswith("BEST_PY=")
 
     def test_valid_in_range(self):
-        r = _run_bash(self._block(requested=sys.executable))
+        r = _run_bash(self._block(requested = sys.executable))
         assert f"BEST_PY={sys.executable}" in r.stdout
         assert "using requested Python" in r.stdout
 
     def test_nonexistent_skipped(self):
-        r = _run_bash(self._block(requested="/nonexistent/python3.99"))
+        r = _run_bash(self._block(requested = "/nonexistent/python3.99"))
         assert r.stdout.strip().endswith("BEST_PY=")
 
     def test_not_executable_skipped(self):
-        r = _run_bash(self._block(requested="/dev/null"))
+        r = _run_bash(self._block(requested = "/dev/null"))
         assert r.stdout.strip().endswith("BEST_PY=")
 
     def test_out_of_range(self):
         r = _run_bash(
             self._block(
-                requested=sys.executable,
-                min_minor=self._PY_MINOR + 10,
-                max_minor=self._PY_MINOR + 11,
+                requested = sys.executable,
+                min_minor = self._PY_MINOR + 10,
+                max_minor = self._PY_MINOR + 11,
             )
         )
         assert r.stdout.strip().endswith("BEST_PY=")
@@ -688,9 +679,9 @@ class TestBashRequestedPython:
 class TestPS1Structural:
     """Static analysis of setup.ps1 -- no PowerShell runtime needed."""
 
-    @pytest.fixture(autouse=True)
+    @pytest.fixture(autouse = True)
     def _load(self):
-        self.content = SETUP_PS1.read_text(encoding="utf-8")
+        self.content = SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_fn_step(self):
         assert re.search(r"^function step\s*\{", self.content, re.MULTILINE)
@@ -727,26 +718,25 @@ class TestPS1Structural:
 
 
 class TestCLISetup:
-
     def test_verbose_sets_env(self):
         from typer.testing import CliRunner
 
         from unsloth_cli.commands.studio import studio_app
 
         runner = CliRunner()
-        mock_result = MagicMock(returncode=0)
+        mock_result = MagicMock(returncode = 0)
         with (
             patch(
                 "unsloth_cli.commands.studio._find_setup_script",
-                return_value=Path("/f/setup.sh"),
+                return_value = Path("/f/setup.sh"),
             ),
             patch(
                 "unsloth_cli.commands.studio.subprocess.run",
-                return_value=mock_result,
+                return_value = mock_result,
             ) as mock_run,
             patch(
                 "unsloth_cli.commands.studio.platform.system",
-                return_value="Linux",
+                return_value = "Linux",
             ),
         ):
             result = runner.invoke(studio_app, ["setup", "--verbose"])
@@ -761,19 +751,19 @@ class TestCLISetup:
         from unsloth_cli.commands.studio import studio_app
 
         runner = CliRunner()
-        mock_result = MagicMock(returncode=0)
+        mock_result = MagicMock(returncode = 0)
         with (
             patch(
                 "unsloth_cli.commands.studio._find_setup_script",
-                return_value=Path("/f/setup.sh"),
+                return_value = Path("/f/setup.sh"),
             ),
             patch(
                 "unsloth_cli.commands.studio.subprocess.run",
-                return_value=mock_result,
+                return_value = mock_result,
             ) as mock_run,
             patch(
                 "unsloth_cli.commands.studio.platform.system",
-                return_value="Linux",
+                return_value = "Linux",
             ),
         ):
             result = runner.invoke(studio_app, ["setup"])
@@ -789,7 +779,7 @@ class TestCLISetup:
         runner = CliRunner()
         with patch(
             "unsloth_cli.commands.studio._find_setup_script",
-            return_value=None,
+            return_value = None,
         ):
             result = runner.invoke(studio_app, ["setup"])
         assert result.exit_code == 1
@@ -801,19 +791,19 @@ class TestCLISetup:
         from unsloth_cli.commands.studio import studio_app
 
         runner = CliRunner()
-        mock_result = MagicMock(returncode=42)
+        mock_result = MagicMock(returncode = 42)
         with (
             patch(
                 "unsloth_cli.commands.studio._find_setup_script",
-                return_value=Path("/f/setup.sh"),
+                return_value = Path("/f/setup.sh"),
             ),
             patch(
                 "unsloth_cli.commands.studio.subprocess.run",
-                return_value=mock_result,
+                return_value = mock_result,
             ),
             patch(
                 "unsloth_cli.commands.studio.platform.system",
-                return_value="Linux",
+                return_value = "Linux",
             ),
         ):
             result = runner.invoke(studio_app, ["setup"])
