@@ -46,12 +46,12 @@ function Install-UnslothStudio {
         $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Unsloth Studio.lnk"
         $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
         $startMenuLink = Join-Path $startMenuDir "Unsloth Studio.lnk"
-        $iconPath = Join-Path $appDir "sloth.ico"
+        $iconPath = Join-Path $appDir "unsloth.ico"
         $bundledIcon = $null
         if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
-            $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\sloth.ico"
+            $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
         }
-        $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/studio/frontend/public/sloth.ico"
+        $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/studio/frontend/public/unsloth.ico"
 
         if (-not (Test-Path $appDir)) {
             New-Item -ItemType Directory -Path $appDir -Force | Out-Null
