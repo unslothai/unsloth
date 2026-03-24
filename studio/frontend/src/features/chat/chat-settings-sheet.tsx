@@ -166,6 +166,35 @@ function ParamSlider({
   );
 }
 
+const COLLAPSIBLE_STATE_KEY = "unsloth_chat_collapsible_state";
+
+function loadCollapsibleState(): Record<string, boolean> {
+  if (!canUseStorage()) return {};
+  try {
+    const raw = localStorage.getItem(COLLAPSIBLE_STATE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, boolean>;
+    }
+    return {};
+  } catch (error) {
+    console.error("Failed to load collapsible state from localStorage:", error);
+    return {};
+  }
+}
+
+function saveCollapsibleOpen(label: string, open: boolean) {
+  if (!canUseStorage()) return;
+  try {
+    const state = loadCollapsibleState();
+    state[label] = open;
+    localStorage.setItem(COLLAPSIBLE_STATE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
+
 function CollapsibleSection({
   icon,
   label,
@@ -177,13 +206,20 @@ function CollapsibleSection({
   children?: ReactNode;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(() => {
+    const saved = loadCollapsibleState();
+    return label in saved ? saved[label] : defaultOpen;
+  });
 
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          saveCollapsibleOpen(label, next);
+        }}
         className="flex w-full items-center corner-squircle gap-2.5 rounded-md px-2 py-2 text-sm transition-colors hover:bg-accent"
       >
         <HugeiconsIcon icon={icon} className="size-4 text-muted-foreground" />
