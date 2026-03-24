@@ -46,6 +46,9 @@ function Install-UnslothStudio {
         $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Unsloth Studio.lnk"
         $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
         $startMenuLink = Join-Path $startMenuDir "Unsloth Studio.lnk"
+        $iconPath = Join-Path $appDir "sloth.ico"
+        $bundledIcon = Join-Path $PSScriptRoot "images\sloth.ico"
+        $iconUrl = "https://raw.githubusercontent.com/imagineer99/unsloth/feat/install-ps1-studio-shortcuts/images/sloth.ico"
 
         if (-not (Test-Path $appDir)) {
             New-Item -ItemType Directory -Path $appDir -Force | Out-Null
@@ -72,6 +75,39 @@ Start-Process -FilePath `"$UnslothExePath`" -ArgumentList 'studio', '-H', '0.0.0
 
         Set-Content -Path $launcherPs1 -Value $launcherContent -Encoding ASCII -Force
 
+        # Prefer bundled icon from local clone/dev installs.
+        # If not available, best-effort download from raw GitHub.
+        # We only attach the icon if the resulting file has a valid ICO header.
+        $hasValidIcon = $false
+        if (Test-Path $bundledIcon) {
+            try {
+                Copy-Item -Path $bundledIcon -Destination $iconPath -Force
+            } catch { }
+        } elseif (-not (Test-Path $iconPath)) {
+            try {
+                Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
+            } catch { }
+        }
+
+        if (Test-Path $iconPath) {
+            try {
+                $bytes = [System.IO.File]::ReadAllBytes($iconPath)
+                if (
+                    $bytes.Length -ge 4 -and
+                    $bytes[0] -eq 0 -and
+                    $bytes[1] -eq 0 -and
+                    $bytes[2] -eq 1 -and
+                    $bytes[3] -eq 0
+                ) {
+                    $hasValidIcon = $true
+                } else {
+                    Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+
         $powershellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
         $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
 
@@ -82,6 +118,9 @@ Start-Process -FilePath `"$UnslothExePath`" -ArgumentList 'studio', '-H', '0.0.0
             $shortcut.Arguments = $shortcutArgs
             $shortcut.WorkingDirectory = $env:USERPROFILE
             $shortcut.Description = "Launch Unsloth Studio"
+            if ($hasValidIcon) {
+                $shortcut.IconLocation = "$iconPath,0"
+            }
             $shortcut.Save()
         }
 
