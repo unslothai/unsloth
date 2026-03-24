@@ -193,9 +193,20 @@ def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
 
 
 def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
-    """Build a standard pip install command."""
+    """Build a standard pip install command.
+
+    Strips uv-only flags like --upgrade-package that pip doesn't understand.
+    """
     cmd = [sys.executable, "-m", "pip", "install"]
-    cmd.extend(args)
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--upgrade-package":
+            skip_next = True  # skip the flag and its value
+            continue
+        cmd.append(arg)
     return cmd
 
 
@@ -348,10 +359,15 @@ def install_python_stack() -> int:
             package_name,
         )
     else:
+        # Update path: upgrade only unsloth + unsloth-zoo while preserving
+        # existing torch/CUDA installations (--torch-backend=auto is already
+        # added by _build_uv_cmd, --upgrade-package targets only base pkgs).
         _progress("base packages")
         pip_install(
-            "Installing base packages",
+            "Updating base packages",
             "--no-cache-dir",
+            "--upgrade-package", "unsloth",
+            "--upgrade-package", "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
 
