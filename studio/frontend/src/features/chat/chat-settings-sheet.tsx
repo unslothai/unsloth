@@ -174,12 +174,16 @@ function loadCollapsibleState(): Record<string, boolean> {
     const raw = localStorage.getItem(COLLAPSIBLE_STATE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, boolean>;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
     }
-    return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+      ),
+    );
   } catch (error) {
-    console.error("Failed to load collapsible state from localStorage:", error);
+    console.warn("Failed to load collapsible state from localStorage:", error);
     return {};
   }
 }
@@ -208,7 +212,7 @@ function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(() => {
     const saved = loadCollapsibleState();
-    return label in saved ? saved[label] : defaultOpen;
+    return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
   });
 
   return (
@@ -459,7 +463,7 @@ export function ChatSettingsPanel({
             />
           </div>
 
-          <CollapsibleSection icon={Settings02Icon} label="Model">
+          <CollapsibleSection icon={Settings02Icon} label="Model" defaultOpen={true}>
             <div className="flex flex-col gap-3 py-1">
               {isGguf && (
                 <>
@@ -467,7 +471,7 @@ export function ChatSettingsPanel({
                     <div className="min-w-0">
                       <div className="text-xs font-medium">Context Length</div>
                       <div className="text-[11px] text-muted-foreground">
-                        Set before loading model (coming soon)
+                        Reported by the loaded GGUF model.
                       </div>
                     </div>
                     <Input
@@ -614,7 +618,7 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection icon={UserSettings01Icon} label="Preferences">
+          <CollapsibleSection icon={UserSettings01Icon} label="Preferences" defaultOpen={true}>
             <div className="flex flex-col gap-3 py-1">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
