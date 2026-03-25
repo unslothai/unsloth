@@ -605,17 +605,17 @@ class TestSourceCodePatterns:
         assert idx_rm > idx_git, "rm -rf should come after git check"
 
     def test_setup_sh_clone_uses_branch_tag(self):
-        """git clone in source-build should use --branch."""
+        """git clone in source-build should use --branch via _CLONE_BRANCH_ARGS."""
         content = SETUP_SH.read_text()
-        # Find the clone line in the source-build block
-        for line in content.splitlines():
-            if "git clone" in line and "ggml-org/llama.cpp" in line:
-                assert (
-                    '--branch "$_RESOLVED_LLAMA_TAG"' in line
-                ), f"Clone line missing --branch: {line.strip()}"
-                break
-        else:
-            pytest.fail("git clone line not found in setup.sh")
+        # The clone line should use _CLONE_BRANCH_ARGS (which conditionally includes --branch)
+        assert "_CLONE_BRANCH_ARGS" in content, "Clone should use _CLONE_BRANCH_ARGS array"
+        assert '--branch "$_RESOLVED_LLAMA_TAG"' in content, (
+            "_CLONE_BRANCH_ARGS should be set to --branch $_RESOLVED_LLAMA_TAG"
+        )
+        # Verify the guard: --branch is only used when tag is not "latest"
+        assert '_RESOLVED_LLAMA_TAG" != "latest"' in content, (
+            "Should guard against literal 'latest' tag"
+        )
 
     def test_setup_sh_latest_resolution_queries_unsloth_first(self):
         """The Unsloth repo should be queried before ggml-org."""
@@ -635,7 +635,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_clone_uses_branch_tag(self):
         """PS1 clone should use --branch with the resolved tag."""
         content = SETUP_PS1.read_text()
-        assert "--branch", "$ResolvedLlamaTag" in content
+        assert "--branch" in content and "$ResolvedLlamaTag" in content
         # The old commented-out line should be gone
         assert "# git clone --depth 1 --branch" not in content
 
