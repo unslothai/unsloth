@@ -16,8 +16,9 @@
 # Original paper: "Q-GaLore: Quantized GaLore with INT4 Projection and
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
 
+from collections import deque
+
 import torch
-import torch.nn.functional as F
 
 __all__ = ["GaLoreProjector"]
 
@@ -74,6 +75,7 @@ class GaLoreProjector:
         "past_ortho_vector",
         "queue",
         "svd_count",
+        "_ortho_float_cache",
     )
 
     def __init__(
@@ -104,8 +106,9 @@ class GaLoreProjector:
         self.gamma_proj = gamma_proj
         self.queue_size = queue_size
         self.past_ortho_vector = None
-        self.queue: list = []
+        self.queue = deque(maxlen=queue_size)
         self.svd_count = 0
+        self._ortho_float_cache = None
 
         # Projection matrix state
         self.ortho_matrix = None
@@ -144,8 +147,8 @@ class GaLoreProjector:
                 self._update_adaptive_schedule(float_ortho, side = "right")
                 self._store_ortho(float_ortho)
 
-            float_ortho = self._load_ortho()
-            low_rank_grad = torch.matmul(full_rank_grad, float_ortho.t())
+            self._ortho_float_cache = self._load_ortho()
+            low_rank_grad = torch.matmul(full_rank_grad, self._ortho_float_cache.t())
         else:
             # "wide" matrix → left projection  (Q^T @ grad)
             if self.ortho_matrix is None or step % self.update_proj_gap == 0:
@@ -157,8 +160,8 @@ class GaLoreProjector:
                 self._update_adaptive_schedule(float_ortho, side = "left")
                 self._store_ortho(float_ortho)
 
-            float_ortho = self._load_ortho()
-            low_rank_grad = torch.matmul(float_ortho.t(), full_rank_grad)
+            self._ortho_float_cache = self._load_ortho()
+            low_rank_grad = torch.matmul(self._ortho_float_cache.t(), full_rank_grad)
 
         return low_rank_grad
 
@@ -171,7 +174,10 @@ class GaLoreProjector:
         Returns:
             The full-rank update scaled by ``self.scale``.
         """
-        float_ortho = self._load_ortho()
+        float_ortho = self._ortho_float_cache
+        self._ortho_float_cache = None
+        if float_ortho is None:
+            float_ortho = self._load_ortho()
 
         if low_rank_grad.shape[0] >= low_rank_grad.shape[1]:
             full_rank_grad = torch.matmul(low_rank_grad, float_ortho)
@@ -205,14 +211,19 @@ class GaLoreProjector:
 
         matrix = weights.float() if original_dtype != torch.float32 else weights
 
-        U, s, Vh = torch.linalg.svd(matrix, full_matrices = False)
-
-        if side == "right":
-            result = Vh[:rank, :]
-        elif side == "left":
-            result = U[:, :rank]
-        else:
+        if side not in ("right", "left"):
             raise ValueError(f"side must be 'left' or 'right', got '{side}'")
+
+        m, n = matrix.shape
+        if min(m, n) <= rank * 2:
+            U, s, Vh = torch.linalg.svd(matrix, full_matrices=False)
+            result = Vh[:rank, :] if side == "right" else U[:, :rank]
+        else:
+            # Oversampling p=10 per Halko et al. 2009 (arXiv:0909.4061)
+            # recommendation of p=5..10 for large low-rank matrices.
+            q = min(rank + 10, min(m, n))
+            U, s, V = torch.svd_lowrank(matrix, q=q, niter=2)
+            result = V[:, :rank].t() if side == "right" else U[:, :rank]
 
         if original_dtype != torch.float32:
             result = result.to(device = original_device, dtype = original_dtype)
@@ -236,18 +247,13 @@ class GaLoreProjector:
             current_vector = float_ortho[:, :1].flatten()
 
         if self.past_ortho_vector is not None:
-            cos_sim = F.cosine_similarity(
-                self.past_ortho_vector.unsqueeze(0),
-                current_vector.unsqueeze(0),
-            ).item()
+            cos_sim = torch.dot(self.past_ortho_vector, current_vector).item()
 
-            if len(self.queue) == self.queue_size:
-                self.queue.pop(0)
             self.queue.append(cos_sim)
 
             if (
-                len(self.queue) == self.queue_size
-                and sum(self.queue) / self.queue_size >= self.cos_threshold
+                len(self.queue) == self.queue.maxlen
+                and sum(self.queue) / len(self.queue) >= self.cos_threshold
             ):
                 self.update_proj_gap = int(self.update_proj_gap * self.gamma_proj)
 

@@ -148,7 +148,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             p._q_zeros,
                             p._q_shape,
                         )
-                        p.data = float_weight.clone().to(p.data.device)
+                        p.data = float_weight
                     # else: first step, weights are still float — skip dequantize
 
                 # --- GaLore projection ---
@@ -208,7 +208,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 # --- Re-quantize weight to INT8 ---
                 if has_weight_quant:
-                    float_data = p.data.clone()
+                    float_data = p.data
                     stochastic = group.get("stochastic_round", True)
                     gsize = group.get("weight_group_size", 128)
                     quant_fn = _quantize_stochastic if stochastic else _quantize
@@ -220,16 +220,11 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # Replace p.data with a scalar placeholder to free float memory.
                     # A forward pre-hook (install_weight_quant_hooks) will
                     # dequantize back to float before the next forward pass.
-                    p.data = torch.zeros(1, dtype=p.data.dtype, device=p.data.device)
+                    p.data = torch.empty(1, dtype=p.data.dtype, device=p.data.device)
 
                 state["step"] += 1
 
-            # Sync once per param group (not per-param) to avoid excessive
-            # GPU stalls while still ensuring bnb async kernels complete.
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-
-        if self.is_paged and torch.cuda.is_available():
+        if torch.cuda.is_available():
             torch.cuda.synchronize()
 
         return loss
