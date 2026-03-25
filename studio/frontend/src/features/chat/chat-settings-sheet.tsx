@@ -483,6 +483,7 @@ export function ChatSettingsPanel({
                         value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
                         placeholder="..."
                         min={128}
+                        max={ggufContextLength ?? undefined}
                         step={1024}
                         className="h-6 w-[100px] text-right text-xs tabular-nums"
                         onChange={(e) => {
@@ -493,7 +494,9 @@ export function ChatSettingsPanel({
                           }
                           const v = parseInt(raw, 10);
                           if (!Number.isNaN(v) && v >= 0) {
-                            setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                            const maxCtx = ggufContextLength ?? Infinity;
+                            const clamped = Math.min(v, maxCtx);
+                            setCustomContextLength(clamped === (ggufContextLength ?? 0) ? null : clamped);
                           }
                         }}
                       />
