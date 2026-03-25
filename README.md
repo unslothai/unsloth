@@ -97,7 +97,8 @@ unsloth studio update --local
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass .\install.ps1 --local
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to update :
@@ -124,7 +125,8 @@ Run in Windows Powershell:
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 git checkout nightly
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass .\install.ps1 --local
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
