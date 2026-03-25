@@ -127,6 +127,7 @@ fn main() {
             commands::get_server_logs,
             commands::get_bootstrap_password,
             commands::open_logs_dir,
+            commands::install_system_packages,
         ])
         .setup(|app| {
             setup_tray(app)?;
@@ -139,6 +140,17 @@ fn main() {
                 api.prevent_close();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Cleanup on ALL exit paths — safety net for non-tray exits
+                if let Some(install_state) = app.try_state::<install::InstallState>() {
+                    let _ = install::stop_install(&install_state);
+                }
+                if let Some(backend_state) = app.try_state::<process::BackendState>() {
+                    let _ = process::stop_backend(&backend_state);
+                }
+            }
+        });
 }
