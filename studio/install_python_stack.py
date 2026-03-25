@@ -376,11 +376,14 @@ def install_python_stack() -> int:
         # pip may not exist yet (uv-created venvs omit it). Try ensurepip
         # first, then upgrade. Only fall back to a direct upgrade when pip
         # is already present.
-        _has_pip = subprocess.run(
-            [sys.executable, "-m", "pip", "--version"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        ).returncode == 0
+        _has_pip = (
+            subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
 
         if not _has_pip:
             run(
