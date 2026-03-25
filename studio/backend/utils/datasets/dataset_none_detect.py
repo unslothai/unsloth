@@ -372,7 +372,14 @@ def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
 FORMAT_REGISTRY = [
     {
         "name": "alpaca",
-        "match": lambda ds, conv: {"instruction", "output"}.issubset(ds.column_names),
+        # Only match alpaca when no conversation column is detected.  A dataset
+        # with both instruction/output columns AND a messages/conversations
+        # column should be scanned as conversational so None turns are caught.
+        # Without this guard, alpaca wins first and conversational turns are
+        # never inspected, producing a silent false negative (P1 fix).
+        "match": lambda ds, conv: (
+            {"instruction", "output"}.issubset(ds.column_names) and conv is None
+        ),
         "scan": find_none_alpaca,
     },
     {
