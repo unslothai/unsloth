@@ -69,10 +69,12 @@ export const ArtifactPanel: FC = () => {
 
   const active = artifacts.find((a) => a.id === activeId) ?? artifacts[0];
 
-  // Sync local editor value when active artifact changes
+  // Sync local editor value when switching between artifacts
   useEffect(() => {
     if (active) setLocalValue(active.content);
-  }, [active?.id, active?.content]);
+    // Only reset on tab switch, not on content updates (which would clobber edits)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id]);
 
   if (!panelOpen || artifacts.length === 0 || !active) return null;
 
