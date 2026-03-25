@@ -483,7 +483,7 @@ export function ChatSettingsPanel({
                         value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
                         placeholder="..."
                         min={128}
-                        className="h-6 w-[80px] text-right text-xs tabular-nums"
+                        className="h-6 w-[100px] text-right text-xs tabular-nums"
                         onChange={(e) => {
                           const raw = e.target.value;
                           if (raw === "") {
@@ -498,9 +498,9 @@ export function ChatSettingsPanel({
                       />
                     </div>
                     <Slider
-                      min={512}
+                      min={1024}
                       max={ggufContextLength ?? 4096}
-                      step={512}
+                      step={1024}
                       value={[Math.min(typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096), ggufContextLength ?? 4096)]}
                       onValueChange={([v]) => {
                         setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
