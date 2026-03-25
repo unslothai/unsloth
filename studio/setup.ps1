@@ -1267,7 +1267,13 @@ if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
     $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
         ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
     } elseif ($RequestedLlamaTag -eq "latest") {
-        "latest"
+        # Try to resolve the actual latest release tag from ggml-org/llama.cpp
+        try {
+            $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -ErrorAction Stop
+            $latestRelease.tag_name
+        } catch {
+            $RequestedLlamaTag
+        }
     } else {
         $RequestedLlamaTag
     }
@@ -1460,11 +1466,7 @@ if (-not $NeedLlamaSourceBuild) {
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
-        if ($ResolvedLlamaTag -eq "latest") {
-            git -C $LlamaCppDir fetch --depth 1 origin 2>&1 | Out-Null
-        } else {
-            git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag 2>&1 | Out-Null
-        }
+        git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "   [WARN] git fetch failed -- using existing source" -ForegroundColor Yellow
         } else {
@@ -1479,12 +1481,7 @@ if (-not $NeedLlamaSourceBuild) {
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
         if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
-        $cloneArgs = @("clone", "--depth", "1")
-        if ($ResolvedLlamaTag -ne "latest") {
-            $cloneArgs += @("--branch", $ResolvedLlamaTag)
-        }
-        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $LlamaCppDir)
-        git @cloneArgs 2>&1 | Out-Null
+        git clone --depth 1 --branch $ResolvedLlamaTag https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"

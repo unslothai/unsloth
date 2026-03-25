@@ -377,8 +377,10 @@ if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
     set -e
     if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
         if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
-            _RESOLVED_LLAMA_TAG="latest"
-        else
+            # Try to resolve the actual latest release tag from ggml-org/llama.cpp
+            _RESOLVED_LLAMA_TAG="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
+        fi
+        if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
             _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
         fi
     fi
@@ -518,11 +520,7 @@ else
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        _CLONE_BRANCH_ARG=()
-        if [ "$_RESOLVED_LLAMA_TAG" != "latest" ]; then
-            _CLONE_BRANCH_ARG=(--branch "$_RESOLVED_LLAMA_TAG")
-        fi
-        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARG[@]}" https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 --branch "$_RESOLVED_LLAMA_TAG" https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)
