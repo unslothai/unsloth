@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "Local Data Designer unstructured seed reader plugin"
 requires-python = ">=3.11"
 dependencies = [
-  "data-designer-engine>=0.5.1,<0.6",
+  "data-designer-engine>=0.5.4,<0.6",
   "pandas>=2,<3",
   "pymupdf>=1.24.0",
   "pymupdf4llm>=0.0.17",
