@@ -497,7 +497,6 @@ if ($DriverMaxCuda) {
             $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
             if ($isCompat) {
                 # Also verify the toolkit supports our GPU architecture
-                Write-Host "   [DEBUG] Checking CUDA compatibility: toolkit=$tkMaj.$tkMin arch=sm_$CudaArch" -ForegroundColor Magenta
                 $archOk = $true
                 if ($CudaArch) {
                     $archOk = Test-NvccArchSupport -NvccExe $candidateNvcc -Arch $CudaArch

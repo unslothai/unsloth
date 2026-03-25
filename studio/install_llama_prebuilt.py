@@ -2127,10 +2127,30 @@ def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
 
 @contextmanager
 def install_lock(lock_path: Path) -> Iterator[None]:
-    if FileLock is None:
-        yield
-        return
     lock_path.parent.mkdir(parents = True, exist_ok = True)
+
+    if FileLock is None:
+        # Fallback: exclusive file creation as a simple lock
+        fd: int | None = None
+        deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
+                    )
+                time.sleep(0.5)
+        try:
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
+            lock_path.unlink(missing_ok = True)
+        return
+
     try:
         with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
             yield
@@ -2721,12 +2741,12 @@ def binary_env(
             dedupe_existing_dirs([*ld_dirs, *existing])
         )
     elif host.is_macos:
-        env["DYLD_LIBRARY_PATH"] = (
-            str(binary_path.parent)
-            + os.pathsep
-            + str(install_dir)
-            + os.pathsep
-            + env.get("DYLD_LIBRARY_PATH", "")
+        dyld_dirs = [str(binary_path.parent), str(install_dir)]
+        existing = [
+            part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part
+        ]
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+            dedupe_existing_dirs([*dyld_dirs, *existing])
         )
     return env
 
