@@ -334,11 +334,7 @@ export function ModelSection() {
                   {(id: string) => {
                     const model = localMetaById.get(id);
                     const source =
-                      model?.source === "hf_cache"
-                        ? "HF cache"
-                        : model?.source === "lmstudio"
-                          ? "LM Studio"
-                          : "Local dir";
+                      model?.source === "hf_cache" ? "HF cache" : "Local dir";
                     return (
                       <ComboboxItem key={id} value={id} className="gap-2">
                         <Tooltip>

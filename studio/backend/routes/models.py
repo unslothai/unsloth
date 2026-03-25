@@ -210,76 +210,6 @@ def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
-def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory for model files.
-
-    LM Studio uses a ``publisher/model-name`` folder structure containing
-    GGUF files, or standalone GGUF files at the top level.
-    """
-    if not lm_dir.exists() or not lm_dir.is_dir():
-        return []
-
-    found: List[LocalModelInfo] = []
-    for child in lm_dir.iterdir():
-        if not child.is_dir():
-            if child.suffix == ".gguf" and child.is_file():
-                try:
-                    updated_at = child.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(child),
-                        display_name = child.stem,
-                        path = str(child),
-                        source = "lmstudio",
-                        updated_at = updated_at,
-                    ),
-                )
-            continue
-
-        # child is a publisher directory — scan its sub-directories
-        for model_dir in child.iterdir():
-            if model_dir.is_dir():
-                has_model = (
-                    any(model_dir.glob("*.gguf"))
-                    or (model_dir / "config.json").exists()
-                    or any(model_dir.glob("*.safetensors"))
-                )
-                if not has_model:
-                    continue
-                model_id = f"{child.name}/{model_dir.name}"
-                try:
-                    updated_at = model_dir.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = model_id,
-                        model_id = model_id,
-                        display_name = model_dir.name,
-                        path = str(model_dir),
-                        source = "lmstudio",
-                        updated_at = updated_at,
-                    ),
-                )
-            elif model_dir.suffix == ".gguf" and model_dir.is_file():
-                try:
-                    updated_at = model_dir.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(model_dir),
-                        display_name = model_dir.stem,
-                        path = str(model_dir),
-                        source = "lmstudio",
-                        updated_at = updated_at,
-                    ),
-                )
-    return found
-
-
 @router.get("/local", response_model = LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
@@ -288,24 +218,13 @@ async def list_local_models(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    List local model candidates from custom models dir, HF cache,
-    legacy Unsloth HF cache, and LM Studio directories.
+    List local model candidates from custom models dir and HF cache.
     """
-    from utils.paths import legacy_hf_cache_dir, lmstudio_model_dirs
-
-    # Resolve all scan directories up front.
-    hf_cache_dir = _resolve_hf_cache_dir()
-    legacy_hf = legacy_hf_cache_dir()
-    lm_dirs = lmstudio_model_dirs()
-
     # Validate models_dir against an allowlist of trusted directories.
     # Only the trusted Path objects are used for filesystem access -- the
     # user-supplied string is only used for matching, never for path construction.
-    allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
-    if legacy_hf.is_dir():
-        allowed_roots.append(legacy_hf)
-    for d in lm_dirs:
-        allowed_roots.append(d)
+    hf_cache_dir = _resolve_hf_cache_dir()
+    allowed_roots = [Path("./models").resolve(), hf_cache_dir]
     try:
         from utils.paths import studio_root, outputs_root
 
@@ -329,14 +248,6 @@ async def list_local_models(
     try:
         local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
 
-        # Scan legacy Unsloth HF cache for backward compatibility
-        if legacy_hf.is_dir() and legacy_hf.resolve() != hf_cache_dir.resolve():
-            local_models += _scan_hf_cache(legacy_hf)
-
-        # Scan LM Studio directories
-        for lm_dir in lm_dirs:
-            local_models += _scan_lmstudio_dir(lm_dir)
-
         deduped: dict[str, LocalModelInfo] = {}
         for model in local_models:
             if model.id not in deduped:
@@ -351,7 +262,6 @@ async def list_local_models(
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
             models = models,
         )
     except Exception as e:
@@ -940,44 +850,42 @@ def _get_repo_size_cached(repo_id: str) -> int:
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
 ):
-    """List GGUF repos downloaded to HF cache and legacy Unsloth cache."""
+    """List GGUF repos that have already been downloaded to the HF cache.
+
+    Uses scan_cache_dir() for proper repo IDs, then deduplicates by
+    lowercased key (HF cache dirs are lowercased but the canonical repo
+    ID preserves casing).
+    """
     try:
         from huggingface_hub import scan_cache_dir
-        from utils.paths import legacy_hf_cache_dir
 
-        cache_scans = [scan_cache_dir()]
-        legacy_hf = legacy_hf_cache_dir()
-        if legacy_hf.is_dir():
-            try:
-                cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception:
-                pass
-
+        hf_cache = scan_cache_dir()
         seen_lower: dict[str, dict] = {}
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                if repo_info.repo_type != "model":
-                    continue
-                repo_id = repo_info.repo_id
-                if not repo_id.upper().endswith("-GGUF"):
-                    continue
-                total_size = 0
-                has_gguf = False
-                for revision in repo_info.revisions:
-                    for f in revision.files:
-                        if f.file_name.endswith(".gguf"):
-                            has_gguf = True
-                            total_size += f.size_on_disk
-                if not has_gguf:
-                    continue
-                key = repo_id.lower()
-                existing = seen_lower.get(key)
-                if existing is None or total_size > existing["size_bytes"]:
-                    seen_lower[key] = {
-                        "repo_id": repo_id,
-                        "size_bytes": total_size,
-                        "cache_path": str(repo_info.repo_path),
-                    }
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            repo_id = repo_info.repo_id
+            if not repo_id.upper().endswith("-GGUF"):
+                continue
+            # Check for actual .gguf files and sum sizes
+            total_size = 0
+            has_gguf = False
+            for revision in repo_info.revisions:
+                for f in revision.files:
+                    if f.file_name.endswith(".gguf"):
+                        has_gguf = True
+                        total_size += f.size_on_disk
+            if not has_gguf:
+                continue
+            # Deduplicate: keep the entry with the most data
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            if existing is None or total_size > existing["size_bytes"]:
+                seen_lower[key] = {
+                    "repo_id": repo_id,
+                    "size_bytes": total_size,
+                    "cache_path": str(repo_info.repo_path),
+                }
         cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:
@@ -989,48 +897,44 @@ async def list_cached_gguf(
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
 ):
-    """List non-GGUF model repos downloaded to HF cache and legacy Unsloth cache."""
+    """List non-GGUF model repos that have been downloaded to the HF cache.
+
+    Only includes repos that actually contain model weight files
+    (.safetensors, .bin), not repos with only config/metadata.
+    """
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
     try:
         from huggingface_hub import scan_cache_dir
-        from utils.paths import legacy_hf_cache_dir
 
-        cache_scans = [scan_cache_dir()]
-        legacy_hf = legacy_hf_cache_dir()
-        if legacy_hf.is_dir():
-            try:
-                cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception:
-                pass
-
+        hf_cache = scan_cache_dir()
         seen_lower: dict[str, dict] = {}
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                if repo_info.repo_type != "model":
-                    continue
-                repo_id = repo_info.repo_id
-                if repo_id.upper().endswith("-GGUF"):
-                    continue
-                total_size = sum(
-                    f.size_on_disk for rev in repo_info.revisions for f in rev.files
-                )
-                if total_size == 0:
-                    continue
-                has_weights = any(
-                    f.file_name.endswith(_WEIGHT_EXTENSIONS)
-                    for rev in repo_info.revisions
-                    for f in rev.files
-                )
-                if not has_weights:
-                    continue
-                key = repo_id.lower()
-                existing = seen_lower.get(key)
-                if existing is None or total_size > existing["size_bytes"]:
-                    seen_lower[key] = {
-                        "repo_id": repo_id,
-                        "size_bytes": total_size,
-                    }
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            repo_id = repo_info.repo_id
+            if repo_id.upper().endswith("-GGUF"):
+                continue
+            total_size = sum(
+                f.size_on_disk for rev in repo_info.revisions for f in rev.files
+            )
+            if total_size == 0:
+                continue
+            # Skip repos that only have config/metadata files (no weights)
+            has_weights = any(
+                f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                for rev in repo_info.revisions
+                for f in rev.files
+            )
+            if not has_weights:
+                continue
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            if existing is None or total_size > existing["size_bytes"]:
+                seen_lower[key] = {
+                    "repo_id": repo_id,
+                    "size_bytes": total_size,
+                }
         cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:
