@@ -377,8 +377,11 @@ if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
     set -e
     if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
         if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
-            # Try to resolve the actual latest release tag from ggml-org/llama.cpp
-            _RESOLVED_LLAMA_TAG="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
+            # Try Unsloth release repo first, then fall back to ggml-org upstream
+            _RESOLVED_LLAMA_TAG="$(curl -fsSL "https://api.github.com/repos/${_HELPER_RELEASE_REPO}/releases/latest" 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
+            if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+                _RESOLVED_LLAMA_TAG="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
+            fi
         fi
         if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
             _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
