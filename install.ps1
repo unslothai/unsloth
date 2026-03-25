@@ -89,7 +89,7 @@ function Install-UnslothStudio {
                 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
             }
 
-        $launcherContent = @"
+            $launcherContent = @"
 `$ErrorActionPreference = 'Stop'
 `$basePort = 8888
 `$maxPortOffset = 20
@@ -145,102 +145,126 @@ if (`$existingPort) {
     exit 0
 }
 
-`$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-`$studioExe = '$SingleQuotedExePath'
-`$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
-`$launchArgs = @(
-    '-NoExit',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-Command',
-    `$studioCommand
-)
-
+`$launchMutex = [System.Threading.Mutex]::new(`$false, 'Local\UnslothStudioLauncher')
+`$haveMutex = `$false
 try {
-    `$proc = Start-Process -FilePath `$powershellExe -ArgumentList `$launchArgs -WorkingDirectory `$env:USERPROFILE -PassThru
-} catch {
-    `$msg = "Could not launch Unsloth Studio terminal.`n`nError: `$(`$_.Exception.Message)"
-    try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
-    } catch {}
-    exit 1
-}
-
-`$browserOpened = `$false
-`$deadline = (Get-Date).AddSeconds(`$timeoutSec)
-while ((Get-Date) -lt `$deadline) {
-    `$healthyPort = Find-HealthyStudioPort
-    if (`$healthyPort) {
-        Start-Process "http://localhost:`$healthyPort"
-        `$browserOpened = `$true
-        break
+    `$haveMutex = `$launchMutex.WaitOne(0)
+    if (-not `$haveMutex) {
+        # Another launcher is already running; wait for it to bring Studio up
+        `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
+        while ((Get-Date) -lt `$deadline) {
+            `$port = Find-HealthyStudioPort
+            if (`$port) { Start-Process "http://localhost:`$port"; exit 0 }
+            Start-Sleep -Milliseconds `$pollIntervalMs
+        }
+        exit 0
     }
-    if (`$proc.HasExited) { break }
-    Start-Sleep -Milliseconds `$pollIntervalMs
-}
-if (-not `$browserOpened -and `$proc.HasExited) {
-    `$msg = "Unsloth Studio exited before becoming healthy. Check terminal output for errors."
+
+    `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    `$studioExe = '$SingleQuotedExePath'
+    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
+    `$launchArgs = @(
+        '-NoExit',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        `$studioCommand
+    )
+
     try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
-    } catch {}
+        `$proc = Start-Process -FilePath `$powershellExe -ArgumentList `$launchArgs -WorkingDirectory `$env:USERPROFILE -PassThru
+    } catch {
+        `$msg = "Could not launch Unsloth Studio terminal.`n`nError: `$(`$_.Exception.Message)"
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+        exit 1
+    }
+
+    `$browserOpened = `$false
+    `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
+    while ((Get-Date) -lt `$deadline) {
+        `$healthyPort = Find-HealthyStudioPort
+        if (`$healthyPort) {
+            Start-Process "http://localhost:`$healthyPort"
+            `$browserOpened = `$true
+            break
+        }
+        if (`$proc.HasExited) { break }
+        Start-Sleep -Milliseconds `$pollIntervalMs
+    }
+    if (-not `$browserOpened) {
+        if (`$proc.HasExited) {
+            `$msg = "Unsloth Studio exited before becoming healthy. Check terminal output for errors."
+        } else {
+            `$msg = "Unsloth Studio is still starting but did not become healthy within `$timeoutSec seconds. Check the terminal window for the selected port and open it manually."
+        }
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+    }
+} finally {
+    if (`$haveMutex) { `$launchMutex.ReleaseMutex() | Out-Null }
+    `$launchMutex.Dispose()
 }
 exit 0
 "@
 
-        # Write UTF-8 with BOM for reliable decoding by Windows PowerShell 5.1,
-        # even when install.ps1 is executed from PowerShell 7.
-        $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-        [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
-        $vbsContent = @"
+            # Write UTF-8 with BOM for reliable decoding by Windows PowerShell 5.1,
+            # even when install.ps1 is executed from PowerShell 7.
+            $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+            [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            $vbsContent = @"
 Set shell = CreateObject("WScript.Shell")
 cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
 shell.Run cmd, 0, False
 "@
-        # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
-        Set-Content -Path $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+            # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
+            Set-Content -Path $launcherVbs -Value $vbsContent -Encoding Unicode -Force
 
-        # Prefer bundled icon from local clone/dev installs.
-        # If not available, best-effort download from raw GitHub.
-        # We only attach the icon if the resulting file has a valid ICO header.
-        $hasValidIcon = $false
-        if ($bundledIcon -and (Test-Path $bundledIcon)) {
-            try {
-                Copy-Item -Path $bundledIcon -Destination $iconPath -Force
-            } catch {
-                Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+            # Prefer bundled icon from local clone/dev installs.
+            # If not available, best-effort download from raw GitHub.
+            # We only attach the icon if the resulting file has a valid ICO header.
+            $hasValidIcon = $false
+            if ($bundledIcon -and (Test-Path $bundledIcon)) {
+                try {
+                    Copy-Item -Path $bundledIcon -Destination $iconPath -Force
+                } catch {
+                    Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            } elseif (-not (Test-Path $iconPath)) {
+                try {
+                    Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
+                } catch {
+                    Write-Host "[DEBUG] Error downloading icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
             }
-        } elseif (-not (Test-Path $iconPath)) {
-            try {
-                Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
-            } catch {
-                Write-Host "[DEBUG] Error downloading icon: $($_.Exception.Message)" -ForegroundColor DarkGray
-            }
-        }
 
-        if (Test-Path $iconPath) {
-            try {
-                $bytes = [System.IO.File]::ReadAllBytes($iconPath)
-                if (
-                    $bytes.Length -ge 4 -and
-                    $bytes[0] -eq 0 -and
-                    $bytes[1] -eq 0 -and
-                    $bytes[2] -eq 1 -and
-                    $bytes[3] -eq 0
-                ) {
-                    $hasValidIcon = $true
-                } else {
+            if (Test-Path $iconPath) {
+                try {
+                    $bytes = [System.IO.File]::ReadAllBytes($iconPath)
+                    if (
+                        $bytes.Length -ge 4 -and
+                        $bytes[0] -eq 0 -and
+                        $bytes[1] -eq 0 -and
+                        $bytes[2] -eq 1 -and
+                        $bytes[3] -eq 0
+                    ) {
+                        $hasValidIcon = $true
+                    } else {
+                        Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {
+                    Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                     Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
                 }
-            } catch {
-                Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
-                Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
             }
-        }
 
-        $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
-        $shortcutArgs = "//B //Nologo `"$launcherVbs`""
+            $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+            $shortcutArgs = "//B //Nologo `"$launcherVbs`""
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
