@@ -158,6 +158,29 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
+_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+
+
+def _write_pid_file():
+    """Write the current process PID to the studio PID file."""
+    try:
+        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
+        _PID_FILE.write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _remove_pid_file():
+    """Remove the PID file if it belongs to this process."""
+    try:
+        if _PID_FILE.is_file():
+            stored = _PID_FILE.read_text().strip()
+            if stored == str(os.getpid()):
+                _PID_FILE.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def _graceful_shutdown(server = None):
     """Explicitly shut down all subprocess backends and the uvicorn server.
 
@@ -165,6 +188,7 @@ def _graceful_shutdown(server = None):
     before the parent exits. This is critical on Windows where atexit
     handlers are unreliable after Ctrl+C.
     """
+    _remove_pid_file()
     logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
 
     # 1. Shut down uvicorn server (releases the listening socket)
@@ -306,6 +330,11 @@ def run_server(
     thread = Thread(target = _run, daemon = True)
     thread.start()
     time.sleep(3)
+
+    _write_pid_file()
+    import atexit
+
+    atexit.register(_remove_pid_file)
 
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
