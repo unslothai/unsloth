@@ -201,7 +201,8 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         install_dir.mkdir(parents = True)
-        binary_path = install_dir / "build" / "bin" / "llama-server"
+        bin_dir = install_dir / "build" / "bin"
+        binary_path = bin_dir / "llama-server"
         binary_path.parent.mkdir(parents = True)
         binary_path.write_bytes(b"fake")
 
@@ -209,7 +210,11 @@ class TestBinaryEnvCrossPlatform:
         monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
 
         env = binary_env(binary_path, install_dir, host)
-        assert str(install_dir) in env["DYLD_LIBRARY_PATH"]
+        dyld_parts = [p for p in env["DYLD_LIBRARY_PATH"].split(os.pathsep) if p]
+        assert str(bin_dir) in dyld_parts, f"build/bin not in DYLD_LIBRARY_PATH: {dyld_parts}"
+        assert str(install_dir) in dyld_parts, f"install_dir not in DYLD_LIBRARY_PATH: {dyld_parts}"
+        # binary_path.parent (build/bin) should come before install_dir
+        assert dyld_parts.index(str(bin_dir)) < dyld_parts.index(str(install_dir))
 
 
 # =========================================================================

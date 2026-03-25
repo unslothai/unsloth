@@ -2722,7 +2722,9 @@ def binary_env(
         )
     elif host.is_macos:
         env["DYLD_LIBRARY_PATH"] = (
-            str(install_dir) + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            str(binary_path.parent) + os.pathsep
+            + str(install_dir) + os.pathsep
+            + env.get("DYLD_LIBRARY_PATH", "")
         )
     return env
 
