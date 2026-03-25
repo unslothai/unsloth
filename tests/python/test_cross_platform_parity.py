@@ -28,10 +28,18 @@ class TestNoTorchBackendAutoInInstallSh:
         for i, line in enumerate(lines):
             if fallback_start is None and "GPU detection failed" in line:
                 fallback_start = i
-            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
+            elif (
+                fallback_start is not None
+                and fallback_end is None
+                and line.strip() == "fi"
+            ):
                 fallback_end = i
                 break
-        fallback_range = range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
+        fallback_range = (
+            range(fallback_start or 0, (fallback_end or 0) + 1)
+            if fallback_start
+            else range(0)
+        )
 
         matches = [
             (i + 1, line)
@@ -48,9 +56,9 @@ class TestNoTorchBackendAutoInInstallSh:
     def test_fallback_uses_torch_backend_auto(self):
         """The fallback branch should use --torch-backend=auto as recovery."""
         text = INSTALL_SH.read_text()
-        assert "GPU detection failed" in text, (
-            "install.sh should have a fallback branch for when GPU detection fails"
-        )
+        assert (
+            "GPU detection failed" in text
+        ), "install.sh should have a fallback branch for when GPU detection fails"
 
 
 class TestInstallShHasGpuDetection:
@@ -58,15 +66,15 @@ class TestInstallShHasGpuDetection:
 
     def test_function_exists(self):
         text = INSTALL_SH.read_text()
-        assert "get_torch_index_url()" in text, (
-            "install.sh is missing the get_torch_index_url() function"
-        )
+        assert (
+            "get_torch_index_url()" in text
+        ), "install.sh is missing the get_torch_index_url() function"
 
     def test_torch_index_url_assigned(self):
         text = INSTALL_SH.read_text()
-        assert "TORCH_INDEX_URL=$(get_torch_index_url)" in text, (
-            "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
-        )
+        assert (
+            "TORCH_INDEX_URL=$(get_torch_index_url)" in text
+        ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
 
 
 class TestCudaMappingParity:
@@ -85,7 +93,7 @@ class TestCudaMappingParity:
             if in_func and line.startswith("}"):
                 break
             if in_func and ("_major" in line or "_minor" in line):
-                m = re.search(r'/(cu\d+|cpu)', line)
+                m = re.search(r"/(cu\d+|cpu)", line)
                 if m:
                     results.append(m.group(1))
         return results
@@ -106,8 +114,8 @@ class TestCudaMappingParity:
                 if depth <= 0:
                     break
                 # Only match the if-chain lines that compare $major/$minor
-                if ("$major" in line or "$minor" in line):
-                    m = re.search(r'/(cu\d+|cpu)', line)
+                if "$major" in line or "$minor" in line:
+                    m = re.search(r"/(cu\d+|cpu)", line)
                     if m:
                         results.append(m.group(1))
         return results

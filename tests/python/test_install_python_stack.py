@@ -29,11 +29,11 @@ class TestBuildUvCmdTorchBackend:
         """Without UV_TORCH_BACKEND env var, no --torch-backend flag."""
         env = os.environ.copy()
         env.pop("UV_TORCH_BACKEND", None)
-        with mock.patch.dict(os.environ, env, clear=True):
+        with mock.patch.dict(os.environ, env, clear = True):
             cmd = self._call(("somepackage",))
-        assert not any(a.startswith("--torch-backend") for a in cmd), (
-            f"--torch-backend should not appear by default, got: {cmd}"
-        )
+        assert not any(
+            a.startswith("--torch-backend") for a in cmd
+        ), f"--torch-backend should not appear by default, got: {cmd}"
 
     def test_uv_torch_backend_auto(self):
         """UV_TORCH_BACKEND=auto adds --torch-backend=auto."""
@@ -51,6 +51,6 @@ class TestBuildUvCmdTorchBackend:
         """UV_TORCH_BACKEND="" (empty string) should NOT add --torch-backend."""
         with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": ""}):
             cmd = self._call(("somepackage",))
-        assert not any(a.startswith("--torch-backend") for a in cmd), (
-            f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
-        )
+        assert not any(
+            a.startswith("--torch-backend") for a in cmd
+        ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
