@@ -164,20 +164,11 @@ fi
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
 # ── Install bun (optional, faster package installs) ──
-# Try the official bun installer first (gives a real bun runtime).
-# Fall back to npm install -g bun (gives a shim that may be outdated).
-# If neither works, bun is simply skipped and npm handles everything.
+# Uses npm to install bun globally -- Node is already guaranteed above,
+# avoids platform-specific installers, PATH issues, and admin requirements.
 if ! command -v bun &>/dev/null; then
     echo "   Installing bun (faster frontend package installs)..."
-    if curl -fsSL https://bun.sh/install 2>/dev/null | bash > /dev/null 2>&1; then
-        export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-        export PATH="$BUN_INSTALL/bin:$PATH"
-    fi
-    if ! command -v bun &>/dev/null; then
-        # Official installer failed or unavailable, try npm shim
-        npm install -g bun > /dev/null 2>&1 || true
-    fi
-    if command -v bun &>/dev/null; then
+    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
         echo "   bun installed ($(bun --version))"
     else
         echo "   bun install skipped (npm will be used instead)"
@@ -216,11 +207,11 @@ trap _restore_gitignores EXIT
 # run_quiet calls exit on failure, which would kill the script before the npm
 # fallback can run. Instead we capture output manually and only show it on failure.
 #
-# IMPORTANT: bun install can exit 0 but silently fail to install packages.
-# The npm "bun" shim (v1.3.x) is known to do this. After bun install reports
-# success, we verify that critical binaries (tsc, vite) actually landed in
-# node_modules/.bin/. If they are missing we reinstall bun from the official
-# source and retry once before falling back to npm.
+# IMPORTANT: bun's package cache can become corrupt -- packages get stored
+# with only metadata (package.json, README) but no actual content (bin/,
+# lib/). When this happens bun install exits 0 but leaves binaries missing.
+# We verify critical binaries after install. If missing, we clear the cache
+# and retry once before falling back to npm.
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
@@ -249,18 +240,12 @@ if command -v bun &>/dev/null; then
     if _try_bun_install; then
         _bun_install_ok=true
     else
-        # First attempt failed -- try reinstalling bun from official source and retry
-        echo "   Reinstalling bun from bun.sh and retrying..."
-        if curl -fsSL https://bun.sh/install 2>/dev/null | bash > /dev/null 2>&1; then
-            export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-            export PATH="$BUN_INSTALL/bin:$PATH"
-            hash -r 2>/dev/null || true
-        fi
-        if command -v bun &>/dev/null; then
-            echo "   bun reinstalled ($(bun --version)), retrying..."
-            if _try_bun_install; then
-                _bun_install_ok=true
-            fi
+        # First attempt failed, likely due to corrupt cache entries.
+        # Clear the cache and retry once.
+        echo "   Clearing bun cache and retrying..."
+        bun pm cache rm > /dev/null 2>&1 || true
+        if _try_bun_install; then
+            _bun_install_ok=true
         fi
     fi
 fi
