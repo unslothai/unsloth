@@ -494,7 +494,9 @@ if (-not $HasGit) {
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
-            winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $wingetGitLog = winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Host $wingetGitLog -ForegroundColor Red }
+            elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetGitLog "DarkGray" }
             Refresh-Environment
             $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
         } catch { }
@@ -515,7 +517,9 @@ if (-not $HasCmake) {
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
-            winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $wingetCmakeLog = winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Host $wingetCmakeLog -ForegroundColor Red }
+            elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetCmakeLog "DarkGray" }
             Refresh-Environment
             $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
         } catch { }
