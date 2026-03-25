@@ -81,8 +81,8 @@ class TrainingProgress:
     epoch: float = 0
     step: int = 0
     total_steps: int = 0
-    loss: float = 0.0
-    learning_rate: float = 0.0
+    loss: Optional[float] = None
+    learning_rate: Optional[float] = None
     is_training: bool = False
     is_completed: bool = False
     error: Optional[str] = None
@@ -244,7 +244,7 @@ class UnslothTrainer:
             def on_log(self, args, state, control, logs = None, **kwargs):
                 if not logs:
                     return
-                loss_value = logs.get("loss", logs.get("train_loss", 0.0))
+                loss_value = logs.get("loss", logs.get("train_loss", None))
                 current_step = state.global_step
                 grad_norm = logs.get("grad_norm", None)
 
@@ -268,7 +268,7 @@ class UnslothTrainer:
                     step = current_step,
                     epoch = round(state.epoch, 2) if state.epoch else 0,
                     loss = loss_value,
-                    learning_rate = logs.get("learning_rate", 0.0),
+                    learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
                     eta_seconds = eta_seconds,
                     grad_norm = grad_norm,
