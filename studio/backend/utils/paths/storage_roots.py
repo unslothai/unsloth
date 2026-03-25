@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -82,8 +83,59 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+def legacy_hf_cache_dir() -> Path:
+    """Old Unsloth-specific HF hub cache, kept for backward-compat scanning."""
+    return cache_root() / "huggingface" / "hub"
+
+
+def hf_default_cache_dir() -> Path:
+    """Return the platform default HuggingFace hub cache (ignoring env overrides).
+
+    This is the location HF uses when no ``HF_HUB_CACHE`` / ``HF_HOME``
+    env var is set.  We scan it so that models a user downloaded *before*
+    installing Unsloth Studio are still discovered.
+    """
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def lmstudio_model_dirs() -> list[Path]:
+    """Return LM Studio model directories that exist on disk."""
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(p: Path) -> None:
+        resolved = p.resolve()
+        if resolved not in seen and p.is_dir():
+            seen.add(resolved)
+            dirs.append(p)
+
+    # 1. Check LM Studio settings.json for custom downloads folder
+    settings_path = Path.home() / ".lmstudio" / "settings.json"
+    if settings_path.is_file():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            downloads = settings.get("downloadsFolder", "")
+            if downloads:
+                _add(Path(downloads).expanduser())
+        except Exception:
+            pass
+
+    # 2. LM Studio current default models directory (all platforms)
+    _add(Path.home() / ".lmstudio" / "models")
+
+    # 3. Legacy LM Studio cache location
+    _add(Path.home() / ".cache" / "lm-studio" / "models")
+
+    return dirs
+
+
 def _setup_cache_env() -> None:
     """Set cache environment variables for HuggingFace, uv, and vLLM.
+
+    HuggingFace cache variables are only set when the legacy Unsloth HF
+    cache already exists, preserving existing model locations.  New
+    installations leave HF at its own defaults.
 
     Only sets variables that are not already set by the user, so
     explicit overrides (e.g. HF_HOME=/data/hf) are respected.
@@ -91,13 +143,17 @@ def _setup_cache_env() -> None:
     """
     root = cache_root()
     hf_dir = root / "huggingface"
-    defaults = {
-        "HF_HOME": str(hf_dir),
-        "HF_HUB_CACHE": str(hf_dir / "hub"),
-        "HF_XET_CACHE": str(hf_dir / "xet"),
+    defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
+    # Preserve legacy HF cache for existing installations
+    legacy_hub = hf_dir / "hub"
+    if legacy_hub.is_dir() and any(legacy_hub.iterdir()):
+        defaults["HF_HOME"] = str(hf_dir)
+        defaults["HF_HUB_CACHE"] = str(legacy_hub)
+        defaults["HF_XET_CACHE"] = str(hf_dir / "xet")
+
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value
