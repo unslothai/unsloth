@@ -658,7 +658,7 @@ def apply_gpu_ids(gpu_ids) -> None:
 def get_device_map() -> str:
     device = get_device()
     if device == DeviceType.CUDA and get_visible_gpu_count() > 1:
-        return "balanced"
+        return "balanced_low0"
     return "sequential"
 
 
