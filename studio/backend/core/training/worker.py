@@ -53,6 +53,7 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
             "falcon-h1",
             "granite-4.0-h",
             "granitemoehybrid",
+            "lfm2",
         )
     )
 
@@ -400,7 +401,19 @@ def run_training_process(
         _ensure_causal_conv1d_fast_path(event_queue, model_name)
         _ensure_mamba_ssm(event_queue, model_name)
     except Exception as exc:
-        logger.warning("Optional SSM dependency install failed: %s", exc)
+        event_queue.put(
+            {
+                "type": "error",
+                "error": (
+                    f"Please choose another model to train, since "
+                    f"causal-conv1d / mamba-ssm failed to install "
+                    f"with error: {exc}"
+                ),
+                "stack": traceback.format_exc(limit=20),
+                "ts": time.time(),
+            }
+        )
+        return
 
     # ── 1c. Set fork start method so dataset.map() can multiprocess ──
     # The parent launched us via spawn (clean process), but the compiled
