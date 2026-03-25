@@ -18,7 +18,6 @@ const shortcuts = [
   { keys: `${mod}+Shift+N`, description: "New chat" },
   { keys: `${mod}+Shift+C`, description: "Toggle compare mode" },
   { keys: `${mod}+Shift+S`, description: "Toggle settings" },
-  { keys: `${mod}+Shift+F`, description: "Search conversations" },
   { keys: "Escape", description: "Close dialogs / Cancel" },
   { keys: "?", description: "Show this help" },
 ];

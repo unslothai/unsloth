@@ -12,7 +12,7 @@ import {
   DownloadIcon,
   XIcon,
 } from "lucide-react";
-import { type FC, useRef, useState } from "react";
+import { type FC, useEffect, useRef, useState } from "react";
 import {
   type Artifact,
   useArtifactStore,
@@ -28,10 +28,12 @@ const ArtifactTab: FC<{ artifact: Artifact; isActive: boolean }> = ({
   const remove = useArtifactStore((s) => s.removeArtifact);
 
   return (
-    <button
-      type="button"
+    <div
+      role="tab"
+      tabIndex={0}
       onClick={() => setActive(artifact.id)}
-      className={`group flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
+      onKeyDown={(e) => e.key === "Enter" && setActive(artifact.id)}
+      className={`group flex cursor-pointer items-center gap-1.5 rounded-t-md border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
         isActive
           ? "border-primary bg-background text-foreground"
           : "border-transparent text-muted-foreground hover:text-foreground"
@@ -48,7 +50,7 @@ const ArtifactTab: FC<{ artifact: Artifact; isActive: boolean }> = ({
       >
         <XIcon className="size-3" />
       </button>
-    </button>
+    </div>
   );
 };
 
@@ -61,13 +63,18 @@ export const ArtifactPanel: FC = () => {
   const updateContent = useArtifactStore((s) => s.updateArtifactContent);
 
   const [copied, setCopied] = useState(false);
+  const [localValue, setLocalValue] = useState("");
   const resetRef = useRef<ReturnType<typeof setTimeout>>();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  if (!panelOpen || artifacts.length === 0) return null;
-
   const active = artifacts.find((a) => a.id === activeId) ?? artifacts[0];
-  if (!active) return null;
+
+  // Sync local editor value when active artifact changes
+  useEffect(() => {
+    if (active) setLocalValue(active.content);
+  }, [active?.id, active?.content]);
+
+  if (!panelOpen || artifacts.length === 0 || !active) return null;
 
   const handleCopy = () => {
     if (copyToClipboard(active.content)) {
@@ -152,14 +159,11 @@ export const ArtifactPanel: FC = () => {
       <div className="flex-1 overflow-auto">
         <textarea
           ref={textareaRef}
-          value={active.content}
-          onChange={(e) => {
-            // Direct editing creates a new version on blur
-          }}
-          onBlur={(e) => {
-            const val = e.target.value;
-            if (val !== active.content) {
-              updateContent(active.id, val);
+          value={localValue}
+          onChange={(e) => setLocalValue(e.target.value)}
+          onBlur={() => {
+            if (localValue !== active.content) {
+              updateContent(active.id, localValue);
             }
           }}
           className="h-full w-full resize-none bg-transparent p-4 font-mono text-xs leading-relaxed outline-none"

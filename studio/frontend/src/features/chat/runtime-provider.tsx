@@ -481,6 +481,11 @@ function createDexieAdapter(
       const firstUser = messages.find((m) => m.role === "user");
       const userText = extractTextParts(firstUser) || defaultTitle;
 
+      // Backfill searchText for new threads (once, on first title generation)
+      if (!thread.searchText && userText !== defaultTitle) {
+        await db.threads.update(remoteId, { searchText: userText.slice(0, 500) });
+      }
+
       if (!autoTitle) {
         const title = fallbackTitleFromUserText(userText);
         await persistTitle(title);

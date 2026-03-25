@@ -619,7 +619,6 @@ const CopyButton: FC = () => {
 };
 
 const FeedbackButtons: FC = () => {
-  const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const [feedback, setFeedback] = useState<"thumbs_up" | "thumbs_down" | null>(
     null,
@@ -628,22 +627,27 @@ const FeedbackButtons: FC = () => {
   // Load existing feedback from DB
   useEffect(() => {
     if (!messageId) return;
+    setFeedback(null);
+    let cancelled = false;
     void db.messages.get(messageId).then((msg) => {
-      if (msg?.feedback) setFeedback(msg.feedback);
+      if (!cancelled && msg?.feedback) setFeedback(msg.feedback);
     });
+    return () => { cancelled = true; };
   }, [messageId]);
 
   const handleFeedback = useCallback(
     (value: "thumbs_up" | "thumbs_down") => {
-      const next = feedback === value ? null : value;
-      setFeedback(next);
-      if (messageId) {
-        void db.messages.update(messageId, {
-          feedback: next ?? undefined,
-        });
-      }
+      setFeedback((prev) => {
+        const next = prev === value ? null : value;
+        if (messageId) {
+          void db.messages
+            .update(messageId, { feedback: next ?? undefined })
+            .catch((err) => console.error("Failed to save feedback:", err));
+        }
+        return next;
+      });
     },
-    [feedback, messageId],
+    [messageId],
   );
 
   return (

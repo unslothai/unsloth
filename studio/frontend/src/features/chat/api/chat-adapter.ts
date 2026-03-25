@@ -446,8 +446,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let systemContent =
         typeof params.systemPrompt === "string" ? params.systemPrompt.trim() : "";
       try {
-        const { db: chatDb } = await import("../db");
-        const allMemories = await chatDb.memory.toArray();
+        const allMemories = await db.memory.toArray();
         const enabledMemories = allMemories.filter(
           (m: { enabled: boolean }) => m.enabled,
         );
@@ -461,8 +460,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? `${memoryBlock}\n\n${systemContent}`
             : memoryBlock;
         }
-      } catch {
-        // Memory table may not exist yet during migration
+      } catch (err) {
+        console.warn("Memory injection skipped:", err);
       }
       if (systemContent) {
         outboundMessages.unshift({

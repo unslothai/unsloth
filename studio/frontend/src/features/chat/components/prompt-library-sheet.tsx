@@ -11,11 +11,10 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { PlusIcon, Trash2Icon, PencilIcon, CheckIcon, XIcon, CopyIcon } from "lucide-react";
+import { Trash2Icon, PencilIcon, CopyIcon } from "lucide-react";
 import { type FC, useCallback, useState } from "react";
 import { db, useLiveQuery } from "../db";
 import type { PromptRecord } from "../types";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 
 const VAR_RE = /\{\{(\w+)\}\}/g;
 
@@ -92,7 +91,8 @@ export const PromptLibrarySheet: FC<{
       let result = p.content;
       if (p.variables.length > 0) {
         for (const v of p.variables) {
-          const value = prompt(`Value for {{${v}}}:`) ?? "";
+          const value = window.prompt(`Value for {{${v}}}:`);
+          if (value === null) return; // user cancelled
           result = result.replaceAll(`{{${v}}}`, value);
         }
       }

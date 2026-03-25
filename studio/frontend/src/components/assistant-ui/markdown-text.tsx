@@ -12,7 +12,7 @@ import { code } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -337,6 +337,23 @@ function CodeBlockActions({
   );
 }
 
+/** Emits an artifact to the store via useEffect (avoids side-effects in render). */
+function ArtifactEmitter({ language, source }: { language: string | null; source: string }) {
+  useEffect(() => {
+    const artifactId = `artifact-${hashCode(source)}`;
+    const store = useArtifactStore.getState();
+    if (store.artifacts.some((a) => a.id === artifactId)) return;
+    store.addArtifact({
+      id: artifactId,
+      title: language ? `${language} snippet` : "Code snippet",
+      language,
+      content: source,
+      createdAt: Date.now(),
+    });
+  }, [language, source]);
+  return null;
+}
+
 function StreamdownBlock(props: BlockProps) {
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
@@ -389,34 +406,23 @@ function StreamdownBlock(props: BlockProps) {
     const isArtifactWorthy =
       !props.isIncomplete &&
       (lineCount >= 20 || svgSource !== null || htmlSource !== null);
-    if (isArtifactWorthy) {
-      const artifactId = `artifact-${hashCode(codeFence.source)}`;
-      const store = useArtifactStore.getState();
-      if (!store.artifacts.some((a) => a.id === artifactId)) {
-        store.addArtifact({
-          id: artifactId,
-          title: codeFence.language
-            ? `${codeFence.language} snippet`
-            : "Code snippet",
-          language: codeFence.language,
-          content: codeFence.source,
-          createdAt: Date.now(),
-        });
-      }
-    }
 
     return (
       <>
-        <div className="relative isolate">
-          <Block {...props} />
-          <CodeBlockActions
-            disabled={props.isIncomplete}
-            language={codeFence.language}
-            source={codeFence.source}
-          />
-        </div>
-        {svgSource && <SvgPreview source={svgSource} />}
-        {htmlSource && <HtmlPreview source={htmlSource} />}
+      {isArtifactWorthy && (
+        <ArtifactEmitter language={codeFence.language} source={codeFence.source} />
+      )}
+
+      <div className="relative isolate">
+        <Block {...props} />
+        <CodeBlockActions
+          disabled={props.isIncomplete}
+          language={codeFence.language}
+          source={codeFence.source}
+        />
+      </div>
+      {svgSource && <SvgPreview source={svgSource} />}
+      {htmlSource && <HtmlPreview source={htmlSource} />}
       </>
     );
   }

@@ -200,12 +200,13 @@ export function ThreadSidebar({
   }
 
   async function handleMoveToFolder(item: SidebarItem, folderId: string | undefined) {
+    const newFolderId = folderId || undefined;
     if (item.type === "single") {
-      await db.threads.update(item.id, { folderId: folderId ?? "" });
+      await db.threads.update(item.id, { folderId: newFolderId });
     } else {
       const paired = await db.threads.where("pairId").equals(item.id).toArray();
       for (const t of paired) {
-        await db.threads.update(t.id, { folderId: folderId ?? "" });
+        await db.threads.update(t.id, { folderId: newFolderId });
       }
     }
   }
@@ -233,12 +234,10 @@ export function ThreadSidebar({
   }, []);
 
   const handleDeleteFolder = useCallback(async (folderId: string) => {
-    // Unfile threads in the folder, then delete the folder
-    const threads = await db.threads.where("folderId").equals(folderId).toArray();
-    for (const t of threads) {
-      await db.threads.update(t.id, { folderId: "" });
-    }
-    await db.folders.delete(folderId);
+    await db.transaction("rw", db.threads, db.folders, async () => {
+      await db.threads.where("folderId").equals(folderId).modify({ folderId: undefined });
+      await db.folders.delete(folderId);
+    });
   }, []);
 
   const toggleSearch = useCallback(() => {

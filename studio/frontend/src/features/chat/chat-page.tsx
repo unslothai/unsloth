@@ -27,6 +27,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   ColumnInsertIcon,
@@ -41,7 +42,6 @@ import {
   KeyboardIcon,
   PanelRightIcon,
   PencilIcon,
-  SearchIcon,
   SettingsIcon,
 } from "lucide-react";
 import {
@@ -775,6 +775,10 @@ export function ChatPage(): ReactElement {
       <PromptLibrarySheet
         open={promptLibraryOpen}
         onOpenChange={setPromptLibraryOpen}
+        onInsertPrompt={(content) => {
+          copyToClipboard(content);
+          toast.success("Prompt copied to clipboard");
+        }}
       />
       <CommandDialog open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
         <Command>
@@ -805,7 +809,7 @@ export function ChatPage(): ReactElement {
                 <BookOpenIcon className="mr-2 size-4" />
                 Prompt Library
               </CommandItem>
-              <CommandItem onSelect={() => { useArtifactStore.getState().setPanelOpen(!artifactPanelOpen); setCommandPaletteOpen(false); }}>
+              <CommandItem onSelect={() => { const s = useArtifactStore.getState(); s.setPanelOpen(!s.panelOpen); setCommandPaletteOpen(false); }}>
                 <PanelRightIcon className="mr-2 size-4" />
                 Toggle Artifacts Panel
               </CommandItem>
