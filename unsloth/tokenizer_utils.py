@@ -297,6 +297,9 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
 
         return check_chat_template and check_special_tokens
     except:
+        # For eg see https://github.com/unslothai/unsloth/issues/292
+        # Sometimes tokenizer has weird tokens, causing a combined tokenization to fail.
+        # [TODO] We temporarily disable this for CodeLlama tokenizers
         if slow_tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
             return check_chat_template
         else:
@@ -309,6 +312,8 @@ def fix_sentencepiece_tokenizer(
     token_mapping,
     temporary_location = "_unsloth_sentencepiece_temp",
 ):
+    # From https://github.com/google/sentencepiece/issues/121
+    # We need to manually edit the sentencepiece tokenizer!
     try:
         from transformers.convert_slow_tokenizer import import_protobuf
 
@@ -325,6 +330,7 @@ def fix_sentencepiece_tokenizer(
                     f"Please downgrade via `pip install --force-reinstall protobuf==3.20.3`"
                 )
         except:
+            # This will only work for older SentencePiece versions <= 3.20.3
             from transformers.utils import sentencepiece_model_pb2
 
     if not os.path.exists(temporary_location):
@@ -351,6 +357,7 @@ def fix_sentencepiece_tokenizer(
             )
             continue
         ids = ids[0]
+        # [TODO] Hack for Starling - try except
         try:
             tokenizer_piece = tokenizer_file.pieces[ids]
         except:
@@ -372,6 +379,11 @@ def fix_sentencepiece_tokenizer(
 
 
 def fix_sentencepiece_gguf(saved_location):
+    """
+    Fixes sentencepiece tokenizers which did not extend the vocabulary with
+    user defined tokens.
+    Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert_hf_to_gguf.py
+    """
     from copy import deepcopy
     from transformers.utils import sentencepiece_model_pb2
     import json
@@ -442,10 +454,12 @@ def _load_correct_tokenizer(
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
     elif IS_KAGGLE_ENVIRONMENT:
+        # /tmp of Kaggle seems has a 80GB limit!
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     else:
         cache_dir = None
 
+    # Mainly to solve Deepseek models with no tokenizer.model file
     slow_tokenizer = None
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
@@ -454,6 +468,7 @@ def _load_correct_tokenizer(
             padding_side = padding_side,
             token = token,
             trust_remote_code = trust_remote_code,
+            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
             use_fast = False,
             legacy = False,
             from_slow = True,
@@ -663,6 +678,11 @@ def check_tokenizer(
     token = None,
     _reload = True,
 ):
+    # Checks tokenizer for out of bounds ids.
+    # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
+    # where <sep> had token id=32002.
+    # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
+    # Seems like the Fast tokenizer in Rust breaks things!
     if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
         return tokenizer
 
@@ -743,12 +763,14 @@ def check_tokenizer(
             else:
                 cache_dir = None
 
+            # Sometimes slow tokenizer does not work like Deepseek
             try:
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_name,
                     model_max_length = model_max_length,
                     padding_side = padding_side,
                     token = token,
+                    # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
                     use_fast = False,
                     legacy = False,
                     from_slow = True,
@@ -785,10 +807,10 @@ def get_tokenizer_info(tokenizer) -> dict:
 
         {
             "name_or_path": "unsloth/Llama-3.2-1B-Instruct",
-            "tokenizer_class": "LlamaTokenizerFast",
+            "tokenizer_class": "PreTrainedTokenizerFast",
             "is_fast": True,
-            "vocab_size": 128256,
-            "added_tokens_count": 3,
+            "vocab_size": 128000,
+            "added_tokens_count": 256,
             "model_max_length": 131072,
             "padding_side": "right",
             "bos_token": "<|begin_of_text|>",
@@ -796,7 +818,7 @@ def get_tokenizer_info(tokenizer) -> dict:
             "pad_token": "<|finetune_right_pad_id|>",
             "unk_token": None,
             "has_chat_template": True,
-            "special_tokens_count": 256,
+            "special_tokens_count": 3,
         }
 
     Args:
@@ -830,6 +852,5 @@ import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
 from transformers.trainer import *
 
-# ... (rest of file unchanged)
 # Finally patch TRL tokenizer things -> moved to RL
 # patch_sft_trainer_tokenizer()
