@@ -196,7 +196,9 @@ def stop():
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        typer.echo(f"Studio server (PID {pid}) is not running. Cleaning up stale PID file.")
+        typer.echo(
+            f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."
+        )
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
     except PermissionError:

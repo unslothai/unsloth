@@ -383,6 +383,7 @@ if __name__ == "__main__":
         kwargs["frontend_path"] = Path(args.frontend)
 
     import atexit
+
     atexit.register(_remove_pid_file)
 
     try:
