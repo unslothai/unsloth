@@ -17,7 +17,6 @@ import {
   type ReasoningGroupComponent,
   type ReasoningMessagePartComponent,
   useAuiState,
-  useScrollLock,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Idea01Icon } from "@hugeicons/core-free-icons";
@@ -34,6 +33,7 @@ import {
   useState,
 } from "react";
 const ANIMATION_DURATION = 200;
+const AUTO_SCROLL_THRESHOLD_PX = 24;
 
 export const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
   variants: {
@@ -68,8 +68,48 @@ function ReasoningRoot({
   ...props
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
+  const lockCleanupRef = useRef<(() => void) | null>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
+
+  useEffect(() => {
+    return () => {
+      lockCleanupRef.current?.();
+    };
+  }, []);
+
+  const lockScroll = useCallback(() => {
+    lockCleanupRef.current?.();
+
+    const animatedElement = collapsibleRef.current;
+    if (!animatedElement) return;
+
+    let scrollContainer: HTMLElement | null = animatedElement;
+    while (scrollContainer) {
+      const { overflowY } = getComputedStyle(scrollContainer);
+      if (overflowY === "scroll" || overflowY === "auto") {
+        break;
+      }
+      scrollContainer = scrollContainer.parentElement;
+    }
+    if (!scrollContainer) return;
+
+    const scrollPosition = scrollContainer.scrollTop;
+    const resetPosition = () => {
+      scrollContainer.scrollTop = scrollPosition;
+    };
+
+    scrollContainer.addEventListener("scroll", resetPosition);
+    const timeoutId = setTimeout(() => {
+      scrollContainer.removeEventListener("scroll", resetPosition);
+      lockCleanupRef.current = null;
+    }, ANIMATION_DURATION);
+
+    lockCleanupRef.current = () => {
+      clearTimeout(timeoutId);
+      scrollContainer.removeEventListener("scroll", resetPosition);
+      lockCleanupRef.current = null;
+    };
+  }, []);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
@@ -220,6 +260,8 @@ function ReasoningText({
 }: ComponentProps<"div"> & { streaming?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
+  const detachedFromBottomRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
 
   useEffect(() => {
     if (!(streaming && scrollRef.current)) {
@@ -227,8 +269,25 @@ function ReasoningText({
     }
     const el = scrollRef.current;
     const updateAutoScroll = () => {
+      const currentScrollTop = el.scrollTop;
+      if (currentScrollTop < lastScrollTopRef.current) {
+        detachedFromBottomRef.current = true;
+      }
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      shouldAutoScrollRef.current = distanceFromBottom <= 24;
+      if (
+        detachedFromBottomRef.current &&
+        distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
+      ) {
+        detachedFromBottomRef.current = false;
+      }
+      shouldAutoScrollRef.current = !detachedFromBottomRef.current;
+      lastScrollTopRef.current = currentScrollTop;
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        detachedFromBottomRef.current = true;
+        shouldAutoScrollRef.current = false;
+      }
     };
     const observer = new MutationObserver(() => {
       if (shouldAutoScrollRef.current) {
@@ -236,16 +295,19 @@ function ReasoningText({
       }
     });
     el.addEventListener("scroll", updateAutoScroll);
+    el.addEventListener("wheel", handleWheel, { passive: true });
     observer.observe(el, {
       childList: true,
       subtree: true,
       characterData: true,
     });
-    shouldAutoScrollRef.current = true;
-    el.scrollTop = el.scrollHeight;
+    lastScrollTopRef.current = el.scrollTop;
+    detachedFromBottomRef.current = false;
+    updateAutoScroll();
     return () => {
       observer.disconnect();
       el.removeEventListener("scroll", updateAutoScroll);
+      el.removeEventListener("wheel", handleWheel);
     };
   }, [streaming]);
 
