@@ -89,7 +89,7 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
+        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
           <ThreadScrollToBottom />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
