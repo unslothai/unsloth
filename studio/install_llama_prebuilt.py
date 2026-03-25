@@ -3392,11 +3392,7 @@ def main() -> int:
     if args.resolve_llama_tag is not None:
         # Pass published_repo so the resolver prefers the Unsloth release tag
         # (tested/approved) over the upstream ggml-org bleeding-edge tag.
-        print(
-            resolve_requested_llama_tag(
-                args.resolve_llama_tag, args.published_repo
-            )
-        )
+        print(resolve_requested_llama_tag(args.resolve_llama_tag, args.published_repo))
         return EXIT_SUCCESS
 
     if args.resolve_install_tag is not None:
