@@ -314,9 +314,7 @@ def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
         # ShareGPT data lives in 'conversations'; restrict probe to that column
         # so a corrupt conversations column is always scanned instead of being
         # silently replaced by a healthy messages column (P1 fix).
-        conv_info = _probe_conversation(
-            dataset, candidates = ("conversations",)
-        )
+        conv_info = _probe_conversation(dataset, candidates = ("conversations",))
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
