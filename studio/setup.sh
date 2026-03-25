@@ -164,17 +164,26 @@ fi
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
 # ── Install bun (optional, faster package installs) ──
-# Uses npm to install bun globally — Node is already guaranteed above,
-# avoids platform-specific installers, PATH issues, and admin requirements.
+# Try the official bun installer first (gives a real bun runtime).
+# Fall back to npm install -g bun (gives a shim that may be outdated).
+# If neither works, bun is simply skipped and npm handles everything.
 if ! command -v bun &>/dev/null; then
     echo "   Installing bun (faster frontend package installs)..."
-    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
-        echo "✅ bun installed ($(bun --version))"
+    if curl -fsSL https://bun.sh/install 2>/dev/null | bash > /dev/null 2>&1; then
+        export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+        export PATH="$BUN_INSTALL/bin:$PATH"
+    fi
+    if ! command -v bun &>/dev/null; then
+        # Official installer failed or unavailable, try npm shim
+        npm install -g bun > /dev/null 2>&1 || true
+    fi
+    if command -v bun &>/dev/null; then
+        echo "   bun installed ($(bun --version))"
     else
         echo "   bun install skipped (npm will be used instead)"
     fi
 else
-    echo "✅ bun already installed ($(bun --version))"
+    echo "   bun already installed ($(bun --version))"
 fi
 
 # ── 5. Build frontend ──
@@ -202,24 +211,60 @@ _restore_gitignores() {
 trap _restore_gitignores EXIT
 
 # Use bun for install if available (faster), fall back to npm.
-# Build always uses npm (Node runtime — avoids bun runtime issues on some platforms).
+# Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
 # run_quiet calls exit on failure, which would kill the script before the npm
 # fallback can run. Instead we capture output manually and only show it on failure.
+#
+# IMPORTANT: bun install can exit 0 but silently fail to install packages.
+# The npm "bun" shim (v1.3.x) is known to do this. After bun install reports
+# success, we verify that critical binaries (tsc, vite) actually landed in
+# node_modules/.bin/. If they are missing we reinstall bun from the official
+# source and retry once before falling back to npm.
+_try_bun_install() {
+    local _log _exit_code=0
+    _log=$(mktemp)
+    bun install >"$_log" 2>&1 || _exit_code=$?
+
+    if [ "$_exit_code" -eq 0 ] && [ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/vite ]; then
+        rm -f "$_log"
+        return 0
+    fi
+
+    # Either bun install failed or it exited 0 but left packages missing
+    if [ "$_exit_code" -ne 0 ]; then
+        echo "   bun install failed (exit code $_exit_code):"
+    else
+        echo "   bun install exited 0 but critical binaries are missing:"
+    fi
+    sed 's/^/   | /' "$_log" >&2
+    rm -f "$_log"
+    rm -rf node_modules
+    return 1
+}
+
+_bun_install_ok=false
 if command -v bun &>/dev/null; then
     echo "   Using bun for package install (faster)"
-    _bun_log=$(mktemp)
-    if bun install >"$_bun_log" 2>&1; then
-        rm -f "$_bun_log"
+    if _try_bun_install; then
+        _bun_install_ok=true
     else
-        echo "   ⚠️  bun install failed, falling back to npm"
-        echo "   bun install output:"
-        sed 's/^/   | /' "$_bun_log" >&2
-        rm -f "$_bun_log"
-        rm -rf node_modules
-        run_quiet "npm install" npm install
+        # First attempt failed -- try reinstalling bun from official source and retry
+        echo "   Reinstalling bun from bun.sh and retrying..."
+        if curl -fsSL https://bun.sh/install 2>/dev/null | bash > /dev/null 2>&1; then
+            export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+            export PATH="$BUN_INSTALL/bin:$PATH"
+            hash -r 2>/dev/null || true
+        fi
+        if command -v bun &>/dev/null; then
+            echo "   bun reinstalled ($(bun --version)), retrying..."
+            if _try_bun_install; then
+                _bun_install_ok=true
+            fi
+        fi
     fi
-else
+fi
+if [ "$_bun_install_ok" = false ]; then
     run_quiet "npm install" npm install
 fi
 run_quiet "npm run build" npm run build
