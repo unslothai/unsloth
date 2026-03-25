@@ -30,16 +30,44 @@ def _pip_install_backend_deps() -> None:
 
     Used on Colab when the Studio venv does not exist (install.sh was not
     run).  Reads the requirements from studio.txt next to this file.
+
+    Version constraints are stripped entirely so pip keeps whatever Colab
+    already has installed (e.g. huggingface-hub, datasets, transformers)
+    and only installs genuinely missing packages like structlog, fastapi.
     """
+    import re
     import subprocess
 
     req_file = Path(__file__).parent / "requirements" / "studio.txt"
     if not req_file.exists():
         return
+
+    packages = []
+    for line in req_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Strip all version constraints -- just keep the package name
+        pkg_name = re.split(r"[><=!~;\[]", line)[0].strip()
+        if pkg_name:
+            packages.append(pkg_name)
+
+    if not packages:
+        return
     print("Installing Studio backend dependencies ...")
     subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
+        [sys.executable, "-m", "pip", "install", "-q"] + packages,
     )
+
+    # Colab ships huggingface-hub 0.36.x which removed is_offline_mode,
+    # breaking transformers. Upgrade to 1.0+ which restored it.
+    try:
+        from huggingface_hub import is_offline_mode  # noqa: F401
+    except ImportError:
+        print("Upgrading huggingface-hub (is_offline_mode missing) ...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-q", "huggingface-hub>=1.0"],
+        )
 
 
 def _bootstrap_studio_venv() -> None:

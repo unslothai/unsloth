@@ -373,10 +373,28 @@ def install_python_stack() -> int:
             ],
         )
     else:
-        run(
-            "Upgrading pip",
-            [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+        # pip may not exist yet (uv-created venvs omit it). Try ensurepip
+        # first, then upgrade. Only fall back to a direct upgrade when pip
+        # is already present.
+        _has_pip = (
+            subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            ).returncode
+            == 0
         )
+
+        if not _has_pip:
+            run(
+                "Bootstrapping pip via ensurepip",
+                [sys.executable, "-m", "ensurepip", "--upgrade"],
+            )
+        else:
+            run(
+                "Upgrading pip",
+                [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+            )
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
