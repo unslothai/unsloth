@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -35,7 +38,7 @@
     "@streamdown/code": "1.0.2",
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
-    "@tailwindcss/vite": "^4.1.18",
+    "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-router": "^1.159.10",
     "@tanstack/react-table": "^8.21.3",
     "@tauri-apps/api": "^2.10.1",
@@ -50,7 +53,6 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
     "dexie": "^4.3.0",
-    "framer-motion": "^11.18.2",
     "js-yaml": "^4.1.1",
     "katex": "^0.16.28",
     "lucide-react": "^0.577.0",
@@ -82,13 +84,13 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.26",
     "globals": "^16.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.55.0",
-    "vite": "^7.3.1"
+    "vite": "^8.0.1"
   }
 }

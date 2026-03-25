@@ -77,7 +77,7 @@ function ToolFallbackRoot({
       open={isOpen}
       onOpenChange={handleOpenChange}
       className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full corner-squircle rounded-lg border py-3",
+        "aui-tool-fallback-root group/tool-fallback-root w-full py-1",
         className,
       )}
       style={
@@ -124,7 +124,7 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2 px-4 text-sm transition-colors",
+        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2 py-1.5 text-sm transition-colors",
         className,
       )}
       {...props}
@@ -207,7 +207,7 @@ function ToolFallbackContent({
       )}
       {...props}
     >
-      <div className="mt-3 flex flex-col gap-2 border-t pt-2">{children}</div>
+      <div className="mt-1 flex flex-col gap-2 pl-5">{children}</div>
     </CollapsibleContent>
   );
 }
@@ -226,7 +226,7 @@ function ToolFallbackArgs({
   return (
     <div
       data-slot="tool-fallback-args"
-      className={cn("aui-tool-fallback-args px-4", className)}
+      className={cn("aui-tool-fallback-args", className)}
       {...props}
     >
       <pre className="aui-tool-fallback-args-value whitespace-pre-wrap">
@@ -251,7 +251,7 @@ function ToolFallbackResult({
     <div
       data-slot="tool-fallback-result"
       className={cn(
-        "aui-tool-fallback-result border-t border-dashed px-4 pt-2",
+        "aui-tool-fallback-result pt-2",
         className,
       )}
       {...props}
@@ -292,7 +292,7 @@ function ToolFallbackError({
   return (
     <div
       data-slot="tool-fallback-error"
-      className={cn("aui-tool-fallback-error px-4", className)}
+      className={cn("aui-tool-fallback-error", className)}
       {...props}
     >
       <p className="aui-tool-fallback-error-header font-semibold text-muted-foreground">
@@ -316,7 +316,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
   return (
     <ToolFallbackRoot
-      className={cn(isCancelled && "border-muted-foreground/30 bg-muted/30")}
+      className={cn(isCancelled && "bg-muted/30")}
     >
       <ToolFallbackTrigger toolName={toolName} status={status} />
       <ToolFallbackContent>
