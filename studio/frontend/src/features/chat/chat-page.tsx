@@ -8,6 +8,16 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandShortcut,
+} from "@/components/ui/command";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
   Sheet,
@@ -25,6 +35,16 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  BookOpenIcon,
+  BrainIcon,
+  ColumnsIcon,
+  KeyboardIcon,
+  PanelRightIcon,
+  PencilIcon,
+  SearchIcon,
+  SettingsIcon,
+} from "lucide-react";
+import {
   type CSSProperties,
   type ReactElement,
   type ReactNode,
@@ -36,6 +56,10 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { KeyboardShortcutHelp } from "./components/keyboard-shortcut-help";
+import { ArtifactPanel } from "./components/artifact-panel";
+import { useArtifactStore } from "./stores/artifact-store";
+import { PromptLibrarySheet } from "./components/prompt-library-sheet";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
@@ -421,6 +445,10 @@ export function ChatPage(): ReactElement {
   const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
     null,
   );
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const artifactPanelOpen = useArtifactStore((s) => s.panelOpen);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore((state) => state.activeGgufVariant);
@@ -695,9 +723,107 @@ export function ChatPage(): ReactElement {
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
+  // Global keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      const target = e.target as HTMLElement;
+      const isInput =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
+
+      if (mod && e.key === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen((o) => !o);
+        return;
+      }
+      if (mod && e.shiftKey && e.key === "N") {
+        e.preventDefault();
+        handleNewThread();
+        return;
+      }
+      if (mod && e.shiftKey && e.key === "C") {
+        e.preventDefault();
+        if (canCompare) handleNewCompare();
+        return;
+      }
+      if (mod && e.shiftKey && e.key === "S") {
+        e.preventDefault();
+        setSettingsOpen((o) => !o);
+        return;
+      }
+      if (e.key === "Escape") {
+        setCommandPaletteOpen(false);
+        setShortcutHelpOpen(false);
+        return;
+      }
+      if (e.key === "?" && !isInput) {
+        e.preventDefault();
+        setShortcutHelpOpen((o) => !o);
+        return;
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [canCompare, handleNewThread, handleNewCompare]);
+
   return (
     <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
+      <KeyboardShortcutHelp open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
+      <PromptLibrarySheet
+        open={promptLibraryOpen}
+        onOpenChange={setPromptLibraryOpen}
+      />
+      <CommandDialog open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
+        <Command>
+          <CommandInput placeholder="Type a command..." />
+          <CommandList>
+            <CommandEmpty>No results found.</CommandEmpty>
+            <CommandGroup heading="Navigation">
+              <CommandItem onSelect={() => { handleNewThread(); setCommandPaletteOpen(false); }}>
+                <PencilIcon className="mr-2 size-4" />
+                New Chat
+                <CommandShortcut>Shift+N</CommandShortcut>
+              </CommandItem>
+              {canCompare && (
+                <CommandItem onSelect={() => { handleNewCompare(); setCommandPaletteOpen(false); }}>
+                  <ColumnsIcon className="mr-2 size-4" />
+                  Compare Mode
+                  <CommandShortcut>Shift+C</CommandShortcut>
+                </CommandItem>
+              )}
+              <CommandItem onSelect={() => { setSettingsOpen(true); setCommandPaletteOpen(false); }}>
+                <SettingsIcon className="mr-2 size-4" />
+                Settings
+                <CommandShortcut>Shift+S</CommandShortcut>
+              </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading="Actions">
+              <CommandItem onSelect={() => { setPromptLibraryOpen(true); setCommandPaletteOpen(false); }}>
+                <BookOpenIcon className="mr-2 size-4" />
+                Prompt Library
+              </CommandItem>
+              <CommandItem onSelect={() => { useArtifactStore.getState().setPanelOpen(!artifactPanelOpen); setCommandPaletteOpen(false); }}>
+                <PanelRightIcon className="mr-2 size-4" />
+                Toggle Artifacts Panel
+              </CommandItem>
+              <CommandItem onSelect={() => { handleEject(); setCommandPaletteOpen(false); }}>
+                <BrainIcon className="mr-2 size-4" />
+                Eject Model
+              </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading="Help">
+              <CommandItem onSelect={() => { setShortcutHelpOpen(true); setCommandPaletteOpen(false); }}>
+                <KeyboardIcon className="mr-2 size-4" />
+                Keyboard Shortcuts
+                <CommandShortcut>?</CommandShortcut>
+              </CommandItem>
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </CommandDialog>
       <SidebarProvider
         defaultOpen={true}
         open={sidebarOpen}
@@ -787,15 +913,24 @@ export function ChatPage(): ReactElement {
             </button>
           </div>
 
-          {view.mode === "single" ? (
-            <SingleContent
-              key={view.threadId ?? view.newThreadNonce ?? "new"}
-              threadId={view.threadId}
-              newThreadNonce={view.newThreadNonce}
-            />
-          ) : (
-            <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
-          )}
+          <div className="flex min-h-0 flex-1">
+            <div className="min-h-0 min-w-0 flex-1">
+              {view.mode === "single" ? (
+                <SingleContent
+                  key={view.threadId ?? view.newThreadNonce ?? "new"}
+                  threadId={view.threadId}
+                  newThreadNonce={view.newThreadNonce}
+                />
+              ) : (
+                <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
+              )}
+            </div>
+            {artifactPanelOpen && (
+              <div className="hidden w-[24rem] shrink-0 md:block">
+                <ArtifactPanel />
+              </div>
+            )}
+          </div>
         </div>
 
         <ChatSettingsPanel
