@@ -106,7 +106,7 @@ class GaLoreProjector:
         self.gamma_proj = gamma_proj
         self.queue_size = queue_size
         self.past_ortho_vector = None
-        self.queue = deque(maxlen=queue_size)
+        self.queue = deque(maxlen = queue_size)
         self.svd_count = 0
         self._ortho_float_cache = None
 
@@ -216,13 +216,13 @@ class GaLoreProjector:
 
         m, n = matrix.shape
         if min(m, n) <= rank * 2:
-            U, s, Vh = torch.linalg.svd(matrix, full_matrices=False)
+            U, s, Vh = torch.linalg.svd(matrix, full_matrices = False)
             result = Vh[:rank, :] if side == "right" else U[:, :rank]
         else:
             # Oversampling p=10 per Halko et al. 2009 (arXiv:0909.4061)
             # recommendation of p=5..10 for large low-rank matrices.
             q = min(rank + 10, min(m, n))
-            U, s, V = torch.svd_lowrank(matrix, q=q, niter=2)
+            U, s, V = torch.svd_lowrank(matrix, q = q, niter = 2)
             result = V[:, :rank].t() if side == "right" else U[:, :rank]
 
         if original_dtype != torch.float32:

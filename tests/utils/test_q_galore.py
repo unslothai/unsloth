@@ -498,18 +498,18 @@ class TestQGaLoreIntegration:
         _projector_mod_local = sys.modules["unsloth.optimizers.q_galore_projector"]
         install_hook = _adamw_mod_local.install_weight_quant_hooks
 
-        linear = nn.Linear(16, 8, bias=False)
+        linear = nn.Linear(16, 8, bias = False)
         original = linear.weight.data.clone()
 
         # Quantize the weight and replace with placeholder (simulates post-step)
         q, scales, zeros, shape = _projector_mod_local._quantize(
-            linear.weight.data.clone(), q_group_size=16
+            linear.weight.data.clone(), q_group_size = 16
         )
         linear.weight._q_data = q
         linear.weight._q_scales = scales
         linear.weight._q_zeros = zeros
         linear.weight._q_shape = shape
-        linear.weight.data = torch.zeros(1, dtype=linear.weight.dtype)
+        linear.weight.data = torch.zeros(1, dtype = linear.weight.dtype)
         assert linear.weight.data.numel() == 1, "placeholder should be 1 element"
 
         # Install hook and run forward -- should restore float weights
@@ -520,8 +520,9 @@ class TestQGaLoreIntegration:
         assert linear.weight.data.shape == (8, 16), "weight shape not restored"
         assert linear.weight.data.is_floating_point(), "weight not float after hook"
         # Check values are close to original (quantization introduces small error)
-        assert torch.allclose(linear.weight.data, original, atol=0.15), \
-            "dequantized weight too far from original"
+        assert torch.allclose(
+            linear.weight.data, original, atol = 0.15
+        ), "dequantized weight too far from original"
 
         for h in handles:
             h.remove()

@@ -220,7 +220,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # Replace p.data with a scalar placeholder to free float memory.
                     # A forward pre-hook (install_weight_quant_hooks) will
                     # dequantize back to float before the next forward pass.
-                    p.data = torch.empty(1, dtype=p.data.dtype, device=p.data.device)
+                    p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
                 state["step"] += 1
 
@@ -277,10 +277,13 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
 def _weight_quant_pre_hook(module, args):
     """Forward pre-hook: dequantize INT8 weights to float before forward."""
-    for p in module.parameters(recurse=False):
+    for p in module.parameters(recurse = False):
         if hasattr(p, "_q_scales") and p._q_scales is not None:
             float_weight = _dequantize(
-                p._q_data, p._q_scales, p._q_zeros, p._q_shape,
+                p._q_data,
+                p._q_scales,
+                p._q_zeros,
+                p._q_shape,
             )
             p.data = float_weight.to(p.data.device)
 
@@ -293,8 +296,7 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     handles = []
     for module in model.modules():
         has_quant_param = any(
-            hasattr(p, "_q_scales")
-            for p in module.parameters(recurse=False)
+            hasattr(p, "_q_scales") for p in module.parameters(recurse = False)
         )
         if has_quant_param:
             h = module.register_forward_pre_hook(_weight_quant_pre_hook)
