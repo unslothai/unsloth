@@ -145,7 +145,7 @@ class QGaloreConfig:
     proj_quant: bool = True
     proj_quant_group_size: int = -1
     proj_quant_n_bit: int = 4
-    weight_quant: bool = True
+    weight_quant: bool = False
     stochastic_round: bool = True
     weight_group_size: int = 128
     cos_threshold: float = 0.4
