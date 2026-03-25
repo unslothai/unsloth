@@ -44,6 +44,35 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
 
+# ── Unicode-safe printing ─────────────────────────────────────────────
+# On Windows the default console encoding can be a legacy code page
+# (e.g. CP1252) that cannot represent Unicode glyphs such as ✅ or ❌.
+# _safe_print() gracefully degrades to ASCII equivalents so the
+# installer never crashes just because of a status glyph.
+
+_UNICODE_TO_ASCII: dict[str, str] = {
+    "\u2705": "[OK]",     # ✅
+    "\u274c": "[FAIL]",   # ❌
+    "\u26a0\ufe0f": "[!]",  # ⚠️  (warning + variation selector)
+    "\u26a0": "[!]",      # ⚠  (warning without variation selector)
+}
+
+
+def _safe_print(*args: object, **kwargs: object) -> None:
+    """Drop-in print() replacement that survives non-UTF-8 consoles."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Stringify, then swap emoji for ASCII equivalents
+        text = " ".join(str(a) for a in args)
+        for uni, ascii_alt in _UNICODE_TO_ASCII.items():
+            text = text.replace(uni, ascii_alt)
+        # Final fallback: replace any remaining unencodable chars
+        print(text.encode(sys.stdout.encoding or "ascii", errors="replace").decode(
+            sys.stdout.encoding or "ascii", errors="replace"
+        ), **kwargs)
+
+
 # ── Color support ──────────────────────────────────────────────────────
 
 
@@ -119,7 +148,7 @@ def run(
         stderr = subprocess.STDOUT if quiet else None,
     )
     if result.returncode != 0:
-        print(_red(f"❌ {label} failed (exit code {result.returncode}):"))
+        _safe_print(_red(f"❌ {label} failed (exit code {result.returncode}):"))
         if result.stdout:
             print(result.stdout.decode(errors = "replace"))
         sys.exit(result.returncode)
@@ -267,7 +296,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         text = True,
     )
     if result.returncode != 0:
-        print(_red(f"   ⚠️  Could not find package {package_name}, skipping patch"))
+        _safe_print(_red(f"   ⚠️  Could not find package {package_name}, skipping patch"))
         return
 
     location = None
@@ -277,7 +306,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
             break
 
     if not location:
-        print(_red(f"   ⚠️  Could not determine location of {package_name}"))
+        _safe_print(_red(f"   ⚠️  Could not determine location of {package_name}"))
         return
 
     dest = Path(location) / relative_path
@@ -393,7 +422,7 @@ def install_python_stack() -> int:
 
     # 11. Local Data Designer seed plugin
     if not LOCAL_DD_UNSTRUCTURED_PLUGIN.is_dir():
-        print(
+        _safe_print(
             _red(
                 f"❌ Missing local plugin directory: {LOCAL_DD_UNSTRUCTURED_PLUGIN}",
             ),
@@ -422,7 +451,7 @@ def install_python_stack() -> int:
         stderr = subprocess.DEVNULL,
     )
 
-    print(_green("✅ Python dependencies installed"))
+    _safe_print(_green("✅ Python dependencies installed"))
     return 0
 
 
