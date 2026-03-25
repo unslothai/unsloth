@@ -59,7 +59,6 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 If you don't have `curl`, use `wget`. Launch after setup via:
 ```bash
-source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
