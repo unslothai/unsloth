@@ -16,6 +16,7 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -90,7 +91,6 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
           <ThreadScrollToBottom />
-          <GeneratingSpinner />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
@@ -541,6 +541,17 @@ const MessageError: FC = () => {
   );
 };
 
+const GeneratingIndicator: FC = () => {
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 && message.status?.type === "running",
+  );
+  if (!show) return null;
+  return (
+    <AnimatedShinyText className="text-sm">Generating...</AnimatedShinyText>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -548,6 +559,7 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
+        <GeneratingIndicator />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,

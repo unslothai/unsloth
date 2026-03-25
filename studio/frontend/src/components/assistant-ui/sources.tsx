@@ -43,7 +43,8 @@ function SourceIcon({
 }: ComponentProps<"span"> & { url: string; size?: number }) {
   const [hasError, setHasError] = useState(false);
   const domain = extractDomain(url);
-  const sizeClass = `size-${size}`;
+  const SIZE_CLASSES: Record<number, string> = { 3: "size-3", 4: "size-4", 5: "size-5" };
+  const sizeClass = SIZE_CLASSES[size] ?? "size-3";
 
   if (hasError) {
     return (
