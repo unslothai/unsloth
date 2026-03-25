@@ -1023,10 +1023,6 @@ def load_approved_release_checksums(
         raise PrebuiltFallback(
             f"approved checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} in {repo}@{release_tag} was invalid"
         ) from exc
-    if checksums.upstream_tag != release_tag:
-        raise PrebuiltFallback(
-            f"approved checksum asset upstream_tag={checksums.upstream_tag} did not match pinned tag {release_tag}"
-        )
     return checksums
 
 
