@@ -297,6 +297,10 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
 
     let pid = child.id();
     info!("Stopping installer process (pid {})", pid);
+    // Note: child.kill() only kills the direct bash/powershell process, not its
+    // subprocess tree (uv, cmake, etc.). Those orphans will finish on their own.
+    // This is acceptable because the install scripts nuke and recreate the venv
+    // on re-run, so partial state from orphaned subprocesses is cleaned up.
     let _ = child.kill();
     let _ = child.wait();
     info!("Installer process stopped");
