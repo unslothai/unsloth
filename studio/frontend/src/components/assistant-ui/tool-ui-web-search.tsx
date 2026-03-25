@@ -81,29 +81,27 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {isRunning ? (
-          <div className="flex items-center gap-2 px-4 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <LoaderIcon className="size-3.5 animate-spin" />
             <span>Searching for &ldquo;{query}&rdquo;&hellip;</span>
           </div>
         ) : sources.length > 0 ? (
-          <div className="flex flex-col gap-1.5 px-4">
-            {sources.map((source) => (
+          <div className="flex flex-wrap gap-1.5">
+            {sources.map((source, i) => (
               <Source
-                key={source.url}
+                key={`${source.url}-${i}`}
                 href={source.url}
                 variant="outline"
-                size="default"
-                className="flex w-full max-w-full items-center gap-2 py-1.5"
+                size="sm"
+                className="inline-flex items-center gap-1.5"
               >
-                <SourceIcon url={source.url} className="size-3.5" />
-                <SourceTitle className="max-w-none flex-1 truncate">
-                  {source.title}
-                </SourceTitle>
+                <SourceIcon url={source.url} size={3} />
+                <SourceTitle>{source.title}</SourceTitle>
               </Source>
             ))}
           </div>
         ) : result ? (
-          <div className="px-4">
+          <div>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
               {typeof result === "string"
                 ? result
