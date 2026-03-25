@@ -5,8 +5,9 @@
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
-    $VenvName = "unsloth_studio"
     $PythonVersion = "3.13"
+    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+    $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
     Write-Host ""
     Write-Host "========================================="
@@ -449,20 +450,59 @@ shell.Run cmd, 0, False
         return
     }
 
-    # ── Create venv (skip if it already exists and has a valid interpreter) ──
+    # ── Create venv (migrate old layout if possible, otherwise fresh) ──
     # Pass the resolved executable path to uv so it does not re-resolve
     # a version string back to a conda interpreter.
-    $VenvPython = Join-Path $VenvName "Scripts\python.exe"
+    if (-not (Test-Path $StudioHome)) {
+        New-Item -ItemType Directory -Path $StudioHome -Force | Out-Null
+    }
+
+    $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+    $_Migrated = $false
+
+    if (Test-Path $VenvPython) {
+        # New layout already exists -- nuke for fresh install
+        Write-Host "==> Removing existing environment for fresh install..."
+        Remove-Item -Recurse -Force $VenvDir
+    } elseif (Test-Path (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
+        # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating
+        $OldVenv = Join-Path $StudioHome ".venv"
+        $OldPy = Join-Path $OldVenv "Scripts\python.exe"
+        Write-Host "==> Found legacy Studio environment, validating..."
+        $prevEAP2 = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
+            $torchOk = ($LASTEXITCODE -eq 0)
+        } catch { $torchOk = $false }
+        $ErrorActionPreference = $prevEAP2
+        if ($torchOk) {
+            Write-Host "   Legacy environment is healthy -- migrating..."
+            Move-Item -Path $OldVenv -Destination $VenvDir -Force
+            Write-Host "   Moved .venv -> unsloth_studio"
+            $_Migrated = $true
+        } else {
+            Write-Host "   Legacy environment failed validation -- creating fresh environment"
+            Remove-Item -Recurse -Force $OldVenv -ErrorAction SilentlyContinue
+        }
+    } elseif (Test-Path (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe")) {
+        # CWD-relative venv from old install.ps1 -- migrate to absolute path
+        $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
+        Write-Host "==> Found CWD-relative Studio environment, migrating to $VenvDir..."
+        Move-Item -Path $CwdVenv -Destination $VenvDir -Force
+        Write-Host "   Moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
+        $_Migrated = $true
+    }
+
     if (-not (Test-Path $VenvPython)) {
-        if (Test-Path $VenvName) { Remove-Item -Recurse -Force $VenvName }
-        Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment (${VenvName})..."
-        uv venv $VenvName --python "$($DetectedPython.Path)"
+        Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment ($VenvDir)..."
+        uv venv $VenvDir --python "$($DetectedPython.Path)"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
             return
         }
     } else {
-        Write-Host "==> Virtual environment ${VenvName} already exists, skipping creation."
+        Write-Host "==> Using migrated environment at $VenvDir"
     }
 
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
@@ -536,15 +576,26 @@ shell.Run cmd, 0, False
     #   CUDA wheels.  Missing dependencies (transformers, trl, peft, etc.)
     #   are still pulled in because they are new, not upgrades.
     #
-    Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-    uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
-        return
-    }
+    if ($_Migrated) {
+        # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
+        # in the new venv location, while preserving existing torch/CUDA
+        Write-Host "==> Upgrading unsloth in migrated environment..."
+        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.11" unsloth-zoo
+    } elseif ($TorchIndexUrl) {
+        Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
+        uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
+            return
+        }
 
-    Write-Host "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.11"
+        Write-Host "==> Installing unsloth (this may take a few minutes)..."
+        uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.11"
+    } else {
+        # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+        Write-Host "==> Installing unsloth (this may take a few minutes)..."
+        uv pip install --python $VenvPython "unsloth>=2026.3.11" --torch-backend=auto
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
@@ -554,7 +605,7 @@ shell.Run cmd, 0, False
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
     Write-Host "==> Running unsloth studio setup..."
-    $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
+    $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
@@ -562,6 +613,8 @@ shell.Run cmd, 0, False
         Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
         return
     }
+    # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
+    $env:SKIP_STUDIO_BASE = "1"
     & $UnslothExe studio setup
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
@@ -582,12 +635,11 @@ shell.Run cmd, 0, False
     if ($IsInteractive) {
         Write-Host "==> Launching Unsloth Studio..."
         Write-Host ""
-        $UnslothExe = Join-Path $VenvName "Scripts\unsloth.exe"
         & $UnslothExe studio -H 0.0.0.0 -p 8888
     } else {
         Write-Host "  To launch, run:"
         Write-Host ""
-        Write-Host "    .\${VenvName}\Scripts\activate"
+        Write-Host "    & `"$VenvDir\Scripts\Activate.ps1`""
         Write-Host "    unsloth studio -H 0.0.0.0 -p 8888"
         Write-Host ""
     }

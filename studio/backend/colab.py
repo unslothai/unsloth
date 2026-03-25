@@ -26,7 +26,7 @@ def _bootstrap_studio_venv() -> None:
     site-packages so that packages like structlog, fastapi, etc. are
     importable from notebook cells and take priority over system copies.
     """
-    venv_lib = Path.home() / ".unsloth" / "studio" / ".venv" / "lib"
+    venv_lib = Path.home() / ".unsloth" / "studio" / "unsloth_studio" / "lib"
     if not venv_lib.exists():
         import warnings
 

@@ -1,11 +1,35 @@
 #!/bin/sh
 # Unsloth Studio Installer
-# Usage (curl): curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
-# Usage (wget): wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | sh
+# Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
+# Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
+# Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
+# Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 set -e
 
-VENV_NAME="unsloth_studio"
+# ── Parse flags ──
+STUDIO_LOCAL_INSTALL=false
+PACKAGE_NAME="unsloth"
+_next_is_package=false
+for arg in "$@"; do
+    if [ "$_next_is_package" = true ]; then
+        PACKAGE_NAME="$arg"
+        _next_is_package=false
+        continue
+    fi
+    case "$arg" in
+        --local) STUDIO_LOCAL_INSTALL=true ;;
+        --package) _next_is_package=true ;;
+    esac
+done
+
+if [ "$_next_is_package" = true ]; then
+    echo "❌ ERROR: --package requires an argument." >&2
+    exit 1
+fi
+
 PYTHON_VERSION="3.13"
+STUDIO_HOME="$HOME/.unsloth/studio"
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -659,32 +683,195 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# ── Create venv (skip if it already exists and has a valid interpreter) ──
-if [ ! -x "$VENV_NAME/bin/python" ]; then
-    [ -e "$VENV_NAME" ] && rm -rf "$VENV_NAME"
-    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_NAME})..."
-    uv venv "$VENV_NAME" --python "$PYTHON_VERSION"
-else
-    echo "==> Virtual environment ${VENV_NAME} already exists, skipping creation."
+# ── Create venv (migrate old layout if possible, otherwise fresh) ──
+mkdir -p "$STUDIO_HOME"
+
+_MIGRATED=false
+
+if [ -x "$VENV_DIR/bin/python" ]; then
+    # New layout already exists — nuke for fresh install
+    rm -rf "$VENV_DIR"
+elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
+    # Old layout exists — validate before migrating
+    echo "==> Found legacy Studio environment, validating..."
+    if "$STUDIO_HOME/.venv/bin/python" -c "
+import torch
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+A = torch.ones((10, 10), device=device)
+B = torch.ones((10, 10), device=device)
+C = torch.ones((10, 10), device=device)
+D = A + B
+E = D @ C
+torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
+" >/dev/null 2>&1; then
+        echo "✅ Legacy environment is healthy — migrating..."
+        mv "$STUDIO_HOME/.venv" "$VENV_DIR"
+        echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
+        _MIGRATED=true
+    else
+        echo "⚠️  Legacy environment failed validation — creating fresh environment"
+        rm -rf "$STUDIO_HOME/.venv"
+    fi
 fi
 
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
+    uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+else
+    echo "==> Using migrated environment at ${VENV_DIR}"
+fi
+
+# ── Resolve repo root (for --local installs) ──
+_REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+
+# ── Detect GPU and choose PyTorch index URL ──
+# Mirrors Get-TorchIndexUrl in install.ps1.
+# On CPU-only machines this returns the cpu index, avoiding the solver
+# dead-end where --torch-backend=auto resolves to unsloth==2024.8.
+get_torch_index_url() {
+    _base="https://download.pytorch.org/whl"
+    # macOS: always CPU (no CUDA support)
+    case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
+    # Try nvidia-smi
+    _smi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _smi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _smi="/usr/bin/nvidia-smi"
+    fi
+    if [ -z "$_smi" ]; then echo "$_base/cpu"; return; fi
+    # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
+    _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
+        | sed -n 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+        | head -1)
+    if [ -z "$_cuda_ver" ]; then
+        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+        echo "$_base/cu126"; return
+    fi
+    _major=${_cuda_ver%%.*}
+    _minor=${_cuda_ver#*.}
+    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
+    elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"
+    elif [ "$_major" -ge 11 ]; then echo "$_base/cu118"
+    else echo "$_base/cpu"; fi
+}
+TORCH_INDEX_URL=$(get_torch_index_url)
+
 # ── Install unsloth directly into the venv (no activation needed) ──
-echo "==> Installing unsloth (this may take a few minutes)..."
-uv pip install --python "$VENV_NAME/bin/python" "unsloth>=2026.3.11" --torch-backend=auto
+_VENV_PY="$VENV_DIR/bin/python"
+if [ "$_MIGRATED" = true ]; then
+    # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
+    # in the new venv location, while preserving existing torch/CUDA
+    echo "==> Upgrading unsloth in migrated environment..."
+    uv pip install --python "$_VENV_PY" \
+        --reinstall-package unsloth --reinstall-package unsloth-zoo \
+        "unsloth>=2026.3.11" unsloth-zoo
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    fi
+elif [ -n "$TORCH_INDEX_URL" ]; then
+    # Fresh: Step 1 - install torch from explicit index
+    echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
+    uv pip install --python "$_VENV_PY" torch torchvision torchaudio \
+        --index-url "$TORCH_INDEX_URL"
+    # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    echo "==> Installing unsloth (this may take a few minutes)..."
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "unsloth>=2026.3.11" unsloth-zoo
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    else
+        uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "$PACKAGE_NAME"
+    fi
+else
+    # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+    echo "==> Installing unsloth (this may take a few minutes)..."
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.11" --torch-backend=auto
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    else
+        uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+    fi
+fi
 
 # ── Run studio setup ──
-# Ensure the venv's Python is on PATH for setup.sh's Python discovery.
-# On macOS the system Python may be outside the 3.11-3.13 range that
-# setup.sh requires, but uv already installed a compatible interpreter
-# inside the venv.
-VENV_ABS_BIN="$(cd "$VENV_NAME/bin" && pwd)"
+# When --local, use the repo's own setup.sh directly.
+# Otherwise, find it inside the installed package.
+SETUP_SH=""
+if [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -f "$_REPO_ROOT/studio/setup.sh" ]; then
+    SETUP_SH="$_REPO_ROOT/studio/setup.sh"
+fi
+
+if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    SETUP_SH=$("$VENV_DIR/bin/python" -c "
+import importlib.resources
+print(importlib.resources.files('studio') / 'setup.sh')
+" 2>/dev/null || echo "")
+fi
+
+# Fallback: search site-packages
+if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    SETUP_SH=$(find "$VENV_DIR" -path "*/studio/setup.sh" -print -quit 2>/dev/null || echo "")
+fi
+
+if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    echo "❌ ERROR: Could not find studio/setup.sh in the installed package."
+    exit 1
+fi
+
+# Ensure the venv's Python is on PATH so setup.sh can find it.
+VENV_ABS_BIN="$(cd "$VENV_DIR/bin" && pwd)"
 if [ -n "$VENV_ABS_BIN" ]; then
     export PATH="$VENV_ABS_BIN:$PATH"
 fi
 
-echo "==> Running unsloth studio setup..."
-REQUESTED_PYTHON_VERSION="$(cd "$VENV_NAME/bin" && pwd)/python" \
-"$VENV_NAME/bin/unsloth" studio setup </dev/null
+echo "==> Running unsloth setup..."
+if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+    SKIP_STUDIO_BASE=1 \
+    STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    STUDIO_LOCAL_INSTALL=1 \
+    STUDIO_LOCAL_REPO="$_REPO_ROOT" \
+    bash "$SETUP_SH" </dev/null
+else
+    SKIP_STUDIO_BASE=1 \
+    STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    bash "$SETUP_SH" </dev/null
+fi
+
+# ── Make 'unsloth' available globally via ~/.local/bin ──
+mkdir -p "$HOME/.local/bin"
+ln -sf "$VENV_DIR/bin/unsloth" "$HOME/.local/bin/unsloth"
+
+_LOCAL_BIN="$HOME/.local/bin"
+case ":$PATH:" in
+    *":$_LOCAL_BIN:"*) ;;  # already on PATH
+    *)
+        _SHELL_PROFILE=""
+        if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+            _SHELL_PROFILE="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            _SHELL_PROFILE="$HOME/.bashrc"
+        elif [ -f "$HOME/.profile" ]; then
+            _SHELL_PROFILE="$HOME/.profile"
+        fi
+
+        if [ -n "$_SHELL_PROFILE" ]; then
+            if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
+                echo '' >> "$_SHELL_PROFILE"
+                echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
+                echo "==> Added ~/.local/bin to PATH in $_SHELL_PROFILE"
+            fi
+        fi
+        export PATH="$_LOCAL_BIN:$PATH"
+        ;;
+esac
 
 create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 
@@ -694,8 +881,32 @@ echo "   Unsloth Studio installed!"
 echo "========================================="
 echo ""
 
-echo "  To launch, run:"
-echo ""
-echo "    source ${VENV_NAME}/bin/activate"
-echo "    unsloth studio -H 0.0.0.0 -p 8888"
-echo ""
+# Launch studio automatically in interactive terminals;
+# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
+if [ -t 1 ]; then
+    echo "==> Launching Unsloth Studio..."
+    echo ""
+    "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
+    _LAUNCH_EXIT=$?
+    if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
+        echo ""
+        echo "⚠️  Unsloth Studio failed to start after migration."
+        echo "   Your migrated environment may be incompatible."
+        echo "   To fix, remove the environment and reinstall:"
+        echo ""
+        echo "   rm -rf $VENV_DIR"
+        echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
+        echo ""
+    fi
+    exit "$_LAUNCH_EXIT"
+else
+    echo "  To launch, run:"
+    echo ""
+    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo ""
+    echo "  Or activate the environment first:"
+    echo ""
+    echo "    source ${VENV_DIR}/bin/activate"
+    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    echo ""
+fi
