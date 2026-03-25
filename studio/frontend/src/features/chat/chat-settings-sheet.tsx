@@ -475,21 +475,38 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-3 py-1">
               {isGguf && (
                 <>
-                  <ParamSlider
-                    label="Context Length"
-                    value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096)}
-                    min={512}
-                    max={ggufContextLength ?? 4096}
-                    step={512}
-                    onChange={(v) => {
-                      setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
-                    }}
-                    displayValue={
-                      (customContextLength == null || customContextLength === ggufContextLength)
-                        ? `${ggufContextLength ?? "..."} (Max)`
-                        : undefined
-                    }
-                  />
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium">Context Length</span>
+                      <Input
+                        type="number"
+                        value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
+                        placeholder="..."
+                        min={128}
+                        className="h-6 w-[80px] text-right text-xs tabular-nums"
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === "") {
+                            setCustomContextLength(null);
+                            return;
+                          }
+                          const v = parseInt(raw, 10);
+                          if (!Number.isNaN(v) && v >= 0) {
+                            setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                          }
+                        }}
+                      />
+                    </div>
+                    <Slider
+                      min={512}
+                      max={ggufContextLength ?? 4096}
+                      step={512}
+                      value={[Math.min(typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096), ggufContextLength ?? 4096)]}
+                      onValueChange={([v]) => {
+                        setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                      }}
+                    />
+                  </div>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium">KV Cache Dtype</div>
