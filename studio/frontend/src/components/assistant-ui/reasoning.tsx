@@ -99,16 +99,17 @@ function ReasoningRoot({
     };
 
     scrollContainer.addEventListener("scroll", resetPosition);
-    const timeoutId = setTimeout(() => {
-      scrollContainer.removeEventListener("scroll", resetPosition);
-      lockCleanupRef.current = null;
-    }, ANIMATION_DURATION);
-
-    lockCleanupRef.current = () => {
-      clearTimeout(timeoutId);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       scrollContainer.removeEventListener("scroll", resetPosition);
       lockCleanupRef.current = null;
     };
+    timeoutId = setTimeout(cleanup, ANIMATION_DURATION);
+    lockCleanupRef.current = cleanup;
   }, []);
 
   const isControlled = controlledOpen !== undefined;
