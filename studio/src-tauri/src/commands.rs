@@ -128,8 +128,8 @@ pub fn open_logs_dir() -> Result<(), String> {
 }
 
 /// Start the first-launch installation process.
-/// Runs the bundled platform installer script and streams progress events.
-/// Streams progress via install-progress, install-complete, and install-failed events.
+/// Runs the platform installer script with --tauri flag and streams progress events.
+/// Returns "NEEDS_ELEVATION" if system packages need elevated install (Linux only).
 #[tauri::command]
 pub async fn start_install(
     app: AppHandle,
@@ -139,4 +139,19 @@ pub async fn start_install(
     tokio::task::spawn_blocking(move || install::run_install(app, state))
         .await
         .map_err(|e| format!("Install task panicked: {e}"))?
+}
+
+/// Install system packages with elevated permissions (Linux only).
+/// Called by frontend after user approves the elevation dialog.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn install_system_packages(packages: Vec<String>) -> Result<(), String> {
+    install::install_system_packages(&packages)
+}
+
+/// Stub for non-Linux platforms — elevation is handled by the scripts themselves.
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub fn install_system_packages(_packages: Vec<String>) -> Result<(), String> {
+    Err("Elevated package install is only supported on Linux".to_string())
 }
