@@ -4,6 +4,7 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { preprocessLaTeX } from "@/lib/latex";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy02Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -11,7 +12,7 @@ import { code } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -394,6 +395,7 @@ const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
+  const processedText = useMemo(() => preprocessLaTeX(text), [text]);
 
   const audioMatch = text.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -419,7 +421,7 @@ const MarkdownTextImpl = () => {
         shikiTheme={["github-light", "github-dark"]}
         BlockComponent={StreamdownBlock}
       >
-        {text}
+        {processedText}
       </Streamdown>
     </div>
   );

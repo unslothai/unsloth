@@ -544,7 +544,7 @@ const MessageError: FC = () => {
 const GeneratingIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
-      message.content.length === 0 && message.status.type === "running",
+      message.content.length === 0 && message.status?.type === "running",
   );
   if (!show) return null;
   return (
