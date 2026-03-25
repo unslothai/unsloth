@@ -1934,7 +1934,8 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
         raw_base = f"https://raw.githubusercontent.com/ggml-org/llama.cpp/{llama_tag}"
         source_url = f"{raw_base}/convert_hf_to_gguf.py"
         data = download_bytes(
-            source_url, progress_label = f"Downloading {download_label_from_url(source_url)}"
+            source_url,
+            progress_label = f"Downloading {download_label_from_url(source_url)}",
         )
         if not data:
             raise RuntimeError(f"downloaded empty converter script from {source_url}")
