@@ -66,8 +66,7 @@ def _pip_install_backend_deps() -> None:
     except ImportError:
         print("Upgrading huggingface-hub (is_offline_mode missing) ...")
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "-q",
-             "huggingface-hub>=1.0"],
+            [sys.executable, "-m", "pip", "install", "-q", "huggingface-hub>=1.0"],
         )
 
 
