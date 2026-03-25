@@ -198,7 +198,9 @@ def _install_package_wheel_first(
                     installed = True
                 else:
                     logger.warning(
-                        "uv failed to install %s wheel:\n%s", display_name, result.stdout
+                        "uv failed to install %s wheel:\n%s",
+                        display_name,
+                        result.stdout,
                     )
             if not installed:
                 pip_cmd = [
@@ -219,7 +221,9 @@ def _install_package_wheel_first(
                     installed = True
                 else:
                     logger.warning(
-                        "pip failed to install %s wheel:\n%s", display_name, result.stdout
+                        "pip failed to install %s wheel:\n%s",
+                        display_name,
+                        result.stdout,
                     )
             if installed:
                 logger.info("Installed prebuilt %s wheel successfully", display_name)
@@ -268,9 +272,13 @@ def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
 
 
 _SSM_MODEL_SUBSTRINGS = (
-    "nemotron_h", "nemotron-h", "nemotron-3-nano",
-    "falcon_h1", "falcon-h1",
-    "granite-4.0-h", "granitemoehybrid",
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
 )
 
 
