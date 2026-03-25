@@ -252,7 +252,12 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     # the system Python (observed on Colab and similar environments).
     cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
-    cmd.append("--torch-backend=auto")
+    # Torch is pre-installed by install.sh/setup.ps1.  Do not add
+    # --torch-backend by default -- it can cause solver dead-ends on
+    # CPU-only machines.  Callers that need it can set UV_TORCH_BACKEND.
+    _tb = os.environ.get("UV_TORCH_BACKEND", "")
+    if _tb:
+        cmd.append(f"--torch-backend={_tb}")
     return cmd
 
 

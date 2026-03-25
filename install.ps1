@@ -580,7 +580,7 @@ shell.Run cmd, 0, False
         # Migrated env: upgrade unsloth while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
         uv pip install --python $VenvPython --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.11"
-    } else {
+    } elseif ($TorchIndexUrl) {
         Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
         uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
         if ($LASTEXITCODE -ne 0) {
@@ -590,6 +590,10 @@ shell.Run cmd, 0, False
 
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.11"
+    } else {
+        # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+        Write-Host "==> Installing unsloth (this may take a few minutes)..."
+        uv pip install --python $VenvPython "unsloth>=2026.3.11" --torch-backend=auto
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red

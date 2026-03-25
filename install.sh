@@ -289,24 +289,74 @@ fi
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 
+# ── Detect GPU and choose PyTorch index URL ──
+# Mirrors Get-TorchIndexUrl in install.ps1.
+# On CPU-only machines this returns the cpu index, avoiding the solver
+# dead-end where --torch-backend=auto resolves to unsloth==2024.8.
+get_torch_index_url() {
+    _base="https://download.pytorch.org/whl"
+    # macOS: always CPU (no CUDA support)
+    case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
+    # Try nvidia-smi
+    _smi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _smi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _smi="/usr/bin/nvidia-smi"
+    fi
+    if [ -z "$_smi" ]; then echo "$_base/cpu"; return; fi
+    # Parse CUDA version from nvidia-smi output
+    _cuda_ver=$($_smi 2>/dev/null | grep -oP 'CUDA Version:\s+\K[0-9]+\.[0-9]+' | head -1)
+    if [ -z "$_cuda_ver" ]; then echo "$_base/cu126"; return; fi  # unparseable -> default
+    _major=${_cuda_ver%%.*}
+    _minor=${_cuda_ver#*.}
+    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
+    elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"
+    elif [ "$_major" -ge 11 ]; then echo "$_base/cu118"
+    else echo "$_base/cpu"; fi
+}
+TORCH_INDEX_URL=$(get_torch_index_url)
+
 # ── Install unsloth directly into the venv (no activation needed) ──
+_VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
-    # Migrated env: upgrade unsloth + unsloth-zoo while preserving existing torch/CUDA
+    # Migrated env: upgrade only unsloth+unsloth-zoo, preserve existing torch
     echo "==> Upgrading unsloth in migrated environment..."
-    uv pip install --python "$VENV_DIR/bin/python" unsloth-zoo "unsloth>=2026.3.11" --torch-backend=auto \
-        --reinstall-package unsloth --reinstall-package unsloth-zoo
+    uv pip install --python "$_VENV_PY" \
+        --upgrade-package unsloth --upgrade-package unsloth-zoo \
+        "unsloth>=2026.3.11" unsloth-zoo
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         echo "==> Overlaying local repo (editable)..."
-        uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto --no-deps
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     fi
-elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    echo "==> Installing unsloth + unsloth-zoo (full deps)..."
-    uv pip install --python "$VENV_DIR/bin/python" unsloth-zoo "unsloth>=2026.3.11" --torch-backend=auto
-    echo "==> Overlaying local repo (editable)..."
-    uv pip install --python "$VENV_DIR/bin/python" -e "$_REPO_ROOT" --torch-backend=auto --no-deps
-else
+elif [ -n "$TORCH_INDEX_URL" ]; then
+    # Fresh: Step 1 - install torch from explicit index
+    echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
+    uv pip install --python "$_VENV_PY" torch torchvision torchaudio \
+        --index-url "$TORCH_INDEX_URL"
+    # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
-    uv pip install --python "$VENV_DIR/bin/python" "$PACKAGE_NAME" --torch-backend=auto
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "unsloth>=2026.3.11" unsloth-zoo
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    else
+        uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "$PACKAGE_NAME"
+    fi
+else
+    # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+    echo "==> Installing unsloth (this may take a few minutes)..."
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.11" --torch-backend=auto
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    else
+        uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+    fi
 fi
 
 # ── Run studio setup ──
