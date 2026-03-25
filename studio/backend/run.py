@@ -165,7 +165,7 @@ def _graceful_shutdown(server = None):
     before the parent exits. This is critical on Windows where atexit
     handlers are unreliable after Ctrl+C.
     """
-    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+    logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn server (releases the listening socket)
     if server is not None:

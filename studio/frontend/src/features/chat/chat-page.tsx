@@ -137,7 +137,7 @@ type CompareModelSelection = {
 
 /**
  * Detect if this is a LoRA base-vs-fine-tuned compare.
- * Returns true when the loaded checkpoint is a LoRA — in that case
+ * Returns true when the loaded checkpoint is a LoRA -- in that case
  * we use the fast simultaneous base/lora adapter-toggle path.
  */
 function useIsLoraCompare(): boolean {

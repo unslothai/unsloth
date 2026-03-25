@@ -16,7 +16,7 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
-# Plaintext bootstrap password file — lives beside auth.db, deleted on
+# Plaintext bootstrap password file -- lives beside auth.db, deleted on
 # first password change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
@@ -43,7 +43,7 @@ def generate_bootstrap_password() -> str:
         if _bootstrap_password:
             return _bootstrap_password
 
-    # 3. First-ever startup — generate a fresh passphrase.
+    # 3. First-ever startup -- generate a fresh passphrase.
     import diceware
 
     _bootstrap_password = diceware.get_passphrase(
@@ -314,7 +314,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
     Verify a refresh token and return the username.
 
     Returns the username if valid and not expired, None otherwise.
-    The token is NOT consumed — it stays valid until it expires.
+    The token is NOT consumed -- it stays valid until it expires.
     """
     token_hash = _hash_token(token)
     conn = get_connection()

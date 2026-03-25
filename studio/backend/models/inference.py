@@ -203,7 +203,7 @@ class InferenceStatusResponse(BaseModel):
 # =====================================================================
 
 
-# ── Multimodal content parts (OpenAI vision format) ──────────────
+# -- Multimodal content parts (OpenAI vision format) --------------
 
 
 class TextContentPart(BaseModel):
@@ -214,7 +214,7 @@ class TextContentPart(BaseModel):
 
 
 class ImageUrl(BaseModel):
-    """Image URL object — supports data URIs and remote URLs."""
+    """Image URL object -- supports data URIs and remote URLs."""
 
     url: str = Field(..., description = "data:image/png;base64,... or https://...")
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
@@ -243,7 +243,7 @@ ContentPart = Annotated[
 """Union type for multimodal content parts, discriminated by the 'type' field."""
 
 
-# ── Messages ─────────────────────────────────────────────────────
+# -- Messages -----------------------------------------------------
 
 
 class ChatMessage(BaseModel):
@@ -282,7 +282,7 @@ class ChatCompletionRequest(BaseModel):
     )
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
 
-    # ── Unsloth extensions (ignored by standard OpenAI clients) ──
+    # -- Unsloth extensions (ignored by standard OpenAI clients) --
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
     min_p: float = Field(
         0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
@@ -338,7 +338,7 @@ class ChatCompletionRequest(BaseModel):
     )
 
 
-# ── Streaming response chunks ────────────────────────────────────
+# -- Streaming response chunks ------------------------------------
 
 
 class ChoiceDelta(BaseModel):
@@ -368,7 +368,7 @@ class ChatCompletionChunk(BaseModel):
     timings: Optional[dict] = None
 
 
-# ── Non-streaming response ───────────────────────────────────────
+# -- Non-streaming response ---------------------------------------
 
 
 class CompletionMessage(BaseModel):

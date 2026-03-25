@@ -27,7 +27,7 @@ const EXCLUDED_TAGS = new Set([
 ]);
 
 // Embedding / sentence-transformer models ship with onnx/openvino as additional
-// export formats — they should not be excluded by the tag check above.
+// export formats -- they should not be excluded by the tag check above.
 const EMBEDDING_TAGS = new Set([
   "sentence-transformers",
   "feature-extraction",

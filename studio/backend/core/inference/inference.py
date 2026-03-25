@@ -74,14 +74,14 @@ class HarmonyTextStreamer:
         self._is_first_put: bool = True
         self._stop: bool = False
 
-        # Stateful channel tracking — avoids delta-on-transformed bugs
+        # Stateful channel tracking -- avoids delta-on-transformed bugs
         self._emitted_think_open: bool = False
         self._emitted_think_close: bool = False
         self._analysis_emitted: int = 0  # chars of analysis content emitted
         self._final_emitted: int = 0  # chars of final content emitted
 
     # ------------------------------------------------------------------
-    # put / end — called from the generation thread
+    # put / end -- called from the generation thread
     # ------------------------------------------------------------------
 
     def put(self, value):
@@ -89,7 +89,7 @@ class HarmonyTextStreamer:
         import torch
 
         if isinstance(value, torch.Tensor):
-            # value shape: (batch, seq) — take first batch element
+            # value shape: (batch, seq) -- take first batch element
             ids = value[0].tolist() if value.dim() > 1 else value.tolist()
         elif isinstance(value, (list, tuple)):
             ids = list(value)
@@ -127,7 +127,7 @@ class HarmonyTextStreamer:
         self._queue.put(None)  # sentinel
 
     # ------------------------------------------------------------------
-    # Iterator interface — consumed by the streaming loop
+    # Iterator interface -- consumed by the streaming loop
     # ------------------------------------------------------------------
 
     def __iter__(self):
@@ -164,16 +164,16 @@ class HarmonyTextStreamer:
         - final content deltas
         """
         # If raw contains <|channel|> but no complete channel+message pair yet,
-        # buffer silently — don't emit partial channel names as text.
+        # buffer silently -- don't emit partial channel names as text.
         has_channel_token = "<|channel|>" in raw
         matches = list(self._HARMONY_RE.finditer(raw))
 
         if has_channel_token and not matches:
-            # Partial harmony markup still building — wait for more tokens
+            # Partial harmony markup still building -- wait for more tokens
             return
 
         if not has_channel_token and not matches:
-            # No harmony protocol at all — should not happen for gpt-oss
+            # No harmony protocol at all -- should not happen for gpt-oss
             # but handle gracefully by not emitting anything
             return
 
@@ -216,7 +216,7 @@ class InferenceBackend:
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
 
-        # Thread safety — _generation_lock serializes model.generate() calls.
+        # Thread safety -- _generation_lock serializes model.generate() calls.
         # Must be a regular Lock (NOT RLock) because in async FastAPI, multiple
         # requests share the same event-loop thread, so RLock reentrancy lets
         # concurrent compare-mode requests race on the GPU.  The lock is
@@ -273,7 +273,7 @@ class InferenceBackend:
                 "active_adapter": None,
             }
 
-            # ── Audio model loading path ──────────────────────────
+            # -- Audio model loading path --------------------------
             if config.is_audio:
                 audio_type = config.audio_type
                 adapter_info = " (LoRA adapter)" if config.is_lora else ""
@@ -309,7 +309,7 @@ class InferenceBackend:
                         if os.path.isdir(base_path):
                             abs_repo_path = os.path.abspath(os.path.dirname(base_path))
                         else:
-                            # base_model is an HF ID — download it
+                            # base_model is an HF ID -- download it
                             from huggingface_hub import snapshot_download
 
                             local_dir = base_path.split("/")[-1]
@@ -368,7 +368,7 @@ class InferenceBackend:
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
                 elif audio_type == "whisper":
-                    # Whisper ASR — uses FastModel with WhisperForConditionalGeneration
+                    # Whisper ASR -- uses FastModel with WhisperForConditionalGeneration
                     from unsloth import FastModel
                     from transformers import WhisperForConditionalGeneration
 
@@ -413,7 +413,7 @@ class InferenceBackend:
                     self.models[model_name]["tokenizer"] = tokenizer
 
                 # Load the external codec for TTS audio types
-                # (Whisper is ASR, audio_vlm is audio input — neither needs a codec)
+                # (Whisper is ASR, audio_vlm is audio input -- neither needs a codec)
                 if audio_type not in ("whisper", "audio_vlm"):
                     model_repo_path = self.models[model_name].get("model_repo_path")
                     self._audio_codec_manager.load_codec(
@@ -473,7 +473,7 @@ class InferenceBackend:
                             pass
                     logger.warning(
                         f"FastVisionModel returned {type(processor).__name__} (no image_processor) "
-                        f"for '{model_name}' — loading proper processor from '{processor_source}'"
+                        f"for '{model_name}' -- loading proper processor from '{processor_source}'"
                     )
                     from transformers import AutoProcessor
 
@@ -725,7 +725,7 @@ class InferenceBackend:
         Uses PEFT's disable_adapter_layers() / enable_adapter_layers() which toggle
         a boolean flag on each LoRA layer. Unsloth's fast_linear_forward checks this
         flag (proj.disable_adapters) and skips LoRA computation when True.
-        This is non-destructive — no model unloading/reloading needed.
+        This is non-destructive -- no model unloading/reloading needed.
 
         Args:
             use_adapter: None = no change, False = disable (base model),
@@ -788,7 +788,7 @@ class InferenceBackend:
         Thread-safe generation with optional adapter toggling.
 
         The adapter toggle + model.generate() are serialized by _generation_lock
-        inside the background generation thread — NOT in the event-loop thread.
+        inside the background generation thread -- NOT in the event-loop thread.
         This prevents the RLock-reentrant race that occurs when two async SSE
         handlers share the same event-loop thread.
 
@@ -891,7 +891,7 @@ class InferenceBackend:
             else:
                 logger.warning(
                     f"Model '{self.active_model_name}' is marked as vision but its processor "
-                    f"({type(processor).__name__}) has no image_processor — "
+                    f"({type(processor).__name__}) has no image_processor -- "
                     f"falling back to text-only generation (image will be ignored)."
                 )
 
@@ -938,7 +938,7 @@ class InferenceBackend:
                 raise ValueError(
                     f"Model '{self.active_model_name}' has no chat_template set in its "
                     f"tokenizer_config.json. This is usually a problem with the model's "
-                    f"HuggingFace repository — it is missing a 'chat_template' key. "
+                    f"HuggingFace repository -- it is missing a 'chat_template' key. "
                     f"Please use a model that includes a chat template, or manually set "
                     f"one via tokenizer.chat_template before inference."
                 )
@@ -1138,7 +1138,7 @@ class InferenceBackend:
         repetition_penalty,
         cancel_event = None,
     ) -> Generator[str, None, None]:
-        """Handle audio input (ASR) generation — accepts audio numpy array, streams text output.
+        """Handle audio input (ASR) generation -- accepts audio numpy array, streams text output.
 
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
         """
@@ -1150,7 +1150,7 @@ class InferenceBackend:
         processor = model_info.get("processor") or model_info.get("tokenizer")
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        # Extract last user text — default matches notebook prompt
+        # Extract last user text -- default matches notebook prompt
         user_text = "Please transcribe this audio."
         if messages:
             for msg in reversed(messages):
@@ -1162,7 +1162,7 @@ class InferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # Build messages in Gemma 3n format — audio goes INTO apply_chat_template
+        # Build messages in Gemma 3n format -- audio goes INTO apply_chat_template
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             {
@@ -1257,7 +1257,7 @@ class InferenceBackend:
     def generate_whisper_response(
         self, audio_array, cancel_event = None
     ) -> Generator[str, None, None]:
-        """Whisper ASR — takes audio numpy array, yields transcribed text.
+        """Whisper ASR -- takes audio numpy array, yields transcribed text.
 
         Uses the pre-built transformers pipeline (created during model loading).
         """
@@ -1433,7 +1433,7 @@ class InferenceBackend:
             finally:
                 # Only set cancel_event when we exited early (user cancel),
                 # NOT on normal completion.  cancel_event is a shared mp.Event
-                # — setting it unconditionally would leave a stale cancel
+                # -- setting it unconditionally would leave a stale cancel
                 # signal that could interfere with the next serialized
                 # generation request (e.g. in compare mode).
                 if cancel_event is not None and not generation_complete:
@@ -1451,7 +1451,7 @@ class InferenceBackend:
             logger.error(f"Error during generation: {e}")
             yield f"Error: {str(e)}"
 
-    # ── Audio (TTS) Generation ────────────────────────────────────
+    # -- Audio (TTS) Generation ------------------------------------
 
     def generate_audio_response(
         self,
@@ -1467,7 +1467,7 @@ class InferenceBackend:
         """
         Generate audio from text for TTS models.
         Returns (wav_bytes, sample_rate).
-        Blocking — generates complete audio before returning.
+        Blocking -- generates complete audio before returning.
         """
         if not self.active_model_name:
             raise RuntimeError("No active model")

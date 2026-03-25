@@ -7,7 +7,7 @@ set -e
 VENV_NAME="unsloth_studio"
 PYTHON_VERSION="3.13"
 
-# ── Helper: download a URL to a file (supports curl and wget) ──
+# -- Helper: download a URL to a file (supports curl and wget) --
 download() {
     if command -v curl >/dev/null 2>&1; then
         curl -LsSf "$1" -o "$2"
@@ -19,7 +19,7 @@ download() {
     fi
 }
 
-# ── Helper: check if a single package is available on the system ──
+# -- Helper: check if a single package is available on the system --
 _is_pkg_installed() {
     case "$1" in
         build-essential) command -v gcc >/dev/null 2>&1 ;;
@@ -31,7 +31,7 @@ _is_pkg_installed() {
     esac
 }
 
-# ── Helper: install packages via apt, escalating to sudo only if needed ──
+# -- Helper: install packages via apt, escalating to sudo only if needed --
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
     _PKGS="$*"
@@ -95,7 +95,7 @@ echo "   Unsloth Studio Installer"
 echo "========================================="
 echo ""
 
-# ── Detect platform ──
+# -- Detect platform --
 OS="linux"
 if [ "$(uname)" = "Darwin" ]; then
     OS="macos"
@@ -104,7 +104,7 @@ elif grep -qi microsoft /proc/version 2>/dev/null; then
 fi
 echo "==> Platform: $OS"
 
-# ── Check system dependencies ──
+# -- Check system dependencies --
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
 MISSING=""
@@ -170,7 +170,7 @@ else
     echo "==> All system dependencies found."
 fi
 
-# ── Install uv ──
+# -- Install uv --
 UV_MIN_VERSION="0.7.14"
 
 version_ge() {
@@ -224,7 +224,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# ── Create venv (skip if it already exists and has a valid interpreter) ──
+# -- Create venv (skip if it already exists and has a valid interpreter) --
 if [ ! -x "$VENV_NAME/bin/python" ]; then
     [ -e "$VENV_NAME" ] && rm -rf "$VENV_NAME"
     echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_NAME})..."
@@ -233,11 +233,11 @@ else
     echo "==> Virtual environment ${VENV_NAME} already exists, skipping creation."
 fi
 
-# ── Install unsloth directly into the venv (no activation needed) ──
+# -- Install unsloth directly into the venv (no activation needed) --
 echo "==> Installing unsloth (this may take a few minutes)..."
 uv pip install --python "$VENV_NAME/bin/python" "unsloth>=2026.3.11" --torch-backend=auto
 
-# ── Run studio setup ──
+# -- Run studio setup --
 # Ensure the venv's Python is on PATH for setup.sh's Python discovery.
 # On macOS the system Python may be outside the 3.11-3.13 range that
 # setup.sh requires, but uv already installed a compatible interpreter

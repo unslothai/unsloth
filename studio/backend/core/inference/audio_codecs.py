@@ -64,7 +64,7 @@ class AudioCodecManager:
         else:
             raise ValueError(f"Unknown audio_type: {audio_type}")
 
-    # ── Lazy loaders ─────────────────────────────────────────────
+    # -- Lazy loaders ---------------------------------------------
 
     def _load_snac(self, device: str) -> None:
         if self._snac_model is not None:
@@ -84,7 +84,7 @@ class AudioCodecManager:
         import subprocess
 
         # Clone SparkAudio/Spark-TTS GitHub repo for the sparktts Python package
-        # (same approach as training — the HF model repos don't contain the package)
+        # (same approach as training -- the HF model repos don't contain the package)
         spark_code_dir = os.path.join(
             os.path.dirname(model_repo_path or "."), "Spark-TTS"
         )
@@ -167,7 +167,7 @@ class AudioCodecManager:
         self._dac_audio_codec = processor.audio_codec
         logger.info("Loaded DAC audio codec")
 
-    # ── Decoders ─────────────────────────────────────────────────
+    # -- Decoders -------------------------------------------------
 
     def decode_snac(
         self, generated_ids: torch.Tensor, device: str
@@ -188,7 +188,7 @@ class AudioCodecManager:
         else:
             # Gracefully fall back to using entire output if marker not found
             logger.warning(
-                "No START_OF_SPEECH token (128257) found — using full generated output"
+                "No START_OF_SPEECH token (128257) found -- using full generated output"
             )
             cropped = generated_ids
         row = cropped[0]
@@ -309,7 +309,7 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """Unified decode — dispatches to the right codec decoder."""
+        """Unified decode -- dispatches to the right codec decoder."""
         if audio_type == "snac":
             if not token_ids:
                 raise ValueError("SNAC decoding requires token_ids")
@@ -324,7 +324,7 @@ class AudioCodecManager:
             return self.decode_dac(text, device)
         raise ValueError(f"Cannot decode audio_type: {audio_type}")
 
-    # ── Cleanup ──────────────────────────────────────────────────
+    # -- Cleanup --------------------------------------------------
 
     def unload(self) -> None:
         """Release all codec models from memory."""

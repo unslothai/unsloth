@@ -61,7 +61,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
 /**
  * Fetch hardware info from `GET /api/system/hardware`.
  *
- * The result is cached at module level — only one network request is made
+ * The result is cached at module level -- only one network request is made
  * regardless of how many components call this hook.
  */
 export function useHardwareInfo(): HardwareInfo {

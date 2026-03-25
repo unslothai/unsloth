@@ -94,9 +94,9 @@ async def load_model(
     """
     try:
         # Version switching is handled automatically by the subprocess-based
-        # inference backend — no need for ensure_transformers_version() here.
+        # inference backend -- no need for ensure_transformers_version() here.
 
-        # ── Already-loaded check: skip reload if the exact model is active ──
+        # -- Already-loaded check: skip reload if the exact model is active --
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
@@ -183,7 +183,7 @@ async def load_model(
                 detail = f"Invalid model identifier: {request.model_path}",
             )
 
-        # ── GGUF path: load via llama-server ──────────────────────
+        # -- GGUF path: load via llama-server ----------------------
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
@@ -264,7 +264,7 @@ async def load_model(
                 chat_template = llama_backend.chat_template,
             )
 
-        # ── Standard path: load via Unsloth/transformers ──────────
+        # -- Standard path: load via Unsloth/transformers ----------
         backend = get_inference_backend()
 
         # Unload any active GGUF model first
@@ -305,13 +305,13 @@ async def load_model(
                     training_method = adapter_cfg.get("unsloth_training_method")
                     if training_method == "lora" and load_in_4bit:
                         logger.info(
-                            f"adapter_config.json says unsloth_training_method='lora' — "
+                            f"adapter_config.json says unsloth_training_method='lora' -- "
                             f"setting load_in_4bit=False to match 16-bit training"
                         )
                         load_in_4bit = False
                     elif training_method == "qlora" and not load_in_4bit:
                         logger.info(
-                            f"adapter_config.json says unsloth_training_method='qlora' — "
+                            f"adapter_config.json says unsloth_training_method='qlora' -- "
                             f"setting load_in_4bit=True to match QLoRA training"
                         )
                         load_in_4bit = True
@@ -320,7 +320,7 @@ async def load_model(
                             f"Training method: {training_method}, load_in_4bit={load_in_4bit}"
                         )
                     else:
-                        # No unsloth_training_method — fallback to base model name
+                        # No unsloth_training_method -- fallback to base model name
                         if (
                             config.base_model
                             and "-bnb-4bit" not in config.base_model.lower()
@@ -328,7 +328,7 @@ async def load_model(
                         ):
                             logger.info(
                                 f"No unsloth_training_method in adapter_config.json. "
-                                f"Base model '{config.base_model}' has no -bnb-4bit suffix — "
+                                f"Base model '{config.base_model}' has no -bnb-4bit suffix -- "
                                 f"setting load_in_4bit=False"
                             )
                             load_in_4bit = False
@@ -657,7 +657,7 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
 
-    # Pick backend — both return (wav_bytes, sample_rate)
+    # Pick backend -- both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
         model_name = llama_backend.model_identifier
@@ -780,7 +780,7 @@ def _extract_content_parts(
     first_image_b64: Optional[str] = None
 
     for msg in messages:
-        # ── System messages → extract as system_prompt ────────
+        # -- System messages → extract as system_prompt --------
         if msg.role == "system":
             if isinstance(msg.content, str):
                 system_prompt = msg.content
@@ -791,9 +791,9 @@ def _extract_content_parts(
                 )
             continue
 
-        # ── User / assistant messages ─────────────────────────
+        # -- User / assistant messages -------------------------
         if isinstance(msg.content, str):
-            # Plain string content — pass through
+            # Plain string content -- pass through
             chat_messages.append({"role": msg.role, "content": msg.content})
         elif isinstance(msg.content, list):
             # Multimodal content parts
@@ -838,7 +838,7 @@ async def openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # ── Determine which backend is active ─────────────────────
+    # -- Determine which backend is active ---------------------
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
         if getattr(llama_backend, "_is_audio", False):
@@ -852,20 +852,20 @@ async def openai_chat_completions(
             )
         model_name = backend.active_model_name or payload.model
 
-        # ── Audio TTS path: auto-route to audio generation ────
-        # (Whisper is ASR not TTS — handled below in audio input path)
+        # -- Audio TTS path: auto-route to audio generation ----
+        # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
             return await generate_audio(payload, request)
 
-        # ── Whisper without audio: return clear error ──
+        # -- Whisper without audio: return clear error --
         if model_info.get("audio_type") == "whisper" and not payload.audio_base64:
             raise HTTPException(
                 status_code = 400,
                 detail = "Whisper models require audio input. Please upload an audio file.",
             )
 
-        # ── Audio INPUT path: decode WAV and route to audio input generation ──
+        # -- Audio INPUT path: decode WAV and route to audio input generation --
         if payload.audio_base64 and model_info.get("has_audio_input"):
             audio_array = _decode_audio_base64(payload.audio_base64)
             system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
@@ -970,7 +970,7 @@ async def openai_chat_completions(
                 )
                 return JSONResponse(content = response.model_dump())
 
-    # ── Parse messages (handles multimodal content parts) ─────
+    # -- Parse messages (handles multimodal content parts) -----
     system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
         payload.messages
     )
@@ -981,7 +981,7 @@ async def openai_chat_completions(
             detail = "At least one non-system message is required.",
         )
 
-    # ── GGUF path: proxy to llama-server /v1/chat/completions ──
+    # -- GGUF path: proxy to llama-server /v1/chat/completions --
     if using_gguf:
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
@@ -1021,7 +1021,7 @@ async def openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
-        # ── Tool-calling path (agentic loop) ──────────────────
+        # -- Tool-calling path (agentic loop) ------------------
         use_tools = (
             payload.enable_tools and llama_backend.supports_tools and not image_b64
         )
@@ -1192,7 +1192,7 @@ async def openai_chat_completions(
                 },
             )
 
-        # ── Standard GGUF path (no tools) ─────────────────────
+        # -- Standard GGUF path (no tools) ---------------------
 
         def gguf_generate():
             return llama_backend.generate_chat_completion(
@@ -1354,7 +1354,7 @@ async def openai_chat_completions(
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 raise HTTPException(status_code = 500, detail = str(e))
 
-    # ── Standard Unsloth path ─────────────────────────────────
+    # -- Standard Unsloth path ---------------------------------
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -1416,7 +1416,7 @@ async def openai_chat_completions(
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    # ── Streaming response ────────────────────────────────────────
+    # -- Streaming response ----------------------------------------
     if payload.stream:
 
         async def stream_chunks():
@@ -1446,7 +1446,7 @@ async def openai_chat_completions(
                 gen = generate()
                 while True:
                     # next(gen, _DONE) returns _DONE instead of raising
-                    # StopIteration — StopIteration cannot propagate
+                    # StopIteration -- StopIteration cannot propagate
                     # through asyncio futures (Python limitation).
                     cumulative = await loop.run_in_executor(None, next, gen, _DONE)
                     if cumulative is _DONE:
@@ -1511,7 +1511,7 @@ async def openai_chat_completions(
             },
         )
 
-    # ── Non-streaming response ────────────────────────────────────
+    # -- Non-streaming response ------------------------------------
     else:
         try:
             full_text = ""

@@ -79,7 +79,7 @@ const TAB_SWITCH_FIT_DELAY_MS = 110;
 /**
  * Maximum RAF iterations to wait for React Flow's ResizeObserver to populate
  * `node.measured` dimensions before calling fitView. ~20 frames ≈ 333 ms at
- * 60 fps — more than enough for the render → layout → ResizeObserver cycle.
+ * 60 fps -- more than enough for the render → layout → ResizeObserver cycle.
  */
 const MAX_FIT_VIEW_RETRIES = 20;
 /**
@@ -477,7 +477,7 @@ export function RecipeStudioPage({
           return;
         }
         if (retries >= MAX_FIT_VIEW_RETRIES) {
-          // Timed out waiting — fit with whatever we have (graceful fallback).
+          // Timed out waiting -- fit with whatever we have (graceful fallback).
           doFit();
           return;
         }
@@ -491,7 +491,7 @@ export function RecipeStudioPage({
             return;
           }
         } else {
-          // Measurements were reset (e.g. by updateNodeInternals) — restart
+          // Measurements were reset (e.g. by updateNodeInternals) -- restart
           // the stability counter.
           stableCount = 0;
         }

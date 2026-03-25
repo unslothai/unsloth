@@ -64,13 +64,13 @@ async def lifespan(app: FastAPI):
     # Clean up any stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
 
-    # Remove stale .venv_overlay from previous versions — no longer used.
+    # Remove stale .venv_overlay from previous versions -- no longer used.
     # Version switching now uses .venv_t5/ (pre-installed by setup.sh).
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
 
-    # Detect hardware first — sets DEVICE global used everywhere
+    # Detect hardware first -- sets DEVICE global used everywhere
     detect_hardware()
 
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
@@ -177,7 +177,7 @@ async def get_system_info():
     import psutil
     from utils.hardware import get_device, get_gpu_memory_info, DeviceType
 
-    # GPU Info — query nvidia-smi for physical GPUs, filtered by
+    # GPU Info -- query nvidia-smi for physical GPUs, filtered by
     # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF
     # fit estimation and llama-server respects CVD too).
     import os
@@ -289,7 +289,7 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
 
     The script tag is only injected while the default admin account still
     has ``must_change_password=True``.  Once the user changes the password
-    the HTML is served clean — no credentials leak.
+    the HTML is served clean -- no credentials leak.
     """
     import json as _json
 
@@ -340,14 +340,14 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         file_path = (build_path / full_path).resolve()
 
-        # Block path traversal — ensure resolved path stays inside build_path
+        # Block path traversal -- ensure resolved path stays inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 
         if file_path.is_file():
             return FileResponse(file_path)
 
-        # Serve index.html as bytes — avoids Content-Length mismatch
+        # Serve index.html as bytes -- avoids Content-Length mismatch
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
         content = _inject_bootstrap(content, app)

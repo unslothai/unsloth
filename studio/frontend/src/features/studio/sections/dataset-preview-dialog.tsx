@@ -97,7 +97,7 @@ export function DatasetPreviewDialog({
   const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = datasetSource === "huggingface";
 
-  // ── AI Assist ──────────────────────────────────────────────────────
+  // -- AI Assist ------------------------------------------------------
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 

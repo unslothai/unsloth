@@ -10,7 +10,7 @@ export const env = {
   BASE_URL: import.meta.env.BASE_URL,
 } as const;
 
-// ── Platform / device type ──────────────────────────────────
+// -- Platform / device type ----------------------------------
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 

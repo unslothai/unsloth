@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Inference orchestrator — subprocess-based.
+Inference orchestrator -- subprocess-based.
 
 Provides the same API as InferenceBackend, but delegates all ML work
 to a persistent subprocess. The subprocess is spawned on first model load
@@ -42,7 +42,7 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 
 class InferenceOrchestrator:
     """
-    Inference backend orchestrator — subprocess-based.
+    Inference backend orchestrator -- subprocess-based.
 
     Exposes the same API surface as InferenceBackend so routes/inference.py
     needs minimal changes. Internally, all heavy ML operations happen in
@@ -54,13 +54,13 @@ class InferenceOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-        self._cancel_event: Any = None  # mp.Event — set to cancel generation instantly
+        self._cancel_event: Any = None  # mp.Event -- set to cancel generation instantly
         self._lock = threading.Lock()
         self._gen_lock = (
             threading.Lock()
-        )  # Serializes generation — one request at a time
+        )  # Serializes generation -- one request at a time
 
-        # Dispatcher state — for compare mode (adapter-controlled requests).
+        # Dispatcher state -- for compare mode (adapter-controlled requests).
         # Instead of serializing via _gen_lock, adapter-controlled requests
         # send commands directly to the subprocess and read from per-request
         # mailboxes. A dispatcher thread routes resp_queue events by request_id.
@@ -294,7 +294,7 @@ class InferenceOrchestrator:
                 logger.info("Subprocess status: %s", resp.get("message", ""))
                 continue
 
-            # Other response types during wait — skip
+            # Other response types during wait -- skip
             logger.debug(
                 "Skipping response type '%s' while waiting for '%s'",
                 rtype,
@@ -337,7 +337,7 @@ class InferenceOrchestrator:
         logger.warning("Timed out waiting for gen_done after cancel")
 
     # ------------------------------------------------------------------
-    # Dispatcher — per-request mailbox routing for compare mode
+    # Dispatcher -- per-request mailbox routing for compare mode
     # ------------------------------------------------------------------
 
     def _start_dispatcher(self) -> None:
@@ -385,7 +385,7 @@ class InferenceOrchestrator:
             rid = resp.get("request_id")
             rtype = resp.get("type", "")
 
-            # Status messages — log and skip
+            # Status messages -- log and skip
             if rtype == "status":
                 logger.info("Subprocess status: %s", resp.get("message", ""))
                 continue
@@ -398,7 +398,7 @@ class InferenceOrchestrator:
                     mbox.put(resp)
                     continue
 
-            # No matching mailbox — might be for a _gen_lock reader or orphaned
+            # No matching mailbox -- might be for a _gen_lock reader or orphaned
             # Push it back so _read_resp can pick it up. But we can't un-get
             # from mp.Queue, so log a warning.
             if rtype not in ("status",):
@@ -422,14 +422,14 @@ class InferenceOrchestrator:
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
-        """Dispatched generation — sends command without holding _gen_lock.
+        """Dispatched generation -- sends command without holding _gen_lock.
 
         Uses a per-request mailbox to receive tokens. This allows two
         compare-mode requests to be queued in the subprocess simultaneously,
         eliminating the inter-generation round-trip overhead.
 
         The subprocess processes commands sequentially from its cmd_queue,
-        so generation is still serialized at the GPU level — we just avoid
+        so generation is still serialized at the GPU level -- we just avoid
         the orchestrator-level lock contention.
         """
         if not self._ensure_subprocess_alive():
@@ -486,7 +486,7 @@ class InferenceOrchestrator:
                 try:
                     resp = mailbox.get(timeout = _DISPATCH_READ_TIMEOUT)
                 except queue.Empty:
-                    # Timeout — check subprocess health
+                    # Timeout -- check subprocess health
                     if not self._ensure_subprocess_alive():
                         yield "Error: Inference subprocess crashed during generation"
                         return
@@ -560,7 +560,7 @@ class InferenceOrchestrator:
             self._stop_dispatcher()
 
     # ------------------------------------------------------------------
-    # Public API — same interface as InferenceBackend
+    # Public API -- same interface as InferenceBackend
     # ------------------------------------------------------------------
 
     def load_model(
@@ -575,7 +575,7 @@ class InferenceOrchestrator:
         """Load a model for inference.
 
         Always spawns a fresh subprocess for each model load. This ensures
-        a clean Python interpreter — no stale unsloth patches, torch.compile
+        a clean Python interpreter -- no stale unsloth patches, torch.compile
         caches, or inspect.getsource() failures from a previous model.
         """
         from utils.transformers_version import needs_transformers_5
@@ -605,7 +605,7 @@ class InferenceOrchestrator:
                 self._shutdown_subprocess()
 
             elif self._proc is not None:
-                # Dead subprocess — clean up
+                # Dead subprocess -- clean up
                 self._shutdown_subprocess(timeout = 2)
 
             logger.info(
@@ -648,7 +648,7 @@ class InferenceOrchestrator:
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
         if not self._ensure_subprocess_alive():
-            # No subprocess — just clear local state
+            # No subprocess -- just clear local state
             self.models.pop(model_name, None)
             if self.active_model_name == model_name:
                 self.active_model_name = None
@@ -739,7 +739,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
-        """Inner generation logic — sends command to subprocess, yields tokens.
+        """Inner generation logic -- sends command to subprocess, yields tokens.
 
         Serialized by _gen_lock: only one generation runs at a time.
         This prevents concurrent readers from consuming each other's
@@ -758,7 +758,7 @@ class InferenceOrchestrator:
         # so we can safely read from resp_queue directly.
         self._wait_dispatcher_idle()
 
-        # Serialize generation — single GPU, one generation at a time.
+        # Serialize generation -- single GPU, one generation at a time.
         # Without this lock, two concurrent readers on the same resp_queue
         # can consume and drop each other's token events.
         with self._gen_lock:
@@ -790,7 +790,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         use_adapter = None,
     ) -> Generator[str, None, None]:
-        """Actual generation logic — must be called under _gen_lock."""
+        """Actual generation logic -- must be called under _gen_lock."""
         request_id = str(uuid.uuid4())
 
         # Convert PIL Image to base64 if needed
@@ -821,7 +821,7 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
-        # Yield tokens from response queue — we are the only reader
+        # Yield tokens from response queue -- we are the only reader
         # because _gen_lock is held.
         while True:
             resp = self._read_resp(timeout = 30.0)
@@ -835,7 +835,7 @@ class InferenceOrchestrator:
 
             rtype = resp.get("type", "")
 
-            # Status messages — skip
+            # Status messages -- skip
             if rtype == "status":
                 continue
 
@@ -874,7 +874,7 @@ class InferenceOrchestrator:
             pass
 
     # ------------------------------------------------------------------
-    # Audio generation — TTS, ASR, audio input
+    # Audio generation -- TTS, ASR, audio input
     # ------------------------------------------------------------------
 
     def generate_audio_response(
@@ -890,7 +890,7 @@ class InferenceOrchestrator:
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
 
-        Blocking — sends command and waits for the complete audio response.
+        Blocking -- sends command and waits for the complete audio response.
         """
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
@@ -953,7 +953,7 @@ class InferenceOrchestrator:
         audio_array,
         cancel_event = None,
     ) -> Generator[str, None, None]:
-        """Whisper ASR — sends audio to subprocess, yields text."""
+        """Whisper ASR -- sends audio to subprocess, yields text."""
         yield from self._generate_audio_input_inner(
             audio_array = audio_array,
             audio_type = "whisper",
@@ -975,7 +975,7 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
-        """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
+        """Audio input generation (e.g. Gemma 3n) -- streams text tokens."""
         yield from self._generate_audio_input_inner(
             audio_array = audio_array,
             audio_type = None,  # worker will use generate_audio_input_response
@@ -1045,7 +1045,7 @@ class InferenceOrchestrator:
                 yield f"Error: {exc}"
                 return
 
-            # Yield tokens — same pattern as _generate_locked
+            # Yield tokens -- same pattern as _generate_locked
             while True:
                 resp = self._read_resp(timeout = 30.0)
 
@@ -1084,7 +1084,7 @@ class InferenceOrchestrator:
 
     def resize_image(self, img, max_size: int = 800):
         """Resize image while maintaining aspect ratio.
-        No ML imports needed — runs locally in parent process.
+        No ML imports needed -- runs locally in parent process.
         """
         if img is None:
             return None

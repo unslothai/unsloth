@@ -201,7 +201,7 @@ async def start_training(
             "trust_remote_code": request.trust_remote_code,
         }
 
-        # Training page has no trust_remote_code toggle — the value comes from
+        # Training page has no trust_remote_code toggle -- the value comes from
         # YAML model defaults applied when the user selects a model.  As a safety
         # net, consult the YAML directly so models that need it always get it.
         if not training_kwargs["trust_remote_code"]:
@@ -323,7 +323,7 @@ async def reset_training(
 
         if is_active:
             if backend._cancel_requested:
-                # Cancel (save=False) was requested — force-terminate so we can reset immediately
+                # Cancel (save=False) was requested -- force-terminate so we can reset immediately
                 logger.info(
                     "Force-terminating subprocess for immediate reset (cancel path)"
                 )
@@ -523,7 +523,7 @@ async def stream_training_progress(
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
-        # ── Helpers ──────────────────────────────────────────────
+        # -- Helpers ----------------------------------------------
         def build_progress(
             step: int,
             loss: float,
@@ -585,11 +585,11 @@ async def stream_training_progress(
             lines.append("")  # double newline terminates the event
             return "\n".join(lines)
 
-        # ── Retry directive ──────────────────────────────────────
+        # -- Retry directive --------------------------------------
         # Tell the browser to reconnect after 3 seconds if the connection drops
         yield "retry: 3000\n\n"
 
-        # ── Replay missed steps on reconnect ─────────────────────
+        # -- Replay missed steps on reconnect ---------------------
         if resume_from_step is not None and backend.step_history:
             replayed = 0
             grad_norm_by_step = {
@@ -636,7 +636,7 @@ async def stream_training_progress(
             if replayed:
                 logger.info(f"SSE reconnect: replayed {replayed} missed steps")
 
-        # ── Initial status (only on fresh connections) ───────────
+        # -- Initial status (only on fresh connections) -----------
         if resume_from_step is None:
             is_active = backend.is_training_active()
             tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
@@ -686,7 +686,7 @@ async def stream_training_progress(
                     )
                 return
 
-        # ── Live polling loop ────────────────────────────────────
+        # -- Live polling loop ------------------------------------
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
         max_no_updates = (
@@ -805,7 +805,7 @@ async def stream_training_progress(
                 )
                 break
 
-        # ── Final "complete" event ───────────────────────────────
+        # -- Final "complete" event -------------------------------
         final_step = backend.step_history[-1] if backend.step_history else last_step
         final_loss = backend.loss_history[-1] if backend.loss_history else 0.0
         final_lr = backend.lr_history[-1] if backend.lr_history else 0.0

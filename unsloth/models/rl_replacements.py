@@ -1373,7 +1373,7 @@ def openenv_vllm_reload_weights():
     except (ImportError, NameError, Exception) as e:
         logger.info(f"Unsloth: Failed to import trl openenv: {e}")
         logger.info(
-            "Unsloth: trl.experimental.openenv not available — skipping RL openenv patches."
+            "Unsloth: trl.experimental.openenv not available -- skipping RL openenv patches."
         )
         return
 

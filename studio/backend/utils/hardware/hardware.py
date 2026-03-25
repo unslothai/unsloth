@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Hardware detection — run once at startup, read everywhere.
+Hardware detection -- run once at startup, read everywhere.
 
 Usage:
     # At FastAPI lifespan startup:
@@ -93,14 +93,14 @@ def detect_hardware() -> DeviceType:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
             device_name = torch.cuda.get_device_properties(0).name
-            print(f"Hardware detected: CUDA — {device_name}")
+            print(f"Hardware detected: CUDA -- {device_name}")
             return DEVICE
 
     # --- MLX: Apple Silicon ---
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
         chip = platform.processor() or platform.machine()
-        print(f"Hardware detected: MLX — Apple Silicon ({chip})")
+        print(f"Hardware detected: MLX -- Apple Silicon ({chip})")
         return DEVICE
 
     # --- Fallback ---
@@ -126,7 +126,7 @@ def get_device() -> DeviceType:
 def clear_gpu_cache():
     """
     Clear GPU memory cache for the current device.
-    Safe to call on any platform — no-ops gracefully.
+    Safe to call on any platform -- no-ops gracefully.
     """
     import gc
 
@@ -142,7 +142,7 @@ def clear_gpu_cache():
         torch.cuda.ipc_collect()
     elif device == DeviceType.MLX:
         # MLX manages memory automatically; no explicit cache clear needed.
-        # mlx.core has no empty_cache equivalent — gc.collect() above is enough.
+        # mlx.core has no empty_cache equivalent -- gc.collect() above is enough.
         pass
 
 
@@ -186,7 +186,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import mlx.core as mx
             import psutil
 
-            # MLX uses unified memory — report system memory as the pool
+            # MLX uses unified memory -- report system memory as the pool
             total = psutil.virtual_memory().total
             # MLX doesn't expose per-process GPU allocation; report 0 as allocated
             allocated = 0
@@ -235,8 +235,8 @@ def get_gpu_summary() -> Dict[str, Any]:
     Return a compact summary of the primary GPU.
 
     Returns dict with keys:
-        gpu_name      – e.g. "NVIDIA L4" (or None)
-        vram_total_gb – e.g. 22.17       (or None)
+        gpu_name      - e.g. "NVIDIA L4" (or None)
+        vram_total_gb - e.g. 22.17       (or None)
     """
     mem = get_gpu_memory_info()
     if mem.get("available"):
@@ -289,19 +289,19 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
     Designed to be polled by the frontend during training (not streaming).
     Uses ``nvidia-smi --query-gpu`` which is the most accurate source for
-    utilization %, temperature, and power draw – stats that PyTorch does
+    utilization %, temperature, and power draw - stats that PyTorch does
     not expose.
 
     Returns dict with keys:
-        available          – bool, whether stats could be retrieved
-        gpu_utilization_pct – GPU core utilization %
-        temperature_c      – GPU temperature in °C
-        vram_used_gb       – VRAM currently used (GiB)
-        vram_total_gb      – VRAM total (GiB)
-        vram_utilization_pct – VRAM used / total * 100
-        power_draw_w       – current power draw (W)
-        power_limit_w      – power limit (W)
-        power_utilization_pct – power draw / limit * 100
+        available          - bool, whether stats could be retrieved
+        gpu_utilization_pct - GPU core utilization %
+        temperature_c      - GPU temperature in °C
+        vram_used_gb       - VRAM currently used (GiB)
+        vram_total_gb      - VRAM total (GiB)
+        vram_utilization_pct - VRAM used / total * 100
+        power_draw_w       - current power draw (W)
+        power_limit_w      - power limit (W)
+        power_utilization_pct - power draw / limit * 100
     """
     device = get_device()
 
@@ -318,7 +318,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
         except (ValueError, TypeError):
             return None
 
-    # ── nvidia-smi (most complete source) ───────────────────────
+    # -- nvidia-smi (most complete source) -----------------------
     smi_data = {}
     try:
         import subprocess
@@ -354,7 +354,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"nvidia-smi query failed: {e}")
 
-    # ── Backfill VRAM from torch.cuda if nvidia-smi returned [N/A] ──
+    # -- Backfill VRAM from torch.cuda if nvidia-smi returned [N/A] --
     vram_used_mb = smi_data.get("vram_used_mb")
     vram_total_mb = smi_data.get("vram_total_mb")
 
@@ -371,7 +371,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"torch.cuda VRAM backfill failed: {e}")
 
-    # ── Build response ──────────────────────────────────────────
+    # -- Build response ------------------------------------------
     gpu_util = smi_data.get("gpu_util")
     temp = smi_data.get("temp")
     power_draw = smi_data.get("power_draw")

@@ -341,7 +341,7 @@
   }
 }
 
-/* Minimal scrollbar — thumb only, no track */
+/* Minimal scrollbar -- thumb only, no track */
 * {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;

@@ -63,7 +63,7 @@ def ui(
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
-                    # Child has its own signal handler — let it finish
+                    # Child has its own signal handler -- let it finish
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:

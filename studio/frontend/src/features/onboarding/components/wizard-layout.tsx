@@ -27,7 +27,7 @@ export function WizardLayout() {
   const hasFiredRef = useRef(false);
   const isFinalStep = currentStep === STEPS.length;
 
-  // Only redirect on initial mount — not on re-renders after markOnboardingDone()
+  // Only redirect on initial mount -- not on re-renders after markOnboardingDone()
   // which would override explicit /chat navigation from skip buttons.
   const checkedRef = useRef(false);
   useEffect(() => {

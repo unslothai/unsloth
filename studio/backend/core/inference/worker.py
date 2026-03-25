@@ -5,7 +5,7 @@
 Inference subprocess entry point.
 
 Each inference session runs in a persistent subprocess (mp.get_context("spawn")).
-This gives us a clean Python interpreter with no stale module state —
+This gives us a clean Python interpreter with no stale module state --
 solving the transformers version-switching problem completely.
 
 The subprocess stays alive while a model is loaded, accepting commands
@@ -135,12 +135,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     training_method = adapter_cfg.get("unsloth_training_method")
                     if training_method == "lora" and load_in_4bit:
                         logger.info(
-                            "adapter_config.json says lora — setting load_in_4bit=False"
+                            "adapter_config.json says lora -- setting load_in_4bit=False"
                         )
                         load_in_4bit = False
                     elif training_method == "qlora" and not load_in_4bit:
                         logger.info(
-                            "adapter_config.json says qlora — setting load_in_4bit=True"
+                            "adapter_config.json says qlora -- setting load_in_4bit=True"
                         )
                         load_in_4bit = True
                     elif not training_method:
@@ -150,7 +150,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                             and load_in_4bit
                         ):
                             logger.info(
-                                "No training method, base model has no -bnb-4bit — setting load_in_4bit=False"
+                                "No training method, base model has no -bnb-4bit -- setting load_in_4bit=False"
                             )
                             load_in_4bit = False
                 except Exception as e:
@@ -259,7 +259,7 @@ def _handle_generate(
         logger.info("Starting text generation for request_id=%s", request_id)
 
         for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling
+            # cancel_event is an mp.Event -- checked instantly, no queue polling
             if cancel_event.is_set():
                 logger.info("Generation cancelled for request %s", request_id)
                 break
@@ -303,7 +303,7 @@ def _handle_generate_audio(
     cmd: dict,
     resp_queue: Any,
 ) -> None:
-    """Handle TTS audio generation — returns WAV bytes + sample_rate."""
+    """Handle TTS audio generation -- returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
@@ -351,7 +351,7 @@ def _handle_generate_audio_input(
     resp_queue: Any,
     cancel_event,
 ) -> None:
-    """Handle audio input generation (ASR/Whisper) — streams text tokens back."""
+    """Handle audio input generation (ASR/Whisper) -- streams text tokens back."""
     request_id = cmd.get("request_id", "")
 
     try:
@@ -461,12 +461,12 @@ def run_inference_process(
     cancel_event,
     config: dict,
 ) -> None:
-    """Subprocess entrypoint. Persistent — runs command loop until shutdown.
+    """Subprocess entrypoint. Persistent -- runs command loop until shutdown.
 
     Args:
         cmd_queue: mp.Queue for receiving commands from parent.
         resp_queue: mp.Queue for sending responses to parent.
-        cancel_event: mp.Event shared with parent — set by parent to cancel generation.
+        cancel_event: mp.Event shared with parent -- set by parent to cancel generation.
         config: Initial configuration dict with model info.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -487,7 +487,7 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
-    # ── 1. Activate correct transformers version BEFORE any ML imports ──
+    # -- 1. Activate correct transformers version BEFORE any ML imports --
     try:
         _activate_transformers_version(model_name)
     except Exception as exc:
@@ -502,20 +502,20 @@ def run_inference_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # -- 1b. On Windows, check Triton availability (must be before import torch) --
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
 
-            logger.info("Triton available — torch.compile enabled")
+            logger.info("Triton available -- torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
             logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
+                "Triton not found on Windows -- torch.compile disabled. "
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 2. Import ML libraries (fresh in this clean process) ──
+    # -- 2. Import ML libraries (fresh in this clean process) --
     try:
         _send_response(
             resp_queue,
@@ -548,7 +548,7 @@ def run_inference_process(
         )
         return
 
-    # ── 3. Create inference backend and load initial model ──
+    # -- 3. Create inference backend and load initial model --
     try:
         backend = InferenceBackend()
 
@@ -575,8 +575,8 @@ def run_inference_process(
         )
         return
 
-    # ── 4. Command loop — process commands until shutdown ──
-    # cancel_event is an mp.Event shared with parent — parent can set it
+    # -- 4. Command loop -- process commands until shutdown --
+    # cancel_event is an mp.Event shared with parent -- parent can set it
     # at any time to cancel generation instantly (no queue polling needed).
     logger.info("Inference subprocess ready, entering command loop")
 

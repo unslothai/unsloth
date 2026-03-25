@@ -339,7 +339,7 @@ def check_format(
         total_rows = None
 
         if dataset_path.exists():
-            # ── Local file ──────────────────────────────────────────
+            # -- Local file ------------------------------------------
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
                 dataset_path = dataset_path,
@@ -347,7 +347,7 @@ def check_format(
                 preview_size = PREVIEW_SIZE,
             )
         else:
-            # ── HuggingFace dataset ─────────────────────────────────
+            # -- HuggingFace dataset ---------------------------------
             # Tier 1: list_repo_files → load only the first data file
             preview_slice = None
 
@@ -402,7 +402,7 @@ def check_format(
                 logger.warning(f"Tier 1 (single-file) failed: {e}")
 
             if preview_slice is None:
-                # Tier 2: full streaming (resolves all files — slow for large repos)
+                # Tier 2: full streaming (resolves all files -- slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
                 load_kwargs = {
                     "path": request.dataset_name,

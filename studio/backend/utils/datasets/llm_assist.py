@@ -9,7 +9,7 @@ vlm_processing.py.  Only invoked when heuristics are uncertain.
 
 Architecture:
   - Instantiates LlamaCppBackend, loads model, runs completion(s), unloads.
-  - Not kept warm — VRAM is freed immediately after use.
+  - Not kept warm -- VRAM is freed immediately after use.
   - Gracefully degrades: returns None when unavailable (no binary, OOM, disabled).
 """
 
@@ -43,12 +43,12 @@ def _strip_think_tags(text: str) -> str:
     if "<think>" not in text:
         return text
 
-    # Try stripping think blocks — keep content outside them
+    # Try stripping think blocks -- keep content outside them
     stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
     if stripped:
         return stripped
 
-    # Everything was inside <think> tags — extract the inner content of the last block
+    # Everything was inside <think> tags -- extract the inner content of the last block
     matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
     if matches:
         return matches[-1].strip()
@@ -158,7 +158,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
         ):
             if isinstance(chunk, dict):
                 continue  # skip metadata events
-            cumulative = chunk  # cumulative — last value is full text
+            cumulative = chunk  # cumulative -- last value is full text
 
         result = cumulative.strip()
         result = _strip_think_tags(result)
@@ -178,7 +178,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
                 pass
 
 
-# ─── Public API ───────────────────────────────────────────────────────
+# --- Public API -------------------------------------------------------
 
 
 def llm_generate_vlm_instruction(
@@ -270,7 +270,7 @@ def llm_classify_columns(
         "- user: The input/question/prompt from the human\n"
         "- assistant: The expected output/answer/response from the AI\n"
         "- system: Context, persona, or task description\n"
-        "- metadata: IDs, scores, labels, timestamps — not part of conversation\n\n"
+        "- metadata: IDs, scores, labels, timestamps -- not part of conversation\n\n"
         f"Columns: {column_names}\n\n"
         f"{formatted}"
         "Respond with ONLY a JSON object mapping column names to roles.\n"
@@ -383,7 +383,7 @@ def llm_generate_dataset_warning(
     return warning
 
 
-# ─── Dataset Conversion Advisor ──────────────────────────────────────
+# --- Dataset Conversion Advisor --------------------------------------
 
 
 def _parse_json_response(text: str) -> Optional[dict]:
@@ -534,7 +534,7 @@ def _run_multi_pass_advisor(
             return None
 
         logger.info(f"Advisor model loaded in {time.monotonic() - t0:.1f}s")
-        # ── Format samples ──
+        # -- Format samples --
         samples_text = ""
         for i, row in enumerate(samples[:5], 1):
             parts = [f"  {col}: {str(row.get(col, ''))[:200]}" for col in columns]
@@ -547,7 +547,7 @@ def _run_multi_pass_advisor(
         )
         card_excerpt = (dataset_card or "")[:1200] or "N/A"
 
-        # ── Target Model Hints ──
+        # -- Target Model Hints --
         target_hints = ""
         is_gemma_3n = False
         if model_name:
@@ -583,7 +583,7 @@ def _run_multi_pass_advisor(
                 "Ensure the dataset format mapped reflects these specialized tasks."
             )
 
-        # ── Pass 1: Classify ──
+        # -- Pass 1: Classify --
         logger.info("Pass 1: Classifying dataset...")
         t1 = time.monotonic()
         messages1 = [
@@ -595,7 +595,7 @@ def _run_multi_pass_advisor(
                     "a conversational format suitable for LLM fine-tuning. A dataset is "
                     '"conversational" if it already has columns like "messages", "conversations", '
                     'or multiturn "user"/"assistant" pairs. Some datasets are NOT conversational '
-                    "— they are things like summarization, question answering, translation, "
+                    "-- they are things like summarization, question answering, translation, "
                     "classification, etc. Those need conversion. You must respond with ONLY a "
                     "valid JSON object. Do not write any explanation before or after the JSON."
                     f"{target_hints}"
@@ -645,11 +645,11 @@ def _run_multi_pass_advisor(
                 "is_conversational": True,
                 "user_notification": (
                     "This dataset is already in conversational format. "
-                    "No conversion needed — columns can be mapped directly."
+                    "No conversion needed -- columns can be mapped directly."
                 ),
             }
 
-        # ── Pass 2: Map columns to roles ──
+        # -- Pass 2: Map columns to roles --
         logger.info("Pass 2: Mapping columns to roles...")
 
         t2 = time.monotonic()
@@ -693,23 +693,23 @@ def _run_multi_pass_advisor(
 
                     Here are worked examples to guide you:
 
-                    Example 1 — Summarization dataset with columns ["document", "summary"]:
+                    Example 1 -- Summarization dataset with columns ["document", "summary"]:
                       "document" is the input text → "user"
                       "summary" is the output the model should generate → "assistant"
                       Result: {{"document": "user", "summary": "assistant"}}
 
-                    Example 2 — Question answering dataset with columns ["context", "question", "answer"]:
+                    Example 2 -- Question answering dataset with columns ["context", "question", "answer"]:
                       "context" is input → "user"
                       "question" is input → "user"
                       "answer" is what the model should generate → "assistant"
                       Result: {{"context": "user", "question": "user", "answer": "assistant"}}
 
-                    Example 3 — Classification dataset with columns ["text", "label"]:
+                    Example 3 -- Classification dataset with columns ["text", "label"]:
                       "text" is input → "user"
                       "label" is the output the model should predict → "assistant"
                       Result: {{"text": "user", "label": "assistant"}}
 
-                    Example 4 — Translation dataset with columns ["en", "fr"]:
+                    Example 4 -- Translation dataset with columns ["en", "fr"]:
                       "en" is the source language (input) → "user"
                       "fr" is the target language (output) → "assistant"
                       Result: {{"en": "user", "fr": "assistant"}}
@@ -725,7 +725,7 @@ def _run_multi_pass_advisor(
                         "notes": "<brief explanation of why you assigned roles this way>"
                     }}
 
-                    REMEMBER: There must be at least one "user" column AND at least one "assistant" column. If all columns are "user", you made a mistake — the output/target column should be "assistant".
+                    REMEMBER: There must be at least one "user" column AND at least one "assistant" column. If all columns are "user", you made a mistake -- the output/target column should be "assistant".
 
                     Respond with ONLY the JSON object."""),
             },
@@ -738,7 +738,7 @@ def _run_multi_pass_advisor(
             logger.warning(f"Advisor Pass 2 failed to produce JSON: {raw2[:200]}")
             return None
 
-        # ── Extract and validate column roles from Pass 2 ──
+        # -- Extract and validate column roles from Pass 2 --
         column_roles = pass2.get("column_roles", {})
         label_map = pass2.get("label_mapping") or {}  # may be null
 
@@ -750,7 +750,7 @@ def _run_multi_pass_advisor(
             )
             return None  # triggers fallback to simple classification
 
-        # ── Pass 3: System prompt (non-conversational datasets only) ──
+        # -- Pass 3: System prompt (non-conversational datasets only) --
         sys_prompt = ""
         dtype = pass1.get("dataset_type", "unknown")
         is_conv = pass1.get("is_conversational", False)
@@ -802,7 +802,7 @@ def _run_multi_pass_advisor(
             )
 
             if raw3:
-                # Pass 3 returns raw text, not JSON — clean it up
+                # Pass 3 returns raw text, not JSON -- clean it up
                 cleaned = raw3.strip().strip('"').strip("'").strip()
                 if len(cleaned) >= 20 and cleaned.lower() not in ("null", "none", ""):
                     sys_prompt = cleaned

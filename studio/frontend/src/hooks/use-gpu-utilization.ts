@@ -59,7 +59,7 @@ export function useGpuUtilization(
                 const json = (await res.json()) as GpuUtilization;
                 if (!cancelled) setData(json);
             } catch {
-                // Silently ignore — next poll will retry
+                // Silently ignore -- next poll will retry
             }
         }
 

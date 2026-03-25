@@ -5,7 +5,7 @@
 Export subprocess entry point.
 
 Each export session runs in a persistent subprocess (mp.get_context("spawn")).
-This gives us a clean Python interpreter with no stale module state —
+This gives us a clean Python interpreter with no stale module state --
 solving the transformers version-switching problem completely.
 
 The subprocess stays alive while a model is loaded, accepting commands
@@ -217,7 +217,7 @@ def run_export_process(
     resp_queue: Any,
     config: dict,
 ) -> None:
-    """Subprocess entrypoint. Persistent — runs command loop until shutdown.
+    """Subprocess entrypoint. Persistent -- runs command loop until shutdown.
 
     Args:
         cmd_queue: mp.Queue for receiving commands from parent.
@@ -244,7 +244,7 @@ def run_export_process(
 
     checkpoint_path = config["checkpoint_path"]
 
-    # ── 1. Activate correct transformers version BEFORE any ML imports ──
+    # -- 1. Activate correct transformers version BEFORE any ML imports --
     try:
         _activate_transformers_version(checkpoint_path)
     except Exception as exc:
@@ -259,20 +259,20 @@ def run_export_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # -- 1b. On Windows, check Triton availability (must be before import torch) --
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
 
-            logger.info("Triton available — torch.compile enabled")
+            logger.info("Triton available -- torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
             logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
+                "Triton not found on Windows -- torch.compile disabled. "
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 2. Import ML libraries (fresh in this clean process) ──
+    # -- 2. Import ML libraries (fresh in this clean process) --
     try:
         _send_response(
             resp_queue,
@@ -307,7 +307,7 @@ def run_export_process(
         )
         return
 
-    # ── 3. Create export backend and load initial checkpoint ──
+    # -- 3. Create export backend and load initial checkpoint --
     try:
         backend = ExportBackend()
 
@@ -325,7 +325,7 @@ def run_export_process(
         )
         return
 
-    # ── 4. Command loop — process commands until shutdown ──
+    # -- 4. Command loop -- process commands until shutdown --
     logger.info("Export subprocess ready, entering command loop")
 
     while True:

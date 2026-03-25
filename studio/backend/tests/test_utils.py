@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Tests for utils/hardware and utils/utils — device detection, GPU memory, error formatting.
+Tests for utils/hardware and utils/utils -- device detection, GPU memory, error formatting.
 
 These tests are designed to pass on ANY platform:
   • NVIDIA GPU  (CUDA backend, requires torch)
@@ -75,7 +75,7 @@ def _reset_and_detect():
 
 
 class TestGetDevice:
-    """Tests for get_device() — should agree with the real hardware."""
+    """Tests for get_device() -- should agree with the real hardware."""
 
     def setup_method(self):
         self._saved_device = _hw_module.DEVICE
@@ -167,7 +167,7 @@ class TestClearGpuCache:
 
     @needs_mlx
     def test_mlx_does_not_raise(self):
-        """MLX cache clear is a no-op — should just succeed."""
+        """MLX cache clear is a no-op -- should just succeed."""
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX):
             clear_gpu_cache()
 

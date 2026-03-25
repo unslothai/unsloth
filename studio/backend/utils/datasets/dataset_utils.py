@@ -120,7 +120,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         }
 
     if is_audio:
-        # Audio dataset — require manual mapping only when columns can't be auto-detected
+        # Audio dataset -- require manual mapping only when columns can't be auto-detected
         detected_audio = multimodal_info.get("detected_audio_column")
         detected_text = multimodal_info.get("detected_text_column")
         needs_mapping = not detected_audio or not detected_text
@@ -155,7 +155,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
         else:
-            # Heuristic failed — user must map manually (or use AI Assist)
+            # Heuristic failed -- user must map manually (or use AI Assist)
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",
@@ -206,7 +206,7 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     Apply user-provided column mapping to convert dataset to conversations format.
 
     Accepts chatml (user/assistant/system), sharegpt (human/gpt/system), and
-    alpaca (instruction/input/output) role names — all normalised to chatml output.
+    alpaca (instruction/input/output) role names -- all normalised to chatml output.
 
     If the mapping contains ``__``-prefixed metadata keys (from the conversion
     advisor), routes to template-based conversion instead of simple role mapping.
@@ -221,7 +221,7 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
     if meta:
         return _apply_template_mapping(dataset, column_roles, meta, batch_size)
 
-    # ── Simple mode (original logic) ──
+    # -- Simple mode (original logic) --
     # Pre-compute: group columns by canonical chatml role
     role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
     for col_name, role in column_roles.items():
@@ -257,7 +257,7 @@ def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
 
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
     """Extract a string value from a column, handling complex types and label mapping."""
-    # Handle complex types (dicts, lists) — extract useful text instead of raw repr
+    # Handle complex types (dicts, lists) -- extract useful text instead of raw repr
     if isinstance(val, dict):
         # Common pattern: {"text": [...]} in QA datasets
         if "text" in val:
@@ -354,7 +354,7 @@ def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
     """
     Apply user-provided column mapping to convert dataset to Alpaca format.
 
-    Accepts any format's role names — normalises via _TO_CHATML, then maps
+    Accepts any format's role names -- normalises via _TO_CHATML, then maps
     user → instruction, system → input, assistant → output.
 
     Returns:
@@ -447,7 +447,7 @@ def format_dataset(
                 final_format = "alpaca"
                 chat_column = None
             else:
-                # auto / chatml / sharegpt / conversational — all produce chatml conversations
+                # auto / chatml / sharegpt / conversational -- all produce chatml conversations
                 # (sharegpt is always standardized to role/content internally)
                 mapped_dataset = _apply_user_mapping(
                     dataset, custom_format_mapping, batch_size
@@ -906,11 +906,11 @@ def format_and_template_dataset(
                         "errors": [],
                     }
                 except Exception as e:
-                    # User mapping failed — fall back to auto-detection instead
+                    # User mapping failed -- fall back to auto-detection instead
                     # of giving up (handles stale cached mappings gracefully)
                     warnings.append(
                         f"User VLM mapping (image='{user_vlm_image_column}', "
-                        f"text='{user_vlm_text_column}') failed: {e} — "
+                        f"text='{user_vlm_text_column}') failed: {e} -- "
                         f"falling back to auto-detection"
                     )
                     logger.info(

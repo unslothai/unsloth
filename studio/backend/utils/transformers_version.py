@@ -38,7 +38,7 @@ logger = get_logger(__name__)
 # Detection
 # ---------------------------------------------------------------------------
 
-# Lowercase substrings — if ANY appears anywhere in the lowered model name,
+# Lowercase substrings -- if ANY appears anywhere in the lowered model name,
 # we need transformers 5.x.
 TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "ministral-3-",  # Ministral-3-{3,8,14}B-{Instruct,Reasoning,Base}-2512
@@ -61,7 +61,7 @@ _tokenizer_class_cache: dict[str, bool] = {}
 TRANSFORMERS_5_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 
-# Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
+# Pre-installed directory for transformers 5.x -- created by setup.sh / setup.ps1
 _VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5")
 
 
@@ -205,7 +205,7 @@ def needs_transformers_5(model_name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Version switching (in-process — used only by export)
+# Version switching (in-process -- used only by export)
 # ---------------------------------------------------------------------------
 
 
@@ -227,7 +227,7 @@ _PURGE_PREFIXES = (
     "trl",
     "accelerate",
     "auto_gptq",
-    # NOTE: bitsandbytes is intentionally EXCLUDED — it registers torch custom
+    # NOTE: bitsandbytes is intentionally EXCLUDED -- it registers torch custom
     # operators at import time via torch.library.define(). Those registrations
     # live in torch's global operator registry which survives module purge.
     # Re-importing bitsandbytes after purge → duplicate registration → crash.
@@ -442,7 +442,7 @@ def ensure_transformers_version(model_name: str) -> None:
         in_memory_major = int(in_memory.split(".")[0])
         if in_memory_major == target_major:
             logger.info(
-                "transformers %s already loaded — correct for '%s'",
+                "transformers %s already loaded -- correct for '%s'",
                 in_memory,
                 model_name,
             )

@@ -53,7 +53,7 @@ def _apply_wsl_sudo_patch():
 
         def _wsl_do_we_need_sudo(system_type = "debian"):
             logger.info(
-                "WSL detected — skipping sudo check "
+                "WSL detected -- skipping sudo check "
                 "(build deps pre-installed by setup.sh)"
             )
             return False
@@ -532,7 +532,7 @@ class ExportBackend:
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                # Pass absolute path — no os.chdir needed.
+                # Pass absolute path -- no os.chdir needed.
                 # unsloth saves intermediate HF model files into model_save_path.
                 # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
                 model_save_path = os.path.join(abs_save_dir, "model")

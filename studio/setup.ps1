@@ -22,9 +22,9 @@ $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Helper functions
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 
 # Reload ALL environment variables from registry.
 # Picks up changes made by installers (winget, msi, etc.) including
@@ -78,7 +78,7 @@ function Find-Nvcc {
         return $null
     }
 
-    # Fallback: no version constraint — pick latest or whatever is available
+    # Fallback: no version constraint -- pick latest or whatever is available
 
     # 1. Check nvcc on PATH
     $cmd = Get-Command nvcc -ErrorAction SilentlyContinue
@@ -133,7 +133,7 @@ function Get-CudaComputeCapability {
 # Check if an nvcc binary supports a given sm_ architecture.
 # Uses `nvcc --list-gpu-code` which outputs sm_* tokens (--list-gpu-arch
 # outputs compute_* tokens instead).  Available since CUDA 11.6.
-# Returns $false if the flag isn't supported (old toolkit) — safer to reject
+# Returns $false if the flag isn't supported (old toolkit) -- safer to reject
 # and fall back to scanning/PTX than to assume support and fail later.
 function Test-NvccArchSupport {
     param([string]$NvccExe, [string]$Arch)
@@ -247,9 +247,9 @@ function Find-VsBuildTools {
     return $null
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Banner
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 Write-Host "+==============================================+" -ForegroundColor Green
 Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
 Write-Host "+==============================================+" -ForegroundColor Green
@@ -861,7 +861,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
 
-    # ── Tailwind v4 .gitignore workaround ──
+    # -- Tailwind v4 .gitignore workaround --
     # Tailwind v4's oxide scanner respects .gitignore in parent directories.
     # Python venvs create a .gitignore with "*" (ignore everything), which
     # prevents Tailwind from scanning .tsx source files for class names.
@@ -907,12 +907,12 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
 
-    # ── Restore hidden .gitignore files ──
+    # -- Restore hidden .gitignore files --
     foreach ($gi in $HiddenGitignores) {
         Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
     }
 
-    # ── Validate CSS output ──
+    # -- Validate CSS output --
     $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
     $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
     if ($MaxCssSize -lt 100000) {
@@ -1214,7 +1214,7 @@ python "$PSScriptRoot\install_python_stack.py"
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
 
-# ── Pre-install transformers 5.x into .venv_t5/ ──
+# -- Pre-install transformers 5.x into .venv_t5/ --
 # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
 # at runtime (slow, ~10-15s), we pre-install into a separate directory.
 # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
@@ -1291,7 +1291,7 @@ if ($OpenSslRoot) {
 # ==========================================================================
 #  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
 # ==========================================================================
-# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# Builds at ~/.unsloth/llama.cpp -- a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
 # export pipeline (unsloth-zoo).
 # We build:
@@ -1360,7 +1360,7 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     $BuildOk = $true
     $FailedStep = ""
 
-    # Re-sanitize CUDA_PATH_V* vars — Refresh-Environment (called during
+    # Re-sanitize CUDA_PATH_V* vars -- Refresh-Environment (called during
     # Node/Python installs above) may have repopulated conflicting versioned
     # vars from the Machine registry.
     if ($HasNvidiaSmi -and $CudaToolkitRoot) {

@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── Helper: run command quietly, show output only on failure ──
+# -- Helper: run command quietly, show output only on failure --
 _run_quiet() {
     local on_fail=$1
     local label=$2
@@ -48,19 +48,19 @@ echo "╔═══════════════════════�
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
 
-# ── Clean up stale Unsloth compiled caches ──
+# -- Clean up stale Unsloth compiled caches --
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
-# ── Detect Colab (like unsloth does) ──
+# -- Detect Colab (like unsloth does) --
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
 if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
 
-# ── Detect whether frontend needs building ──
+# -- Detect whether frontend needs building --
 # Skip if dist/ exists AND no tracked input is newer than dist/.
 # Checks top-level config/entry files and src/, public/ recursively.
 # This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
@@ -107,7 +107,7 @@ else
 fi
 
 if [ "$NEED_NODE" = true ]; then
-    # ── 2. Install nvm ──
+    # -- 2. Install nvm --
     export NODE_OPTIONS=--dns-result-order=ipv4first # or else fails on colab.
     echo "Installing nvm..."
     curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
@@ -117,7 +117,7 @@ if [ "$NEED_NODE" = true ]; then
     set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-    # ── Fix npmrc conflict with nvm ──
+    # -- Fix npmrc conflict with nvm --
     # System npm (apt, conda, etc.) may have written `prefix` or `globalconfig`
     # to ~/.npmrc, which is incompatible with nvm and causes "nvm use" to fail
     # with: "has a `globalconfig` and/or a `prefix` setting, which are
@@ -129,12 +129,12 @@ if [ "$NEED_NODE" = true ]; then
         fi
     fi
 
-    # ── 3. Install Node LTS ──
+    # -- 3. Install Node LTS --
     echo "Installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
     nvm use --lts > /dev/null 2>&1
     set -u
-    # ── 4. Verify versions ──
+    # -- 4. Verify versions --
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
     NPM_MAJOR=$(npm -v | cut -d. -f1)
 
@@ -150,7 +150,7 @@ fi
 
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
-# ── 5. Build frontend ──
+# -- 5. Build frontend --
 cd "$SCRIPT_DIR/frontend"
 
 # Tailwind v4's oxide scanner respects .gitignore in parent directories.
@@ -194,16 +194,16 @@ echo "✅ Frontend built to frontend/dist"
 
 fi  # end frontend build check
 
-# ── oxc-validator runtime (needs npm -- skip if not available) ──
+# -- oxc-validator runtime (needs npm -- skip if not available) --
 if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
     run_quiet "npm install (oxc validator runtime)" npm install
     cd "$SCRIPT_DIR"
 fi
 
-# ── 6. Python venv + deps ──
+# -- 6. Python venv + deps --
 
-# ── 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) ──
+# -- 6a. Discover best Python >= 3.11 and < 3.14 (i.e. 3.11.x, 3.12.x, or 3.13.x) --
 MIN_PY_MINOR=11   # minimum minor version (>= 3.11)
 MAX_PY_MINOR=13   # maximum minor version (< 3.14)
 BEST_PY=""
@@ -274,7 +274,7 @@ if [ -z "$BEST_PY" ]; then
 fi
 
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
-echo "✅ Using $BEST_PY ($BEST_VER) — compatible (3.${MIN_PY_MINOR}.x – 3.${MAX_PY_MINOR}.x)"
+echo "✅ Using $BEST_PY ($BEST_VER) -- compatible (3.${MIN_PY_MINOR}.x - 3.${MAX_PY_MINOR}.x)"
 
 REQ_ROOT="$SCRIPT_DIR/backend/requirements"
 SINGLE_ENV_CONSTRAINTS="$REQ_ROOT/single-env/constraints.txt"
@@ -311,7 +311,7 @@ else
     source "$VENV_DIR/bin/activate"
 fi
 
-# ── Ensure uv is available (much faster than pip) ──
+# -- Ensure uv is available (much faster than pip) --
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
@@ -331,7 +331,7 @@ fast_install() {
 cd "$SCRIPT_DIR"
 install_python_stack
 
-# ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
+# -- 6b. Pre-install transformers 5.x into .venv_t5/ --
 # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
 # at runtime (slow, ~10-15s), we pre-install into a separate directory.
 # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
@@ -346,7 +346,7 @@ run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps
 run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
 echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
 
-# ── 7. WSL: pre-install GGUF build dependencies ──
+# -- 7. WSL: pre-install GGUF build dependencies --
 # On WSL, sudo requires a password and can't be entered during GGUF export
 # (runs in a non-interactive subprocess). Install build deps here instead.
 if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -407,8 +407,8 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     fi
 fi
 
-# ── 8. Build llama.cpp binaries for GGUF inference + export ──
-# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# -- 8. Build llama.cpp binaries for GGUF inference + export --
+# Builds at ~/.unsloth/llama.cpp -- a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
 # export pipeline (unsloth-zoo).
 #   - llama-server: for GGUF model inference
@@ -427,11 +427,11 @@ rm -rf "$LLAMA_CPP_DIR"
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
         echo ""
-        echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
+        echo "⚠️  cmake not found -- skipping llama-server build (GGUF inference won't be available)"
         echo "   Install cmake and re-run setup.sh to enable GGUF inference."
     elif ! command -v git &>/dev/null; then
         echo ""
-        echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
+        echo "⚠️  git not found -- skipping llama-server build (GGUF inference won't be available)"
     else
         echo ""
         echo "Building llama-server for GGUF inference..."
@@ -495,7 +495,7 @@ rm -rf "$LLAMA_CPP_DIR"
                 # Multi-threaded nvcc compilation (uses all CPU cores per .cu file)
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
-                echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                echo "   CUDA driver detected but nvcc not found -- building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
             else
                 echo "   Building CPU-only (no CUDA detected)..."
@@ -519,7 +519,7 @@ rm -rf "$LLAMA_CPP_DIR"
         # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
-            # Symlink to llama.cpp root — check_llama_cpp() looks for the binary there
+            # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
@@ -530,13 +530,13 @@ rm -rf "$LLAMA_CPP_DIR"
             if [ -f "$LLAMA_SERVER_BIN" ]; then
                 echo "✅ llama-server built at $LLAMA_SERVER_BIN"
             else
-                echo "⚠️  llama-server binary not found after build — GGUF inference won't be available"
+                echo "⚠️  llama-server binary not found after build -- GGUF inference won't be available"
             fi
             if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
                 echo "✅ llama-quantize available for GGUF export"
             fi
         else
-            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+            echo "⚠️  llama-server build failed -- GGUF inference won't be available, but everything else works"
         fi
     fi
 }

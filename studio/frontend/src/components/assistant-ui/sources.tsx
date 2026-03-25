@@ -18,7 +18,7 @@ import {
   HoverCardContent,
 } from "@/components/ui/hover-card";
 
-// ── Helpers ──────────────────────────────────────────────────
+// -- Helpers --------------------------------------------------
 
 const extractDomain = (url: string): string => {
   try {
@@ -33,7 +33,7 @@ const getDomainInitial = (url: string): string => {
   return domain.charAt(0).toUpperCase();
 };
 
-// ── Sub-components ───────────────────────────────────────────
+// -- Sub-components -------------------------------------------
 
 function SourceIcon({
   url,
@@ -116,7 +116,7 @@ function Source({
   );
 }
 
-// ── Source badge with hover card ─────────────────────────────
+// -- Source badge with hover card -----------------------------
 
 interface SourceData {
   url: string;
@@ -158,7 +158,7 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
   );
 };
 
-// ── Grouped sources with 2-row collapse ─────────────────────
+// -- Grouped sources with 2-row collapse ---------------------
 
 const SourcesGroup: FC = () => {
   const message = useMessage();
@@ -238,7 +238,7 @@ const SourcesGroup: FC = () => {
 
   return (
     <div className="relative mt-2">
-      {/* Hidden measurement container — renders all badges to measure row positions */}
+      {/* Hidden measurement container -- renders all badges to measure row positions */}
       <div
         ref={containerRef}
         aria-hidden
@@ -288,11 +288,11 @@ const SourcesGroup: FC = () => {
   );
 };
 
-// ── Individual source (renders null — SourcesGroup handles all) ──
+// -- Individual source (renders null -- SourcesGroup handles all) --
 
 const SourcesNoop: FC<Record<string, unknown>> = () => null;
 
-// ── Exports ──────────────────────────────────────────────────
+// -- Exports --------------------------------------------------
 
 const Sources = memo(SourcesNoop) as unknown as FC<Record<string, unknown>> & {
   Root: typeof Source;

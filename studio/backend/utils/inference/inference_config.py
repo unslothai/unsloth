@@ -20,7 +20,7 @@ from utils.models.model_config import load_model_defaults
 
 logger = get_logger(__name__)
 
-# ── Family-based inference defaults (loaded once, cached) ──────────────
+# -- Family-based inference defaults (loaded once, cached) --------------
 
 _FAMILY_DEFAULTS: Optional[Dict[str, Any]] = None
 _FAMILY_PATTERNS: Optional[list] = None

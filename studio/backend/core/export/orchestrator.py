@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Export orchestrator — subprocess-based.
+Export orchestrator -- subprocess-based.
 
 Provides the same API as ExportBackend, but delegates all ML work
 to a persistent subprocess. The subprocess is spawned on first checkpoint
@@ -32,7 +32,7 @@ _CTX = mp.get_context("spawn")
 
 class ExportOrchestrator:
     """
-    Export backend orchestrator — subprocess-based.
+    Export backend orchestrator -- subprocess-based.
 
     Exposes the same API surface as ExportBackend so routes/export.py
     needs minimal changes. Internally, all heavy ML operations happen in
@@ -154,7 +154,7 @@ class ExportOrchestrator:
     def _wait_response(self, expected_type: str, timeout: float = 3600.0) -> dict:
         """Block until a response of the expected type arrives.
 
-        Export operations can take a very long time — GGUF conversion for
+        Export operations can take a very long time -- GGUF conversion for
         large models (30B+) easily takes 20-30 minutes. Default timeout
         is 1 hour.
         """
@@ -183,7 +183,7 @@ class ExportOrchestrator:
                 logger.info("Export subprocess status: %s", resp.get("message", ""))
                 continue
 
-            # Other response types during wait — skip
+            # Other response types during wait -- skip
             logger.debug(
                 "Skipping response type '%s' while waiting for '%s'",
                 rtype,
@@ -208,7 +208,7 @@ class ExportOrchestrator:
                 return events
 
     # ------------------------------------------------------------------
-    # Public API — same interface as ExportBackend
+    # Public API -- same interface as ExportBackend
     # ------------------------------------------------------------------
 
     def load_checkpoint(
@@ -365,7 +365,7 @@ class ExportOrchestrator:
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""
         if not self._ensure_subprocess_alive():
-            # No subprocess — just clear local state
+            # No subprocess -- just clear local state
             self.current_checkpoint = None
             self.is_vision = False
             self.is_peft = False
@@ -378,7 +378,7 @@ class ExportOrchestrator:
         except RuntimeError:
             success = False
 
-        # Shut down subprocess after cleanup — no model loaded
+        # Shut down subprocess after cleanup -- no model loaded
         self._shutdown_subprocess()
 
         self.current_checkpoint = None
@@ -389,7 +389,7 @@ class ExportOrchestrator:
     def scan_checkpoints(
         self, outputs_dir: str = str(outputs_root())
     ) -> List[Tuple[str, list]]:
-        """Scan for checkpoints — no ML imports needed, runs locally."""
+        """Scan for checkpoints -- no ML imports needed, runs locally."""
         from utils.models.checkpoints import scan_checkpoints
 
         return scan_checkpoints(outputs_dir = outputs_dir)

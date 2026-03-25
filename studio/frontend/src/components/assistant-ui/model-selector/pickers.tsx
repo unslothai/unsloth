@@ -152,7 +152,7 @@ function ModelRow({
   return content;
 }
 
-// ── GGUF Variant Expander ────────────────────────────────────
+// -- GGUF Variant Expander ------------------------------------
 
 function GgufVariantExpander({
   repoId,
@@ -358,7 +358,7 @@ function GgufVariantExpander({
   );
 }
 
-// ── Detect GGUF repos by naming convention ────────────────────
+// -- Detect GGUF repos by naming convention --------------------
 
 function isGgufRepo(id: string): boolean {
   return id.toUpperCase().includes("-GGUF");
@@ -376,7 +376,7 @@ function extractParamLabel(id: string): string | undefined {
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
 
-// ── Hub Model Picker ──────────────────────────────────────────
+// -- Hub Model Picker ------------------------------------------
 
 export function HubModelPicker({
   models,
@@ -583,7 +583,7 @@ export function HubModelPicker({
     return () => { clearTimeout(timer); obs.disconnect(); };
   }, [recommendedSentinel, hasMoreRecommended, recommendedPage, scrollRef]);
 
-  /** Handle clicking a model row — GGUF repos expand, others load directly. */
+  /** Handle clicking a model row -- GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
       if (isGgufRepo(id)) {

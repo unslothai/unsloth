@@ -1537,7 +1537,7 @@ def create_huggingface_repo(
             card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        # Repo already exists — update datasets metadata separately
+        # Repo already exists -- update datasets metadata separately
         if datasets:
             try:
                 from huggingface_hub import metadata_update
@@ -1593,7 +1593,7 @@ def upload_to_huggingface(
             card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        # Repo already exists — update datasets metadata separately
+        # Repo already exists -- update datasets metadata separately
         if datasets:
             try:
                 from huggingface_hub import metadata_update
@@ -1991,7 +1991,7 @@ def unsloth_save_pretrained_gguf(
         except Exception as e:
             raise RuntimeError(f"Failed to save/merge model: {e}")
     else:
-        # Non-PEFT model — checkpoint files already exist on disk.
+        # Non-PEFT model -- checkpoint files already exist on disk.
         # Point save_to_gguf at the original checkpoint path instead of
         # re-saving to a temporary "model" subdirectory.
         original_path = getattr(self.config, "_name_or_path", None)

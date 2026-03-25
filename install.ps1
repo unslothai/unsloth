@@ -14,7 +14,7 @@ function Install-UnslothStudio {
     Write-Host "========================================="
     Write-Host ""
 
-    # ── Helper: refresh PATH from registry (deduplicating entries) ──
+    # -- Helper: refresh PATH from registry (deduplicating entries) --
     function Refresh-SessionPath {
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
@@ -31,7 +31,7 @@ function Install-UnslothStudio {
         $env:Path = $unique -join ";"
     }
 
-    # ── Check winget ──
+    # -- Check winget --
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host "Error: winget is not available." -ForegroundColor Red
         Write-Host "       Install it from https://aka.ms/getwinget" -ForegroundColor Yellow
@@ -39,7 +39,7 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Helper: detect a working Python 3.11-3.13 on the system ──
+    # -- Helper: detect a working Python 3.11-3.13 on the system --
     # Returns the version string (e.g. "3.13") or "" if none found.
     # Uses try-catch + stderr redirection so that App Execution Alias stubs
     # (WindowsApps) and other non-functional executables are probed safely
@@ -109,7 +109,7 @@ function Install-UnslothStudio {
         return $null
     }
 
-    # ── Install Python if no compatible version (3.11-3.13) found ──
+    # -- Install Python if no compatible version (3.11-3.13) found --
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     $DetectedPython = Find-CompatiblePython
     if ($DetectedPython) {
@@ -158,7 +158,7 @@ function Install-UnslothStudio {
         }
     }
 
-    # ── Install uv if not present ──
+    # -- Install uv if not present --
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Write-Host "==> Installing uv package manager..."
         $prevEAP = $ErrorActionPreference
@@ -180,7 +180,7 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Create venv (skip if it already exists and has a valid interpreter) ──
+    # -- Create venv (skip if it already exists and has a valid interpreter) --
     # Pass the resolved executable path to uv so it does not re-resolve
     # a version string back to a conda interpreter.
     $VenvPython = Join-Path $VenvName "Scripts\python.exe"
@@ -196,7 +196,7 @@ function Install-UnslothStudio {
         Write-Host "==> Virtual environment ${VenvName} already exists, skipping creation."
     }
 
-    # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
+    # -- Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) --
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
     try {
@@ -227,7 +227,7 @@ function Install-UnslothStudio {
         Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     }
 
-    # ── Choose the correct PyTorch index URL based on driver CUDA version ──
+    # -- Choose the correct PyTorch index URL based on driver CUDA version --
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = "https://download.pytorch.org/whl"
@@ -249,7 +249,7 @@ function Install-UnslothStudio {
     }
     $TorchIndexUrl = Get-TorchIndexUrl
 
-    # ── Install PyTorch first, then unsloth separately ──
+    # -- Install PyTorch first, then unsloth separately --
     #
     # Why two steps?
     #   `uv pip install unsloth --torch-backend=cpu` on Windows resolves to
@@ -281,7 +281,7 @@ function Install-UnslothStudio {
         return
     }
 
-    # ── Run studio setup ──
+    # -- Run studio setup --
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
     Write-Host "==> Running unsloth studio setup..."

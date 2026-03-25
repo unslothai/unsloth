@@ -33,9 +33,9 @@ class LlamaCppBackend:
     Manages a llama-server subprocess for GGUF model inference.
 
     Lifecycle:
-        1. load_model()  — starts llama-server with the GGUF file
-        2. generate_chat_completion() — proxies to /v1/chat/completions, streams back
-        3. unload_model() — terminates llama-server subprocess
+        1. load_model()  -- starts llama-server with the GGUF file
+        2. generate_chat_completion() -- proxies to /v1/chat/completions, streams back
+        3. unload_model() -- terminates llama-server subprocess
     """
 
     def __init__(self):
@@ -61,7 +61,7 @@ class LlamaCppBackend:
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
 
-    # ── Properties ────────────────────────────────────────────────
+    # -- Properties ------------------------------------------------
 
     @property
     def is_loaded(self) -> bool:
@@ -112,7 +112,7 @@ class LlamaCppBackend:
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
 
-    # ── Binary discovery ──────────────────────────────────────────
+    # -- Binary discovery ------------------------------------------
 
     @staticmethod
     def _find_llama_server_binary() -> Optional[str]:
@@ -135,12 +135,12 @@ class LlamaCppBackend:
 
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
-        # 1. Env var — direct path to binary
+        # 1. Env var -- direct path to binary
         env_path = os.environ.get("LLAMA_SERVER_PATH")
         if env_path and Path(env_path).is_file():
             return env_path
 
-        # 1b. UNSLOTH_LLAMA_CPP_PATH — custom llama.cpp install directory
+        # 1b. UNSLOTH_LLAMA_CPP_PATH -- custom llama.cpp install directory
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         if custom_llama_cpp:
             custom_dir = Path(custom_llama_cpp)
@@ -158,7 +158,7 @@ class LlamaCppBackend:
                 if win_bin.is_file():
                     return str(win_bin)
 
-        # 2–4. ~/.unsloth/llama.cpp (primary — setup.sh / setup.ps1 build here)
+        # 2-4. ~/.unsloth/llama.cpp (primary -- setup.sh / setup.ps1 build here)
         unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
         # Root dir (make builds copy binaries here)
         home_root = unsloth_home / binary_name
@@ -175,7 +175,7 @@ class LlamaCppBackend:
             if home_win.is_file():
                 return str(home_win)
 
-        # 5–6. Legacy: in-tree build (older setup.sh / setup.ps1 versions)
+        # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1 versions)
         project_root = Path(__file__).resolve().parents[4]
         # Root dir (make builds)
         root_path = project_root / "llama.cpp" / binary_name
@@ -204,7 +204,7 @@ class LlamaCppBackend:
 
         return None
 
-    # ── GPU allocation ────────────────────────────────────────────
+    # -- GPU allocation --------------------------------------------
 
     @staticmethod
     def _get_gguf_size_bytes(model_path: str) -> int:
@@ -318,7 +318,7 @@ class LlamaCppBackend:
         # Model is too large even for all GPUs, let --fit handle it
         return None, True
 
-    # ── Variant fallback ────────────────────────────────────────────
+    # -- Variant fallback --------------------------------------------
 
     @staticmethod
     def _find_smallest_fitting_variant(
@@ -374,7 +374,7 @@ class LlamaCppBackend:
         except Exception:
             return None
 
-    # ── Port allocation ───────────────────────────────────────────
+    # -- Port allocation -------------------------------------------
 
     @staticmethod
     def _find_free_port() -> int:
@@ -383,7 +383,7 @@ class LlamaCppBackend:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
-    # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
+    # -- Stdout drain (prevents pipe deadlock on Windows) ---------
 
     def _drain_stdout(self):
         """
@@ -400,7 +400,7 @@ class LlamaCppBackend:
                     self._stdout_lines.append(line)
                     logger.debug(f"[llama-server] {line}")
         except (ValueError, OSError):
-            # Pipe closed — process is terminating
+            # Pipe closed -- process is terminating
             pass
 
     # GGUF KV type sizes for fast skipping
@@ -530,7 +530,7 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
-    # ── HF download (no lock held) ───────────────────────────────
+    # -- HF download (no lock held) -------------------------------
 
     def _download_gguf(
         self,
@@ -740,7 +740,7 @@ class LlamaCppBackend:
             logger.warning(f"Could not download mmproj: {e}")
             return None
 
-    # ── Lifecycle ─────────────────────────────────────────────────
+    # -- Lifecycle -------------------------------------------------
 
     def load_model(
         self,
@@ -776,7 +776,7 @@ class LlamaCppBackend:
         """
         self._cancel_event.clear()
 
-        # ── Phase 1: kill old process (under lock, fast) ──────────
+        # -- Phase 1: kill old process (under lock, fast) ----------
         with self._lock:
             self._kill_process()
 
@@ -788,7 +788,7 @@ class LlamaCppBackend:
                 "or set LLAMA_SERVER_PATH environment variable."
             )
 
-        # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+        # -- Phase 2: download (NO lock held, so cancel can proceed) --
         if hf_repo:
             model_path = self._download_gguf(
                 hf_repo = hf_repo,
@@ -819,7 +819,7 @@ class LlamaCppBackend:
             logger.info("Load cancelled after download phase")
             return False
 
-        # ── Phase 3: start llama-server (under lock) ──────────────
+        # -- Phase 3: start llama-server (under lock) --------------
         with self._lock:
             # Re-check cancel inside lock
             if self._cancel_event.is_set():
@@ -1163,7 +1163,7 @@ class LlamaCppBackend:
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
 
-    # ── Message building (OpenAI format) ──────────────────────────
+    # -- Message building (OpenAI format) --------------------------
 
     @staticmethod
     def _parse_tool_calls_from_text(content: str) -> list[dict]:
@@ -1327,7 +1327,7 @@ class LlamaCppBackend:
 
         return result
 
-    # ── Generation (proxy to llama-server) ────────────────────────
+    # -- Generation (proxy to llama-server) ------------------------
 
     @staticmethod
     def _iter_text_cancellable(
@@ -1463,7 +1463,7 @@ class LlamaCppBackend:
         """
         Send a chat completion request to llama-server and stream tokens back.
 
-        Uses /v1/chat/completions — llama-server handles chat template
+        Uses /v1/chat/completions -- llama-server handles chat template
         application and vision (multimodal image_url parts) natively.
 
         Yields cumulative text (matching InferenceBackend's convention).
@@ -1598,7 +1598,7 @@ class LlamaCppBackend:
                 return
             raise
 
-    # ── Tool-calling agentic loop ──────────────────────────────
+    # -- Tool-calling agentic loop ------------------------------
 
     def generate_chat_completion_with_tools(
         self,
@@ -2028,7 +2028,7 @@ class LlamaCppBackend:
                 return
             raise
 
-    # ── TTS support ────────────────────────────────────────────
+    # -- TTS support --------------------------------------------
 
     def detect_audio_type(self) -> Optional[str]:
         """Detect audio/TTS codec by probing the loaded model's vocabulary."""
@@ -2103,7 +2103,7 @@ class LlamaCppBackend:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_repo_path = None
 
-        # BiCodec needs a repo with BiCodec/ weights — download canonical SparkTTS
+        # BiCodec needs a repo with BiCodec/ weights -- download canonical SparkTTS
         if audio_type == "bicodec":
             from huggingface_hub import snapshot_download
             import os

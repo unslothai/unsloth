@@ -3,7 +3,7 @@
 
 "use client";
 
-// Avatar removed — caused circular crop on image thumbnails
+// Avatar removed -- caused circular crop on image thumbnails
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   Dialog,

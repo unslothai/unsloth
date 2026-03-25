@@ -84,7 +84,7 @@ def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[st
     """
     Validate a refresh token and issue a new access token.
 
-    The refresh token itself is NOT consumed — it stays valid until expiry.
+    The refresh token itself is NOT consumed -- it stays valid until expiry.
     Returns a new access_token or None if the refresh token is invalid/expired.
     """
     username = verify_refresh_token(refresh_token)

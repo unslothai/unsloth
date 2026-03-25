@@ -210,7 +210,7 @@ const ToolGroupImpl: FC<
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
 
-  // Single tool call — render directly without wrapper
+  // Single tool call -- render directly without wrapper
   if (toolCount <= 1) {
     return <>{children}</>;
   }

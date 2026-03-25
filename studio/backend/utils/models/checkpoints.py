@@ -108,7 +108,7 @@ def scan_checkpoints(
             # This is a valid training run
             checkpoints = []
 
-            # Placeholder for the main adapter — loss filled from last checkpoint below
+            # Placeholder for the main adapter -- loss filled from last checkpoint below
             checkpoints.append((item.name, str(item), None))
 
             # Scan for intermediate checkpoints (checkpoint-N subdirs)

@@ -433,7 +433,7 @@ def detect_multimodal_dataset(dataset):
     audio_columns = []
     modality_types = set()
 
-    # ── Image detection ─────────────────────────────────────
+    # -- Image detection -------------------------------------
     # Pass 1: column-name heuristic (word-boundary match to avoid
     #          false positives like 'pic' in 'topic')
     for col_name in column_names:
@@ -453,7 +453,7 @@ def detect_multimodal_dataset(dataset):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
-    # ── Audio detection ─────────────────────────────────────
+    # -- Audio detection -------------------------------------
     # Pass 1: column-name heuristic (word-boundary match)
     for col_name in column_names:
         for keyword in audio_keywords:
@@ -812,17 +812,17 @@ def detect_vlm_dataset_structure(dataset):
         Returns True if likely valid, False if definitely broken."""
         import os
 
-        # PIL / dict — already loaded, always valid
+        # PIL / dict -- already loaded, always valid
         if not isinstance(sample_value, str):
             return True
 
-        # Local file — check it exists
+        # Local file -- check it exists
         if not sample_value.startswith(("http://", "https://")):
             return os.path.exists(
                 sample_value
             )  # bare filenames return False here, that's OK
 
-        # URL — quick HEAD request with short timeout
+        # URL -- quick HEAD request with short timeout
         try:
             import urllib.request
 
@@ -845,7 +845,7 @@ def detect_vlm_dataset_structure(dataset):
                 if score > 0:
                     candidates.append((col, score))
 
-        # Pass 2: value-based fallback — find columns with image URLs/paths
+        # Pass 2: value-based fallback -- find columns with image URLs/paths
         # even if the column name doesn't match image keywords
         already = {c[0] for c in candidates}
         for col in column_names:
@@ -862,17 +862,17 @@ def detect_vlm_dataset_structure(dataset):
 
         candidates.sort(key = lambda x: x[1], reverse = True)
 
-        # Single candidate or top candidate is PIL/dict — no probing needed
+        # Single candidate or top candidate is PIL/dict -- no probing needed
         if len(candidates) == 1 or candidates[0][1] >= 75:
             return candidates[0][0]
 
-        # Multiple string-based candidates — probe to find one that actually works
+        # Multiple string-based candidates -- probe to find one that actually works
         for col, score in candidates:
             sample_value = sample[col]
             if _probe_image_candidate(col, sample_value):
                 return col
 
-        # Nothing probed successfully — return highest-scored anyway and let
+        # Nothing probed successfully -- return highest-scored anyway and let
         # conversion handle the error (it may still resolve via hf_hub_download)
         return candidates[0][0]
 
@@ -899,7 +899,7 @@ def detect_vlm_dataset_structure(dataset):
                     and len(sample_value) > 0
                     and isinstance(sample_value[0], str)
                 ):
-                    # List of strings (e.g. captions list) — lower priority than plain strings
+                    # List of strings (e.g. captions list) -- lower priority than plain strings
                     priority = min(len(sample_value[0]), 1000) // 2
                     candidates.append((col, priority))
 

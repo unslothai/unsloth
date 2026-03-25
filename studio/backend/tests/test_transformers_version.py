@@ -37,7 +37,7 @@ from utils.transformers_version import (
 
 
 # ---------------------------------------------------------------------------
-# _resolve_base_model — config.json fallback
+# _resolve_base_model -- config.json fallback
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +102,7 @@ class TestResolveBaseModel:
 
 
 # ---------------------------------------------------------------------------
-# _check_tokenizer_config_needs_v5 — local file check
+# _check_tokenizer_config_needs_v5 -- local file check
 # ---------------------------------------------------------------------------
 
 
@@ -150,7 +150,7 @@ class TestCheckTokenizerConfigNeedsV5:
 
 
 # ---------------------------------------------------------------------------
-# needs_transformers_5 — integration-level
+# needs_transformers_5 -- integration-level
 # ---------------------------------------------------------------------------
 
 

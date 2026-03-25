@@ -55,7 +55,7 @@ async def load_checkpoint(
     """
     try:
         # Version switching is handled automatically by the subprocess-based
-        # export backend — no need for ensure_transformers_version() here.
+        # export backend -- no need for ensure_transformers_version() here.
 
         # Free GPU memory: shut down any running inference/training subprocesses
         # before loading the export checkpoint (they'd compete for VRAM).

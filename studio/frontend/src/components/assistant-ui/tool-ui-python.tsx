@@ -55,7 +55,7 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-/** Render code with syntax highlighting via Streamdown + shiki. No extra borders — inherits parent container. */
+/** Render code with syntax highlighting via Streamdown + shiki. No extra borders -- inherits parent container. */
 function HighlightedCode({ code: source, language }: { code: string; language: string }) {
   const markdown = useMemo(
     () => `\`\`\`${language}\n${truncate(source)}\n\`\`\``,

@@ -151,7 +151,7 @@ class UnslothTrainer:
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
     ) -> None:
-        """Lightweight detection and tokenizer load — no model weights, no VRAM.
+        """Lightweight detection and tokenizer load -- no model weights, no VRAM.
 
         Sets is_vlm, _audio_type, is_audio_vlm, model_name and loads a
         lightweight tokenizer for dataset formatting.  Call this before
@@ -159,7 +159,7 @@ class UnslothTrainer:
         BEFORE loading the training model (avoids VRAM contention with
         the LLM-assisted detection helper).
 
-        load_model() may be called afterwards — it will re-detect and load
+        load_model() may be called afterwards -- it will re-detect and load
         the full model + tokenizer, overwriting the lightweight one set here.
         """
         self.model_name = model_name
@@ -513,7 +513,7 @@ class UnslothTrainer:
             # the compiled cache. unsloth_compile_transformers() sets __UNSLOTH_PATCHED__
             # on each modeling module and replaces methods with exec'd code.
             # clear_unsloth_compiled_cache() deletes the disk cache, but the flag
-            # prevents re-compilation — leaving missing cache files. Reloading
+            # prevents re-compilation -- leaving missing cache files. Reloading
             # restores original class definitions so Unsloth can re-compile cleanly.
             import sys as _sys
             import importlib
@@ -524,7 +524,7 @@ class UnslothTrainer:
                         try:
                             importlib.reload(_mod)
                         except Exception:
-                            pass  # Non-critical — Unsloth will handle stale modules
+                            pass  # Non-critical -- Unsloth will handle stale modules
 
             # Remove stale compiled cache so the new model gets a fresh one
             from utils.cache_cleanup import clear_unsloth_compiled_cache
@@ -733,7 +733,7 @@ class UnslothTrainer:
 
             elif self.is_audio_vlm:
                 # Audio VLM: multimodal model trained on audio (e.g. Gemma 3N)
-                # Uses FastModel (general loader) — returns (model, processor)
+                # Uses FastModel (general loader) -- returns (model, processor)
                 from unsloth import FastModel
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
@@ -814,7 +814,7 @@ class UnslothTrainer:
                 # second attempt because the failed first call's partial
                 # imports clean up the stale state as a side effect.
                 self._source_code_retried = True
-                logger.info(f"\n'could not get source code' — retrying once...\n")
+                logger.info(f"\n'could not get source code' -- retrying once...\n")
                 return self.load_model(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
@@ -1324,7 +1324,7 @@ class UnslothTrainer:
             trust_remote_code = getattr(self, "trust_remote_code", False),
         )
 
-        # Strip pad_to_multiple_of from tokenizer init_kwargs — fine-tuned models
+        # Strip pad_to_multiple_of from tokenizer init_kwargs -- fine-tuned models
         # (e.g. keanteng/sesame-csm-elise) save it in tokenizer_config.json, and
         # _merge_kwargs leaks it into audio_kwargs where EncodecFeatureExtractor rejects it.
         processor.tokenizer.init_kwargs.pop("pad_to_multiple_of", None)
@@ -1383,7 +1383,7 @@ class UnslothTrainer:
                         ],
                     }
                 ]
-                # NOTE: pad_to_multiple_of intentionally omitted from text_kwargs —
+                # NOTE: pad_to_multiple_of intentionally omitted from text_kwargs --
                 # CsmProcessor._merge_kwargs leaks it to EncodecFeatureExtractor which rejects it.
                 model_inputs = processor.apply_chat_template(
                     conversation,
@@ -1654,7 +1654,7 @@ class UnslothTrainer:
                 # Truncate to max_length
                 input_ids = input_ids[:max_length]
 
-                # Labels = input_ids (no masking — Orpheus trains on full sequence)
+                # Labels = input_ids (no masking -- Orpheus trains on full sequence)
                 labels = list(input_ids)
                 attention_mask = [1] * len(input_ids)
 
@@ -1753,7 +1753,7 @@ class UnslothTrainer:
             )
 
         # Cast audio column so datasets 4.x AudioDecoder objects are decoded to dicts.
-        # Don't resample here — BiCodec's target_sr may differ; the loop handles resampling.
+        # Don't resample here -- BiCodec's target_sr may differ; the loop handles resampling.
         from datasets import Audio
 
         dataset = dataset.cast_column(audio_col, Audio())
@@ -2305,7 +2305,7 @@ class UnslothTrainer:
         """
         Load and prepare dataset for training.
 
-        Strategy: format first, then split — ensures both train and eval
+        Strategy: format first, then split -- ensures both train and eval
         portions are properly formatted and templated.
 
         Returns:
@@ -2368,7 +2368,7 @@ class UnslothTrainer:
                     and dataset_slice_end >= 0
                     and dataset_slice_end >= _slice_start
                 ):
-                    # Manual slice — stream only the rows we need instead of
+                    # Manual slice -- stream only the rows we need instead of
                     # downloading the entire dataset.
                     rows_to_stream = dataset_slice_end + 1
                     logger.info(
@@ -2419,9 +2419,9 @@ class UnslothTrainer:
                             f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n"
                         )
                     elif eval_split and eval_split == effective_train:
-                        # Same split as training — will do 80/20 split after formatting
+                        # Same split as training -- will do 80/20 split after formatting
                         logger.info(
-                            f"Eval split '{eval_split}' is the same as train split — will split 80/20\n"
+                            f"Eval split '{eval_split}' is the same as train split -- will split 80/20\n"
                         )
                     else:
                         # Auto-detect eval split from HF (returns a separate dataset, or None)
@@ -2538,7 +2538,7 @@ class UnslothTrainer:
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:
-                # Eval came from a separate HF split — format it too
+                # Eval came from a separate HF split -- format it too
                 logger.info(f"Formatting eval dataset ({len(eval_dataset)} rows)...\n")
                 eval_info = format_and_template_dataset(
                     eval_dataset,
@@ -2552,7 +2552,7 @@ class UnslothTrainer:
                 eval_dataset = eval_info["dataset"]
                 logger.info(f"Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source:
-                # No separate eval source — split the already-formatted dataset
+                # No separate eval source -- split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
                 split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
                 if split_result is not None:
@@ -2599,7 +2599,7 @@ class UnslothTrainer:
         except Exception as e:
             logger.warning(f"Could not check dataset splits: {e}")
 
-        # No separate HF eval split found — caller will handle programmatic splitting
+        # No separate HF eval split found -- caller will handle programmatic splitting
         return None
 
     def _resolve_eval_split_from_dataset(self, dataset) -> Optional[tuple]:
@@ -2666,7 +2666,7 @@ class UnslothTrainer:
         # Unsloth's patched_import hook (deepseek_v3_moe.py) is not thread-safe
         # with Python's importlib cache, causing KeyError: 'size' if these are
         # first imported inside the worker thread.
-        import transformers  # noqa: F401 – ensures submodules are cached
+        import transformers  # noqa: F401 - ensures submodules are cached
         from transformers import (  # noqa: F401
             Trainer as _HFTrainer,
             TrainingArguments as _TrainingArguments,
@@ -2796,7 +2796,7 @@ class UnslothTrainer:
                 return
 
             elif self._audio_type == "snac":
-                # Orpheus: language model with SNAC codec tokens — plain HF Trainer
+                # Orpheus: language model with SNAC codec tokens -- plain HF Trainer
                 # DataCollatorForSeq2Seq dynamically pads variable-length sequences per batch
                 # (text + audio codes vary in length) and pads labels with -100.
                 from transformers import (
@@ -3083,7 +3083,7 @@ class UnslothTrainer:
                     )
                     logger.info("To enable evaluation, set eval_steps > 0.0\n")
             else:
-                logger.info("No eval dataset — evaluation disabled\n")
+                logger.info("No eval dataset -- evaluation disabled\n")
 
             # Add model-specific parameters
             # Use optim and lr_scheduler_type from training_args if provided, otherwise use defaults
@@ -3130,7 +3130,7 @@ class UnslothTrainer:
                         f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"
                     )
 
-            # Audio codec overrides — BiCodec/DAC use the text SFTTrainer path
+            # Audio codec overrides -- BiCodec/DAC use the text SFTTrainer path
             if self._audio_type == "bicodec":
                 config_args["packing"] = False
                 logger.info("Applied BiCodec overrides: packing=False\n")
@@ -3284,7 +3284,7 @@ class UnslothTrainer:
                     )
                     logger.info("Train on responses only configured successfully\n")
 
-                    # ── Safety net: check if all samples were filtered out ──
+                    # -- Safety net: check if all samples were filtered out --
                     # Unsloth's train_on_responses_only masks non-response
                     # tokens with -100. If max_seq_length is too short and the
                     # response portion gets truncated away, EVERY sample ends
@@ -3304,7 +3304,7 @@ class UnslothTrainer:
                         error_msg = (
                             f"{dropped}/{original_len} samples ({drop_pct}%) "
                             f"were dropped after applying 'train on responses "
-                            f"only' — only {filtered_len} remain. This usually "
+                            f"only' -- only {filtered_len} remain. This usually "
                             f"means max_seq_length ({max_seq}) is too short "
                             f"and the response portion is being truncated "
                             f"away. Try increasing max_seq_length (e.g. 8192) "
@@ -3394,7 +3394,7 @@ class UnslothTrainer:
         """
         config_path = os.path.join(output_dir, "adapter_config.json")
         if not os.path.exists(config_path):
-            logger.info("No adapter_config.json found — skipping training method patch")
+            logger.info("No adapter_config.json found -- skipping training method patch")
             return
 
         try:

@@ -357,7 +357,7 @@ def convert_to_vlm_format(
             else:
                 image_data = Image.open(image_data).convert("RGB")
 
-        # Get text (if list of strings, pick a random one — e.g. multiple captions)
+        # Get text (if list of strings, pick a random one -- e.g. multiple captions)
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
             import random
@@ -391,7 +391,7 @@ def convert_to_vlm_format(
         ("http://", "https://")
     )
 
-    # ── Bare-filename detection: images stored as filenames (e.g. "img_001.png")
+    # -- Bare-filename detection: images stored as filenames (e.g. "img_001.png")
     #    that don't exist locally.  Build a basename→repo_path lookup so we can
     #    resolve them via hf_hub_download during conversion.
     _image_lookup = None
@@ -407,7 +407,7 @@ def convert_to_vlm_format(
 
             _notify("Resolving image filenames from HF repo...")
             logger.info(
-                f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
+                f"🔍 Image column contains bare filenames (e.g. '{first_image}') -- building repo lookup..."
             )
             repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
             _image_lookup = {
@@ -421,14 +421,14 @@ def convert_to_vlm_format(
                 )
             else:
                 logger.info(
-                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open"
+                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found -- falling back to local open"
                 )
                 _image_lookup = None
         except Exception as e:
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
 
-    # ── URL probe: 200 samples with parallel workers to estimate speed + failure rate ──
+    # -- URL probe: 200 samples with parallel workers to estimate speed + failure rate --
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
@@ -510,7 +510,7 @@ def convert_to_vlm_format(
         logger.info(f"⏱️ Estimated time for {total:,} samples: ~{eta_str}")
         _notify(info_msg)
 
-    # ── Full conversion with progress ──
+    # -- Full conversion with progress --
     from tqdm import tqdm
 
     logger.info(f"🔄 Converting {total} samples to VLM format...")
@@ -617,7 +617,7 @@ def convert_to_vlm_format(
 
     if len(converted_list) == 0:
         issues = [
-            f"All {total} samples failed during VLM conversion — no usable images found",
+            f"All {total} samples failed during VLM conversion -- no usable images found",
             f"Image column '{image_column}' may contain URLs that are no longer accessible, "
             "or local file paths that don't exist",
         ]
@@ -636,7 +636,7 @@ def convert_to_vlm_format(
         raise ValueError(
             friendly
             or (
-                f"All {total} samples failed during VLM conversion — no usable images found. "
+                f"All {total} samples failed during VLM conversion -- no usable images found. "
                 "This dataset may contain only image URLs that are no longer accessible."
             )
         )
@@ -687,7 +687,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         if progress_callback:
             progress_callback(status_message = msg)
 
-    # ── Resolve image loading strategy (same 3-tier as convert_to_vlm_format) ──
+    # -- Resolve image loading strategy (same 3-tier as convert_to_vlm_format) --
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
 
@@ -703,7 +703,7 @@ def convert_sharegpt_with_images_to_vlm_format(
 
             _notify("Resolving image filenames from HF repo...")
             logger.info(
-                f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
+                f"🔍 Image column contains bare filenames (e.g. '{first_image}') -- building repo lookup..."
             )
             repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
             _image_lookup = {
@@ -721,7 +721,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                 )
             else:
                 logger.info(
-                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open"
+                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found -- falling back to local open"
                 )
                 _image_lookup = None
         except Exception as e:
@@ -792,7 +792,7 @@ def convert_sharegpt_with_images_to_vlm_format(
 
         return {"messages": new_messages}
 
-    # ── Full conversion with progress ──
+    # -- Full conversion with progress --
     logger.info(f"🔄 Converting {total} samples from ShareGPT+image format...")
     converted_list = []
     failed_count = 0
@@ -815,7 +815,7 @@ def convert_sharegpt_with_images_to_vlm_format(
 
     if len(converted_list) == 0:
         raise ValueError(
-            f"All {total} samples failed during ShareGPT+image conversion — "
+            f"All {total} samples failed during ShareGPT+image conversion -- "
             "no usable samples found."
         )
 

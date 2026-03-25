@@ -177,7 +177,7 @@ export function ModelSection() {
     return applyPriorityOrdering(ids);
   }, [hfResults, selectedModel]);
 
-  // Filter out GGUF models — they can't be used for training
+  // Filter out GGUF models -- they can't be used for training
   const trainableLocalModels = useMemo(
     () =>
       localModels.filter((m) => {

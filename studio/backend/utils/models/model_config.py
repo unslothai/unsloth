@@ -35,7 +35,7 @@ logger = get_logger(__name__)
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
 # Based on the model mapper provided - canonical filename is based on the first model name in the mapper
 MODEL_NAME_MAPPING = {
-    # ── Embedding models ──
+    # -- Embedding models --
     "unsloth_all-MiniLM-L6-v2.yaml": [
         "unsloth/all-MiniLM-L6-v2",
         "sentence-transformers/all-MiniLM-L6-v2",
@@ -58,7 +58,7 @@ MODEL_NAME_MAPPING = {
         "unsloth/Qwen3-Embedding-4B",
         "Qwen/Qwen3-Embedding-4B",
     ],
-    # ── Other models ──
+    # -- Other models --
     "unsloth_answerdotai_ModernBERT-large.yaml": [
         "answerdotai/ModernBERT-large",
     ],
@@ -551,7 +551,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Works for fine-tuned models since they inherit the base architecture.
 
     For models that require transformers 5.x (e.g. GLM-4.7-Flash), the check
-    runs in a subprocess with .venv_t5/ activated — same pattern as the
+    runs in a subprocess with .venv_t5/ activated -- same pattern as the
     training and inference workers.
 
     Args:
@@ -565,7 +565,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     if needs_transformers_5(model_name):
         logger.info(
-            "Model '%s' needs transformers 5.x — checking vision via subprocess",
+            "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
         return _is_vision_model_subprocess(model_name, hf_token = hf_token)
@@ -643,7 +643,7 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     """
     Dynamically detect if a model is an audio model and return its type.
 
-    Fully dynamic — works for any model, not just known ones.
+    Fully dynamic -- works for any model, not just known ones.
     Uses tokenizer_config.json special tokens to detect all 6 audio types.
 
     Returns: audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm') or None.
@@ -751,7 +751,7 @@ def detect_mmproj_file(path: str) -> Optional[str]:
     Find the mmproj (vision projection) GGUF file in a directory.
 
     Args:
-        path: Directory to search — or a .gguf file (uses its parent dir).
+        path: Directory to search -- or a .gguf file (uses its parent dir).
 
     Returns:
         Full path to the mmproj .gguf file, or None if not found.
@@ -775,7 +775,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
     1. path is a direct .gguf file path
     2. path is a directory containing .gguf files
 
-    Skips mmproj (vision projection) files — those must be passed via
+    Skips mmproj (vision projection) files -- those must be passed via
     ``--mmproj``, not ``-m``.  Use :func:`detect_mmproj_file` instead.
 
     Returns the full path to the .gguf file if found, None otherwise.
@@ -1149,7 +1149,7 @@ def scan_exported_models(
                 continue
 
             # Check for flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/)
-            # Filter out mmproj (vision projection) files — they aren't loadable as main models
+            # Filter out mmproj (vision projection) files -- they aren't loadable as main models
             gguf_files = [f for f in run_dir.glob("*.gguf") if not _is_mmproj(f.name)]
             if gguf_files:
                 base_model = None
@@ -1585,7 +1585,7 @@ class ModelConfig:
 
                 if not LlamaCppBackend._find_llama_server_binary():
                     raise RuntimeError(
-                        "llama-server binary not found — cannot load GGUF models. "
+                        "llama-server binary not found -- cannot load GGUF models. "
                         "Run setup.sh to build it, or set LLAMA_SERVER_PATH."
                     )
 
@@ -1599,7 +1599,7 @@ class ModelConfig:
                     if best:
                         variant = _extract_quant_label(best)
                     else:
-                        variant = "Q4_K_M"  # Fallback — llama-server's own default
+                        variant = "Q4_K_M"  # Fallback -- llama-server's own default
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(

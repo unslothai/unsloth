@@ -499,7 +499,7 @@ async def scan_loras(
                 )
             )
 
-        # Scan exported models (merged, LoRA, base — skips GGUF)
+        # Scan exported models (merged, LoRA, base -- skips GGUF)
         exported = scan_exported_models(exports_dir = resolved_exports_dir)
         for display_name, model_path, export_type, base_model in exported:
             lora_list.append(
@@ -1003,7 +1003,7 @@ async def delete_cached_model(
         if target_repo is None:
             raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
-        # ── Per-variant GGUF deletion ────────────────────────────
+        # -- Per-variant GGUF deletion ----------------------------
         if variant:
             deleted_bytes = 0
             deleted_count = 0
@@ -1041,7 +1041,7 @@ async def delete_cached_model(
             )
             return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
-        # ── Full repo deletion ───────────────────────────────────
+        # -- Full repo deletion -----------------------------------
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
             raise HTTPException(status_code = 404, detail = "No revisions found for model")

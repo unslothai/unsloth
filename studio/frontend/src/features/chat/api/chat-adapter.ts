@@ -224,7 +224,7 @@ async function resolveUseAdapter(
     if (!thread?.pairId) {
       return undefined;
     }
-    // model1/model2 threads don't use the adapter toggle — each side
+    // model1/model2 threads don't use the adapter toggle -- each side
     // loads its own model via /api/inference/load before generation.
     if (thread.modelType === "model1" || thread.modelType === "model2") {
       return undefined;
@@ -357,7 +357,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       }
     }
 
-    // No cached models found — try downloading a small default GGUF
+    // No cached models found -- try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
       description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
@@ -463,7 +463,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
       const useAdapter = await resolveUseAdapter(unstable_threadId);
 
-      // ── Audio model path (non-streaming) ─────────────────────
+      // -- Audio model path (non-streaming) ---------------------
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
@@ -552,7 +552,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
-      // Tool call content parts — accumulated and yielded cumulatively.
+      // Tool call content parts -- accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;

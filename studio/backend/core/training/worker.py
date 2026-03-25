@@ -5,7 +5,7 @@
 Training subprocess entry point.
 
 Each training job runs in a fresh subprocess (mp.get_context("spawn")).
-This gives us a clean Python interpreter with no stale module state —
+This gives us a clean Python interpreter with no stale module state --
 solving the transformers version-switching problem completely.
 
 Pattern follows core/data_recipe/jobs/worker.py.
@@ -65,7 +65,7 @@ def run_training_process(
     stop_queue: Any,
     config: dict,
 ) -> None:
-    """Subprocess entrypoint. Fresh Python — no stale module state.
+    """Subprocess entrypoint. Fresh Python -- no stale module state.
 
     Args:
         event_queue: mp.Queue for sending progress/status/error events to parent.
@@ -90,7 +90,7 @@ def run_training_process(
 
     model_name = config["model_name"]
 
-    # ── 1. Activate correct transformers version BEFORE any ML imports ──
+    # -- 1. Activate correct transformers version BEFORE any ML imports --
     try:
         _activate_transformers_version(model_name)
     except Exception as exc:
@@ -104,7 +104,7 @@ def run_training_process(
         )
         return
 
-    # ── 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models ──
+    # -- 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models --
     # Some newer architectures (e.g. NemotronH) have config parsing bugs in
     # transformers that require trust_remote_code=True as a workaround.
     # Only auto-enable for unsloth/* prefixed models (trusted source).
@@ -121,7 +121,7 @@ def run_training_process(
             model_name,
         )
 
-    # ── 1b. Auto-install mamba-ssm for SSM/hybrid models (NemotronH, Falcon-H1) ──
+    # -- 1b. Auto-install mamba-ssm for SSM/hybrid models (NemotronH, Falcon-H1) --
     _SSM_MODEL_SUBSTRINGS = ("nemotron_h", "nemotron-3-nano", "falcon_h1", "falcon-h1")
     if any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
         try:
@@ -130,7 +130,7 @@ def run_training_process(
             logger.info("mamba-ssm already installed")
         except ImportError:
             logger.info(
-                "SSM model detected — installing mamba-ssm and causal-conv1d (this may take several minutes)..."
+                "SSM model detected -- installing mamba-ssm and causal-conv1d (this may take several minutes)..."
             )
             _send_status(
                 event_queue, "Installing mamba-ssm (first time only, ~7 min)..."
@@ -161,7 +161,7 @@ def run_training_process(
                     logger.info("Installed %s successfully", _pkg)
             logger.info("mamba-ssm installation complete")
 
-    # ── 1c. Set fork start method so dataset.map() can multiprocess ──
+    # -- 1c. Set fork start method so dataset.map() can multiprocess --
     # The parent launched us via spawn (clean process), but the compiled
     # SFTTrainer checks get_start_method() and disables num_proc if not "fork".
     # Linux only: fork is the default start method and is safe here (no CUDA
@@ -176,20 +176,20 @@ def run_training_process(
         except RuntimeError:
             pass  # Already set
 
-    # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # -- 1c. On Windows, check Triton availability (must be before import torch) --
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
 
-            logger.info("Triton available — torch.compile enabled")
+            logger.info("Triton available -- torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
             logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
+                "Triton not found on Windows -- torch.compile disabled. "
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 2. Now import ML libraries (fresh in this clean process) ──
+    # -- 2. Now import ML libraries (fresh in this clean process) --
     try:
         _send_status(event_queue, "Importing Unsloth...")
 
@@ -219,7 +219,7 @@ def run_training_process(
         )
         return
 
-    # ── 2b. EMBEDDING MODEL FAST-PATH ──
+    # -- 2b. EMBEDDING MODEL FAST-PATH --
     # Embedding models use a completely different pipeline (FastSentenceTransformer
     # + SentenceTransformerTrainer + MultipleNegativesRankingLoss) so we branch
     # early and handle the entire flow in a self-contained function.
@@ -237,7 +237,7 @@ def run_training_process(
             )
         return
 
-    # ── 3. Create a fresh trainer instance ──
+    # -- 3. Create a fresh trainer instance --
     trainer = UnslothTrainer()
 
     # Wire up progress callback → event_queue
@@ -289,7 +289,7 @@ def run_training_process(
     stop_thread = threading.Thread(target = _poll_stop, daemon = True)
     stop_thread.start()
 
-    # ── 4. Execute the training pipeline ──
+    # -- 4. Execute the training pipeline --
     # Order: detect → dataset → model → prepare → train
     # Dataset processing (including LLM-assisted detection) runs BEFORE model
     # loading so both never occupy VRAM at the same time.
@@ -297,7 +297,7 @@ def run_training_process(
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
 
-        # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
+        # -- 4a. Lightweight detection + tokenizer (no VRAM) --
         _send_status(event_queue, "Detecting model type...")
         trainer.pre_detect_and_load_tokenizer(
             model_name = model_name,
@@ -311,7 +311,7 @@ def run_training_process(
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
 
-        # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
+        # -- 4b. Load and format dataset (LLM helper may use VRAM briefly) --
         _send_status(event_queue, "Loading and formatting dataset...")
         hf_dataset = config.get("hf_dataset", "")
         dataset_result = trainer.load_and_format_dataset(
@@ -385,7 +385,7 @@ def run_training_process(
                 )
             return
 
-        # ── Start tqdm monitor early so it captures download + tokenization bars ──
+        # -- Start tqdm monitor early so it captures download + tokenization bars --
         import threading as _th
 
         _tqdm_stop = _th.Event()
@@ -413,7 +413,7 @@ def run_training_process(
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
 
-        # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
+        # -- 4c. Load training model (uses VRAM -- dataset already formatted) --
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
             model_name = model_name,
@@ -442,7 +442,7 @@ def run_training_process(
                 )
             return
 
-        # ── 4d. Prepare model (LoRA or full finetuning) ──
+        # -- 4d. Prepare model (LoRA or full finetuning) --
         if use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
@@ -510,7 +510,7 @@ def run_training_process(
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
-        # Start training (directly — no inner thread, we ARE the subprocess)
+        # Start training (directly -- no inner thread, we ARE the subprocess)
         dataset_display = (
             config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         )
@@ -598,7 +598,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     """Self-contained embedding model training pipeline.
 
     Uses FastSentenceTransformer + SentenceTransformerTrainer +
-    MultipleNegativesRankingLoss — completely separate from the
+    MultipleNegativesRankingLoss -- completely separate from the
     LLM/VLM/audio paths in UnslothTrainer.
 
     Mirrors the pattern from the reference embedding notebooks:
@@ -612,7 +612,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     model_name = config["model_name"]
     training_start_time = time.time()
 
-    # ── 1. Import embedding-specific libraries ──
+    # -- 1. Import embedding-specific libraries --
     _send_status(event_queue, "Importing embedding libraries...")
     try:
         from unsloth import FastSentenceTransformer, is_bfloat16_supported
@@ -637,7 +637,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    # ── Stop signal handling ──
+    # -- Stop signal handling --
     _should_stop = False
     _save_on_stop = True
 
@@ -662,7 +662,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     stop_thread = threading.Thread(target = _poll_stop, daemon = True)
     stop_thread.start()
 
-    # ── 2. Load model ──
+    # -- 2. Load model --
     _send_status(event_queue, "Loading embedding model...")
     try:
         hf_token = config.get("hf_token", "")
@@ -692,7 +692,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
 
-    # ── 3. Apply LoRA ──
+    # -- 3. Apply LoRA --
     if use_lora:
         _send_status(event_queue, "Configuring LoRA adapters (FEATURE_EXTRACTION)...")
         try:
@@ -732,7 +732,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
 
-    # ── 4. Load dataset ──
+    # -- 4. Load dataset --
     _send_status(event_queue, "Loading dataset...")
     try:
         hf_dataset = config.get("hf_dataset", "")
@@ -750,7 +750,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
             )
         elif local_datasets:
-            # Load from local file(s) — mirrors the non-embedding pipeline's
+            # Load from local file(s) -- mirrors the non-embedding pipeline's
             # directory handling so recipe outputs (parquet-files/) work.
             all_files: list[str] = []
             for dataset_file in local_datasets:
@@ -833,10 +833,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
 
-    # ── 5. Create loss function ──
+    # -- 5. Create loss function --
     loss = MultipleNegativesRankingLoss(model)
 
-    # ── 6. Build training arguments ──
+    # -- 6. Build training arguments --
     _send_status(event_queue, "Configuring training...")
     try:
         lr_value = float(config.get("learning_rate", "2e-4"))
@@ -902,7 +902,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     args = SentenceTransformerTrainingArguments(**training_args_kwargs)
 
-    # ── 7. Calculate total steps for progress tracking ──
+    # -- 7. Calculate total steps for progress tracking --
     if max_steps_val and max_steps_val > 0:
         total_steps = max_steps_val
     else:
@@ -911,7 +911,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         steps_per_epoch = max(len_dataloader // gradient_accumulation_steps, 1)
         total_steps = steps_per_epoch * effective_epochs
 
-    # ── 8. Create progress callback ──
+    # -- 8. Create progress callback --
     class _EmbeddingProgressCallback(TrainerCallback):
         """Sends training progress events to the parent process via event_queue."""
 
@@ -952,7 +952,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 control.should_training_stop = True
                 return control
 
-    # ── 9. Create trainer and train ──
+    # -- 9. Create trainer and train --
     _send_status(event_queue, "Starting embedding training...")
     try:
         trainer = SentenceTransformerTrainer(
@@ -975,7 +975,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    # ── 10. Save model ──
+    # -- 10. Save model --
     if _should_stop and not _save_on_stop:
         event_queue.put(
             {
@@ -1004,7 +1004,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    # ── 11. Done ──
+    # -- 11. Done --
     event_queue.put(
         {
             "type": "complete",

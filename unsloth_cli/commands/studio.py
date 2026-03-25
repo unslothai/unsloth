@@ -31,7 +31,7 @@ def _studio_venv_python() -> Optional[Path]:
 def _find_run_py() -> Optional[Path]:
     """Find studio/backend/run.py.
 
-    No CWD dependency — works from any directory.
+    No CWD dependency -- works from any directory.
     Since studio/ is now a proper package (has __init__.py), it lives in
     site-packages after pip install, right next to unsloth_cli/.
     """
@@ -52,7 +52,7 @@ def _find_run_py() -> Optional[Path]:
 def _find_setup_script() -> Optional[Path]:
     """Find studio/setup.sh or studio/setup.ps1.
 
-    No CWD dependency — works from any directory.
+    No CWD dependency -- works from any directory.
     """
     name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
     # 1. Relative to __file__ (site-packages or editable repo root)
@@ -69,7 +69,7 @@ def _find_setup_script() -> Optional[Path]:
     return None
 
 
-# ── unsloth studio (server) ──────────────────────────────────────────
+# -- unsloth studio (server) ------------------------------------------
 
 
 @studio_app.callback(invoke_without_command = True)
@@ -116,7 +116,7 @@ def studio_default(
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
-                    # Child has its own signal handler — let it finish
+                    # Child has its own signal handler -- let it finish
                     rc = proc.wait()
                 if rc != 0:
                     typer.echo(
@@ -166,7 +166,7 @@ def studio_default(
         typer.echo("\nShutting down...")
 
 
-# ── unsloth studio setup ─────────────────────────────────────────────
+# -- unsloth studio setup ---------------------------------------------
 
 
 @studio_app.command()
@@ -188,7 +188,7 @@ def setup():
         raise typer.Exit(result.returncode)
 
 
-# ── unsloth studio reset-password ────────────────────────────────────
+# -- unsloth studio reset-password ------------------------------------
 
 
 @studio_app.command("reset-password")

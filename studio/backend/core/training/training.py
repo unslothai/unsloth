@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Training backend — subprocess orchestrator.
+Training backend -- subprocess orchestrator.
 
 Each training job runs in a fresh subprocess (mp.get_context("spawn")),
 solving the transformers version-switching problem. The old in-process
@@ -38,7 +38,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress — kept here so the parent process
+    """Mirror of trainer.TrainingProgress -- kept here so the parent process
     never needs to import the heavy ML modules."""
 
     epoch: float = 0
@@ -59,7 +59,7 @@ class TrainingProgress:
 
 class TrainingBackend:
     """
-    Training orchestration backend — subprocess-based.
+    Training orchestration backend -- subprocess-based.
     Launches a fresh subprocess per training job, communicates via mp.Queue.
     """
 
@@ -321,7 +321,7 @@ class TrainingBackend:
         return None
 
     # ------------------------------------------------------------------
-    # Compatibility shims — routes/training.py accesses these
+    # Compatibility shims -- routes/training.py accesses these
     # ------------------------------------------------------------------
 
     class _TrainerShim:
@@ -369,11 +369,11 @@ class TrainingBackend:
                 self._handle_event(event)
                 continue
 
-            # No event — check if process is still alive
+            # No event -- check if process is still alive
             if self._proc.is_alive():
                 continue
 
-            # Process exited — drain remaining events
+            # Process exited -- drain remaining events
             for e in self._drain_queue(self._event_queue):
                 self._handle_event(e)
 
@@ -610,7 +610,7 @@ class TrainingBackend:
         checkpoint on disk. This is a no-op placeholder.
         """
         logger.info(
-            "_transfer_to_inference_backend: subprocess training — "
+            "_transfer_to_inference_backend: subprocess training -- "
             "model must be loaded from disk (output_dir=%s)",
             self._output_dir,
         )

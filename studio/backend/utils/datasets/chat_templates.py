@@ -75,8 +75,8 @@ def get_tokenizer_chat_template(tokenizer, model_name):
         if has_chat_template:
             logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
         else:
-            # Base model with no chat template — apply default ChatML
-            logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
+            # Base model with no chat template -- apply default ChatML
+            logger.info(f"📝 No chat template found -- applying default ChatML template (base model)")
             try:
                 tokenizer = get_chat_template(
                     tokenizer,
