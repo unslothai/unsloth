@@ -435,11 +435,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       }
 
+      // Re-read store after potential auto-load so tool flags are current
+      const currentRuntime = useChatRuntimeStore.getState();
       const {
         supportsTools,
         toolsEnabled,
         codeToolsEnabled,
-      } = runtime;
+      } = currentRuntime;
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
