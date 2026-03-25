@@ -87,7 +87,7 @@ def generate_with_grammar(
         grammar_str = JSON_ARR_GBNF
 
     grammar = IncrementalGrammarConstraint(
-        grammar_str, start_rule_name=start_rule, tokenizer=tokenizer
+        grammar_str, start_rule_name = start_rule, tokenizer = tokenizer
     )
     grammar_processor = GrammarConstrainedLogitsProcessor(grammar)
 
