@@ -280,7 +280,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: hfToken,
-              max_seq_length: 4096,
+              max_seq_length: 0,
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
@@ -370,7 +370,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-GGUF",
         hf_token: hfToken,
-        max_seq_length: 4096,
+        max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",

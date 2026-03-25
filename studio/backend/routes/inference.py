@@ -19,6 +19,23 @@ import asyncio
 import threading
 
 
+import re as _re
+
+def _friendly_error(exc: Exception) -> str:
+    """Extract a user-friendly message from known llama-server errors."""
+    msg = str(exc)
+    m = _re.search(r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)", msg)
+    if m:
+        return (
+            f"Message too long: {m.group(1)} tokens exceeds the {m.group(2)}-token "
+            f"context window. Try increasing the Context Length in Model settings, "
+            f"or shorten the conversation."
+        )
+    if "Lost connection to llama-server" in msg:
+        return "Lost connection to the model server. It may have crashed -- try reloading the model."
+    return "An internal error occurred"
+
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -550,7 +567,7 @@ async def generate_stream(
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
-            yield f"data: {json.dumps({'error': 'An internal error occurred'})}\n\n"
+            yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
 
     return StreamingResponse(
         stream(),
@@ -944,7 +961,7 @@ async def openai_chat_completions(
                         logger.error(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
-                        yield f"data: {json.dumps({'error': {'message': 'An internal error occurred', 'type': 'server_error'}})}\n\n"
+                        yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
 
                 return StreamingResponse(
                     audio_input_stream(),
@@ -1176,7 +1193,7 @@ async def openai_chat_completions(
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     error_chunk = {
                         "error": {
-                            "message": "An internal error occurred",
+                            "message": _friendly_error(e),
                             "type": "server_error",
                         },
                     }
@@ -1314,7 +1331,7 @@ async def openai_chat_completions(
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
                     error_chunk = {
                         "error": {
-                            "message": "An internal error occurred",
+                            "message": _friendly_error(e),
                             "type": "server_error",
                         },
                     }
@@ -1495,7 +1512,7 @@ async def openai_chat_completions(
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 error_chunk = {
                     "error": {
-                        "message": "An internal error occurred",
+                        "message": _friendly_error(e),
                         "type": "server_error",
                     },
                 }

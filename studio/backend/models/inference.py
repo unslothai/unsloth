@@ -22,7 +22,7 @@ class LoadRequest(BaseModel):
         None, description = "HuggingFace token for gated models"
     )
     max_seq_length: int = Field(
-        4096, ge = 128, le = 1048576, description = "Maximum sequence length"
+        0, ge = 0, le = 1048576, description = "Maximum sequence length (0 = model default for GGUF)"
     )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
