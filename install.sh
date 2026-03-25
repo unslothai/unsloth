@@ -767,7 +767,7 @@ if [ "$_MIGRATED" = true ]; then
     echo "==> Upgrading unsloth in migrated environment..."
     uv pip install --python "$_VENV_PY" \
         --reinstall-package unsloth --reinstall-package unsloth-zoo \
-        "unsloth>=2026.3.12" unsloth-zoo
+        "unsloth>=2026.3.14" unsloth-zoo
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
@@ -781,7 +781,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.3.12" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
@@ -792,7 +792,7 @@ else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.12" --torch-backend=auto
+        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.14" --torch-backend=auto
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
