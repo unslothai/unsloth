@@ -1,5 +1,5 @@
 # Torch AO overrides (installed with --force-reinstall --no-cache-dir)
-torchao==0.14.0
+torchao==0.16.0
 pytorch_tokenizers
 
 # Kernel packages
