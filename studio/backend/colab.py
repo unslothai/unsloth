@@ -29,14 +29,31 @@ def _pip_install_backend_deps() -> None:
 
     Used on Colab when the Studio venv does not exist (install.sh was not
     run).  Reads the requirements from studio.txt next to this file.
+
+    Strict ``==`` version pins are relaxed to ``>=`` so we do not clobber
+    Colab's pre-installed packages (e.g. huggingface-hub, datasets) with
+    versions that are incompatible with its bundled transformers.
     """
+    import re
     import subprocess
     req_file = Path(__file__).parent / "requirements" / "studio.txt"
     if not req_file.exists():
         return
+
+    packages = []
+    for line in req_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Relax exact pins (==) to >= so pip keeps existing compatible versions
+        line = re.sub(r"==", ">=", line)
+        packages.append(line)
+
+    if not packages:
+        return
     print("Installing Studio backend dependencies ...")
     subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
+        [sys.executable, "-m", "pip", "install", "-q"] + packages,
     )
 
 

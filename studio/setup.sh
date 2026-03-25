@@ -295,9 +295,12 @@ VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
 _COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
-        # On Colab there is no Studio venv -- install backend deps into system Python
+        # On Colab there is no Studio venv -- install backend deps into system Python.
+        # Relax strict == pins to >= so we don't clobber Colab's pre-installed
+        # packages (huggingface-hub, datasets) with incompatible versions.
         echo "   Colab detected, installing Studio backend dependencies..."
-        pip install -q -r "$SCRIPT_DIR/backend/requirements/studio.txt" 2>/dev/null || true
+        sed 's/==/>=/' "$SCRIPT_DIR/backend/requirements/studio.txt" \
+            | pip install -q -r /dev/stdin 2>/dev/null || true
         _COLAB_NO_VENV=true
     else
         echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
