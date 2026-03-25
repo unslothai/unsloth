@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useTrainingRuntimeStore } from "@/features/training";
+import type { TrainingSeriesPoint } from "@/features/training";
 import { type ReactElement, Suspense, lazy, useMemo } from "react";
 
 const ChartsContent = lazy(() =>
@@ -16,42 +16,49 @@ const SKELETON_KEYS = [
   "chart-skeleton-4",
 ];
 
-export function ChartsSection(): ReactElement | null {
-  const currentStep = useTrainingRuntimeStore((state) => state.currentStep);
-  const totalSteps = useTrainingRuntimeStore((state) => state.totalSteps);
-  const isTraining = useTrainingRuntimeStore((state) => state.isTrainingRunning);
-  const evalEnabled = useTrainingRuntimeStore((state) => state.evalEnabled);
-  const lossHistoryRaw = useTrainingRuntimeStore((state) => state.lossHistory);
-  const lrHistoryRaw = useTrainingRuntimeStore((state) => state.lrHistory);
-  const gradNormHistoryRaw = useTrainingRuntimeStore(
-    (state) => state.gradNormHistory,
-  );
-  const evalLossHistoryRaw = useTrainingRuntimeStore(
-    (state) => state.evalLossHistory,
-  );
+interface ChartsSectionProps {
+  currentStep: number;
+  totalSteps: number;
+  isTraining: boolean;
+  evalEnabled: boolean;
+  lossHistory: TrainingSeriesPoint[];
+  lrHistory: TrainingSeriesPoint[];
+  gradNormHistory: TrainingSeriesPoint[];
+  evalLossHistory: TrainingSeriesPoint[];
+}
 
+export function ChartsSection({
+  currentStep,
+  totalSteps,
+  isTraining,
+  evalEnabled,
+  lossHistory,
+  lrHistory,
+  gradNormHistory,
+  evalLossHistory,
+}: ChartsSectionProps): ReactElement | null {
   const series = useMemo(
     () => ({
       currentStep,
       totalSteps,
-      lossHistory: lossHistoryRaw.map((point) => ({
+      lossHistory: lossHistory.map((point) => ({
         step: point.step,
         loss: point.value,
       })),
-      lrHistory: lrHistoryRaw.map((point) => ({
+      lrHistory: lrHistory.map((point) => ({
         step: point.step,
         lr: point.value,
       })),
-      gradNormHistory: gradNormHistoryRaw.map((point) => ({
+      gradNormHistory: gradNormHistory.map((point) => ({
         step: point.step,
         gradNorm: point.value,
       })),
-      evalLossHistory: evalLossHistoryRaw.map((point) => ({
+      evalLossHistory: evalLossHistory.map((point) => ({
         step: point.step,
         loss: point.value,
       })),
     }),
-    [currentStep, evalLossHistoryRaw, gradNormHistoryRaw, lossHistoryRaw, lrHistoryRaw, totalSteps],
+    [currentStep, evalLossHistory, gradNormHistory, lossHistory, lrHistory, totalSteps],
   );
 
   if (

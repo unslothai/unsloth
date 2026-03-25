@@ -242,7 +242,7 @@ def run_training_process(
 
     # Wire up progress callback → event_queue
     def _on_progress(progress: TrainingProgress):
-        has_train_loss = progress.step >= 0 and progress.loss > 0
+        has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
         if has_train_loss or has_eval_loss:
             event_queue.put(
@@ -918,7 +918,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         def on_log(self, args, state, control, logs = None, **kwargs):
             if not logs:
                 return
-            loss_value = logs.get("loss", logs.get("train_loss", 0.0))
+            loss_value = logs.get("loss", logs.get("train_loss", None))
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time
@@ -934,7 +934,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     "step": current_step,
                     "epoch": round(state.epoch, 2) if state.epoch else 0,
                     "loss": loss_value,
-                    "learning_rate": logs.get("learning_rate", 0.0),
+                    "learning_rate": logs.get("learning_rate", None),
                     "total_steps": total_steps,
                     "elapsed_seconds": elapsed,
                     "eta_seconds": eta,
