@@ -397,7 +397,10 @@ if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
     echo "⚠️  Failed to resolve an installable prebuilt llama.cpp tag via $_HELPER_RELEASE_REPO"
     cat "$_RESOLVE_LLAMA_LOG" >&2 || true
     set +e
-    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" 2>/dev/null)"
+    # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
+    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
+    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
+    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
     _RESOLVE_UPSTREAM_STATUS=$?
     set -e
     if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
