@@ -333,6 +333,7 @@ def run_server(
 
     _write_pid_file()
     import atexit
+
     atexit.register(_remove_pid_file)
 
     if not silent:
