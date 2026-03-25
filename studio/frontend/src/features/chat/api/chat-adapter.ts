@@ -442,12 +442,32 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           Boolean(message),
         );
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+      // Build system prompt with memory injection
+      let systemContent =
+        typeof params.systemPrompt === "string" ? params.systemPrompt.trim() : "";
+      try {
+        const { db: chatDb } = await import("../db");
+        const allMemories = await chatDb.memory.toArray();
+        const enabledMemories = allMemories.filter(
+          (m: { enabled: boolean }) => m.enabled,
+        );
+        if (enabledMemories.length > 0) {
+          const memoryBlock =
+            "[Memory]\n" +
+            enabledMemories
+              .map((m: { content: string }) => `- ${m.content}`)
+              .join("\n");
+          systemContent = systemContent
+            ? `${memoryBlock}\n\n${systemContent}`
+            : memoryBlock;
+        }
+      } catch {
+        // Memory table may not exist yet during migration
+      }
+      if (systemContent) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: systemContent,
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);
