@@ -28,7 +28,11 @@ import urllib.request
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from filelock import FileLock, Timeout as FileLockTimeout
+try:
+    from filelock import FileLock, Timeout as FileLockTimeout
+except ImportError:
+    FileLock = None
+    FileLockTimeout = None
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -1922,19 +1926,18 @@ def copy_globs(
 
 
 def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
-    raw_base = f"https://raw.githubusercontent.com/ggml-org/llama.cpp/{llama_tag}"
-    source_url = f"{raw_base}/convert_hf_to_gguf.py"
-    data = download_bytes(
-        source_url, progress_label = f"Downloading {download_label_from_url(source_url)}"
-    )
-    if not data:
-        raise RuntimeError(f"downloaded empty converter script from {source_url}")
-    if b"import " not in data and b"def " not in data and b"#!/" not in data:
+    canonical = install_dir / "convert_hf_to_gguf.py"
+    if not canonical.exists():
         raise RuntimeError(
-            f"downloaded converter script did not look like Python source: {source_url}"
+            "hydrated source tree did not include convert_hf_to_gguf.py"
         )
-    for file_name in ("convert_hf_to_gguf.py", "convert-hf-to-gguf.py"):
-        atomic_write_bytes(install_dir / file_name, data)
+    legacy = install_dir / "convert-hf-to-gguf.py"
+    if legacy.exists() or legacy.is_symlink():
+        legacy.unlink()
+    try:
+        legacy.symlink_to("convert_hf_to_gguf.py")
+    except OSError:
+        shutil.copy2(canonical, legacy)
 
 
 def extracted_archive_root(extract_dir: Path) -> Path:
@@ -2111,6 +2114,9 @@ def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
 
 @contextmanager
 def install_lock(lock_path: Path) -> Iterator[None]:
+    if FileLock is None:
+        yield
+        return
     lock_path.parent.mkdir(parents = True, exist_ok = True)
     try:
         with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
