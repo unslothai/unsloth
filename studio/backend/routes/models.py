@@ -291,7 +291,11 @@ async def list_local_models(
     List local model candidates from custom models dir, HF cache,
     legacy Unsloth HF cache, and LM Studio directories.
     """
-    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
+    from utils.paths import (
+        legacy_hf_cache_dir,
+        hf_default_cache_dir,
+        lmstudio_model_dirs,
+    )
 
     # Resolve all scan directories up front.
     hf_cache_dir = _resolve_hf_cache_dir()
@@ -335,7 +339,11 @@ async def list_local_models(
             local_models += _scan_hf_cache(legacy_hf)
 
         # Scan HF system default cache (may differ when env vars are overridden)
-        if hf_default.is_dir() and hf_default.resolve() != hf_cache_dir.resolve() and hf_default.resolve() != legacy_hf.resolve():
+        if (
+            hf_default.is_dir()
+            and hf_default.resolve() != hf_cache_dir.resolve()
+            and hf_default.resolve() != legacy_hf.resolve()
+        ):
             local_models += _scan_hf_cache(hf_default)
 
         # Scan LM Studio directories
@@ -951,6 +959,7 @@ def _all_hf_cache_scans():
     try:
         # Resolve the active cache dir so we can dedup
         from huggingface_hub.constants import HF_HUB_CACHE
+
         seen.add(str(Path(HF_HUB_CACHE).resolve()))
     except Exception:
         pass
