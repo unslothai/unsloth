@@ -9,6 +9,7 @@ set -e
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
+TAURI_MODE=false
 _next_is_package=false
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
@@ -19,6 +20,7 @@ for arg in "$@"; do
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
+        --tauri) TAURI_MODE=true ;;
     esac
 done
 
@@ -26,6 +28,13 @@ if [ "$_next_is_package" = true ]; then
     echo "❌ ERROR: --package requires an argument." >&2
     exit 1
 fi
+
+# ── Tauri structured output ──
+tauri_log() {
+    if [ "$TAURI_MODE" = true ]; then
+        echo "[TAURI:$1] $2"
+    fi
+}
 
 PYTHON_VERSION="3.13"
 STUDIO_HOME="$HOME/.unsloth/studio"
@@ -75,6 +84,12 @@ _smart_apt_install() {
 
     if [ -z "$_STILL_MISSING" ]; then
         return 0
+    fi
+
+    # In Tauri mode, report needed packages and exit — Rust handles elevation
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "NEED_SUDO" "$_STILL_MISSING"
+        exit 2
     fi
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
@@ -555,6 +570,7 @@ echo "========================================="
 echo ""
 
 # ── Detect platform ──
+tauri_log "STEP" "Detecting platform"
 OS="linux"
 if [ "$(uname)" = "Darwin" ]; then
     OS="macos"
@@ -566,6 +582,7 @@ echo "==> Platform: $OS"
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+tauri_log "STEP" "Checking system dependencies"
 MISSING=""
 
 command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
@@ -630,6 +647,7 @@ else
 fi
 
 # ── Install uv ──
+tauri_log "STEP" "Installing uv package manager"
 UV_MIN_VERSION="0.7.14"
 
 version_ge() {
@@ -684,6 +702,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
 fi
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
+tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
 
 _MIGRATED=false
@@ -760,6 +779,7 @@ get_torch_index_url() {
 TORCH_INDEX_URL=$(get_torch_index_url)
 
 # ── Install unsloth directly into the venv (no activation needed) ──
+tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
@@ -778,6 +798,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
         --index-url "$TORCH_INDEX_URL"
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    tauri_log "STEP" "Installing Unsloth"
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         uv pip install --python "$_VENV_PY" \
@@ -790,6 +811,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
+    tauri_log "STEP" "Installing Unsloth"
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.14" --torch-backend=auto
@@ -801,6 +823,7 @@ else
 fi
 
 # ── Run studio setup ──
+tauri_log "STEP" "Running Studio setup"
 # When --local, use the repo's own setup.sh directly.
 # Otherwise, find it inside the installed package.
 SETUP_SH=""
@@ -872,6 +895,12 @@ case ":$PATH:" in
         export PATH="$_LOCAL_BIN:$PATH"
         ;;
 esac
+
+# ── Tauri mode: done, skip shortcuts and auto-launch ──
+if [ "$TAURI_MODE" = true ]; then
+    tauri_log "DONE" ""
+    exit 0
+fi
 
 create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 
