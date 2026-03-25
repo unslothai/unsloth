@@ -638,17 +638,7 @@ def get_visible_gpu_count() -> int:
 
 
 def apply_gpu_ids(gpu_ids) -> None:
-    """
-    Restrict this process to the given GPU IDs by setting CUDA_VISIBLE_DEVICES.
-
-    Must be called **before** any ML imports (torch, unsloth, etc.) in a
-    fresh subprocess.  Busts the cached ``_visible_gpu_count`` so that
-    ``get_visible_gpu_count()`` / ``get_device_map()`` see the new value.
-
-    Args:
-        gpu_ids: List of GPU indices (e.g. [0, 2, 3]), a comma-separated
-                 string ("0,2,3"), or None (no-op).
-    """
+    # To select subset of GPUs for the training/inference process
     if gpu_ids is None:
         return
 
@@ -666,12 +656,6 @@ def apply_gpu_ids(gpu_ids) -> None:
 
 
 def get_device_map() -> str:
-    """
-    Return the best device_map for model loading.
-
-    Returns "balanced" when multiple CUDA GPUs are visible (spreads layers
-    across GPUs), otherwise "sequential" (single GPU, MLX, CPU).
-    """
     device = get_device()
     if device == DeviceType.CUDA and get_visible_gpu_count() > 1:
         return "balanced"
