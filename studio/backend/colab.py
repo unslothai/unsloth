@@ -21,6 +21,7 @@ import _platform_compat  # noqa: F401
 def _is_colab() -> bool:
     """Detect Google Colab by checking for COLAB_ prefixed env vars."""
     import os
+
     return any(k.startswith("COLAB_") for k in os.environ)
 
 
@@ -31,6 +32,7 @@ def _pip_install_backend_deps() -> None:
     run).  Reads the requirements from studio.txt next to this file.
     """
     import subprocess
+
     req_file = Path(__file__).parent / "requirements" / "studio.txt"
     if not req_file.exists():
         return
