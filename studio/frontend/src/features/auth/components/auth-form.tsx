@@ -10,6 +10,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
+import { usePlatformStore } from "@/config/env";
 import { refreshSession } from "../api";
 
 // Bootstrap credentials injected into index.html by the backend
@@ -292,7 +293,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       );
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Auth failed.");
+      let msg = err instanceof Error ? err.message : "Auth failed.";
+      if (msg.includes("unsloth studio reset-password") && usePlatformStore.getState().deviceType === "windows") {
+        msg = msg.replace(
+          "unsloth studio reset-password",
+          ".\\unsloth_studio\\Scripts\\unsloth.exe studio reset-password",
+        );
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }

@@ -454,7 +454,8 @@ export function HubModelPicker({
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      .filter((id) => !chatOnly || isGgufRepo(id));
+      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
     const hub: string[] = [];
@@ -498,7 +499,8 @@ export function HubModelPicker({
     return results
       .map((result) => result.id)
       .filter((id) => !recommendedSet.has(id))
-      .filter((id) => !chatOnly || isGgufRepo(id));
+      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
   }, [recommendedSet, results, showHfSection, chatOnly]);
 
   const metricsById = useMemo(

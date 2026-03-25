@@ -14,7 +14,7 @@ Run and train AI models with a unified local interface.
   <a href="#-quickstart">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
   <a href="https://unsloth.ai/docs">Documentation</a> •
-  <a href="https://discord.com/invite/unsloth">Discord</a>
+  <a href="https://www.reddit.com/r/unsloth/">Reddit</a>
 </p>
  <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/studio%20github%20landscape%20colab%20display.png" style="max-width: 100%; margin-bottom: 0;"></a>
@@ -32,12 +32,12 @@ Unsloth provides several key features for both inference and training:
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](models/tutorials/devstral-how-to-run-and-fine-tune.md), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
 * Upload images, audio, PDFs, code, DOCX and more file types to chat with.
 ### Training
-* Train **500+ models** up to **2x faster** with up to **70% less VRAM**, with no accuracy loss.
+* Train and RL **500+ models** up to **2x faster** with up to **70% less VRAM**, with no accuracy loss.
 * Custom Triton and mathematical **kernels**. See some collabs we did with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
 * **Data Recipes**: [Auto-create datasets](https://unsloth.ai/docs/new/studio/data-recipe) from **PDF, CSV, DOCX** etc. Edit data in a visual-node workflow.
-* Supports full fine-tuning, pretraining, 4-bit, 16-bit and, FP8 training.
+* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)** (RL): The most efficient [RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide) library, using **80% less VRAM** for GRPO, [FP8](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) etc.
+* Supports full fine-tuning, RL, pretraining, 4-bit, 16-bit and, FP8 training.
 * **Observability**: Monitor training live, track loss and GPU usage and customize graphs.
-* **Reinforcement Learning**: The most efficient [RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide) library, using **80% less VRAM** for GRPO, [FP8](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) etc.
 * [Multi-GPU](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth) training is supported, with major improvements coming soon.
 
 ## ⚡ Quickstart
@@ -49,7 +49,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **CPU:** Supported for Chat and Data Recipes currently
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Currently supports chat and Data Recipes. **MLX training** is coming very soon
-* **AMD:** Chat works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is coming soon.
+* **AMD:** Chat + Data works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is out soon.
 * **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
@@ -59,7 +59,6 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 If you don't have `curl`, use `wget`. Launch after setup via:
 ```bash
-source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
@@ -69,7 +68,7 @@ irm https://unsloth.ai/install.ps1 | iex
 ```
 Launch after setup via:
 ```powershell
-& .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Docker
@@ -84,60 +83,52 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 
 #### macOS, Linux, WSL developer installs:
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv unsloth_studio --python 3.13
-source unsloth_studio/bin/activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+./install.sh --local
 unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update --local
 ```
 
 #### Windows PowerShell developer installs:
 ```powershell
-winget install -e --id Python.Python.3.13
-winget install --id=astral-sh.uv  -e
-uv venv unsloth_studio --python 3.13
-.\unsloth_studio\Scripts\activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass .\install.ps1 --local
 unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update --local
 ```
 
 #### Nightly - MacOS, Linux, WSL:
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
-cd unsloth_studio
-uv venv --python 3.13
-source .venv/bin/activate
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+git checkout nightly
+./install.sh --local
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
 ```bash
-cd unsloth_studio
-source .venv/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Nightly - Windows:
 Run in Windows Powershell:
 ```bash
-winget install -e --id Python.Python.3.13
-winget install --id=astral-sh.uv  -e
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
-cd unsloth_studio
-uv venv --python 3.13
-.\.venv\Scripts\activate
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+git checkout nightly
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass .\install.ps1 --local
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
 ```bash
-cd unsloth_studio
-.\.venv\Scripts\activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
@@ -172,8 +163,9 @@ Train for free with our notebooks. Read our [guide](https://unsloth.ai/docs/get-
 |-----------|---------|--------|----------|
 | **Qwen3.5 (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)_Vision.ipynb)               | 1.5x faster | 60% less |
 | **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 2x faster | 70% less |
+| **Qwen3.5 GSPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)_Vision_GRPO.ipynb)               | 2x faster | 70% less |
 | **gpt-oss (20B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-GRPO.ipynb)               | 2x faster | 80% less |
-| **Qwen3: Advanced GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 50% less |
+| **Qwen3: Advanced GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 70% less |
 | **Gemma 3 (4B) Vision** | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3_(4B)-Vision.ipynb)               | 1.7x faster | 60% less |
 | **embeddinggemma (300M)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/EmbeddingGemma_(300M).ipynb)               | 2x faster | 20% less |
 | **Mistral Ministral 3 (3B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Ministral_3_VL_(3B)_Vision.ipynb)               | 1.5x faster | 60% less |
@@ -196,13 +188,13 @@ Train for free with our notebooks. Read our [guide](https://unsloth.ai/docs/get-
 - **FP8 & Vision RL**: You can now do FP8 & VLM GRPO on consumer GPUs. [FP8 Blog](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) • [Vision RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/vision-reinforcement-learning-vlm-rl)
 - **gpt-oss** by OpenAI: Read our [RL blog](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/gpt-oss-reinforcement-learning), [Flex Attention](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/long-context-gpt-oss-training) blog and [Guide](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune).
 
-## 🔗 Links and Resources
+## 💚 Community and Links
 | Type                                                                                                                                      | Links                                                                          |
 | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| <img width="16" src="https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/66e3d80db9971f10a9757c99_Symbol.svg" />  **Discord**                       | [Join Discord server](https://discord.com/invite/unsloth)                          |
 | <img width="15" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />  **r/unsloth Reddit**                       | [Join Reddit community](https://reddit.com/r/unsloth)                          |
 | 📚 **Documentation & Wiki**                                                                                                               | [Read Our Docs](https://unsloth.ai/docs)                                       |
 | <img width="13" src="https://upload.wikimedia.org/wikipedia/commons/0/09/X_(formerly_Twitter)_logo_late_2025.svg" />  **Twitter (aka X)** | [Follow us on X](https://twitter.com/unslothai)                                |
-| 💾 **Installation**                                                                                                                       | [Pip & Docker Install](https://unsloth.ai/docs/get-started/install) |
 | 🔮 **Our Models**                                                                                                                         | [Unsloth Catalog](https://unsloth.ai/docs/get-started/unsloth-model-catalog)   |
 | ✍️ **Blog**                                                                                                                               | [Read our Blogs](https://unsloth.ai/blog)                                      |
 

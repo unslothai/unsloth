@@ -6,7 +6,7 @@
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { CheckIcon, CopyIcon, LoaderIcon, TerminalIcon } from "lucide-react";
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -25,6 +25,15 @@ function truncate(text: string): string {
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+    };
+  }, []);
+
   const copy = useCallback(() => {
     if (copyToClipboard(text)) {
       setCopied(true);
@@ -74,7 +83,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         icon={TerminalIcon}
       />
       <ToolFallbackContent>
-        <div className="flex flex-col px-4">
+        <div className="border-l-2 border-muted-foreground/20 pl-2">
           {isRunning ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <LoaderIcon className="size-3.5 animate-spin" />

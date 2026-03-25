@@ -177,8 +177,8 @@ class TrainingProgress(BaseModel):
     job_id: str = Field(..., description = "Training job identifier")
     step: int = Field(..., description = "Current training step")
     total_steps: int = Field(..., description = "Total training steps")
-    loss: float = Field(..., description = "Current loss value")
-    learning_rate: float = Field(..., description = "Current learning rate")
+    loss: Optional[float] = Field(None, description = "Current loss value")
+    learning_rate: Optional[float] = Field(None, description = "Current learning rate")
     progress_percent: float = Field(
         ..., description = "Progress percentage (0.0 to 100.0)"
     )
@@ -196,3 +196,59 @@ class TrainingProgress(BaseModel):
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )
+
+
+class TrainingRunSummary(BaseModel):
+    """Summary of a training run for list views."""
+
+    id: str
+    status: Literal["running", "completed", "stopped", "error"]
+    model_name: str
+    dataset_name: str
+    started_at: str
+    ended_at: Optional[str] = None
+    total_steps: Optional[int] = None
+    final_step: Optional[int] = None
+    final_loss: Optional[float] = None
+    output_dir: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+    loss_sparkline: Optional[List[float]] = None
+
+
+class TrainingRunListResponse(BaseModel):
+    """Response for listing training runs."""
+
+    runs: List[TrainingRunSummary]
+    total: int
+
+
+class TrainingRunMetrics(BaseModel):
+    """Metrics arrays for a training run, using paired step arrays per metric."""
+
+    step_history: List[int] = Field(default_factory = list)
+    loss_history: List[float] = Field(default_factory = list)
+    loss_step_history: List[int] = Field(default_factory = list)
+    lr_history: List[float] = Field(default_factory = list)
+    lr_step_history: List[int] = Field(default_factory = list)
+    grad_norm_history: List[float] = Field(default_factory = list)
+    grad_norm_step_history: List[int] = Field(default_factory = list)
+    eval_loss_history: List[float] = Field(default_factory = list)
+    eval_step_history: List[int] = Field(default_factory = list)
+    final_epoch: Optional[float] = None
+    final_num_tokens: Optional[int] = None
+
+
+class TrainingRunDetailResponse(BaseModel):
+    """Response for a single training run with config and metrics."""
+
+    run: TrainingRunSummary
+    config: dict
+    metrics: TrainingRunMetrics
+
+
+class TrainingRunDeleteResponse(BaseModel):
+    """Response for deleting a training run."""
+
+    status: str
+    message: str
