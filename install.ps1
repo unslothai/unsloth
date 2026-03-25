@@ -114,11 +114,8 @@ function Get-CandidatePorts {
         `$maxPort = `$basePort + `$maxPortOffset
         `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
             Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
-            Select-Object -ExpandProperty LocalPort -Unique |
-            Sort-Object
-        foreach (`$p in `$listening) {
-            if (`$ports -notcontains `$p) { `$ports += `$p }
-        }
+            Select-Object -ExpandProperty LocalPort
+        `$ports = (@(`$basePort) + `$listening) | Sort-Object -Unique
     } catch {
         Write-Host "[DEBUG] Get-NetTCPConnection failed: `$(`$_.Exception.Message). Falling back to full port scan." -ForegroundColor DarkGray
         # Fallback when Get-NetTCPConnection is unavailable/restricted.
