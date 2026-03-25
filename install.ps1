@@ -678,6 +678,10 @@ shell.Run cmd, 0, False
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
+    # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+    if ($TauriMode) {
+        $env:SKIP_STUDIO_FRONTEND = "1"
+    }
     if ($StudioLocalInstall) {
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
