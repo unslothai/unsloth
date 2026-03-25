@@ -727,10 +727,13 @@ if (-not $CudaArch) {
 }
 
 # ============================================
-# 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
+# 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
 # ============================================
+$SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
 if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping Node/npm check" -ForegroundColor Green
+} elseif ($SkipFrontend) {
+    Write-Host "[OK] Tauri mode - frontend already bundled, skipping Node/npm check" -ForegroundColor Green
 } else {
     # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
     # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
@@ -861,6 +864,9 @@ $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
+} elseif ($SkipFrontend) {
+    $NeedFrontendBuild = $false
+    Write-Host "[OK] Tauri mode - frontend already bundled, skipping build" -ForegroundColor Green
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null

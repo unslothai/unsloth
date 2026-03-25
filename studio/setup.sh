@@ -67,10 +67,15 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ── Detect whether frontend needs building ──
-# Skip if dist/ exists AND no tracked input is newer than dist/.
+# Skip if SKIP_STUDIO_FRONTEND=1 (Tauri desktop app bundles its own frontend),
+# or if dist/ exists AND no tracked input is newer than dist/.
 # Checks top-level config/entry files and src/, public/ recursively.
 # This handles: PyPI installs (dist/ bundled), repeat runs (no changes),
 # and upgrades/pulls (source newer than dist/ triggers rebuild).
+if [ "${SKIP_STUDIO_FRONTEND:-0}" = "1" ]; then
+    _NEED_FRONTEND_BUILD=false
+    echo "✅ Frontend build skipped (SKIP_STUDIO_FRONTEND=1)"
+else
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
@@ -86,6 +91,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
         _NEED_FRONTEND_BUILD=false
     fi
 fi
+fi  # end SKIP_STUDIO_FRONTEND guard
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     echo "✅ Frontend already built and up to date -- skipping Node/npm check."
 else

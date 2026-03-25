@@ -855,14 +855,21 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
+# Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+_SKIP_FRONTEND=0
+if [ "$TAURI_MODE" = true ]; then
+    _SKIP_FRONTEND=1
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     bash "$SETUP_SH" </dev/null
 else
     SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_FRONTEND="$_SKIP_FRONTEND" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     bash "$SETUP_SH" </dev/null
 fi
