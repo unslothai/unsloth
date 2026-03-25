@@ -49,6 +49,10 @@ def auth_db_path() -> Path:
     return auth_root() / "auth.db"
 
 
+def studio_db_path() -> Path:
+    return studio_root() / "studio.db"
+
+
 def tmp_root() -> Path:
     return Path(tempfile.gettempdir()) / "unsloth-studio"
 
