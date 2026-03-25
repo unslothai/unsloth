@@ -250,9 +250,15 @@ function Find-VsBuildTools {
 # ─────────────────────────────────────────────
 # Banner
 # ─────────────────────────────────────────────
-Write-Host "+==============================================+" -ForegroundColor Green
-Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
-Write-Host "+==============================================+" -ForegroundColor Green
+if ($env:SKIP_STUDIO_BASE -eq "1") {
+    Write-Host "+==============================================+" -ForegroundColor Green
+    Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
+    Write-Host "+==============================================+" -ForegroundColor Green
+} else {
+    Write-Host "+==============================================+" -ForegroundColor Green
+    Write-Host "|      Unsloth Studio Update (Windows)         |" -ForegroundColor Green
+    Write-Host "+==============================================+" -ForegroundColor Green
+}
 
 # ==========================================================================
 #  PHASE 1: System-level prerequisites (winget installs, env vars)
@@ -1030,9 +1036,9 @@ if (-not $PythonCmd) {
 
 Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
-# Always create a .venv for isolation -- even for pip installs.
-# Created in the repo root (parent of studio/).
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
+# The venv must already exist (created by install.ps1).
+# This script (setup.ps1 / "unsloth studio update") only updates packages.
+$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.
@@ -1095,6 +1101,13 @@ if (Test-Path $VenvDir -PathType Container) {
 }
 
 if (-not (Test-Path $VenvDir)) {
+    if ($env:SKIP_STUDIO_BASE -eq "1") {
+        # Called from install.ps1 which should have created the venv already.
+        # If it is missing at this point, something went wrong.
+        Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
+        Write-Host "        Re-run the installer: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+        exit 1
+    }
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
 } else {
@@ -1537,8 +1550,9 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
 # Done
 # ============================================
 Write-Host ""
+$doneLine = if ($env:SKIP_STUDIO_BASE -eq "1") { "Setup Complete!" } else { "Update Complete!" }
 Write-Host "+===============================================+" -ForegroundColor Green
-Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
+Write-Host "|           $doneLine                    |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "|  Launch with:                                 |" -ForegroundColor Green
 Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
