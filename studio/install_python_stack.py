@@ -300,12 +300,13 @@ def install_python_stack() -> int:
     # Try to use uv for faster installs
     USE_UV = _bootstrap_uv()
 
-    # 2. Preinstall torch to a wheel-friendly line for causal-conv1d happy-path testing
-    _progress("torch pin")
+    # 2. Preinstall torch to a wheel-friendly line for causal-conv1d and mamba-ssm happy-path testing
+    # TODO: update this once 2.11 builds are available and stable :)
+    _progress("torch<=2.10.0 for easier hybrid model training")
     pip_install(
         "Installing pinned torch stack",
         "--no-cache-dir",
-        "torch<2.10.0",
+        "torch<=2.10.0",
         "torchvision",
         "torchaudio",
         constrain = False,
