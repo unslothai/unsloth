@@ -607,7 +607,7 @@ shell.Run cmd, 0, False
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
         # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
-        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.11" unsloth-zoo
+        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.12" unsloth-zoo
         if ($StudioLocalInstall) {
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
@@ -622,7 +622,7 @@ shell.Run cmd, 0, False
 
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.11" unsloth-zoo
+            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.12" unsloth-zoo
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
         } else {
@@ -632,7 +632,7 @@ shell.Run cmd, 0, False
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.11" --torch-backend=auto
+            uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.12" --torch-backend=auto
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
         } else {
