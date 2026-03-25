@@ -775,7 +775,7 @@ if [ "$_MIGRATED" = true ]; then
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index
     echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
-    uv pip install --python "$_VENV_PY" torch torchvision torchaudio \
+    uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
         --index-url "$TORCH_INDEX_URL"
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."

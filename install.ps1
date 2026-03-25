@@ -583,7 +583,7 @@ shell.Run cmd, 0, False
         uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.11" unsloth-zoo
     } elseif ($TorchIndexUrl) {
         Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-        uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
+        uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
             return
