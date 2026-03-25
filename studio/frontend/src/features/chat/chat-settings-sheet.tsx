@@ -478,7 +478,7 @@ export function ChatSettingsPanel({
                       value={ggufContextLength ?? ""}
                       placeholder="Loading..."
                       disabled={true}
-                      className="h-7 w-[90px] text-xs opacity-50 cursor-not-allowed"
+                      className="h-7 w-[90px] text-xs"
                     />
                   </div>
                   <div className="flex items-center justify-between gap-3">
