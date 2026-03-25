@@ -28,6 +28,7 @@ import urllib.request
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -1928,9 +1929,7 @@ def copy_globs(
 def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
     canonical = install_dir / "convert_hf_to_gguf.py"
     if not canonical.exists():
-        raise RuntimeError(
-            "hydrated source tree did not include convert_hf_to_gguf.py"
-        )
+        raise RuntimeError("hydrated source tree did not include convert_hf_to_gguf.py")
     legacy = install_dir / "convert-hf-to-gguf.py"
     if legacy.exists() or legacy.is_symlink():
         legacy.unlink()
