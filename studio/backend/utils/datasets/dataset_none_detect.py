@@ -311,14 +311,16 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
 def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
     """ShareGPT uses 'from'/'value' keys — same scan logic handles both."""
     if col is None:
-        # ShareGPT data conventionally lives in 'conversations'; try it first.
+        # ShareGPT data lives in 'conversations'; restrict probe to that column
+        # so a corrupt conversations column is always scanned instead of being
+        # silently replaced by a healthy messages column (P1 fix).
         conv_info = _probe_conversation(
-            dataset, candidates = ("conversations", "messages", "texts")
+            dataset, candidates = ("conversations",)
         )
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
-                "Expected a column with 'from'/'value' or 'role'/'content' turn keys."
+                "Expected a 'conversations' column with 'from'/'value' or 'role'/'content' turn keys."
             )
         col = conv_info["column"]
     return find_none_chatml(dataset, col = col)
