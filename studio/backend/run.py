@@ -332,6 +332,8 @@ def run_server(
     time.sleep(3)
 
     _write_pid_file()
+    import atexit
+    atexit.register(_remove_pid_file)
 
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
@@ -381,10 +383,6 @@ if __name__ == "__main__":
     kwargs = dict(host = args.host, port = args.port, silent = args.silent)
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
-
-    import atexit
-
-    atexit.register(_remove_pid_file)
 
     try:
         run_server(**kwargs)
