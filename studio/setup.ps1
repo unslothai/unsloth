@@ -1536,16 +1536,21 @@ if (-not $NeedLlamaSourceBuild) {
         }
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
-        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+        $cloneTmp = "$LlamaCppDir.clone.$PID"
+        if (Test-Path $cloneTmp) { Remove-Item -Recurse -Force $cloneTmp }
         $cloneArgs = @("clone", "--depth", "1")
         if ($UseConcreteRef) {
             $cloneArgs += @("--branch", $ResolvedLlamaTag)
         }
-        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $LlamaCppDir)
+        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $cloneTmp)
         git @cloneArgs 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"
+            if (Test-Path $cloneTmp) { Remove-Item -Recurse -Force $cloneTmp }
+        } else {
+            if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+            Move-Item $cloneTmp $LlamaCppDir
         }
     }
 

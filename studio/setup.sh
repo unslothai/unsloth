@@ -559,7 +559,6 @@ else
         echo ""
         echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
     else
-        rm -rf "$LLAMA_CPP_DIR"
         echo ""
         echo "Building llama-server for GGUF inference..."
 
@@ -568,7 +567,15 @@ else
         if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
             _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
         fi
-        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        _CLONE_TMP="${LLAMA_CPP_DIR}.clone.$$"
+        rm -rf "$_CLONE_TMP"
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_CLONE_TMP" || BUILD_OK=false
+        if [ "$BUILD_OK" = true ]; then
+            rm -rf "$LLAMA_CPP_DIR"
+            mv "$_CLONE_TMP" "$LLAMA_CPP_DIR"
+        else
+            rm -rf "$_CLONE_TMP"
+        fi
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)
