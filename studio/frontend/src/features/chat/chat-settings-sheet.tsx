@@ -549,12 +549,12 @@ export function ChatSettingsPanel({
                   )}
                 </>
               )}
-              {!isGguf && (
+              {!isGguf && params.checkpoint && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium">Trust remote code</div>
+                    <div className="text-xs font-medium">Enable custom code</div>
                     <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only enable for repos you trust.
+                      Allow models with custom code (e.g. Nemotron). Only enable if sure.
                     </div>
                   </div>
                   <Switch
