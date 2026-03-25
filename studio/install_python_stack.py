@@ -389,8 +389,8 @@ def install_python_stack() -> int:
         )
     else:
         # Update path: upgrade only unsloth + unsloth-zoo while preserving
-        # existing torch/CUDA installations (--torch-backend=auto is already
-        # added by _build_uv_cmd, --upgrade-package targets only base pkgs).
+        # existing torch/CUDA installations.  Torch is pre-installed by
+        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
         _progress("base packages")
         pip_install(
             "Updating base packages",

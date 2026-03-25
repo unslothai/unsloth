@@ -48,7 +48,7 @@ MOCK
 # Build a minimal tools directory with symlinks to essential commands
 # (uname, grep, head, etc.) but WITHOUT nvidia-smi.
 _TOOLS_DIR=$(mktemp -d)
-for _cmd in uname grep head sh bash cat; do
+for _cmd in uname grep sed head sh bash cat; do
     _real=$(command -v "$_cmd" 2>/dev/null || true)
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS_DIR/$_cmd"
 done

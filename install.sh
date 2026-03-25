@@ -740,9 +740,14 @@ get_torch_index_url() {
         _smi="/usr/bin/nvidia-smi"
     fi
     if [ -z "$_smi" ]; then echo "$_base/cpu"; return; fi
-    # Parse CUDA version from nvidia-smi output
-    _cuda_ver=$($_smi 2>/dev/null | grep -oP 'CUDA Version:\s+\K[0-9]+\.[0-9]+' | head -1)
-    if [ -z "$_cuda_ver" ]; then echo "$_base/cu126"; return; fi  # unparseable -> default
+    # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
+    _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
+        | sed -n 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+        | head -1)
+    if [ -z "$_cuda_ver" ]; then
+        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+        echo "$_base/cu126"; return
+    fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
     if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
