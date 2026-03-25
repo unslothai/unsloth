@@ -2709,7 +2709,7 @@ def binary_env(
         existing = [part for part in env.get("PATH", "").split(os.pathsep) if part]
         env["PATH"] = os.pathsep.join(dedupe_existing_dirs([*path_dirs, *existing]))
     elif host.is_linux:
-        ld_dirs = [str(install_dir), *linux_runtime_dirs(binary_path)]
+        ld_dirs = [str(binary_path.parent), str(install_dir), *linux_runtime_dirs(binary_path)]
         existing = [
             part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
         ]

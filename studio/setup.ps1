@@ -1459,16 +1459,12 @@ if (-not $NeedLlamaSourceBuild) {
     # -- Step A: Clone or pull llama.cpp --
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
-        # Consider using a specific branch/tag here
-        # Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
-        # git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag 2>&1 | Out-Null
-        Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
-        git -C $LlamaCppDir pull 2>&1 | Out-Null
+        Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
+        git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            $BuildOk = $false
-            $FailedStep = "git fetch"
+            Write-Host "   [WARN] git fetch failed -- using existing source" -ForegroundColor Yellow
         } else {
-            git -C $LlamaCppDir checkout --force FETCH_HEAD 2>&1 | Out-Null
+            git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git checkout"
@@ -1477,12 +1473,9 @@ if (-not $NeedLlamaSourceBuild) {
             }
         }
     } else {
-        # Consider using a specific branch/tag here
-        # Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
-        Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
+        Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
         if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
-        # git clone --depth 1 --branch $ResolvedLlamaTag https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
-        git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
+        git clone --depth 1 --branch $ResolvedLlamaTag https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"

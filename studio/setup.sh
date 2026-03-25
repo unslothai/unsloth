@@ -503,7 +503,6 @@ elif [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
     echo "Skipping llama-server build (missing dependencies)"
     echo "   Install the missing packages and re-run setup to enable GGUF inference."
 else
-rm -rf "$LLAMA_CPP_DIR"
 {
     # Check prerequisites
     if ! command -v cmake &>/dev/null; then
@@ -514,11 +513,12 @@ rm -rf "$LLAMA_CPP_DIR"
         echo ""
         echo "⚠️  git not found — skipping llama-server build (GGUF inference won't be available)"
     else
+        rm -rf "$LLAMA_CPP_DIR"
         echo ""
         echo "Building llama-server for GGUF inference..."
 
         BUILD_OK=true
-        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 --branch "$_RESOLVED_LLAMA_TAG" https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             # Skip tests/examples we don't need (faster build)

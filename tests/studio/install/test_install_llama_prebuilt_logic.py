@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 import sys
 import tarfile
 import zipfile
@@ -21,6 +22,7 @@ SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
+binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 HostInfo = INSTALL_LLAMA_PREBUILT.HostInfo
 AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
 ApprovedArtifactHash = INSTALL_LLAMA_PREBUILT.ApprovedArtifactHash
@@ -571,6 +573,43 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     )
     assert "removing failed install path" in output
     assert "removing rollback path" in output
+
+
+def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents=True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system="Linux",
+        machine="x86_64",
+        is_windows=False,
+        is_linux=True,
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
+    )
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: []
+    )
+
+    env = binary_env(binary_path, install_dir, host)
+    ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(bin_dir) in ld_dirs, (
+        f"binary_path.parent ({bin_dir}) must be in LD_LIBRARY_PATH, got: {ld_dirs}"
+    )
+    assert str(install_dir) in ld_dirs
 
 
 def io_bytes(data: bytes):
