@@ -132,13 +132,7 @@ const SuggestionItem: FC = () => {
   const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
   const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
-  const allTools = SUGGESTION_TOOLS[prompt] ?? [];
-  const tools = allTools.filter((tool) => {
-    if (tool === "thinking") return supportsReasoning;
-    return supportsTools;
-  });
+  const tools = SUGGESTION_TOOLS[prompt] ?? [];
 
   return (
     <button
@@ -335,9 +329,6 @@ function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
   if (!checkpoint.includes("qwen3")) return;
-  // Qwen3 & Qwen3.5 share the same recommended settings:
-  // Thinking ON (general): temp=1.0, top_p=0.95, top_k=20
-  // Thinking OFF (general): temp=0.7, top_p=0.8, top_k=20
   const params = thinkingOn
     ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
     : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
@@ -345,15 +336,18 @@ function applyQwenThinkingParams(thinkingOn: boolean): void {
 }
 
 const ReasoningToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-
-  if (!supportsReasoning) return null;
+  const disabled = !modelLoaded || !supportsReasoning;
 
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => {
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
@@ -361,13 +355,15 @@ const ReasoningToggle: FC = () => {
       }}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        reasoningEnabled
-          ? "bg-primary/10 text-primary hover:bg-primary/20"
-          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : reasoningEnabled
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
     >
-      {reasoningEnabled ? (
+      {reasoningEnabled && !disabled ? (
         <LightbulbIcon className="size-3.5" />
       ) : (
         <LightbulbOffIcon className="size-3.5" />
@@ -378,21 +374,26 @@ const ReasoningToggle: FC = () => {
 };
 
 const WebSearchToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-
-  if (!supportsTools) return null;
+  const disabled = !modelLoaded || !supportsTools;
 
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => setToolsEnabled(!toolsEnabled)}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        toolsEnabled
-          ? "bg-primary/10 text-primary hover:bg-primary/20"
-          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : toolsEnabled
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
@@ -403,23 +404,28 @@ const WebSearchToggle: FC = () => {
 };
 
 const CodeToolsToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore(
     (s) => s.setCodeToolsEnabled,
   );
-
-  if (!supportsTools) return null;
+  const disabled = !modelLoaded || !supportsTools;
 
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        codeToolsEnabled
-          ? "bg-primary/10 text-primary hover:bg-primary/20"
-          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : codeToolsEnabled
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
     >

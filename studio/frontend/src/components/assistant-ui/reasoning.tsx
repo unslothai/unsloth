@@ -17,6 +17,7 @@ import {
   type ReasoningGroupComponent,
   type ReasoningMessagePartComponent,
   useAuiState,
+  useScrollLock,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Idea01Icon } from "@hugeicons/core-free-icons";
@@ -66,23 +67,29 @@ function ReasoningRoot({
   children,
   ...props
 }: ReasoningRootProps) {
+  const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
+      if (!open) {
+        lockScroll();
+      }
       if (!isControlled) {
         setUncontrolledOpen(open);
       }
       controlledOnOpenChange?.(open);
     },
-    [isControlled, controlledOnOpenChange],
+    [lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (
     <Collapsible
+      ref={collapsibleRef}
       data-slot="reasoning-root"
       data-variant={variant}
       open={isOpen}
