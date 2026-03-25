@@ -33,20 +33,29 @@ pub fn new_backend_state() -> BackendState {
 }
 
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
+/// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
+/// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     let home = dirs::home_dir()?;
-    let base = home.join(".unsloth").join("studio").join(".venv");
+    let studio = home.join(".unsloth").join("studio");
 
-    #[cfg(unix)]
-    let bin = base.join("bin").join("unsloth");
-    #[cfg(windows)]
-    let bin = base.join("Scripts").join("unsloth.exe");
+    // New layout (upstream scripts >= March 2026)
+    let new_base = studio.join("unsloth_studio");
+    // Old layout (bundled scripts, older upstream)
+    let old_base = studio.join(".venv");
 
-    if bin.exists() {
-        Some(bin)
-    } else {
-        None
+    for base in [new_base, old_base] {
+        #[cfg(unix)]
+        let bin = base.join("bin").join("unsloth");
+        #[cfg(windows)]
+        let bin = base.join("Scripts").join("unsloth.exe");
+
+        if bin.exists() {
+            return Some(bin);
+        }
     }
+
+    None
 }
 
 /// Find the unsloth binary, preferring the dev repo if available.
