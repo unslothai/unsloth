@@ -107,6 +107,31 @@ export function ProgressSection(): ReactElement {
   const gpu = useGpuUtilization(runtime.isTrainingRunning);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
+  const gpuEntries =
+    gpu.gpus.length > 0
+      ? gpu.gpus
+      : gpu.available
+        ? [
+            {
+              index: 0,
+              name: null,
+              gpu_utilization_pct: gpu.gpu_utilization_pct,
+              temperature_c: gpu.temperature_c,
+              vram_used_gb: gpu.vram_used_gb,
+              vram_total_gb: gpu.vram_total_gb,
+              vram_utilization_pct: gpu.vram_utilization_pct,
+              power_draw_w: gpu.power_draw_w,
+              power_limit_w: gpu.power_limit_w,
+              power_utilization_pct: gpu.power_utilization_pct,
+            },
+          ]
+        : [];
+  const gpuCountLabel =
+    gpu.physical_gpu_count > 0
+      ? `${gpu.physical_gpu_count} GPU${gpu.physical_gpu_count === 1 ? "" : "s"}`
+      : gpuEntries.length > 0
+        ? `${gpuEntries.length} GPU${gpuEntries.length === 1 ? "" : "s"}`
+        : "No GPU";
 
   useEffect(() => {
     if (!runtime.isTrainingRunning) {
@@ -291,61 +316,26 @@ export function ProgressSection(): ReactElement {
         </div>
 
         <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-medium text-muted-foreground">
               GPU Monitor
             </p>
-            <span className="text-[11px] text-muted-foreground">Live</span>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              <span>{gpuCountLabel}</span>
+              <span>Live</span>
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-2.5">
-            <GpuStat
-              label="Utilization"
-              icon={
-                <HugeiconsIcon
-                  icon={DashboardSpeed01Icon}
-                  className="size-3.5"
-                />
-              }
-              value={
-                gpu.gpu_utilization_pct != null
-                  ? `${gpu.gpu_utilization_pct}%`
-                  : "--"
-              }
-              pct={gpu.gpu_utilization_pct ?? 0}
-            />
-            <GpuStat
-              label="Temperature"
-              icon={
-                <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
-              }
-              value={
-                gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"
-              }
-              pct={gpu.temperature_c ?? 0}
-              max={100}
-            />
-            <GpuStat
-              label="VRAM"
-              icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-              value={
-                gpu.vram_used_gb != null && gpu.vram_total_gb != null
-                  ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB`
-                  : "--"
-              }
-              pct={gpu.vram_utilization_pct ?? 0}
-            />
-            <GpuStat
-              label="Power"
-              icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-              value={
-                gpu.power_draw_w != null
-                  ? gpu.power_limit_w != null
-                    ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W`
-                    : `${gpu.power_draw_w} W`
-                  : "--"
-              }
-              pct={gpu.power_utilization_pct ?? 0}
-            />
+          <div
+            className={cn(
+              "grid gap-3",
+              gpuEntries.length > 1
+                ? "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                : "grid-cols-1",
+            )}
+          >
+            {gpuEntries.map((entry) => (
+              <GpuMonitorCard key={entry.index} gpu={entry} />
+            ))}
           </div>
         </div>
       </div>
@@ -543,12 +533,14 @@ function GpuStat({
   label,
   icon,
   value,
+  detail,
   pct,
   max,
 }: {
   label: string;
   icon: ReactNode;
   value: string;
+  detail?: string;
   pct: number;
   max?: number;
 }): ReactElement {
@@ -561,18 +553,99 @@ function GpuStat({
   }
 
   return (
-    <div className="corner-squircle flex flex-col gap-2 rounded-2xl border border-border/50 bg-background/60 p-3">
-      <div className="flex items-center justify-between text-xs">
-        <span className="flex items-center gap-1.5 text-muted-foreground">
+    <div className="corner-squircle min-w-0 rounded-2xl border border-border/50 bg-background/60 p-3">
+      <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        <span className="shrink-0">
           {icon}
-          {label}
         </span>
-        <span className="font-medium tabular-nums">{value}</span>
+        <span className="truncate">{label}</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-muted/80">
+      <div className="mt-2 min-w-0">
+        <p className="truncate text-sm font-semibold leading-none tabular-nums text-foreground">
+          {value}
+        </p>
+        {detail ? (
+          <p className="mt-1 truncate text-[11px] text-muted-foreground">
+            {detail}
+          </p>
+        ) : null}
+      </div>
+      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted/80">
         <div
           className={`h-full rounded-full ${barColor} transition-all duration-300`}
           style={{ width: `${clamped}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function GpuMonitorCard({
+  gpu,
+}: {
+  gpu: {
+    index: number;
+    name?: string | null;
+    gpu_utilization_pct: number | null;
+    temperature_c: number | null;
+    vram_used_gb: number | null;
+    vram_total_gb: number | null;
+    vram_utilization_pct: number | null;
+    power_draw_w: number | null;
+    power_limit_w: number | null;
+    power_utilization_pct: number | null;
+  };
+}): ReactElement {
+  return (
+    <div className="corner-squircle min-w-0 rounded-2xl border border-border/50 bg-background/40 p-3">
+      <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">GPU {gpu.index}</p>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+            {gpu.name ?? "NVIDIA GPU"}
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        <GpuStat
+          label="Utilization"
+          icon={<HugeiconsIcon icon={DashboardSpeed01Icon} className="size-3.5" />}
+          value={
+            gpu.gpu_utilization_pct != null ? `${gpu.gpu_utilization_pct}%` : "--"
+          }
+          pct={gpu.gpu_utilization_pct ?? 0}
+        />
+        <GpuStat
+          label="Temperature"
+          icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
+          value={gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"}
+          detail={gpu.temperature_c != null ? "Sensor reading" : undefined}
+          pct={gpu.temperature_c ?? 0}
+          max={100}
+        />
+        <GpuStat
+          label="VRAM"
+          icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
+          value={
+            gpu.vram_used_gb != null ? `${gpu.vram_used_gb} GB used` : "--"
+          }
+          detail={
+            gpu.vram_total_gb != null ? `${gpu.vram_total_gb} GB total` : undefined
+          }
+          pct={gpu.vram_utilization_pct ?? 0}
+        />
+        <GpuStat
+          label="Power"
+          icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
+          value={
+            gpu.power_draw_w != null
+              ? `${gpu.power_draw_w} W draw`
+              : "--"
+          }
+          detail={
+            gpu.power_limit_w != null ? `${gpu.power_limit_w} W limit` : undefined
+          }
+          pct={gpu.power_utilization_pct ?? 0}
         />
       </div>
     </div>
