@@ -58,11 +58,10 @@ export function useTauriBackend() {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });
 
-      // Poll health. Prefer the port from server-port event if available,
-      // otherwise scan the range. Backend can auto-increment up to +20 ports
-      // (run.py:89-97) so we scan wider than 8888-8899.
+      // Wait for the server-port event (usually arrives within ~2s) before
+      // falling back to scanning the full port range. This avoids 20 unnecessary
+      // health checks per poll iteration.
       for (let i = 0; i < 120; i++) {
-        // If server-port event already told us the port, just check that one
         if (portRef.current) {
           const healthy = await invoke<boolean>("check_health", {
             port: portRef.current,
@@ -73,8 +72,9 @@ export function useTauriBackend() {
             startingRef.current = false;
             return;
           }
-        } else {
-          // Scan range as fallback
+        } else if (i >= 4) {
+          // Only scan the full range after ~2s (4 x 500ms) if the server-port
+          // event hasn't arrived yet. This is the rare fallback path.
           for (let p = 8888; p <= 8907; p++) {
             const healthy = await invoke<boolean>("check_health", { port: p });
             if (healthy) {

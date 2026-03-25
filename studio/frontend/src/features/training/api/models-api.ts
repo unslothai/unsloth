@@ -137,13 +137,32 @@ export async function getModelConfig(
   return (await response.json()) as ModelConfigResponse;
 }
 
+// Simple in-memory cache to avoid duplicate fetches during page load.
+// TTL is short (5s) — just enough to deduplicate concurrent mount effects.
+let _localModelsCache: { data: LocalModelInfo[]; ts: number } | null = null;
+let _localModelsFlight: Promise<LocalModelInfo[]> | null = null;
+const LOCAL_MODELS_CACHE_TTL = 5000;
+
 export async function listLocalModels(
   signal?: AbortSignal,
 ): Promise<LocalModelInfo[]> {
-  const response = await authFetch("/api/models/local", { signal });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch local models (${response.status})`);
+  if (_localModelsCache && Date.now() - _localModelsCache.ts < LOCAL_MODELS_CACHE_TTL) {
+    return _localModelsCache.data;
   }
-  const data = (await response.json()) as LocalModelListResponse;
-  return data.models;
+  // Deduplicate concurrent in-flight requests
+  if (_localModelsFlight) return _localModelsFlight;
+
+  _localModelsFlight = (async () => {
+    const response = await authFetch("/api/models/local", { signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch local models (${response.status})`);
+    }
+    const data = (await response.json()) as LocalModelListResponse;
+    _localModelsCache = { data: data.models, ts: Date.now() };
+    return data.models;
+  })().finally(() => {
+    _localModelsFlight = null;
+  });
+
+  return _localModelsFlight;
 }
