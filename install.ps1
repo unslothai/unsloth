@@ -31,6 +31,275 @@ function Install-UnslothStudio {
         $env:Path = $unique -join ";"
     }
 
+    function New-StudioShortcuts {
+        param(
+            [Parameter(Mandatory = $true)][string]$UnslothExePath
+        )
+
+        if (-not (Test-Path $UnslothExePath)) {
+            Write-Host "[WARN] Cannot create shortcuts: unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
+            return
+        }
+        try {
+            # Persist an absolute path in launcher scripts so shortcut working
+            # directory changes do not break process startup.
+            $UnslothExePath = (Resolve-Path $UnslothExePath).Path
+            # Escape for single-quoted embedding in generated launcher script.
+            # This prevents runtime variable expansion for paths containing '$'.
+            $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
+
+            $localAppDataDir = $env:LOCALAPPDATA
+            if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
+                Write-Host "[WARN] LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
+                return
+            }
+            $appDir = Join-Path $localAppDataDir "Unsloth Studio"
+            $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
+            $launcherVbs = Join-Path $appDir "launch-studio.vbs"
+            $desktopDir = [Environment]::GetFolderPath("Desktop")
+            $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
+                Join-Path $desktopDir "Unsloth Studio.lnk"
+            } else {
+                $null
+            }
+            $startMenuDir = if ($env:APPDATA -and $env:APPDATA.Trim()) {
+                Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+            } else {
+                $null
+            }
+            $startMenuLink = if ($startMenuDir -and $startMenuDir.Trim()) {
+                Join-Path $startMenuDir "Unsloth Studio.lnk"
+            } else {
+                $null
+            }
+            if (-not $desktopLink) {
+                Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
+            }
+            if (-not $startMenuLink) {
+                Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
+            }
+            $iconPath = Join-Path $appDir "unsloth.ico"
+            $bundledIcon = $null
+            if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
+                $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
+            }
+            $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
+
+            if (-not (Test-Path $appDir)) {
+                New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+            }
+
+            $launcherContent = @"
+`$ErrorActionPreference = 'Stop'
+`$basePort = 8888
+`$maxPortOffset = 20
+`$timeoutSec = 60
+`$pollIntervalMs = 1000
+
+function Test-StudioHealth {
+    param([Parameter(Mandatory = `$true)][int]`$Port)
+    try {
+        `$url = "http://127.0.0.1:`$Port/api/health"
+        `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
+        return (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')
+    } catch {
+        return `$false
+    }
+}
+
+function Get-CandidatePorts {
+    # Fast path: only probe base port + currently listening ports in range.
+    `$ports = @(`$basePort)
+    try {
+        `$maxPort = `$basePort + `$maxPortOffset
+        `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
+            Select-Object -ExpandProperty LocalPort
+        `$ports = (@(`$basePort) + `$listening) | Sort-Object -Unique
+    } catch {
+        Write-Host "[DEBUG] Get-NetTCPConnection failed: `$(`$_.Exception.Message). Falling back to full port scan." -ForegroundColor DarkGray
+        # Fallback when Get-NetTCPConnection is unavailable/restricted.
+        for (`$offset = 1; `$offset -le `$maxPortOffset; `$offset++) {
+            `$ports += (`$basePort + `$offset)
+        }
+    }
+    return `$ports
+}
+
+function Find-HealthyStudioPort {
+    foreach (`$candidate in (Get-CandidatePorts)) {
+        if (Test-StudioHealth -Port `$candidate) {
+            return `$candidate
+        }
+    }
+    return `$null
+}
+
+# If Studio is already healthy on any expected port, just open it and exit.
+`$existingPort = Find-HealthyStudioPort
+if (`$existingPort) {
+    Start-Process "http://localhost:`$existingPort"
+    exit 0
+}
+
+`$launchMutex = [System.Threading.Mutex]::new(`$false, 'Local\UnslothStudioLauncher')
+`$haveMutex = `$false
+try {
+    try {
+        `$haveMutex = `$launchMutex.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        `$haveMutex = `$true
+    }
+    if (-not `$haveMutex) {
+        # Another launcher is already running; wait for it to bring Studio up
+        `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
+        while ((Get-Date) -lt `$deadline) {
+            `$port = Find-HealthyStudioPort
+            if (`$port) { Start-Process "http://localhost:`$port"; exit 0 }
+            Start-Sleep -Milliseconds `$pollIntervalMs
+        }
+        exit 0
+    }
+
+    `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    `$studioExe = '$SingleQuotedExePath'
+    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
+    `$launchArgs = @(
+        '-NoExit',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        `$studioCommand
+    )
+
+    try {
+        `$proc = Start-Process -FilePath `$powershellExe -ArgumentList `$launchArgs -WorkingDirectory `$env:USERPROFILE -PassThru
+    } catch {
+        `$msg = "Could not launch Unsloth Studio terminal.`n`nError: `$(`$_.Exception.Message)"
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+        exit 1
+    }
+
+    `$browserOpened = `$false
+    `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
+    while ((Get-Date) -lt `$deadline) {
+        `$healthyPort = Find-HealthyStudioPort
+        if (`$healthyPort) {
+            Start-Process "http://localhost:`$healthyPort"
+            `$browserOpened = `$true
+            break
+        }
+        if (`$proc.HasExited) { break }
+        Start-Sleep -Milliseconds `$pollIntervalMs
+    }
+    if (-not `$browserOpened) {
+        if (`$proc.HasExited) {
+            `$msg = "Unsloth Studio exited before becoming healthy. Check terminal output for errors."
+        } else {
+            `$msg = "Unsloth Studio is still starting but did not become healthy within `$timeoutSec seconds. Check the terminal window for the selected port and open it manually."
+        }
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+    }
+} finally {
+    if (`$haveMutex) { `$launchMutex.ReleaseMutex() | Out-Null }
+    `$launchMutex.Dispose()
+}
+exit 0
+"@
+
+            # Write UTF-8 with BOM for reliable decoding by Windows PowerShell 5.1,
+            # even when install.ps1 is executed from PowerShell 7.
+            $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+            [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            $vbsContent = @"
+Set shell = CreateObject("WScript.Shell")
+cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
+shell.Run cmd, 0, False
+"@
+            # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
+            Set-Content -Path $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+
+            # Prefer bundled icon from local clone/dev installs.
+            # If not available, best-effort download from raw GitHub.
+            # We only attach the icon if the resulting file has a valid ICO header.
+            $hasValidIcon = $false
+            if ($bundledIcon -and (Test-Path $bundledIcon)) {
+                try {
+                    Copy-Item -Path $bundledIcon -Destination $iconPath -Force
+                } catch {
+                    Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            } elseif (-not (Test-Path $iconPath)) {
+                try {
+                    Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
+                } catch {
+                    Write-Host "[DEBUG] Error downloading icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            }
+
+            if (Test-Path $iconPath) {
+                try {
+                    $bytes = [System.IO.File]::ReadAllBytes($iconPath)
+                    if (
+                        $bytes.Length -ge 4 -and
+                        $bytes[0] -eq 0 -and
+                        $bytes[1] -eq 0 -and
+                        $bytes[2] -eq 1 -and
+                        $bytes[3] -eq 0
+                    ) {
+                        $hasValidIcon = $true
+                    } else {
+                        Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {
+                    Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+            $shortcutArgs = "//B //Nologo `"$launcherVbs`""
+
+            try {
+                $wshell = New-Object -ComObject WScript.Shell
+                $createdShortcutCount = 0
+                foreach ($linkPath in @($desktopLink, $startMenuLink)) {
+                    if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
+                    try {
+                        $shortcut = $wshell.CreateShortcut($linkPath)
+                        $shortcut.TargetPath = $wscriptExe
+                        $shortcut.Arguments = $shortcutArgs
+                        $shortcut.WorkingDirectory = $appDir
+                        $shortcut.Description = "Launch Unsloth Studio"
+                        if ($hasValidIcon) {
+                            $shortcut.IconLocation = "$iconPath,0"
+                        }
+                        $shortcut.Save()
+                        $createdShortcutCount++
+                    } catch {
+                        Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                }
+                if ($createdShortcutCount -gt 0) {
+                    Write-Host "[OK] Created Unsloth Studio shortcut(s): $createdShortcutCount" -ForegroundColor Green
+                } else {
+                    Write-Host "[WARN] No Unsloth Studio shortcuts were created" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "[WARN] Shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "[WARN] Shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
     # ── Check winget ──
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host "Error: winget is not available." -ForegroundColor Red
@@ -298,6 +567,8 @@ function Install-UnslothStudio {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
+
+    New-StudioShortcuts -UnslothExePath $UnslothExe
 
     Write-Host ""
     Write-Host "========================================="
