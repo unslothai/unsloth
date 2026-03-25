@@ -253,6 +253,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * falls back to smallest cached safetensors model.
  */
 async function autoLoadSmallestModel(): Promise<boolean> {
+  const hfToken = useChatRuntimeStore.getState().hfToken || null;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -278,7 +279,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             const variant = downloaded[0];
             const loadResp = await loadModel({
               model_path: repo.repo_id,
-              hf_token: null,
+              hf_token: hfToken,
               max_seq_length: 4096,
               load_in_4bit: true,
               is_lora: false,
@@ -331,7 +332,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         try {
           const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
-            hf_token: null,
+            hf_token: hfToken,
             max_seq_length: 4096,
             load_in_4bit: true,
             is_lora: false,
@@ -368,7 +369,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
     try {
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-GGUF",
-        hf_token: null,
+        hf_token: hfToken,
         max_seq_length: 4096,
         load_in_4bit: true,
         is_lora: false,

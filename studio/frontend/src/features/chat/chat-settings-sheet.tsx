@@ -682,6 +682,7 @@ export function ChatSettingsPanel({
                   onCheckedChange={onAutoTitleChange}
                 />
               </div>
+              <HfTokenField />
             </div>
           </CollapsibleSection>
 
@@ -820,6 +821,29 @@ function AutoHealToolCallsToggle() {
       <Switch
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function HfTokenField() {
+  const hfToken = useChatRuntimeStore((s) => s.hfToken);
+  const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="min-w-0">
+        <div className="text-xs font-medium">Hugging Face Token</div>
+        <div className="text-[11px] text-muted-foreground">
+          For downloading gated or private models.
+        </div>
+      </div>
+      <Input
+        type="password"
+        value={hfToken}
+        placeholder="hf_..."
+        className="h-7 text-xs font-mono"
+        onChange={(e) => setHfToken(e.target.value)}
       />
     </div>
   );

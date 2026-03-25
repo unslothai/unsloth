@@ -354,12 +354,13 @@ export function useChatModelRuntime() {
             useChatRuntimeStore.getState().params.checkpoint;
           const paramsBeforeLoad = useChatRuntimeStore.getState().params;
           const maxSeqLength = paramsBeforeLoad.maxSeqLength;
+          const hfToken = useChatRuntimeStore.getState().hfToken || null;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
             await validateModel({
               model_path: modelId,
-              hf_token: null,
+              hf_token: hfToken,
               max_seq_length: maxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
@@ -379,7 +380,7 @@ export function useChatModelRuntime() {
               : ggufVariant != null ? (ggufContextLength ?? maxSeqLength) : maxSeqLength;
             const loadResponse = await loadModel({
               model_path: modelId,
-              hf_token: null,
+              hf_token: hfToken,
               max_seq_length: effectiveMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
@@ -449,7 +450,7 @@ export function useChatModelRuntime() {
               try {
                 await loadModel({
                   model_path: previousCheckpoint,
-                  hf_token: null,
+                  hf_token: hfToken,
                   max_seq_length: maxSeqLength,
                   load_in_4bit: true,
                   is_lora: previousIsLora,

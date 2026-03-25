@@ -14,6 +14,7 @@ const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
 const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
+const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
 let hasShownInferencePersistenceWarning = false;
 
@@ -57,6 +58,24 @@ function saveInt(key: string, value: number): void {
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(key, String(value));
+  } catch {
+    // ignore
+  }
+}
+
+function loadString(key: string, fallback: string): string {
+  if (!canUseStorage()) return fallback;
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveString(key: string, value: string): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(key, value);
   } catch {
     // ignore
   }
@@ -127,6 +146,7 @@ type ChatRuntimeStore = {
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   autoTitle: boolean;
+  hfToken: string;
   modelsError: string | null;
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
@@ -161,6 +181,7 @@ type ChatRuntimeStore = {
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
   setAutoTitle: (enabled: boolean) => void;
+  setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
@@ -187,6 +208,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   loras: [],
   runningByThreadId: {},
   autoTitle: loadBool(AUTO_TITLE_KEY, false),
+  hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
   activeGgufVariant: null,
   ggufContextLength: null,
@@ -239,6 +261,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     set(() => {
       saveBool(AUTO_TITLE_KEY, autoTitle);
       return { autoTitle };
+    }),
+  setHfToken: (hfToken) =>
+    set(() => {
+      saveString(HF_TOKEN_KEY, hfToken);
+      return { hfToken };
     }),
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
