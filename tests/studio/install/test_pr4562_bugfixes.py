@@ -211,8 +211,12 @@ class TestBinaryEnvCrossPlatform:
 
         env = binary_env(binary_path, install_dir, host)
         dyld_parts = [p for p in env["DYLD_LIBRARY_PATH"].split(os.pathsep) if p]
-        assert str(bin_dir) in dyld_parts, f"build/bin not in DYLD_LIBRARY_PATH: {dyld_parts}"
-        assert str(install_dir) in dyld_parts, f"install_dir not in DYLD_LIBRARY_PATH: {dyld_parts}"
+        assert (
+            str(bin_dir) in dyld_parts
+        ), f"build/bin not in DYLD_LIBRARY_PATH: {dyld_parts}"
+        assert (
+            str(install_dir) in dyld_parts
+        ), f"install_dir not in DYLD_LIBRARY_PATH: {dyld_parts}"
         # binary_path.parent (build/bin) should come before install_dir
         assert dyld_parts.index(str(bin_dir)) < dyld_parts.index(str(install_dir))
 
