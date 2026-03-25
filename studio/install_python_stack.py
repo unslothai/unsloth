@@ -51,10 +51,10 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 # installer never crashes just because of a status glyph.
 
 _UNICODE_TO_ASCII: dict[str, str] = {
-    "\u2705": "[OK]",     # ✅
-    "\u274c": "[FAIL]",   # ❌
+    "\u2705": "[OK]",  # ✅
+    "\u274c": "[FAIL]",  # ❌
     "\u26a0\ufe0f": "[!]",  # ⚠️  (warning + variation selector)
-    "\u26a0": "[!]",      # ⚠  (warning without variation selector)
+    "\u26a0": "[!]",  # ⚠  (warning without variation selector)
 }
 
 
@@ -68,9 +68,12 @@ def _safe_print(*args: object, **kwargs: object) -> None:
         for uni, ascii_alt in _UNICODE_TO_ASCII.items():
             text = text.replace(uni, ascii_alt)
         # Final fallback: replace any remaining unencodable chars
-        print(text.encode(sys.stdout.encoding or "ascii", errors="replace").decode(
-            sys.stdout.encoding or "ascii", errors="replace"
-        ), **kwargs)
+        print(
+            text.encode(sys.stdout.encoding or "ascii", errors = "replace").decode(
+                sys.stdout.encoding or "ascii", errors = "replace"
+            ),
+            **kwargs,
+        )
 
 
 # ── Color support ──────────────────────────────────────────────────────
@@ -296,7 +299,9 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         text = True,
     )
     if result.returncode != 0:
-        _safe_print(_red(f"   ⚠️  Could not find package {package_name}, skipping patch"))
+        _safe_print(
+            _red(f"   ⚠️  Could not find package {package_name}, skipping patch")
+        )
         return
 
     location = None
