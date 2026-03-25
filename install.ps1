@@ -577,9 +577,10 @@ shell.Run cmd, 0, False
     #   are still pulled in because they are new, not upgrades.
     #
     if ($_Migrated) {
-        # Migrated env: upgrade unsloth while preserving existing torch/CUDA
+        # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
+        # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
-        uv pip install --python $VenvPython --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.11"
+        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.11"
     } elseif ($TorchIndexUrl) {
         Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
         uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl

@@ -322,10 +322,11 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # ── Install unsloth directly into the venv (no activation needed) ──
 _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
-    # Migrated env: upgrade only unsloth+unsloth-zoo, preserve existing torch
+    # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
+    # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
     uv pip install --python "$_VENV_PY" \
-        --upgrade-package unsloth --upgrade-package unsloth-zoo \
+        --reinstall-package unsloth --reinstall-package unsloth-zoo \
         "unsloth>=2026.3.11" unsloth-zoo
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         echo "==> Overlaying local repo (editable)..."
