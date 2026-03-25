@@ -88,6 +88,16 @@ def legacy_hf_cache_dir() -> Path:
     return cache_root() / "huggingface" / "hub"
 
 
+def hf_default_cache_dir() -> Path:
+    """Return the platform default HuggingFace hub cache (ignoring env overrides).
+
+    This is the location HF uses when no ``HF_HUB_CACHE`` / ``HF_HOME``
+    env var is set.  We scan it so that models a user downloaded *before*
+    installing Unsloth Studio are still discovered.
+    """
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
 def lmstudio_model_dirs() -> list[Path]:
     """Return LM Studio model directories that exist on disk."""
     dirs: list[Path] = []

@@ -291,11 +291,12 @@ async def list_local_models(
     List local model candidates from custom models dir, HF cache,
     legacy Unsloth HF cache, and LM Studio directories.
     """
-    from utils.paths import legacy_hf_cache_dir, lmstudio_model_dirs
+    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
 
     # Resolve all scan directories up front.
     hf_cache_dir = _resolve_hf_cache_dir()
     legacy_hf = legacy_hf_cache_dir()
+    hf_default = hf_default_cache_dir()
     lm_dirs = lmstudio_model_dirs()
 
     # Validate models_dir against an allowlist of trusted directories.
@@ -304,6 +305,8 @@ async def list_local_models(
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if legacy_hf.is_dir():
         allowed_roots.append(legacy_hf)
+    if hf_default.is_dir():
+        allowed_roots.append(hf_default)
     try:
         from utils.paths import studio_root, outputs_root
 
@@ -330,6 +333,10 @@ async def list_local_models(
         # Scan legacy Unsloth HF cache for backward compatibility
         if legacy_hf.is_dir() and legacy_hf.resolve() != hf_cache_dir.resolve():
             local_models += _scan_hf_cache(legacy_hf)
+
+        # Scan HF system default cache (may differ when env vars are overridden)
+        if hf_default.is_dir() and hf_default.resolve() != hf_cache_dir.resolve() and hf_default.resolve() != legacy_hf.resolve():
+            local_models += _scan_hf_cache(hf_default)
 
         # Scan LM Studio directories
         for lm_dir in lm_dirs:
@@ -934,22 +941,38 @@ def _get_repo_size_cached(repo_id: str) -> int:
         return 0
 
 
+def _all_hf_cache_scans():
+    """Return scan_cache_dir results for the active, legacy, and default HF caches."""
+    from huggingface_hub import scan_cache_dir
+    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
+
+    scans = [scan_cache_dir()]
+    seen: set[str] = set()
+    try:
+        # Resolve the active cache dir so we can dedup
+        from huggingface_hub.constants import HF_HUB_CACHE
+        seen.add(str(Path(HF_HUB_CACHE).resolve()))
+    except Exception:
+        pass
+
+    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        extra = extra_fn()
+        if extra.is_dir() and str(extra.resolve()) not in seen:
+            seen.add(str(extra.resolve()))
+            try:
+                scans.append(scan_cache_dir(cache_dir = str(extra)))
+            except Exception as exc:
+                logger.warning("Could not scan HF cache %s: %s", extra, exc)
+    return scans
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(
     current_subject: str = Depends(get_current_subject),
 ):
-    """List GGUF repos downloaded to HF cache and legacy Unsloth cache."""
+    """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        from huggingface_hub import scan_cache_dir
-        from utils.paths import legacy_hf_cache_dir
-
-        cache_scans = [scan_cache_dir()]
-        legacy_hf = legacy_hf_cache_dir()
-        if legacy_hf.is_dir():
-            try:
-                cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception as exc:
-                logger.warning("Could not scan legacy HF cache %s: %s", legacy_hf, exc)
+        cache_scans = _all_hf_cache_scans()
 
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
@@ -987,20 +1010,11 @@ async def list_cached_gguf(
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
 ):
-    """List non-GGUF model repos downloaded to HF cache and legacy Unsloth cache."""
+    """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
     try:
-        from huggingface_hub import scan_cache_dir
-        from utils.paths import legacy_hf_cache_dir
-
-        cache_scans = [scan_cache_dir()]
-        legacy_hf = legacy_hf_cache_dir()
-        if legacy_hf.is_dir():
-            try:
-                cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception as exc:
-                logger.warning("Could not scan legacy HF cache %s: %s", legacy_hf, exc)
+        cache_scans = _all_hf_cache_scans()
 
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
@@ -1083,16 +1097,7 @@ async def delete_cached_model(
         pass
 
     try:
-        from huggingface_hub import scan_cache_dir
-        from utils.paths import legacy_hf_cache_dir
-
-        legacy_hf = legacy_hf_cache_dir()
-        cache_scans = [scan_cache_dir()]
-        if legacy_hf.is_dir():
-            try:
-                cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception as exc:
-                logger.warning("Could not scan legacy HF cache %s: %s", legacy_hf, exc)
+        cache_scans = _all_hf_cache_scans()
 
         target_repo = None
         for hf_cache in cache_scans:
