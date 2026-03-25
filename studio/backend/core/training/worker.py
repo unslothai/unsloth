@@ -409,7 +409,7 @@ def run_training_process(
                     f"causal-conv1d / mamba-ssm failed to install "
                     f"with error: {exc}"
                 ),
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             }
         )
