@@ -442,10 +442,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           Boolean(message),
         );
 
-      if (params.systemPrompt.trim()) {
+      const safeSystemPrompt =
+        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
+      if (safeSystemPrompt.trim()) {
         outboundMessages.unshift({
           role: "system",
-          content: params.systemPrompt.trim(),
+          content: safeSystemPrompt.trim(),
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);

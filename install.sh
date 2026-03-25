@@ -171,7 +171,48 @@ else
 fi
 
 # ── Install uv ──
-if ! command -v uv >/dev/null 2>&1; then
+UV_MIN_VERSION="0.7.14"
+
+version_ge() {
+    # returns 0 if $1 >= $2
+    _a=$1
+    _b=$2
+
+    while [ -n "$_a" ] || [ -n "$_b" ]; do
+        _a_part=${_a%%.*}
+        _b_part=${_b%%.*}
+
+        [ "$_a" = "$_a_part" ] && _a="" || _a=${_a#*.}
+        [ "$_b" = "$_b_part" ] && _b="" || _b=${_b#*.}
+
+        [ -z "$_a_part" ] && _a_part=0
+        [ -z "$_b_part" ] && _b_part=0
+
+        if [ "$_a_part" -gt "$_b_part" ]; then
+            return 0
+        fi
+        if [ "$_a_part" -lt "$_b_part" ]; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+_uv_version_ok() {
+    _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
+    [ -n "$_raw" ] || return 1
+    _ver=${_raw%%[-+]*}
+    case "$_ver" in
+        ''|*[!0-9.]*) return 1 ;;
+    esac
+    version_ge "$_ver" "$UV_MIN_VERSION" || return 1
+    # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
+    [ "$_ver" = "$UV_MIN_VERSION" ] && [ "$_raw" != "$_ver" ] && return 1
+    return 0
+}
+
+if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     echo "==> Installing uv package manager..."
     _uv_tmp=$(mktemp)
     download "https://astral.sh/uv/install.sh" "$_uv_tmp"
@@ -194,7 +235,7 @@ fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
 echo "==> Installing unsloth (this may take a few minutes)..."
-uv pip install --python "$VENV_NAME/bin/python" unsloth --torch-backend=auto
+uv pip install --python "$VENV_NAME/bin/python" "unsloth>=2026.3.11" --torch-backend=auto
 
 # ── Run studio setup ──
 # Ensure the venv's Python is on PATH for setup.sh's Python discovery.
@@ -207,6 +248,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth studio setup..."
+REQUESTED_PYTHON_VERSION="$(cd "$VENV_NAME/bin" && pwd)/python" \
 "$VENV_NAME/bin/unsloth" studio setup </dev/null
 
 echo ""
@@ -215,16 +257,8 @@ echo "   Unsloth Studio installed!"
 echo "========================================="
 echo ""
 
-# Launch studio automatically in interactive terminals;
-# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 0 ]; then
-    echo "==> Launching Unsloth Studio..."
-    echo ""
-    exec "$VENV_NAME/bin/unsloth" studio -H 0.0.0.0 -p 8888
-else
-    echo "  To launch, run:"
-    echo ""
-    echo "    source ${VENV_NAME}/bin/activate"
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
-    echo ""
-fi
+echo "  To launch, run:"
+echo ""
+echo "    source ${VENV_NAME}/bin/activate"
+echo "    unsloth studio -H 0.0.0.0 -p 8888"
+echo ""
