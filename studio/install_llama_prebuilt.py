@@ -39,7 +39,9 @@ EXIT_ERROR = 1
 
 APPROVED_PREBUILT_LLAMA_TAG = "b8508"
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", APPROVED_PREBUILT_LLAMA_TAG)
-DEFAULT_PUBLISHED_REPO = os.environ.get("UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp")
+DEFAULT_PUBLISHED_REPO = os.environ.get(
+    "UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp"
+)
 DEFAULT_PUBLISHED_TAG = os.environ.get("UNSLOTH_LLAMA_RELEASE_TAG")
 DEFAULT_PUBLISHED_MANIFEST_ASSET = os.environ.get(
     "UNSLOTH_LLAMA_RELEASE_MANIFEST_ASSET", "llama-prebuilt-manifest.json"
@@ -49,7 +51,9 @@ DEFAULT_PUBLISHED_SHA256_ASSET = os.environ.get(
 )
 UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
-TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+TEST_MODEL_URL = (
+    "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+)
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 VALIDATION_MODEL_CACHE_DIRNAME = ".cache"
 VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
@@ -102,7 +106,7 @@ class AssetChoice:
     expected_sha256: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class PublishedLlamaArtifact:
     asset_name: str
     install_kind: str
@@ -144,7 +148,7 @@ class CudaRuntimePreference:
     selection_log: list[str]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ApprovedArtifactHash:
     asset_name: str
     sha256: str
@@ -223,18 +227,20 @@ def is_retryable_url_error(exc: Exception) -> bool:
     return False
 
 
-def sleep_backoff(attempt: int, *, base_delay: float = HTTP_FETCH_BASE_DELAY_SECONDS) -> None:
+def sleep_backoff(
+    attempt: int, *, base_delay: float = HTTP_FETCH_BASE_DELAY_SECONDS
+) -> None:
     delay = base_delay * (2 ** max(attempt - 1, 0))
     delay += random.uniform(0.0, 0.2)
     time.sleep(delay)
 
 
 def atomic_write_bytes(destination: Path, data: bytes) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     with tempfile.NamedTemporaryFile(
-        prefix=destination.name + ".tmp-",
-        dir=destination.parent,
-        delete=False,
+        prefix = destination.name + ".tmp-",
+        dir = destination.parent,
+        delete = False,
     ) as handle:
         tmp_path = Path(handle.name)
         handle.write(data)
@@ -244,7 +250,7 @@ def atomic_write_bytes(destination: Path, data: bytes) -> None:
 
 
 def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     os.replace(tmp_path, destination)
 
 
@@ -290,7 +296,13 @@ class DownloadProgress:
         self.start_time = time.monotonic()
         self.last_emit = 0.0
         term_ok = os.environ.get("TERM", "").lower() != "dumb"
-        self.stream = sys.stderr if sys.stderr.isatty() else sys.stdout if sys.stdout.isatty() else sys.stderr
+        self.stream = (
+            sys.stderr
+            if sys.stderr.isatty()
+            else sys.stdout
+            if sys.stdout.isatty()
+            else sys.stderr
+        )
         self.is_tty = term_ok and self.stream.isatty()
         self.completed = False
         self.last_milestone_percent = -1
@@ -317,12 +329,19 @@ class DownloadProgress:
         if self.is_tty:
             elapsed = now - self.start_time
             if not self.has_rendered_tty_progress:
-                if self.total_bytes is not None and downloaded_bytes >= self.total_bytes:
+                if (
+                    self.total_bytes is not None
+                    and downloaded_bytes >= self.total_bytes
+                ):
                     return
                 if elapsed < TTY_PROGRESS_START_DELAY_SECONDS:
                     return
             min_interval = 0.2
-            if self.has_rendered_tty_progress and not self.completed and (now - self.last_emit) < min_interval:
+            if (
+                self.has_rendered_tty_progress
+                and not self.completed
+                and (now - self.last_emit) < min_interval
+            ):
                 return
             self.last_emit = now
             line = self._render(downloaded_bytes)
@@ -335,12 +354,18 @@ class DownloadProgress:
         if self.total_bytes is not None:
             percent = int((downloaded_bytes * 100) / max(self.total_bytes, 1))
             milestone_percent = min((percent // 25) * 25, 100)
-            if milestone_percent > self.last_milestone_percent and milestone_percent < 100:
+            if (
+                milestone_percent > self.last_milestone_percent
+                and milestone_percent < 100
+            ):
                 self.last_milestone_percent = milestone_percent
                 should_emit = True
         else:
             byte_step = 25 * 1024 * 1024
-            if downloaded_bytes - self.last_milestone_bytes >= byte_step and (now - self.last_emit) >= 5.0:
+            if (
+                downloaded_bytes - self.last_milestone_bytes >= byte_step
+                and (now - self.last_emit) >= 5.0
+            ):
                 self.last_milestone_bytes = downloaded_bytes
                 should_emit = True
 
@@ -353,7 +378,7 @@ class DownloadProgress:
 
     def finish(self, downloaded_bytes: int) -> None:
         self.completed = True
-        line = self._render(downloaded_bytes, final=True)
+        line = self._render(downloaded_bytes, final = True)
         if self.is_tty:
             if not self.has_rendered_tty_progress:
                 return
@@ -379,13 +404,17 @@ def download_bytes(
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            request = urllib.request.Request(url, headers=headers or auth_headers(url))
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            request = urllib.request.Request(url, headers = headers or auth_headers(url))
+            with urllib.request.urlopen(request, timeout = timeout) as response:
                 total_bytes: int | None = None
                 content_length = response.headers.get("Content-Length")
                 if content_length and content_length.isdigit():
                     total_bytes = int(content_length)
-                progress = DownloadProgress(progress_label, total_bytes) if progress_label else None
+                progress = (
+                    DownloadProgress(progress_label, total_bytes)
+                    if progress_label
+                    else None
+                )
                 data = bytearray()
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -410,8 +439,10 @@ def download_bytes(
 def fetch_json(url: str) -> Any:
     data = download_bytes(
         url,
-        timeout=30,
-        headers=github_api_headers(url) if is_github_api_url(url) else auth_headers(url),
+        timeout = 30,
+        headers = github_api_headers(url)
+        if is_github_api_url(url)
+        else auth_headers(url),
     )
     if not data:
         raise RuntimeError(f"downloaded empty JSON payload from {url}")
@@ -420,29 +451,33 @@ def fetch_json(url: str) -> Any:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"downloaded invalid JSON from {url}: {exc}") from exc
     if not isinstance(payload, dict) and not isinstance(payload, list):
-        raise RuntimeError(f"downloaded unexpected JSON type from {url}: {type(payload).__name__}")
+        raise RuntimeError(
+            f"downloaded unexpected JSON type from {url}: {type(payload).__name__}"
+        )
     return payload
 
 
 def download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     last_exc: Exception | None = None
     for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
         tmp_path: Path | None = None
         try:
-            request = urllib.request.Request(url, headers=auth_headers(url))
+            request = urllib.request.Request(url, headers = auth_headers(url))
             with tempfile.NamedTemporaryFile(
-                prefix=destination.name + ".tmp-",
-                dir=destination.parent,
-                delete=False,
+                prefix = destination.name + ".tmp-",
+                dir = destination.parent,
+                delete = False,
             ) as handle:
                 tmp_path = Path(handle.name)
-                with urllib.request.urlopen(request, timeout=120) as response:
+                with urllib.request.urlopen(request, timeout = 120) as response:
                     total_bytes: int | None = None
                     content_length = response.headers.get("Content-Length")
                     if content_length and content_length.isdigit():
                         total_bytes = int(content_length)
-                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
+                    progress = DownloadProgress(
+                        f"Downloading {destination.name}", total_bytes
+                    )
                     downloaded_bytes = 0
                     while True:
                         chunk = response.read(1024 * 1024)
@@ -462,12 +497,14 @@ def download_file(url: str, destination: Path) -> None:
             last_exc = exc
             if tmp_path is not None:
                 try:
-                    tmp_path.unlink(missing_ok=True)
+                    tmp_path.unlink(missing_ok = True)
                 except Exception:
                     pass
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
                 raise
-            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
+            log(
+                f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying"
+            )
             sleep_backoff(attempt)
     assert last_exc is not None
     raise last_exc
@@ -495,7 +532,7 @@ def download_file_verified(
             f"{label} checksum mismatch on attempt {attempt}/2: "
             f"expected={normalized_expected} actual={actual_sha256}"
         )
-        destination.unlink(missing_ok=True)
+        destination.unlink(missing_ok = True)
         if attempt == 2:
             raise PrebuiltFallback(
                 f"{label} checksum mismatch after retry: expected={normalized_expected} actual={actual_sha256}"
@@ -504,7 +541,7 @@ def download_file_verified(
 
 
 def upstream_source_archive_urls(tag: str) -> list[str]:
-    encoded_tag = urllib.parse.quote(tag, safe="")
+    encoded_tag = urllib.parse.quote(tag, safe = "")
     return [
         f"https://codeload.github.com/{UPSTREAM_REPO}/tar.gz/refs/tags/{encoded_tag}",
         f"https://github.com/{UPSTREAM_REPO}/archive/refs/tags/{encoded_tag}.tar.gz",
@@ -512,14 +549,18 @@ def upstream_source_archive_urls(tag: str) -> list[str]:
 
 
 def github_release_assets(repo: str, tag: str) -> dict[str, str]:
-    payload = fetch_json(f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}")
+    payload = fetch_json(
+        f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe = '')}"
+    )
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected release payload for {repo}@{tag}")
     return release_asset_map(payload)
 
 
 def github_release(repo: str, tag: str) -> dict[str, Any]:
-    payload = fetch_json(f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}")
+    payload = fetch_json(
+        f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe = '')}"
+    )
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected release payload for {repo}@{tag}")
     return payload
@@ -529,7 +570,9 @@ def github_releases(repo: str, *, per_page: int = 100) -> list[dict[str, Any]]:
     releases: list[dict[str, Any]] = []
     page = 1
     while True:
-        payload = fetch_json(f"https://api.github.com/repos/{repo}/releases?per_page={per_page}&page={page}")
+        payload = fetch_json(
+            f"https://api.github.com/repos/{repo}/releases?per_page={per_page}&page={page}"
+        )
         if not isinstance(payload, list):
             raise RuntimeError(f"unexpected releases payload for {repo}")
         page_items = [item for item in payload if isinstance(item, dict)]
@@ -544,7 +587,9 @@ def latest_upstream_release_tag() -> str:
     payload = fetch_json(UPSTREAM_RELEASES_API)
     tag = payload.get("tag_name")
     if not isinstance(tag, str) or not tag:
-        raise RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
+        raise RuntimeError(
+            f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
+        )
     return tag
 
 
@@ -576,7 +621,7 @@ def normalize_compute_caps(compute_caps: Iterable[str]) -> list[str]:
             continue
         seen.add(normalized_value)
         normalized.append(normalized_value)
-    normalized.sort(key=int)
+    normalized.sort(key = int)
     return normalized
 
 
@@ -589,7 +634,9 @@ def parse_cuda_visible_devices(value: str | None) -> list[str] | None:
     return [token.strip() for token in raw.split(",") if token.strip()]
 
 
-def supports_explicit_visible_device_matching(visible_devices: list[str] | None) -> bool:
+def supports_explicit_visible_device_matching(
+    visible_devices: list[str] | None,
+) -> bool:
     if not visible_devices:
         return False
     for token in visible_devices:
@@ -639,7 +686,10 @@ def dir_provides_exact_library(directory: str | Path, library: str) -> bool:
     candidate = Path(directory) / library
     return candidate.exists() and (candidate.is_file() or candidate.is_symlink())
 
-def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str]) -> list[str]:
+
+def linux_runtime_dirs_for_required_libraries(
+    required_libraries: Iterable[str],
+) -> list[str]:
     required = [library for library in required_libraries if library]
     candidates: list[str | Path] = []
 
@@ -655,7 +705,9 @@ def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str])
         value = os.environ.get(name)
         if value:
             cuda_roots.append(Path(value))
-    cuda_roots.extend(Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*"))
+    cuda_roots.extend(
+        Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*")
+    )
 
     for root in cuda_roots:
         candidates.extend(
@@ -679,7 +731,10 @@ def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str])
             "/usr/lib/x86_64-linux-gnu",
         )
     )
-    candidates.extend(Path(path) for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib"))
+    candidates.extend(
+        Path(path)
+        for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib")
+    )
     candidates.extend(Path(path) for path in python_runtime_dirs())
     candidates.extend(Path(path) for path in ldconfig_runtime_dirs(required))
 
@@ -691,13 +746,12 @@ def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str])
     for directory in resolved:
         base = Path(directory)
         provided = sum(
-            1 for library in required
-            if dir_provides_exact_library(directory, library)
+            1 for library in required if dir_provides_exact_library(directory, library)
         )
         if provided:
             matched.append((provided, directory))
 
-    matched.sort(key=lambda item: item[0], reverse=True)
+    matched.sort(key = lambda item: item[0], reverse = True)
     return [directory for _, directory in matched]
 
 
@@ -713,7 +767,11 @@ def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
         library_matches: dict[str, list[str]] = {}
         matching_dirs: list[str] = []
         for library in required:
-            matched_dirs = [directory for directory in dirs if any(Path(directory).glob(f"{library}*"))]
+            matched_dirs = [
+                directory
+                for directory in dirs
+                if any(Path(directory).glob(f"{library}*"))
+            ]
             if not matched_dirs:
                 library_matches = {}
                 matching_dirs = []
@@ -749,13 +807,17 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     if not isinstance(asset_name, str) or not asset_name:
         raise ValueError("artifact.asset_name was missing or not a string")
     if not isinstance(install_kind, str) or not install_kind:
-        raise ValueError(f"artifact {asset_name} install_kind was missing or not a string")
+        raise ValueError(
+            f"artifact {asset_name} install_kind was missing or not a string"
+        )
 
     supported_sms_raw = raw.get("supported_sms", [])
     if not isinstance(supported_sms_raw, (list, tuple)):
         raise ValueError(f"artifact {asset_name} supported_sms must be a list or tuple")
     if any(not isinstance(value, (int, str)) for value in supported_sms_raw):
-        raise ValueError(f"artifact {asset_name} supported_sms entries must be ints or strings")
+        raise ValueError(
+            f"artifact {asset_name} supported_sms entries must be ints or strings"
+        )
     supported_sms = normalize_compute_caps(supported_sms_raw)
 
     min_sm_raw = raw.get("min_sm")
@@ -764,7 +826,9 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         min_sm = int(min_sm_raw) if min_sm_raw is not None else None
         max_sm = int(max_sm_raw) if max_sm_raw is not None else None
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"artifact {asset_name} min_sm/max_sm were not integers") from exc
+        raise ValueError(
+            f"artifact {asset_name} min_sm/max_sm were not integers"
+        ) from exc
     runtime_line = raw.get("runtime_line")
     coverage_class = raw.get("coverage_class")
     bundle_profile = raw.get("bundle_profile")
@@ -780,19 +844,27 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     except (TypeError, ValueError):
         raise ValueError(f"artifact {asset_name} rank was not an integer")
     return PublishedLlamaArtifact(
-        asset_name=asset_name,
-        install_kind=install_kind,
-        runtime_line=runtime_line if isinstance(runtime_line, str) and runtime_line else None,
-        coverage_class=coverage_class if isinstance(coverage_class, str) and coverage_class else None,
-        supported_sms=supported_sms,
-        min_sm=min_sm,
-        max_sm=max_sm,
-        bundle_profile=bundle_profile if isinstance(bundle_profile, str) and bundle_profile else None,
-        rank=rank,
+        asset_name = asset_name,
+        install_kind = install_kind,
+        runtime_line = runtime_line
+        if isinstance(runtime_line, str) and runtime_line
+        else None,
+        coverage_class = coverage_class
+        if isinstance(coverage_class, str) and coverage_class
+        else None,
+        supported_sms = supported_sms,
+        min_sm = min_sm,
+        max_sm = max_sm,
+        bundle_profile = bundle_profile
+        if isinstance(bundle_profile, str) and bundle_profile
+        else None,
+        rank = rank,
     )
 
 
-def parse_published_release_bundle(repo: str, release: dict[str, Any]) -> PublishedReleaseBundle | None:
+def parse_published_release_bundle(
+    repo: str, release: dict[str, Any]
+) -> PublishedReleaseBundle | None:
     release_tag = release.get("tag_name")
     if not isinstance(release_tag, str) or not release_tag:
         return None
@@ -806,7 +878,9 @@ def parse_published_release_bundle(repo: str, release: dict[str, Any]) -> Publis
     # by release tag or asset filename conventions.
     manifest_payload = fetch_json(manifest_url)
     if not isinstance(manifest_payload, dict):
-        raise RuntimeError(f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} was not a JSON object")
+        raise RuntimeError(
+            f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} was not a JSON object"
+        )
     component = manifest_payload.get("component")
     upstream_tag = manifest_payload.get("upstream_tag")
     if component != "llama.cpp":
@@ -827,7 +901,9 @@ def parse_published_release_bundle(repo: str, release: dict[str, Any]) -> Publis
         try:
             artifact = parse_published_artifact(raw_artifact)
         except ValueError as exc:
-            log(f"published artifact ignored for {repo}@{release_tag} artifact[{index}]: {exc}")
+            log(
+                f"published artifact ignored for {repo}@{release_tag} artifact[{index}]: {exc}"
+            )
             continue
         if artifact is not None:
             artifacts.append(artifact)
@@ -838,13 +914,13 @@ def parse_published_release_bundle(repo: str, release: dict[str, Any]) -> Publis
         f"published_release: upstream_tag={upstream_tag}",
     ]
     return PublishedReleaseBundle(
-        repo=repo,
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        assets=assets,
-        manifest_asset_name=DEFAULT_PUBLISHED_MANIFEST_ASSET,
-        artifacts=artifacts,
-        selection_log=selection_log,
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        assets = assets,
+        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        artifacts = artifacts,
+        selection_log = selection_log,
     )
 
 
@@ -854,12 +930,18 @@ def parse_approved_release_checksums(
     payload: Any,
 ) -> ApprovedReleaseChecksums:
     if not isinstance(payload, dict):
-        raise RuntimeError(f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} was not a JSON object")
+        raise RuntimeError(
+            f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} was not a JSON object"
+        )
     if payload.get("component") != "llama.cpp":
-        raise RuntimeError(f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} did not describe llama.cpp")
+        raise RuntimeError(
+            f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} did not describe llama.cpp"
+        )
     payload_release_tag = payload.get("release_tag")
     if not isinstance(payload_release_tag, str) or not payload_release_tag:
-        raise RuntimeError(f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} omitted release_tag")
+        raise RuntimeError(
+            f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} omitted release_tag"
+        )
     if payload_release_tag != release_tag:
         raise RuntimeError(
             f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} release_tag={payload_release_tag} "
@@ -867,44 +949,60 @@ def parse_approved_release_checksums(
         )
     upstream_tag = payload.get("upstream_tag")
     if not isinstance(upstream_tag, str) or not upstream_tag:
-        raise RuntimeError(f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} omitted upstream_tag")
+        raise RuntimeError(
+            f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} omitted upstream_tag"
+        )
     artifacts_payload = payload.get("artifacts")
     if not isinstance(artifacts_payload, dict):
-        raise RuntimeError(f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} omitted artifacts")
+        raise RuntimeError(
+            f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} omitted artifacts"
+        )
 
     artifacts: dict[str, ApprovedArtifactHash] = {}
     for asset_name, raw_entry in artifacts_payload.items():
         if not isinstance(asset_name, str) or not asset_name:
-            raise RuntimeError("published checksum asset used a non-string artifact key")
+            raise RuntimeError(
+                "published checksum asset used a non-string artifact key"
+            )
         if not isinstance(raw_entry, dict):
-            raise RuntimeError(f"published checksum entry for {asset_name} was not an object")
+            raise RuntimeError(
+                f"published checksum entry for {asset_name} was not an object"
+            )
         digest = normalize_sha256_digest(raw_entry.get("sha256"))
         if not digest:
-            raise RuntimeError(f"published checksum entry for {asset_name} omitted a valid sha256")
+            raise RuntimeError(
+                f"published checksum entry for {asset_name} omitted a valid sha256"
+            )
         repo_value = raw_entry.get("repo")
         kind_value = raw_entry.get("kind")
         artifacts[asset_name] = ApprovedArtifactHash(
-            asset_name=asset_name,
-            sha256=digest,
-            repo=repo_value if isinstance(repo_value, str) and repo_value else None,
-            kind=kind_value if isinstance(kind_value, str) and kind_value else None,
+            asset_name = asset_name,
+            sha256 = digest,
+            repo = repo_value if isinstance(repo_value, str) and repo_value else None,
+            kind = kind_value if isinstance(kind_value, str) and kind_value else None,
         )
 
     source_commit = payload.get("source_commit")
     return ApprovedReleaseChecksums(
-        repo=repo,
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        source_commit=source_commit if isinstance(source_commit, str) and source_commit else None,
-        artifacts=artifacts,
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        source_commit = source_commit
+        if isinstance(source_commit, str) and source_commit
+        else None,
+        artifacts = artifacts,
     )
 
 
-def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedReleaseChecksums:
+def load_approved_release_checksums(
+    repo: str, release_tag: str
+) -> ApprovedReleaseChecksums:
     try:
         release = github_release(repo, release_tag)
     except Exception as exc:
-        raise PrebuiltFallback(f"approved prebuilt release {repo}@{release_tag} was not available") from exc
+        raise PrebuiltFallback(
+            f"approved prebuilt release {repo}@{release_tag} was not available"
+        ) from exc
     assets = release_asset_map(release)
     checksum_url = assets.get(DEFAULT_PUBLISHED_SHA256_ASSET)
     if not checksum_url:
@@ -927,10 +1025,18 @@ def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedRele
     return checksums
 
 
-def iter_published_release_bundles(repo: str, published_release_tag: str = "") -> Iterable[PublishedReleaseBundle]:
-    releases = [github_release(repo, published_release_tag)] if published_release_tag else github_releases(repo)
+def iter_published_release_bundles(
+    repo: str, published_release_tag: str = ""
+) -> Iterable[PublishedReleaseBundle]:
+    releases = (
+        [github_release(repo, published_release_tag)]
+        if published_release_tag
+        else github_releases(repo)
+    )
     for release in releases:
-        if not published_release_tag and (release.get("draft") or release.get("prerelease")):
+        if not published_release_tag and (
+            release.get("draft") or release.get("prerelease")
+        ):
             continue
         try:
             bundle = parse_published_release_bundle(repo, release)
@@ -953,42 +1059,64 @@ def linux_cuda_choice_from_release(
     detected_runtime_lines, runtime_dirs = detected_linux_runtime_lines()
     driver_runtime_lines = compatible_linux_runtime_lines(host)
     runtime_lines = [
-        runtime_line for runtime_line in detected_runtime_lines if runtime_line in driver_runtime_lines
+        runtime_line
+        for runtime_line in detected_runtime_lines
+        if runtime_line in driver_runtime_lines
     ]
     ordered_runtime_lines = list(runtime_lines)
-    selection_log = list(release.selection_log) + list(selection_preamble) + [
-        f"linux_cuda_selection: release={release.release_tag}",
-        f"linux_cuda_selection: detected_sms={','.join(host_sms) if host_sms else 'unknown'}",
-        "linux_cuda_selection: detected_runtime_lines="
-        + (",".join(detected_runtime_lines) if detected_runtime_lines else "none"),
-        "linux_cuda_selection: driver_runtime_lines="
-        + (",".join(driver_runtime_lines) if driver_runtime_lines else "none"),
-        "linux_cuda_selection: compatible_runtime_lines="
-        + (",".join(runtime_lines) if runtime_lines else "none"),
-    ]
+    selection_log = (
+        list(release.selection_log)
+        + list(selection_preamble)
+        + [
+            f"linux_cuda_selection: release={release.release_tag}",
+            f"linux_cuda_selection: detected_sms={','.join(host_sms) if host_sms else 'unknown'}",
+            "linux_cuda_selection: detected_runtime_lines="
+            + (",".join(detected_runtime_lines) if detected_runtime_lines else "none"),
+            "linux_cuda_selection: driver_runtime_lines="
+            + (",".join(driver_runtime_lines) if driver_runtime_lines else "none"),
+            "linux_cuda_selection: compatible_runtime_lines="
+            + (",".join(runtime_lines) if runtime_lines else "none"),
+        ]
+    )
     for runtime_line in ("cuda13", "cuda12"):
         selection_log.append(
             "linux_cuda_selection: runtime_dirs "
             f"{runtime_line}="
-            + (",".join(runtime_dirs.get(runtime_line, [])) if runtime_dirs.get(runtime_line) else "none")
+            + (
+                ",".join(runtime_dirs.get(runtime_line, []))
+                if runtime_dirs.get(runtime_line)
+                else "none"
+            )
         )
-    published_artifacts = [artifact for artifact in release.artifacts if artifact.install_kind == "linux-cuda"]
-    published_asset_names = sorted(artifact.asset_name for artifact in published_artifacts)
+    published_artifacts = [
+        artifact
+        for artifact in release.artifacts
+        if artifact.install_kind == "linux-cuda"
+    ]
+    published_asset_names = sorted(
+        artifact.asset_name for artifact in published_artifacts
+    )
     selection_log.append(
         "linux_cuda_selection: published_assets="
         + (",".join(published_asset_names) if published_asset_names else "none")
     )
 
     if not host_sms:
-        selection_log.append("linux_cuda_selection: compute capability detection unavailable; prefer portable by runtime line")
+        selection_log.append(
+            "linux_cuda_selection: compute capability detection unavailable; prefer portable by runtime line"
+        )
     if not runtime_lines:
-        selection_log.append("linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility")
+        selection_log.append(
+            "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
+        )
         return None
 
     if preferred_runtime_line:
         if preferred_runtime_line in ordered_runtime_lines:
             ordered_runtime_lines = [preferred_runtime_line] + [
-                runtime_line for runtime_line in ordered_runtime_lines if runtime_line != preferred_runtime_line
+                runtime_line
+                for runtime_line in ordered_runtime_lines
+                if runtime_line != preferred_runtime_line
             ]
             selection_log.append(
                 "linux_cuda_selection: torch_preferred_runtime_line="
@@ -1003,27 +1131,29 @@ def linux_cuda_choice_from_release(
     attempts: list[AssetChoice] = []
     seen_attempts: set[str] = set()
 
-    def add_attempt(artifact: PublishedLlamaArtifact, asset_url: str, reason: str) -> None:
+    def add_attempt(
+        artifact: PublishedLlamaArtifact, asset_url: str, reason: str
+    ) -> None:
         asset_name = artifact.asset_name
         if asset_name in seen_attempts:
             return
         seen_attempts.add(asset_name)
         attempts.append(
             AssetChoice(
-                repo=release.repo,
-                tag=release.release_tag,
-                name=asset_name,
-                url=asset_url,
-                source_label="published",
-                is_ready_bundle=True,
-                install_kind="linux-cuda",
-                bundle_profile=artifact.bundle_profile,
-                runtime_line=artifact.runtime_line,
-                coverage_class=artifact.coverage_class,
-                supported_sms=artifact.supported_sms,
-                min_sm=artifact.min_sm,
-                max_sm=artifact.max_sm,
-                selection_log=list(selection_log)
+                repo = release.repo,
+                tag = release.release_tag,
+                name = asset_name,
+                url = asset_url,
+                source_label = "published",
+                is_ready_bundle = True,
+                install_kind = "linux-cuda",
+                bundle_profile = artifact.bundle_profile,
+                runtime_line = artifact.runtime_line,
+                coverage_class = artifact.coverage_class,
+                supported_sms = artifact.supported_sms,
+                min_sm = artifact.min_sm,
+                max_sm = artifact.max_sm,
+                selection_log = list(selection_log)
                 + [
                     "linux_cuda_selection: selected "
                     f"{asset_name} runtime_line={artifact.runtime_line} coverage_class={artifact.coverage_class} reason={reason}"
@@ -1040,7 +1170,9 @@ def linux_cuda_choice_from_release(
             asset_name = artifact.asset_name
             asset_url = release.assets.get(asset_name)
             if not asset_url:
-                selection_log.append(f"linux_cuda_selection: reject {asset_name} missing asset")
+                selection_log.append(
+                    f"linux_cuda_selection: reject {asset_name} missing asset"
+                )
                 continue
             if not host_sms and artifact.coverage_class != "portable":
                 selection_log.append(
@@ -1068,7 +1200,9 @@ def linux_cuda_choice_from_release(
             supported_sms = {str(value) for value in artifact.supported_sms}
             missing_sms = [sm for sm in host_sms if sm not in supported_sms]
             out_of_range_sms = [
-                sm for sm in host_sms if not (artifact.min_sm <= int(sm) <= artifact.max_sm)
+                sm
+                for sm in host_sms
+                if not (artifact.min_sm <= int(sm) <= artifact.max_sm)
             ]
             reasons: list[str] = []
             if missing_sms:
@@ -1097,7 +1231,7 @@ def linux_cuda_choice_from_release(
         if coverage_candidates:
             artifact, url = sorted(
                 coverage_candidates,
-                key=lambda item: (
+                key = lambda item: (
                     (item[0].max_sm or 0) - (item[0].min_sm or 0),
                     item[0].rank,
                     item[0].max_sm or 0,
@@ -1112,14 +1246,15 @@ def linux_cuda_choice_from_release(
         return None
 
     selection_log.append(
-        "linux_cuda_selection: attempt_order=" + ",".join(choice.name for choice in attempts)
+        "linux_cuda_selection: attempt_order="
+        + ",".join(choice.name for choice in attempts)
     )
     for attempt in attempts:
         attempt.selection_log = list(selection_log) + [
             "linux_cuda_selection: attempt "
             f"{attempt.name} runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
         ]
-    return LinuxCudaSelection(attempts=attempts, selection_log=selection_log)
+    return LinuxCudaSelection(attempts = attempts, selection_log = selection_log)
 
 
 def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str | None:
@@ -1136,10 +1271,14 @@ def iter_upstream_releases() -> Iterable[dict[str, Any]]:
         yield release
 
 
-def pinned_published_release_bundle(repo: str, published_release_tag: str) -> PublishedReleaseBundle:
+def pinned_published_release_bundle(
+    repo: str, published_release_tag: str
+) -> PublishedReleaseBundle:
     bundle = next(iter_published_release_bundles(repo, published_release_tag), None)
     if bundle is None:
-        raise PrebuiltFallback(f"published release {repo}@{published_release_tag} did not expose a usable llama.cpp manifest")
+        raise PrebuiltFallback(
+            f"published release {repo}@{published_release_tag} did not expose a usable llama.cpp manifest"
+        )
     return bundle
 
 
@@ -1177,13 +1316,15 @@ def run_capture(
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+        env = env,
     )
     if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, command, result.stdout, result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, command, result.stdout, result.stderr
+        )
     return result
 
 
@@ -1205,7 +1346,7 @@ def detect_host() -> HostInfo:
     has_usable_nvidia = False
     if nvidia_smi:
         try:
-            result = run_capture([nvidia_smi], timeout=20)
+            result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
             if "NVIDIA-SMI" in merged:
                 has_physical_nvidia = True
@@ -1221,8 +1362,12 @@ def detect_host() -> HostInfo:
 
         try:
             caps = run_capture(
-                [nvidia_smi, "--query-gpu=index,uuid,compute_cap", "--format=csv,noheader"],
-                timeout=20,
+                [
+                    nvidia_smi,
+                    "--query-gpu=index,uuid,compute_cap",
+                    "--format=csv,noheader",
+                ],
+                timeout = 20,
             )
             visible_gpu_rows: list[tuple[str, str, str]] = []
             for raw in caps.stdout.splitlines():
@@ -1255,19 +1400,19 @@ def detect_host() -> HostInfo:
             pass
 
     return HostInfo(
-        system=system,
-        machine=machine,
-        is_windows=is_windows,
-        is_linux=is_linux,
-        is_macos=is_macos,
-        is_x86_64=is_x86_64,
-        is_arm64=is_arm64,
-        nvidia_smi=nvidia_smi,
-        driver_cuda_version=driver_cuda_version,
-        compute_caps=compute_caps,
-        visible_cuda_devices=visible_cuda_devices,
-        has_physical_nvidia=has_physical_nvidia,
-        has_usable_nvidia=has_usable_nvidia,
+        system = system,
+        machine = machine,
+        is_windows = is_windows,
+        is_linux = is_linux,
+        is_macos = is_macos,
+        is_x86_64 = is_x86_64,
+        is_arm64 = is_arm64,
+        nvidia_smi = nvidia_smi,
+        driver_cuda_version = driver_cuda_version,
+        compute_caps = compute_caps,
+        visible_cuda_devices = visible_cuda_devices,
+        has_physical_nvidia = has_physical_nvidia,
+        has_usable_nvidia = has_usable_nvidia,
     )
 
 
@@ -1339,46 +1484,52 @@ def detect_torch_cuda_runtime_preference(host: HostInfo) -> CudaRuntimePreferenc
     selection_log: list[str] = []
     if host.is_macos:
         selection_log.append("torch_cuda_preference: skipped on macOS")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
     if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
-        selection_log.append("torch_cuda_preference: skipped because CUDA host prerequisites were not met")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        selection_log.append(
+            "torch_cuda_preference: skipped because CUDA host prerequisites were not met"
+        )
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     try:
         import torch
     except Exception as exc:
         selection_log.append(f"torch_cuda_preference: import failed: {exc}")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
     if not isinstance(cuda_version, str) or not cuda_version.strip():
-        selection_log.append("torch_cuda_preference: torch.version.cuda missing; skipping Torch shortcut")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        selection_log.append(
+            "torch_cuda_preference: torch.version.cuda missing; skipping Torch shortcut"
+        )
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     try:
         cuda_available = bool(torch.cuda.is_available())
     except Exception as exc:
-        selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        selection_log.append(
+            f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}"
+        )
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     if not cuda_available:
         selection_log.append(
             "torch_cuda_preference: torch.cuda.is_available() returned False; falling back to normal selection"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     runtime_line = runtime_line_from_cuda_version(cuda_version)
     if runtime_line is None:
         selection_log.append(
             f"torch_cuda_preference: unsupported torch.version.cuda={cuda_version}; falling back to normal selection"
         )
-        return CudaRuntimePreference(runtime_line=None, selection_log=selection_log)
+        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     selection_log.append(
         "torch_cuda_preference: selected runtime_line="
         f"{runtime_line} from torch.version.cuda={cuda_version}"
     )
-    return CudaRuntimePreference(runtime_line=runtime_line, selection_log=selection_log)
+    return CudaRuntimePreference(runtime_line = runtime_line, selection_log = selection_log)
 
 
 def windows_cuda_attempts(
@@ -1395,11 +1546,14 @@ def windows_cuda_attempts(
     compatible_runtime_lines = compatible_windows_runtime_lines(host)
     normal_runtime_lines: list[str]
     if detected_runtime_lines:
-        normal_runtime_lines = [line for line in compatible_runtime_lines if line in detected_runtime_lines]
+        normal_runtime_lines = [
+            line for line in compatible_runtime_lines if line in detected_runtime_lines
+        ]
     else:
         normal_runtime_lines = compatible_runtime_lines
     selection_log.append(
-        "windows_cuda_selection: driver_runtime=" + (driver_runtime if driver_runtime else "unknown")
+        "windows_cuda_selection: driver_runtime="
+        + (driver_runtime if driver_runtime else "unknown")
     )
     selection_log.append(
         "windows_cuda_selection: detected_runtime_lines="
@@ -1409,7 +1563,11 @@ def windows_cuda_attempts(
         selection_log.append(
             "windows_cuda_selection: runtime_dirs "
             f"{runtime_line}="
-            + (",".join(runtime_dirs.get(runtime_line, [])) if runtime_dirs.get(runtime_line) else "none")
+            + (
+                ",".join(runtime_dirs.get(runtime_line, []))
+                if runtime_dirs.get(runtime_line)
+                else "none"
+            )
         )
     if detected_runtime_lines:
         selection_log.append(
@@ -1417,13 +1575,19 @@ def windows_cuda_attempts(
             + (",".join(normal_runtime_lines) if normal_runtime_lines else "none")
         )
     else:
-        selection_log.append("windows_cuda_selection: no CUDA runtime DLL line detected; falling back to driver order")
+        selection_log.append(
+            "windows_cuda_selection: no CUDA runtime DLL line detected; falling back to driver order"
+        )
     if not normal_runtime_lines:
         if detected_runtime_lines:
             selection_log.append(
                 "windows_cuda_selection: detected CUDA runtime DLLs were incompatible with the reported driver"
             )
-        fallback_runtime_lines = ["cuda13", "cuda12"] if driver_runtime == "13.1" else (["cuda12"] if driver_runtime == "12.4" else [])
+        fallback_runtime_lines = (
+            ["cuda13", "cuda12"]
+            if driver_runtime == "13.1"
+            else (["cuda12"] if driver_runtime == "12.4" else [])
+        )
         normal_runtime_lines = fallback_runtime_lines
 
     runtime_order: list[str] = []
@@ -1439,14 +1603,22 @@ def windows_cuda_attempts(
             f"{preferred_runtime_line} unavailable_or_incompatible"
         )
     else:
-        selection_log.append("windows_cuda_selection: no Torch runtime preference available")
+        selection_log.append(
+            "windows_cuda_selection: no Torch runtime preference available"
+        )
 
-    runtime_order.extend(runtime_line for runtime_line in normal_runtime_lines if runtime_line not in runtime_order)
-    selection_log.append(
-        "windows_cuda_selection: normal_runtime_order=" + (",".join(normal_runtime_lines) if normal_runtime_lines else "none")
+    runtime_order.extend(
+        runtime_line
+        for runtime_line in normal_runtime_lines
+        if runtime_line not in runtime_order
     )
     selection_log.append(
-        "windows_cuda_selection: attempt_runtime_order=" + (",".join(runtime_order) if runtime_order else "none")
+        "windows_cuda_selection: normal_runtime_order="
+        + (",".join(normal_runtime_lines) if normal_runtime_lines else "none")
+    )
+    selection_log.append(
+        "windows_cuda_selection: attempt_runtime_order="
+        + (",".join(runtime_order) if runtime_order else "none")
     )
 
     attempts: list[AssetChoice] = []
@@ -1455,25 +1627,31 @@ def windows_cuda_attempts(
         upstream_name = f"llama-{llama_tag}-bin-win-cuda-{runtime}-x64.zip"
         asset_url = upstream_assets.get(upstream_name)
         if not asset_url:
-            selection_log.append(f"windows_cuda_selection: skip missing asset {upstream_name}")
+            selection_log.append(
+                f"windows_cuda_selection: skip missing asset {upstream_name}"
+            )
             continue
         attempts.append(
             AssetChoice(
-                repo=UPSTREAM_REPO,
-                tag=llama_tag,
-                name=upstream_name,
-                url=asset_url,
-                source_label="upstream",
-                install_kind="windows-cuda",
-                runtime_line=runtime_line,
-                selection_log=list(selection_log)
-                + [f"windows_cuda_selection: selected {upstream_name} runtime={runtime}"],
+                repo = UPSTREAM_REPO,
+                tag = llama_tag,
+                name = upstream_name,
+                url = asset_url,
+                source_label = "upstream",
+                install_kind = "windows-cuda",
+                runtime_line = runtime_line,
+                selection_log = list(selection_log)
+                + [
+                    f"windows_cuda_selection: selected {upstream_name} runtime={runtime}"
+                ],
             )
         )
     return attempts
 
 
-def resolve_windows_cuda_choices(host: HostInfo, llama_tag: str, upstream_assets: dict[str, str]) -> list[AssetChoice]:
+def resolve_windows_cuda_choices(
+    host: HostInfo, llama_tag: str, upstream_assets: dict[str, str]
+) -> list[AssetChoice]:
     torch_preference = detect_torch_cuda_runtime_preference(host)
     attempts = windows_cuda_attempts(
         host,
@@ -1485,18 +1663,22 @@ def resolve_windows_cuda_choices(host: HostInfo, llama_tag: str, upstream_assets
     return attempts
 
 
-def resolve_linux_cuda_choice(host: HostInfo, llama_tag: str, published_repo: str, published_release_tag: str) -> LinuxCudaSelection:
+def resolve_linux_cuda_choice(
+    host: HostInfo, llama_tag: str, published_repo: str, published_release_tag: str
+) -> LinuxCudaSelection:
     torch_preference = detect_torch_cuda_runtime_preference(host)
     skipped_tag_mismatches = 0
-    for release in iter_published_release_bundles(published_repo, published_release_tag):
+    for release in iter_published_release_bundles(
+        published_repo, published_release_tag
+    ):
         if release.upstream_tag != llama_tag:
             skipped_tag_mismatches += 1
             continue
         selection = linux_cuda_choice_from_release(
             host,
             release,
-            preferred_runtime_line=torch_preference.runtime_line,
-            selection_preamble=torch_preference.selection_log,
+            preferred_runtime_line = torch_preference.runtime_line,
+            selection_preamble = torch_preference.selection_log,
         )
         if selection is not None:
             return selection
@@ -1515,12 +1697,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="linux-cpu",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "linux-cpu",
         )
 
     if host.is_windows and host.is_x86_64:
@@ -1534,12 +1716,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Windows CPU asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="windows-cpu",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "windows-cpu",
         )
 
     if host.is_macos and host.is_arm64:
@@ -1547,12 +1729,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream macOS arm64 asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="macos-arm64",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "macos-arm64",
         )
 
     if host.is_macos and host.is_x86_64:
@@ -1560,20 +1742,26 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream macOS x64 asset was not found")
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=llama_tag,
-            name=upstream_name,
-            url=upstream_assets[upstream_name],
-            source_label="upstream",
-            install_kind="macos-x64",
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "macos-x64",
         )
 
-    raise PrebuiltFallback(f"no prebuilt policy exists for {host.system} {host.machine}")
+    raise PrebuiltFallback(
+        f"no prebuilt policy exists for {host.system} {host.machine}"
+    )
 
 
-def resolve_asset_choice(host: HostInfo, llama_tag: str, published_repo: str, published_release_tag: str) -> AssetChoice:
+def resolve_asset_choice(
+    host: HostInfo, llama_tag: str, published_repo: str, published_release_tag: str
+) -> AssetChoice:
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
-        return resolve_linux_cuda_choice(host, llama_tag, published_repo, published_release_tag).primary
+        return resolve_linux_cuda_choice(
+            host, llama_tag, published_repo, published_release_tag
+        ).primary
     return resolve_upstream_asset_choice(host, llama_tag)
 
 
@@ -1582,21 +1770,29 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         normalized = member_name.replace("\\", "/")
         member_path = Path(normalized)
         if member_path.is_absolute():
-            raise PrebuiltFallback(f"archive member used an absolute path: {member_name}")
+            raise PrebuiltFallback(
+                f"archive member used an absolute path: {member_name}"
+            )
 
         target = (base / member_path).resolve()
         base_resolved = base.resolve()
         try:
             target.relative_to(base_resolved)
         except ValueError as exc:
-            raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
+            raise PrebuiltFallback(
+                f"archive member escaped destination: {member_name}"
+            ) from exc
         return target
 
-    def safe_link_target(base: Path, member_name: str, link_name: str, target: Path) -> tuple[str, Path]:
+    def safe_link_target(
+        base: Path, member_name: str, link_name: str, target: Path
+    ) -> tuple[str, Path]:
         normalized = link_name.replace("\\", "/")
         link_path = Path(normalized)
         if link_path.is_absolute():
-            raise PrebuiltFallback(f"archive link used an absolute target: {member_name} -> {link_name}")
+            raise PrebuiltFallback(
+                f"archive link used an absolute target: {member_name} -> {link_name}"
+            )
         if not normalized:
             raise PrebuiltFallback(f"archive link used an empty target: {member_name}")
 
@@ -1605,7 +1801,9 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         try:
             resolved.relative_to(base_resolved)
         except ValueError as exc:
-            raise PrebuiltFallback(f"archive link escaped destination: {member_name} -> {link_name}") from exc
+            raise PrebuiltFallback(
+                f"archive link escaped destination: {member_name} -> {link_name}"
+            ) from exc
         return normalized, resolved
 
     def extract_zip_safely(source: Path, base: Path) -> None:
@@ -1614,11 +1812,13 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 target = safe_extract_path(base, member.filename)
                 mode = (member.external_attr >> 16) & 0o170000
                 if mode == 0o120000:
-                    raise PrebuiltFallback(f"zip archive contained a symlink entry: {member.filename}")
+                    raise PrebuiltFallback(
+                        f"zip archive contained a symlink entry: {member.filename}"
+                    )
                 if member.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    target.mkdir(parents = True, exist_ok = True)
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents = True, exist_ok = True)
                 with archive.open(member, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
 
@@ -1628,17 +1828,21 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
             for member in archive.getmembers():
                 target = safe_extract_path(base, member.name)
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    target.mkdir(parents = True, exist_ok = True)
                     continue
                 if member.islnk() or member.issym():
                     pending_links.append((member, target))
                     continue
                 if not member.isfile():
-                    raise PrebuiltFallback(f"tar archive contained an unsupported entry: {member.name}")
-                target.parent.mkdir(parents=True, exist_ok=True)
+                    raise PrebuiltFallback(
+                        f"tar archive contained an unsupported entry: {member.name}"
+                    )
+                target.parent.mkdir(parents = True, exist_ok = True)
                 extracted = archive.extractfile(member)
                 if extracted is None:
-                    raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
+                    raise PrebuiltFallback(
+                        f"tar archive entry could not be read: {member.name}"
+                    )
                 with extracted, target.open("wb") as dst:
                     shutil.copyfileobj(extracted, dst)
 
@@ -1647,14 +1851,18 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
             next_round: list[tuple[tarfile.TarInfo, Path]] = []
             progressed = False
             for member, target in unresolved:
-                normalized_link, resolved_target = safe_link_target(base, member.name, member.linkname, target)
+                normalized_link, resolved_target = safe_link_target(
+                    base, member.name, member.linkname, target
+                )
                 if not resolved_target.exists() and not resolved_target.is_symlink():
                     next_round.append((member, target))
                     continue
                 if resolved_target.is_dir():
-                    raise PrebuiltFallback(f"archive link targeted a directory: {member.name} -> {member.linkname}")
+                    raise PrebuiltFallback(
+                        f"archive link targeted a directory: {member.name} -> {member.linkname}"
+                    )
 
-                target.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents = True, exist_ok = True)
                 if target.exists() or target.is_symlink():
                     target.unlink()
 
@@ -1668,10 +1876,12 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 details = ", ".join(
                     f"{member.name} -> {member.linkname}" for member, _ in next_round
                 )
-                raise PrebuiltFallback(f"tar archive contained unresolved link entries: {details}")
+                raise PrebuiltFallback(
+                    f"tar archive contained unresolved link entries: {details}"
+                )
             unresolved = next_round
 
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents = True, exist_ok = True)
     if archive_path.name.endswith(".zip"):
         extract_zip_safely(archive_path, destination)
         return
@@ -1681,12 +1891,17 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
 
 
-def copy_globs(source_dir: Path, destination: Path, patterns: list[str], *, required: bool = True) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
+def copy_globs(
+    source_dir: Path, destination: Path, patterns: list[str], *, required: bool = True
+) -> None:
+    destination.mkdir(parents = True, exist_ok = True)
     matched_sources: dict[str, Path] = {}
     for path in sorted(
         (candidate for candidate in source_dir.rglob("*") if candidate.is_file()),
-        key=lambda candidate: (len(candidate.relative_to(source_dir).parts), str(candidate)),
+        key = lambda candidate: (
+            len(candidate.relative_to(source_dir).parts),
+            str(candidate),
+        ),
     ):
         for pattern in patterns:
             if fnmatch.fnmatch(path.name, pattern):
@@ -1709,11 +1924,15 @@ def copy_globs(source_dir: Path, destination: Path, patterns: list[str], *, requ
 def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
     raw_base = f"https://raw.githubusercontent.com/ggml-org/llama.cpp/{llama_tag}"
     source_url = f"{raw_base}/convert_hf_to_gguf.py"
-    data = download_bytes(source_url, progress_label=f"Downloading {download_label_from_url(source_url)}")
+    data = download_bytes(
+        source_url, progress_label = f"Downloading {download_label_from_url(source_url)}"
+    )
     if not data:
         raise RuntimeError(f"downloaded empty converter script from {source_url}")
     if b"import " not in data and b"def " not in data and b"#!/" not in data:
-        raise RuntimeError(f"downloaded converter script did not look like Python source: {source_url}")
+        raise RuntimeError(
+            f"downloaded converter script did not look like Python source: {source_url}"
+        )
     for file_name in ("convert_hf_to_gguf.py", "convert-hf-to-gguf.py"):
         atomic_write_bytes(install_dir / file_name, data)
 
@@ -1726,11 +1945,11 @@ def extracted_archive_root(extract_dir: Path) -> Path:
 
 
 def copy_directory_contents(source_dir: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents = True, exist_ok = True)
     for item in source_dir.iterdir():
         target = destination / item.name
         if item.is_dir():
-            shutil.copytree(item, target, dirs_exist_ok=True)
+            shutil.copytree(item, target, dirs_exist_ok = True)
         else:
             shutil.copy2(item, target)
 
@@ -1744,7 +1963,7 @@ def hydrate_source_tree(
 ) -> None:
     archive_path = work_dir / f"llama.cpp-source-{upstream_tag}.tar.gz"
     source_urls = upstream_source_archive_urls(upstream_tag)
-    extract_dir = Path(tempfile.mkdtemp(prefix="source-extract-", dir=work_dir))
+    extract_dir = Path(tempfile.mkdtemp(prefix = "source-extract-", dir = work_dir))
 
     try:
         log(f"downloading llama.cpp source tree for upstream tag {upstream_tag}")
@@ -1753,12 +1972,14 @@ def hydrate_source_tree(
         for index, source_url in enumerate(source_urls):
             try:
                 if index > 0:
-                    log(f"retrying source tree download from fallback URL: {source_url}")
+                    log(
+                        f"retrying source tree download from fallback URL: {source_url}"
+                    )
                 download_file_verified(
                     source_url,
                     archive_path,
-                    expected_sha256=expected_sha256,
-                    label=f"llama.cpp source tree for {upstream_tag}",
+                    expected_sha256 = expected_sha256,
+                    label = f"llama.cpp source tree for {upstream_tag}",
                 )
                 downloaded = True
                 break
@@ -1777,10 +1998,15 @@ def hydrate_source_tree(
             source_root / "convert_hf_to_gguf.py",
             source_root / "gguf-py",
         ]
-        missing = [str(path.relative_to(source_root)) for path in required_paths if not path.exists()]
+        missing = [
+            str(path.relative_to(source_root))
+            for path in required_paths
+            if not path.exists()
+        ]
         if missing:
             raise PrebuiltFallback(
-                "upstream source archive was missing required repo files: " + ", ".join(missing)
+                "upstream source archive was missing required repo files: "
+                + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
     except PrebuiltFallback:
@@ -1797,11 +2023,11 @@ def normalize_install_layout(install_dir: Path, host: HostInfo) -> tuple[Path, P
     build_bin = install_dir / "build" / "bin"
     if host.is_windows:
         exec_dir = build_bin / "Release"
-        exec_dir.mkdir(parents=True, exist_ok=True)
+        exec_dir.mkdir(parents = True, exist_ok = True)
         return exec_dir / "llama-server.exe", exec_dir / "llama-quantize.exe"
 
-    install_dir.mkdir(parents=True, exist_ok=True)
-    build_bin.mkdir(parents=True, exist_ok=True)
+    install_dir.mkdir(parents = True, exist_ok = True)
+    build_bin.mkdir(parents = True, exist_ok = True)
     return install_dir / "llama-server", install_dir / "llama-quantize"
 
 
@@ -1809,7 +2035,9 @@ def discover_installed_executable(install_dir: Path, executable_name: str) -> Pa
     direct = install_dir / executable_name
     if direct.exists() and direct.is_file():
         return direct
-    candidate = next((path for path in install_dir.rglob(executable_name) if path.is_file()), None)
+    candidate = next(
+        (path for path in install_dir.rglob(executable_name) if path.is_file()), None
+    )
     if candidate is None:
         raise PrebuiltFallback(f"{executable_name} was not installed")
     return candidate
@@ -1839,12 +2067,14 @@ def create_exec_entrypoint(entrypoint: Path, target: Path) -> None:
         write_exec_wrapper(entrypoint, target)
 
 
-def overlay_directory_for_choice(install_dir: Path, choice: AssetChoice, host: HostInfo) -> Path:
+def overlay_directory_for_choice(
+    install_dir: Path, choice: AssetChoice, host: HostInfo
+) -> Path:
     if host.is_windows or choice.install_kind.startswith("windows"):
         path = install_dir / "build" / "bin" / "Release"
     else:
         path = install_dir / "build" / "bin"
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents = True, exist_ok = True)
     return path
 
 
@@ -1865,7 +2095,9 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
     if choice.install_kind in {"windows-cpu", "windows-cuda"}:
         return ["*.exe", "*.dll"]
-    raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
+    raise PrebuiltFallback(
+        f"unsupported install kind for runtime overlay: {choice.install_kind}"
+    )
 
 
 def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
@@ -1879,9 +2111,9 @@ def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
 
 @contextmanager
 def install_lock(lock_path: Path) -> Iterator[None]:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
     try:
-        with FileLock(lock_path, timeout=INSTALL_LOCK_TIMEOUT_SECONDS):
+        with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
             yield
     except FileLockTimeout as exc:
         raise RuntimeError(
@@ -1895,7 +2127,7 @@ def install_lock_path(install_dir: Path) -> Path:
 
 def install_staging_root(install_dir: Path) -> Path:
     root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents = True, exist_ok = True)
     return root
 
 
@@ -1908,7 +2140,11 @@ def prune_install_staging_root(install_dir: Path) -> None:
 
 
 def create_install_staging_dir(install_dir: Path) -> Path:
-    staging_dir = Path(tempfile.mkdtemp(prefix=f"{install_dir.name}.staging-", dir=install_staging_root(install_dir)))
+    staging_dir = Path(
+        tempfile.mkdtemp(
+            prefix = f"{install_dir.name}.staging-", dir = install_staging_root(install_dir)
+        )
+    )
     log(f"created install staging dir {staging_dir}")
     return staging_dir
 
@@ -1927,7 +2163,7 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
 
 def remove_tree(path: Path | None) -> None:
     if path and path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, ignore_errors = True)
 
 
 def remove_tree_logged(path: Path | None, label: str) -> None:
@@ -1991,7 +2227,9 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
     expected.append(install_dir / "UNSLOTH_PREBUILT_INFO.json")
     missing = [str(path) for path in expected if not path.exists()]
     if missing:
-        raise RuntimeError("activated install was missing expected files: " + ", ".join(missing))
+        raise RuntimeError(
+            "activated install was missing expected files: " + ", ".join(missing)
+        )
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -2028,27 +2266,29 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restored previous install from rollback path {rollback_dir.name}")
                 raise PrebuiltFallback(
                     "staged prebuilt validation passed but activation failed; restored previous install "
-                    f"({textwrap.shorten(str(exc), width=200, placeholder='...')})"
+                    f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                 ) from exc
         except PrebuiltFallback:
             raise
         except Exception as rollback_exc:
             log(f"rollback after failed activation also failed: {rollback_exc}")
 
-        log("rollback restoration failed; cleaning staging, install, and rollback paths before source build fallback")
+        log(
+            "rollback restoration failed; cleaning staging, install, and rollback paths before source build fallback"
+        )
         cleanup_error: Exception | None = None
         try:
             cleanup_install_side_paths(
                 install_dir,
-                staging_dir=staging_dir,
-                rollback_dir=rollback_dir,
-                failed_dir=failed_dir,
-                active_dir=install_dir,
+                staging_dir = staging_dir,
+                rollback_dir = rollback_dir,
+                failed_dir = failed_dir,
+                active_dir = install_dir,
             )
         except Exception as cleanup_exc:
             cleanup_error = cleanup_exc
             log(f"cleanup after rollback failure also failed: {cleanup_exc}")
-        details = textwrap.shorten(str(exc), width=200, placeholder="...")
+        details = textwrap.shorten(str(exc), width = 200, placeholder = "...")
         if cleanup_error is not None:
             raise PrebuiltFallback(
                 "staged prebuilt validation passed but activation and rollback failed; "
@@ -2067,27 +2307,38 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         prune_install_staging_root(install_dir)
 
 
-def install_from_archives(choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path) -> tuple[Path, Path]:
+def install_from_archives(
+    choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path
+) -> tuple[Path, Path]:
     main_archive = work_dir / choice.name
     log(f"downloading {choice.name} from {choice.source_label} release")
     if not choice.expected_sha256:
-        raise PrebuiltFallback(f"approved checksum was missing for selected asset {choice.name}")
+        raise PrebuiltFallback(
+            f"approved checksum was missing for selected asset {choice.name}"
+        )
     download_file_verified(
         choice.url,
         main_archive,
-        expected_sha256=choice.expected_sha256,
-        label=f"prebuilt archive {choice.name}",
+        expected_sha256 = choice.expected_sha256,
+        label = f"prebuilt archive {choice.name}",
     )
 
-    install_dir.mkdir(parents=True, exist_ok=True)
-    extract_dir = Path(tempfile.mkdtemp(prefix="extract-", dir=work_dir))
+    install_dir.mkdir(parents = True, exist_ok = True)
+    extract_dir = Path(tempfile.mkdtemp(prefix = "extract-", dir = work_dir))
 
     try:
         extract_archive(main_archive, extract_dir)
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
-        copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required=True)
-        copy_globs(source_dir, install_dir, metadata_patterns_for_choice(choice), required=False)
+        copy_globs(
+            source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
+        )
+        copy_globs(
+            source_dir,
+            install_dir,
+            metadata_patterns_for_choice(choice),
+            required = False,
+        )
     finally:
         remove_tree(extract_dir)
 
@@ -2103,7 +2354,9 @@ def install_from_archives(choice: AssetChoice, host: HostInfo, install_dir: Path
     source_server = build_bin / "llama-server"
     source_quantize = build_bin / "llama-quantize"
     if not source_server.exists() or not source_quantize.exists():
-        raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
+        raise PrebuiltFallback(
+            "unix executables were not installed correctly into build/bin"
+        )
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
 
@@ -2129,14 +2382,18 @@ def ensure_repo_shape(install_dir: Path) -> None:
         install_dir / "convert_hf_to_gguf.py",
         install_dir / "gguf-py",
     ]
-    missing = [str(path.relative_to(install_dir)) for path in required if not path.exists()]
+    missing = [
+        str(path.relative_to(install_dir)) for path in required if not path.exists()
+    ]
     if missing:
-        raise PrebuiltFallback("hydrated llama.cpp source tree was missing: " + ", ".join(missing))
+        raise PrebuiltFallback(
+            "hydrated llama.cpp source tree was missing: " + ", ".join(missing)
+        )
 
 
 def validation_model_cache_path(install_dir: Path) -> Path:
     cache_dir = install_dir.parent / VALIDATION_MODEL_CACHE_DIRNAME
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents = True, exist_ok = True)
     return cache_dir / VALIDATION_MODEL_CACHE_FILENAME
 
 
@@ -2160,14 +2417,16 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
                 data = validated_validation_model_bytes(cache_path.read_bytes())
                 log(f"using cached tiny GGUF validation model from {cache_path}")
             except Exception as exc:
-                log(f"cached tiny GGUF validation model was invalid; refreshing cache ({exc})")
+                log(
+                    f"cached tiny GGUF validation model was invalid; refreshing cache ({exc})"
+                )
                 data = None
         if data is None:
             log("downloading tiny GGUF validation model")
             data = validated_validation_model_bytes(
                 download_bytes(
                     TEST_MODEL_URL,
-                    progress_label=f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
+                    progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
                 )
             )
             if cache_path is not None:
@@ -2187,7 +2446,7 @@ def free_local_port() -> int:
 
 def read_log_excerpt(log_path: Path, *, max_lines: int = 60) -> str:
     try:
-        content = log_path.read_text(encoding="utf-8", errors="replace")
+        content = log_path.read_text(encoding = "utf-8", errors = "replace")
     except FileNotFoundError:
         return ""
     return "\n".join(content.splitlines()[-max_lines:])
@@ -2216,7 +2475,14 @@ def is_retryable_server_bind_error(
         reason = exc.reason
         if exited_quickly and isinstance(reason, ConnectionRefusedError):
             return True
-        if isinstance(reason, OSError) and reason.errno in {98, 99, 111, 10048, 10049, 10061}:
+        if isinstance(reason, OSError) and reason.errno in {
+            98,
+            99,
+            111,
+            10048,
+            10049,
+            10061,
+        }:
             return exited_quickly
     if exited_quickly and isinstance(exc, ConnectionRefusedError):
         return True
@@ -2242,9 +2508,11 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
+def linux_missing_libraries(
+    binary_path: Path, *, env: dict[str, str] | None = None
+) -> list[str]:
     try:
-        result = run_capture(["ldd", str(binary_path)], timeout=20, env=env)
+        result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
     except Exception:
         return []
 
@@ -2284,7 +2552,7 @@ def python_runtime_dirs() -> list[str]:
 
 def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
     try:
-        result = run_capture(["ldconfig", "-p"], timeout=20)
+        result = run_capture(["ldconfig", "-p"], timeout = 20)
     except Exception:
         return []
 
@@ -2320,17 +2588,21 @@ def preflight_linux_installed_binaries(
     issues: list[str] = []
     for binary_path in binaries:
         env = binary_env(binary_path, install_dir, host)
-        missing = linux_missing_libraries(binary_path, env=env)
+        missing = linux_missing_libraries(binary_path, env = env)
         if not missing:
             continue
-        runtime_dirs = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        runtime_dirs = [
+            part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
+        ]
         issues.append(
             f"{binary_path.name}: missing={','.join(missing)} "
             f"ld_library_path={','.join(runtime_dirs) if runtime_dirs else 'none'}"
         )
 
     if issues:
-        raise PrebuiltFallback("linux extracted binary preflight failed:\n" + "\n".join(issues))
+        raise PrebuiltFallback(
+            "linux extracted binary preflight failed:\n" + "\n".join(issues)
+        )
 
 
 def glob_paths(*patterns: str) -> list[str]:
@@ -2377,10 +2649,14 @@ def windows_runtime_dirs_for_patterns(
     required_patterns: Iterable[str],
     candidate_dirs: Iterable[str] | None = None,
 ) -> list[str]:
-    directories = list(candidate_dirs) if candidate_dirs is not None else windows_runtime_dirs()
+    directories = (
+        list(candidate_dirs) if candidate_dirs is not None else windows_runtime_dirs()
+    )
     matching_dirs: list[str] = []
     for pattern in required_patterns:
-        matched_dirs = [directory for directory in directories if any(Path(directory).glob(pattern))]
+        matched_dirs = [
+            directory for directory in directories if any(Path(directory).glob(pattern))
+        ]
         if not matched_dirs:
             return []
         for directory in matched_dirs:
@@ -2407,15 +2683,24 @@ def binary_env(
 ) -> dict[str, str]:
     env = os.environ.copy()
     if host.is_windows:
-        path_dirs = [str(binary_path.parent), *windows_runtime_dirs_for_runtime_line(runtime_line)]
+        path_dirs = [
+            str(binary_path.parent),
+            *windows_runtime_dirs_for_runtime_line(runtime_line),
+        ]
         existing = [part for part in env.get("PATH", "").split(os.pathsep) if part]
         env["PATH"] = os.pathsep.join(dedupe_existing_dirs([*path_dirs, *existing]))
     elif host.is_linux:
         ld_dirs = [str(install_dir), *linux_runtime_dirs(binary_path)]
-        existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
+        existing = [
+            part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
+        ]
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            dedupe_existing_dirs([*ld_dirs, *existing])
+        )
     elif host.is_macos:
-        env["DYLD_LIBRARY_PATH"] = str(install_dir) + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+        env["DYLD_LIBRARY_PATH"] = (
+            str(install_dir) + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+        )
     return env
 
 
@@ -2431,12 +2716,16 @@ def validate_quantize(
     command = [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"]
     result = subprocess.run(
         command,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env=binary_env(quantize_path, install_dir, host, runtime_line=runtime_line),
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
     )
-    if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
+    if (
+        result.returncode != 0
+        or not quantized_path.exists()
+        or quantized_path.stat().st_size == 0
+    ):
         raise PrebuiltFallback(
             "llama-quantize validation failed:\n"
             + result.stdout
@@ -2477,18 +2766,20 @@ def validate_server(
         if host.has_usable_nvidia or (host.is_macos and host.is_arm64):
             command.extend(["--n-gpu-layers", "1"])
 
-        log_fd, log_name = tempfile.mkstemp(prefix="llama-server-", suffix=".log")
+        log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
         os.close(log_fd)
         log_path = Path(log_name)
         process: subprocess.Popen[str] | None = None
         try:
-            with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
+            with log_path.open("w", encoding = "utf-8", errors = "replace") as log_handle:
                 process = subprocess.Popen(
                     command,
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=binary_env(server_path, install_dir, host, runtime_line=runtime_line),
+                    stdout = log_handle,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                    env = binary_env(
+                        server_path, install_dir, host, runtime_line = runtime_line
+                    ),
                 )
                 deadline = time.time() + 20
                 startup_started = time.time()
@@ -2496,15 +2787,22 @@ def validate_server(
                 last_error: Exception | None = None
                 while time.time() < deadline:
                     if process.poll() is not None:
-                        process.wait(timeout=5)
+                        process.wait(timeout = 5)
                         log_handle.flush()
                         output = read_log_excerpt(log_path)
-                        exited_quickly = (time.time() - startup_started) <= SERVER_BIND_RETRY_WINDOW_SECONDS
-                        failure = PrebuiltFallback("llama-server exited during startup:\n" + output)
-                        if port_attempt < SERVER_PORT_BIND_ATTEMPTS and is_retryable_server_bind_error(
-                            last_error,
-                            output,
-                            exited_quickly=exited_quickly,
+                        exited_quickly = (
+                            time.time() - startup_started
+                        ) <= SERVER_BIND_RETRY_WINDOW_SECONDS
+                        failure = PrebuiltFallback(
+                            "llama-server exited during startup:\n" + output
+                        )
+                        if (
+                            port_attempt < SERVER_PORT_BIND_ATTEMPTS
+                            and is_retryable_server_bind_error(
+                                last_error,
+                                output,
+                                exited_quickly = exited_quickly,
+                            )
                         ):
                             log(
                                 f"llama-server startup hit a port race on {port}; retrying with a fresh port "
@@ -2514,19 +2812,23 @@ def validate_server(
                             break
                         raise failure
 
-                    payload = json.dumps({"prompt": "a", "n_predict": 1}).encode("utf-8")
+                    payload = json.dumps({"prompt": "a", "n_predict": 1}).encode(
+                        "utf-8"
+                    )
                     request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/completion",
-                        data=payload,
-                        headers={"Content-Type": "application/json"},
+                        data = payload,
+                        headers = {"Content-Type": "application/json"},
                     )
                     try:
-                        with urllib.request.urlopen(request, timeout=5) as response:
+                        with urllib.request.urlopen(request, timeout = 5) as response:
                             status_code = response.status
                             response_body = response.read().decode("utf-8", "replace")
                             if status_code == 200:
                                 return
-                            last_error = RuntimeError(f"unexpected HTTP status {status_code}")
+                            last_error = RuntimeError(
+                                f"unexpected HTTP status {status_code}"
+                            )
                     except urllib.error.HTTPError as exc:
                         response_body = exc.read().decode("utf-8", "replace")
                         last_error = exc
@@ -2547,12 +2849,12 @@ def validate_server(
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
-                    process.wait(timeout=5)
+                    process.wait(timeout = 5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.wait(timeout=5)
+                    process.wait(timeout = 5)
             try:
-                log_path.unlink(missing_ok=True)
+                log_path.unlink(missing_ok = True)
             except Exception:
                 pass
     if last_failure is not None:
@@ -2560,7 +2862,9 @@ def validate_server(
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
 
 
-def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:
+def collect_system_report(
+    host: HostInfo, choice: AssetChoice | None, install_dir: Path
+) -> str:
     lines = [
         f"platform={host.system} machine={host.machine}",
         f"driver_cuda_version={host.driver_cuda_version}",
@@ -2573,18 +2877,25 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
     ]
     if host.is_linux and host.has_physical_nvidia:
         runtime_lines, runtime_dirs = detected_linux_runtime_lines()
-        lines.append("linux_runtime_lines=" + (",".join(runtime_lines) if runtime_lines else "none"))
+        lines.append(
+            "linux_runtime_lines="
+            + (",".join(runtime_lines) if runtime_lines else "none")
+        )
         for runtime_line in ("cuda13", "cuda12"):
             lines.append(
                 f"linux_runtime_dirs_{runtime_line}="
-                + (",".join(runtime_dirs.get(runtime_line, [])) if runtime_dirs.get(runtime_line) else "none")
+                + (
+                    ",".join(runtime_dirs.get(runtime_line, []))
+                    if runtime_dirs.get(runtime_line)
+                    else "none"
+                )
             )
     if choice and choice.selection_log:
         lines.append("selection_log:")
         lines.extend(choice.selection_log)
     if host.nvidia_smi:
         try:
-            smi = run_capture([host.nvidia_smi], timeout=20)
+            smi = run_capture([host.nvidia_smi], timeout = 20)
             excerpt = "\n".join((smi.stdout + smi.stderr).splitlines()[:20])
             lines.append("nvidia-smi:")
             lines.append(excerpt)
@@ -2597,32 +2908,57 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
             server_env = binary_env(server_binary, install_dir, host)
             lines.append(
                 "linux_missing_libs="
-                + (",".join(linux_missing_libraries(server_binary, env=server_env)) or "none")
+                + (
+                    ",".join(linux_missing_libraries(server_binary, env = server_env))
+                    or "none"
+                )
             )
             lines.append(
                 "linux_runtime_dirs="
-                + (",".join([part for part in server_env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]) or "none")
+                + (
+                    ",".join(
+                        [
+                            part
+                            for part in server_env.get("LD_LIBRARY_PATH", "").split(
+                                os.pathsep
+                            )
+                            if part
+                        ]
+                    )
+                    or "none"
+                )
             )
             try:
-                ldd = run_capture(["ldd", str(server_binary)], timeout=20, env=server_env)
+                ldd = run_capture(
+                    ["ldd", str(server_binary)], timeout = 20, env = server_env
+                )
                 lines.append("ldd llama-server:")
                 lines.append((ldd.stdout + ldd.stderr).strip())
             except Exception as exc:
                 lines.append(f"ldd error: {exc}")
     elif host.is_windows:
-        lines.append("windows_runtime_dirs=" + (",".join(windows_runtime_dirs()) or "none"))
+        lines.append(
+            "windows_runtime_dirs=" + (",".join(windows_runtime_dirs()) or "none")
+        )
         runtime_lines, runtime_dirs = detected_windows_runtime_lines()
-        lines.append("windows_runtime_lines=" + (",".join(runtime_lines) if runtime_lines else "none"))
+        lines.append(
+            "windows_runtime_lines="
+            + (",".join(runtime_lines) if runtime_lines else "none")
+        )
         for runtime_line in ("cuda13", "cuda12"):
             lines.append(
                 f"windows_runtime_dirs_{runtime_line}="
-                + (",".join(runtime_dirs.get(runtime_line, [])) if runtime_dirs.get(runtime_line) else "none")
+                + (
+                    ",".join(runtime_dirs.get(runtime_line, []))
+                    if runtime_dirs.get(runtime_line)
+                    else "none"
+                )
             )
     elif host.is_macos:
         server_binary = install_dir / "llama-server"
         if server_binary.exists():
             try:
-                otool = run_capture(["otool", "-L", str(server_binary)], timeout=20)
+                otool = run_capture(["otool", "-L", str(server_binary)], timeout = 20)
                 lines.append("otool -L llama-server:")
                 lines.append((otool.stdout + otool.stderr).strip())
             except Exception as exc:
@@ -2653,7 +2989,9 @@ def apply_approved_hashes(
     return approved_attempts
 
 
-def require_approved_source_hash(checksums: ApprovedReleaseChecksums, llama_tag: str) -> ApprovedArtifactHash:
+def require_approved_source_hash(
+    checksums: ApprovedReleaseChecksums, llama_tag: str
+) -> ApprovedArtifactHash:
     source_asset_name = source_archive_logical_name(llama_tag)
     approved_source = checksums.artifacts.get(source_asset_name)
     if approved_source is None:
@@ -2675,7 +3013,9 @@ def resolve_install_attempts(
     require_approved_source_hash(checksums, resolved_tag)
 
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
-        linux_cuda_selection = resolve_linux_cuda_choice(host, resolved_tag, published_repo, published_release_tag)
+        linux_cuda_selection = resolve_linux_cuda_choice(
+            host, resolved_tag, published_repo, published_release_tag
+        )
         attempts = apply_approved_hashes(linux_cuda_selection.attempts, checksums)
         if not attempts:
             raise PrebuiltFallback("no compatible Linux CUDA asset was found")
@@ -2684,14 +3024,18 @@ def resolve_install_attempts(
 
     if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
         upstream_assets = github_release_assets(UPSTREAM_REPO, resolved_tag)
-        attempts = apply_approved_hashes(resolve_windows_cuda_choices(host, resolved_tag, upstream_assets), checksums)
+        attempts = apply_approved_hashes(
+            resolve_windows_cuda_choices(host, resolved_tag, upstream_assets), checksums
+        )
         if not attempts:
             raise PrebuiltFallback("no compatible Windows CUDA asset was found")
         if attempts[0].selection_log:
             log_lines(attempts[0].selection_log)
         return requested_tag, resolved_tag, attempts, checksums
 
-    choice = resolve_asset_choice(host, resolved_tag, published_repo, published_release_tag)
+    choice = resolve_asset_choice(
+        host, resolved_tag, published_repo, published_release_tag
+    )
     approved_attempts = apply_approved_hashes([choice], checksums)
     if choice.selection_log:
         log_lines(choice.selection_log)
@@ -2717,7 +3061,9 @@ def write_prebuilt_metadata(
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps(metadata, indent = 2) + "\n"
+    )
 
 
 def validate_prebuilt_choice(
@@ -2733,7 +3079,9 @@ def validate_prebuilt_choice(
     prebuilt_fallback_used: bool,
     quantized_path: Path,
 ) -> tuple[Path, Path]:
-    source_archive = approved_checksums.artifacts.get(source_archive_logical_name(llama_tag))
+    source_archive = approved_checksums.artifacts.get(
+        source_archive_logical_name(llama_tag)
+    )
     if source_archive is None:
         raise PrebuiltFallback(
             f"approved checksum asset did not contain source archive {source_archive_logical_name(llama_tag)}"
@@ -2743,18 +3091,20 @@ def validate_prebuilt_choice(
         llama_tag,
         install_dir,
         work_dir,
-        expected_sha256=source_archive.sha256,
+        expected_sha256 = source_archive.sha256,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
-    server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
+    server_path, quantize_path = install_from_archives(
+        choice, host, install_dir, work_dir
+    )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,
-        requested_tag=requested_tag,
-        llama_tag=llama_tag,
-        choice=choice,
-        prebuilt_fallback_used=prebuilt_fallback_used,
+        requested_tag = requested_tag,
+        llama_tag = llama_tag,
+        choice = choice,
+        prebuilt_fallback_used = prebuilt_fallback_used,
     )
     validate_quantize(
         quantize_path,
@@ -2762,14 +3112,14 @@ def validate_prebuilt_choice(
         quantized_path,
         install_dir,
         host,
-        runtime_line=choice.runtime_line,
+        runtime_line = choice.runtime_line,
     )
     validate_server(
         server_path,
         probe_path,
         host,
         install_dir,
-        runtime_line=choice.runtime_line,
+        runtime_line = choice.runtime_line,
     )
     log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
@@ -2811,11 +3161,11 @@ def validate_prebuilt_attempts(
                 staging_dir,
                 work_dir,
                 probe_path,
-                requested_tag=requested_tag,
-                llama_tag=llama_tag,
-                approved_checksums=approved_checksums,
-                prebuilt_fallback_used=tried_fallback,
-                quantized_path=quantized_path,
+                requested_tag = requested_tag,
+                llama_tag = llama_tag,
+                approved_checksums = approved_checksums,
+                prebuilt_fallback_used = tried_fallback,
+                quantized_path = quantized_path,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -2830,7 +3180,7 @@ def validate_prebuilt_attempts(
                 raise attempt_error from exc
             log(
                 "selected CUDA bundle failed before activation; trying next prebuilt fallback "
-                f"({textwrap.shorten(str(attempt_error), width=200, placeholder='...')})"
+                f"({textwrap.shorten(str(attempt_error), width = 200, placeholder = '...')})"
             )
             continue
 
@@ -2839,36 +3189,48 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
-def install_prebuilt(install_dir: Path, llama_tag: str, published_repo: str, published_release_tag: str) -> None:
+def install_prebuilt(
+    install_dir: Path, llama_tag: str, published_repo: str, published_release_tag: str
+) -> None:
     host = detect_host()
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
             if install_dir.exists():
-                log(f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement")
+                log(
+                    f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"
+                )
             else:
-                log(f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install")
-            requested_tag, llama_tag, attempts, approved_checksums = resolve_install_attempts(
-                llama_tag,
-                host,
-                published_repo,
-                published_release_tag,
+                log(
+                    f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
+                )
+            requested_tag, llama_tag, attempts, approved_checksums = (
+                resolve_install_attempts(
+                    llama_tag,
+                    host,
+                    published_repo,
+                    published_release_tag,
+                )
             )
             choice = attempts[0]
-            log(f"selected {choice.name} ({choice.source_label}) for {host.system} {host.machine}")
-            with tempfile.TemporaryDirectory(prefix="unsloth-llama-prebuilt-") as tmp:
+            log(
+                f"selected {choice.name} ({choice.source_label}) for {host.system} {host.machine}"
+            )
+            with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
-                download_validation_model(probe_path, validation_model_cache_path(install_dir))
+                download_validation_model(
+                    probe_path, validation_model_cache_path(install_dir)
+                )
                 choice, selected_staging_dir, _ = validate_prebuilt_attempts(
                     attempts,
                     host,
                     install_dir,
                     work_dir,
                     probe_path,
-                    requested_tag=requested_tag,
-                    llama_tag=llama_tag,
-                    approved_checksums=approved_checksums,
+                    requested_tag = requested_tag,
+                    llama_tag = llama_tag,
+                    approved_checksums = approved_checksums,
                 )
                 activate_install_tree(selected_staging_dir, install_dir, host)
                 try:
@@ -2876,7 +3238,7 @@ def install_prebuilt(install_dir: Path, llama_tag: str, published_repo: str, pub
                 except Exception as exc:
                     log(
                         "converter script fetch failed after activation; install remains valid "
-                        f"({textwrap.shorten(str(exc), width=200, placeholder='...')})"
+                        f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                     )
     except PrebuiltFallback as exc:
         log("prebuilt install path failed; falling back to source build")
@@ -2888,32 +3250,36 @@ def install_prebuilt(install_dir: Path, llama_tag: str, published_repo: str, pub
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install and validate a prebuilt llama.cpp bundle for Unsloth Studio."
+        description = "Install and validate a prebuilt llama.cpp bundle for Unsloth Studio."
     )
-    parser.add_argument("--install-dir", help="Target ~/.unsloth/llama.cpp directory")
+    parser.add_argument("--install-dir", help = "Target ~/.unsloth/llama.cpp directory")
     parser.add_argument(
         "--llama-tag",
-        default=DEFAULT_LLAMA_TAG,
-        help=f"llama.cpp release tag. Prebuilt installs are pinned to the approved tag {APPROVED_PREBUILT_LLAMA_TAG}.",
+        default = DEFAULT_LLAMA_TAG,
+        help = f"llama.cpp release tag. Prebuilt installs are pinned to the approved tag {APPROVED_PREBUILT_LLAMA_TAG}.",
     )
-    parser.add_argument("--published-repo", default=DEFAULT_PUBLISHED_REPO, help="Published bundle repository")
+    parser.add_argument(
+        "--published-repo",
+        default = DEFAULT_PUBLISHED_REPO,
+        help = "Published bundle repository",
+    )
     parser.add_argument(
         "--published-release-tag",
-        default=DEFAULT_PUBLISHED_TAG,
-        help="Published GitHub release tag to pin. By default, scan releases until a compatible llama.cpp bundle is found.",
+        default = DEFAULT_PUBLISHED_TAG,
+        help = "Published GitHub release tag to pin. By default, scan releases until a compatible llama.cpp bundle is found.",
     )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
-        nargs="?",
-        const="latest",
-        help="Resolve a llama.cpp tag such as 'latest' to the logical upstream release tag.",
+        nargs = "?",
+        const = "latest",
+        help = "Resolve a llama.cpp tag such as 'latest' to the logical upstream release tag.",
     )
     resolve_group.add_argument(
         "--resolve-install-tag",
-        nargs="?",
-        const="latest",
-        help="Resolve a llama.cpp tag such as 'latest' to the concrete tag installable on the current host.",
+        nargs = "?",
+        const = "latest",
+        help = "Resolve a llama.cpp tag such as 'latest' to the concrete tag installable on the current host.",
     )
     return parser.parse_args()
 
@@ -2925,7 +3291,11 @@ def main() -> int:
         return EXIT_SUCCESS
 
     if args.resolve_install_tag is not None:
-        print(resolve_requested_install_tag(args.resolve_install_tag, args.published_release_tag or ""))
+        print(
+            resolve_requested_install_tag(
+                args.resolve_install_tag, args.published_release_tag or ""
+            )
+        )
         return EXIT_SUCCESS
 
     if not args.install_dir:
@@ -2933,10 +3303,10 @@ def main() -> int:
             "install_llama_prebuilt.py: --install-dir is required unless --resolve-llama-tag or --resolve-install-tag is used"
         )
     install_prebuilt(
-        install_dir=Path(args.install_dir).expanduser().resolve(),
-        llama_tag=args.llama_tag,
-        published_repo=args.published_repo,
-        published_release_tag=args.published_release_tag or "",
+        install_dir = Path(args.install_dir).expanduser().resolve(),
+        llama_tag = args.llama_tag,
+        published_repo = args.published_repo,
+        published_release_tag = args.published_release_tag or "",
     )
     return EXIT_SUCCESS
 
@@ -2947,6 +3317,6 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as exc:
-        message = textwrap.shorten(str(exc), width=400, placeholder="...")
+        message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
         log(f"fatal helper error: {message}")
         raise SystemExit(EXIT_ERROR)

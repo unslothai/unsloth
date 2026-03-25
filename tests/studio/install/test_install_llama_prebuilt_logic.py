@@ -11,7 +11,9 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "studio_install_llama_prebuilt", MODULE_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 INSTALL_LLAMA_PREBUILT = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = INSTALL_LLAMA_PREBUILT
@@ -31,24 +33,26 @@ sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
 
 
-def approved_checksums_for(upstream_tag: str, *, source_archive: Path, bundle_archive: Path, bundle_name: str) -> ApprovedReleaseChecksums:
+def approved_checksums_for(
+    upstream_tag: str, *, source_archive: Path, bundle_archive: Path, bundle_name: str
+) -> ApprovedReleaseChecksums:
     return ApprovedReleaseChecksums(
-        repo="local",
-        release_tag=upstream_tag,
-        upstream_tag=upstream_tag,
-        source_commit=None,
-        artifacts={
+        repo = "local",
+        release_tag = upstream_tag,
+        upstream_tag = upstream_tag,
+        source_commit = None,
+        artifacts = {
             source_archive_logical_name(upstream_tag): ApprovedArtifactHash(
-                asset_name=source_archive_logical_name(upstream_tag),
-                sha256=sha256_file(source_archive),
-                repo="ggml-org/llama.cpp",
-                kind="upstream-source",
+                asset_name = source_archive_logical_name(upstream_tag),
+                sha256 = sha256_file(source_archive),
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
             ),
             bundle_name: ApprovedArtifactHash(
-                asset_name=bundle_name,
-                sha256=sha256_file(bundle_archive),
-                repo="local",
-                kind="local-test-bundle",
+                asset_name = bundle_name,
+                sha256 = sha256_file(bundle_archive),
+                repo = "local",
+                kind = "local-test-bundle",
             ),
         },
     )
@@ -112,7 +116,7 @@ def test_extract_archive_rejects_absolute_tar_symlink_target(tmp_path: Path):
         entry.linkname = "/tmp/libllama.so.0"
         archive.addfile(entry)
 
-    with pytest.raises(PrebuiltFallback, match="archive link used an absolute target"):
+    with pytest.raises(PrebuiltFallback, match = "archive link used an absolute target"):
         extract_archive(archive_path, tmp_path / "extract")
 
 
@@ -125,7 +129,7 @@ def test_extract_archive_rejects_escaping_tar_symlink_target(tmp_path: Path):
         entry.linkname = "../outside/libllama.so.0"
         archive.addfile(entry)
 
-    with pytest.raises(PrebuiltFallback, match="archive link escaped destination"):
+    with pytest.raises(PrebuiltFallback, match = "archive link escaped destination"):
         extract_archive(archive_path, tmp_path / "extract")
 
 
@@ -138,7 +142,7 @@ def test_extract_archive_rejects_unresolved_tar_symlink_target(tmp_path: Path):
         entry.linkname = "libllama.so.0"
         archive.addfile(entry)
 
-    with pytest.raises(PrebuiltFallback, match="unresolved link entries"):
+    with pytest.raises(PrebuiltFallback, match = "unresolved link entries"):
         extract_archive(archive_path, tmp_path / "extract")
 
 
@@ -151,17 +155,31 @@ def test_extract_archive_rejects_zip_symlink_entry(tmp_path: Path):
         info.external_attr = 0o120777 << 16
         archive.writestr(info, "libllama.so.0")
 
-    with pytest.raises(PrebuiltFallback, match="zip archive contained a symlink entry"):
+    with pytest.raises(PrebuiltFallback, match = "zip archive contained a symlink entry"):
         extract_archive(archive_path, tmp_path / "extract")
 
 
-def test_hydrate_source_tree_extracts_upstream_archive_contents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_hydrate_source_tree_extracts_upstream_archive_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     upstream_tag = "b9999"
     archive_path = tmp_path / "llama.cpp-source.tar.gz"
     with tarfile.open(archive_path, "w:gz") as archive:
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/convert_hf_to_gguf.py", b"#!/usr/bin/env python3\nimport gguf\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/CMakeLists.txt",
+            b"cmake_minimum_required(VERSION 3.14)\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py",
+            b"__all__ = []\n",
+        )
 
     source_urls = set(INSTALL_LLAMA_PREBUILT.upstream_source_archive_urls(upstream_tag))
 
@@ -174,7 +192,9 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(tmp_path: Path, 
     install_dir = tmp_path / "install"
     work_dir = tmp_path / "work"
     work_dir.mkdir()
-    hydrate_source_tree(upstream_tag, install_dir, work_dir, expected_sha256=sha256_file(archive_path))
+    hydrate_source_tree(
+        upstream_tag, install_dir, work_dir, expected_sha256 = sha256_file(archive_path)
+    )
 
     assert (install_dir / "CMakeLists.txt").exists()
     assert (install_dir / "convert_hf_to_gguf.py").exists()
@@ -182,18 +202,32 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(tmp_path: Path, 
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
 
 
-def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     upstream_tag = "b9998"
     bundle_name = "app-b9998-linux-x64-cuda13-newer.tar.gz"
     source_archive = tmp_path / "source.tar.gz"
     bundle_archive = tmp_path / "bundle.tar.gz"
     with tarfile.open(source_archive, "w:gz") as archive:
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/convert_hf_to_gguf.py", b"#!/usr/bin/env python3\nimport gguf\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/CMakeLists.txt",
+            b"cmake_minimum_required(VERSION 3.14)\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py",
+            b"__all__ = []\n",
+        )
     with tarfile.open(bundle_archive, "w:gz") as archive:
-        add_bytes_to_tar(archive, "llama-server", b"#!/bin/sh\nexit 0\n", mode=0o755)
-        add_bytes_to_tar(archive, "llama-quantize", b"#!/bin/sh\nexit 0\n", mode=0o755)
+        add_bytes_to_tar(archive, "llama-server", b"#!/bin/sh\nexit 0\n", mode = 0o755)
+        add_bytes_to_tar(archive, "llama-quantize", b"#!/bin/sh\nexit 0\n", mode = 0o755)
         add_bytes_to_tar(archive, "libllama.so.0.0.1", b"libllama")
         add_symlink_to_tar(archive, "libllama.so.0", "libllama.so.0.0.1")
         add_symlink_to_tar(archive, "libllama.so", "libllama.so.0")
@@ -229,36 +263,44 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(tmp_path: Pa
         "download_bytes",
         lambda url, **_: b"#!/usr/bin/env python3\nimport gguf\n",
     )
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "preflight_linux_installed_binaries", lambda *args, **kwargs: None)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "validate_quantize", lambda *args, **kwargs: None)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "validate_server", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "preflight_linux_installed_binaries",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "validate_quantize", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "validate_server", lambda *args, **kwargs: None
+    )
 
     host = HostInfo(
-        system="Linux",
-        machine="x86_64",
-        is_windows=False,
-        is_linux=True,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
     )
     choice = AssetChoice(
-        repo="local",
-        tag=upstream_tag,
-        name=bundle_name,
-        url="file://bundle",
-        source_label="local",
-        is_ready_bundle=True,
-        install_kind="linux-cuda",
-        bundle_profile="cuda13-newer",
-        runtime_line="cuda13",
-        expected_sha256=sha256_file(bundle_archive),
+        repo = "local",
+        tag = upstream_tag,
+        name = bundle_name,
+        url = "file://bundle",
+        source_label = "local",
+        is_ready_bundle = True,
+        install_kind = "linux-cuda",
+        bundle_profile = "cuda13-newer",
+        runtime_line = "cuda13",
+        expected_sha256 = sha256_file(bundle_archive),
     )
 
     install_dir = tmp_path / "install"
@@ -272,16 +314,16 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(tmp_path: Pa
         install_dir,
         work_dir,
         probe_path,
-        requested_tag=upstream_tag,
-        llama_tag=upstream_tag,
-        approved_checksums=approved_checksums_for(
+        requested_tag = upstream_tag,
+        llama_tag = upstream_tag,
+        approved_checksums = approved_checksums_for(
             upstream_tag,
-            source_archive=source_archive,
-            bundle_archive=bundle_archive,
-            bundle_name=bundle_name,
+            source_archive = source_archive,
+            bundle_archive = bundle_archive,
+            bundle_name = bundle_name,
         ),
-        prebuilt_fallback_used=False,
-        quantized_path=quantized_path,
+        prebuilt_fallback_used = False,
+        quantized_path = quantized_path,
     )
 
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
@@ -295,15 +337,29 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(tmp_path: Pa
     assert (install_dir / "BUILD_INFO.txt").exists()
 
 
-def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     upstream_tag = "b9997"
     bundle_name = "app-b9997-windows-x64-cpu.zip"
     source_archive = tmp_path / "source.tar.gz"
     bundle_archive = tmp_path / "bundle.zip"
     with tarfile.open(source_archive, "w:gz") as archive:
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/convert_hf_to_gguf.py", b"#!/usr/bin/env python3\nimport gguf\n")
-        add_bytes_to_tar(archive, f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/CMakeLists.txt",
+            b"cmake_minimum_required(VERSION 3.14)\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py",
+            b"__all__ = []\n",
+        )
     with zipfile.ZipFile(bundle_archive, "w") as archive:
         archive.writestr("llama-server.exe", b"MZ")
         archive.writestr("llama-quantize.exe", b"MZ")
@@ -327,34 +383,42 @@ def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(tmp_path: 
         "download_bytes",
         lambda url, **_: b"#!/usr/bin/env python3\nimport gguf\n",
     )
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "preflight_linux_installed_binaries", lambda *args, **kwargs: None)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "validate_quantize", lambda *args, **kwargs: None)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "validate_server", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "preflight_linux_installed_binaries",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "validate_quantize", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "validate_server", lambda *args, **kwargs: None
+    )
 
     host = HostInfo(
-        system="Windows",
-        machine="AMD64",
-        is_windows=True,
-        is_linux=False,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
     )
     choice = AssetChoice(
-        repo="local",
-        tag=upstream_tag,
-        name=bundle_name,
-        url="file://bundle.zip",
-        source_label="local",
-        is_ready_bundle=True,
-        install_kind="windows-cpu",
-        expected_sha256=sha256_file(bundle_archive),
+        repo = "local",
+        tag = upstream_tag,
+        name = bundle_name,
+        url = "file://bundle.zip",
+        source_label = "local",
+        is_ready_bundle = True,
+        install_kind = "windows-cpu",
+        expected_sha256 = sha256_file(bundle_archive),
     )
 
     install_dir = tmp_path / "install"
@@ -368,16 +432,16 @@ def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(tmp_path: 
         install_dir,
         work_dir,
         probe_path,
-        requested_tag=upstream_tag,
-        llama_tag=upstream_tag,
-        approved_checksums=approved_checksums_for(
+        requested_tag = upstream_tag,
+        llama_tag = upstream_tag,
+        approved_checksums = approved_checksums_for(
             upstream_tag,
-            source_archive=source_archive,
-            bundle_archive=bundle_archive,
-            bundle_name=bundle_name,
+            source_archive = source_archive,
+            bundle_archive = bundle_archive,
+            bundle_name = bundle_name,
         ),
-        prebuilt_fallback_used=False,
-        quantized_path=quantized_path,
+        prebuilt_fallback_used = False,
+        quantized_path = quantized_path,
     )
 
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
@@ -403,30 +467,32 @@ def test_activate_install_tree_restores_existing_install_after_activation_failur
     (staging_dir / "new.txt").write_text("new install\n")
 
     host = HostInfo(
-        system="Linux",
-        machine="x86_64",
-        is_windows=False,
-        is_linux=True,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
     )
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "confirm_install_tree",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("activation confirm failed")
+        ),
     )
 
     with pytest.raises(
         PrebuiltFallback,
-        match="activation failed; restored previous install",
+        match = "activation failed; restored previous install",
     ):
         activate_install_tree(staging_dir, install_dir, host)
 
@@ -453,25 +519,27 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     (staging_dir / "new.txt").write_text("new install\n")
 
     host = HostInfo(
-        system="Linux",
-        machine="x86_64",
-        is_windows=False,
-        is_linux=True,
-        is_macos=False,
-        is_x86_64=True,
-        is_arm64=False,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
     )
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "confirm_install_tree",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("activation confirm failed")
+        ),
     )
 
     original_replace = INSTALL_LLAMA_PREBUILT.os.replace
@@ -487,7 +555,7 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
 
     with pytest.raises(
         PrebuiltFallback,
-        match="activation and rollback failed; cleaned install state for fresh source build",
+        match = "activation and rollback failed; cleaned install state for fresh source build",
     ):
         activate_install_tree(staging_dir, install_dir, host)
 
@@ -497,7 +565,10 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
 
     output = capsys.readouterr().out
     assert "rollback after failed activation also failed: restore failed" in output
-    assert "cleaning staging, install, and rollback paths before source build fallback" in output
+    assert (
+        "cleaning staging, install, and rollback paths before source build fallback"
+        in output
+    )
     assert "removing failed install path" in output
     assert "removing rollback path" in output
 
@@ -506,7 +577,9 @@ def io_bytes(data: bytes):
     return io.BytesIO(data)
 
 
-def add_bytes_to_tar(archive: tarfile.TarFile, name: str, data: bytes, *, mode: int = 0o644) -> None:
+def add_bytes_to_tar(
+    archive: tarfile.TarFile, name: str, data: bytes, *, mode: int = 0o644
+) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(data)
     info.mode = mode
