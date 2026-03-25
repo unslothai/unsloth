@@ -409,17 +409,25 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
+            const nativeCtx = loadResponse.is_gguf
+              ? (loadResponse.context_length ?? 131072)
+              : null;
+            // Keep customContextLength if the user set one and it differs
+            // from the model's native context; otherwise clear it so the
+            // display shows the native value without a dirty marker.
+            const keepCustomCtx = customContextLength != null
+              && customContextLength !== nativeCtx
+              ? customContextLength
+              : null;
             useChatRuntimeStore.setState({
-              ggufContextLength: loadResponse.is_gguf
-                ? (loadResponse.context_length ?? 131072)
-                : null,
+              ggufContextLength: nativeCtx,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningEnabled: reasoningDefault,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: false,
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
-              customContextLength: null,
+              customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });

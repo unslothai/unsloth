@@ -515,7 +515,7 @@ export function ChatSettingsPanel({
                     <div className="min-w-0">
                       <div className="text-xs font-medium">KV Cache Dtype</div>
                       <div className="text-[11px] text-muted-foreground">
-                        Quantize KV cache to reduce VRAM. Reload to apply.
+                        Quantize KV cache to reduce VRAM.
                       </div>
                     </div>
                     <Select
