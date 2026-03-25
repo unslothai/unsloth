@@ -688,15 +688,8 @@ shell.Run cmd, 0, False
         return
     }
 
-    # ── Tauri mode: done, skip shortcuts and auto-launch ──
-    if ($TauriMode) {
-        Write-TauriLog "DONE" ""
-        return
-    }
-
-    New-StudioShortcuts -UnslothExePath $UnslothExe
-
     # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
+    # (Keep this in Tauri mode — user may want CLI access)
     $ScriptsDir = Join-Path $VenvDir "Scripts"
     $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
     if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
@@ -708,6 +701,14 @@ shell.Run cmd, 0, False
         Refresh-SessionPath
         Write-Host "[OK] Added unsloth to PATH" -ForegroundColor Green
     }
+
+    # ── Tauri mode: done, skip shortcuts and auto-launch ──
+    if ($TauriMode) {
+        Write-TauriLog "DONE" ""
+        return
+    }
+
+    New-StudioShortcuts -UnslothExePath $UnslothExe
 
     Write-Host ""
     Write-Host "========================================="
