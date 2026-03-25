@@ -21,10 +21,14 @@ import threading
 
 import re as _re
 
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     msg = str(exc)
-    m = _re.search(r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)", msg)
+    m = _re.search(
+        r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
+        msg,
+    )
     if m:
         return (
             f"Message too long: {m.group(1)} tokens exceeds the {m.group(2)}-token "
