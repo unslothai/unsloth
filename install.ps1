@@ -1,9 +1,36 @@
 # Unsloth Studio Installer for Windows PowerShell
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1
+# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# Test:   .\install.ps1 --package roland-sloth
 
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
+
+    # ── Parse flags ──
+    $StudioLocalInstall = $false
+    $PackageName = "unsloth"
+    $RepoRoot = ""
+    $argList = $args
+    for ($i = 0; $i -lt $argList.Count; $i++) {
+        switch ($argList[$i]) {
+            "--local"   { $StudioLocalInstall = $true }
+            "--package" {
+                $i++
+                if ($i -ge $argList.Count) {
+                    Write-Host "[ERROR] --package requires an argument." -ForegroundColor Red
+                    return
+                }
+                $PackageName = $argList[$i]
+            }
+        }
+    }
+    if ($StudioLocalInstall) {
+        $RepoRoot = (Resolve-Path (Split-Path -Parent $PSCommandPath)).Path
+        if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
+            Write-Host "[ERROR] --local must be run from the unsloth repo root (pyproject.toml not found at $RepoRoot)" -ForegroundColor Red
+            return
+        }
+    }
 
     $PythonVersion = "3.13"
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
@@ -581,6 +608,10 @@ shell.Run cmd, 0, False
         # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
         uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.11" unsloth-zoo
+        if ($StudioLocalInstall) {
+            Write-Host "==> Overlaying local repo (editable)..."
+            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+        }
     } elseif ($TorchIndexUrl) {
         Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
         uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
@@ -590,11 +621,23 @@ shell.Run cmd, 0, False
         }
 
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
-        uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.11"
+        if ($StudioLocalInstall) {
+            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.11" unsloth-zoo
+            Write-Host "==> Overlaying local repo (editable)..."
+            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+        } else {
+            uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName"
+        }
     } else {
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
-        uv pip install --python $VenvPython "unsloth>=2026.3.11" --torch-backend=auto
+        if ($StudioLocalInstall) {
+            uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.11" --torch-backend=auto
+            Write-Host "==> Overlaying local repo (editable)..."
+            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+        } else {
+            uv pip install --python $VenvPython "$PackageName" --torch-backend=auto
+        }
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
@@ -615,6 +658,11 @@ shell.Run cmd, 0, False
     }
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
+    $env:STUDIO_PACKAGE_NAME = $PackageName
+    if ($StudioLocalInstall) {
+        $env:STUDIO_LOCAL_INSTALL = "1"
+        $env:STUDIO_LOCAL_REPO = $RepoRoot
+    }
     & $UnslothExe studio setup
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
@@ -622,6 +670,19 @@ shell.Run cmd, 0, False
     }
 
     New-StudioShortcuts -UnslothExePath $UnslothExe
+
+    # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
+    $ScriptsDir = Join-Path $VenvDir "Scripts"
+    $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
+        if ($UserPath) {
+            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir;$UserPath", "User")
+        } else {
+            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
+        }
+        Refresh-SessionPath
+        Write-Host "[OK] Added unsloth to PATH" -ForegroundColor Green
+    }
 
     Write-Host ""
     Write-Host "========================================="
@@ -645,4 +706,4 @@ shell.Run cmd, 0, False
     }
 }
 
-Install-UnslothStudio
+Install-UnslothStudio @args

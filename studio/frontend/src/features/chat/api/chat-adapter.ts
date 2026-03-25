@@ -253,6 +253,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * falls back to smallest cached safetensors model.
  */
 async function autoLoadSmallestModel(): Promise<boolean> {
+  const hfToken = useChatRuntimeStore.getState().hfToken || null;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -278,8 +279,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             const variant = downloaded[0];
             const loadResp = await loadModel({
               model_path: repo.repo_id,
-              hf_token: null,
-              max_seq_length: 4096,
+              hf_token: hfToken,
+              max_seq_length: 0,
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
@@ -308,8 +309,10 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
               supportsTools: loadResp.supports_tools ?? false,
-              toolsEnabled: false,
-              codeToolsEnabled: false,
+              toolsEnabled: loadResp.supports_tools ?? false,
+              codeToolsEnabled: loadResp.supports_tools ?? false,
+              kvCacheDtype: loadResp.cache_type_kv ?? null,
+              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
             });
@@ -329,7 +332,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         try {
           const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
-            hf_token: null,
+            hf_token: hfToken,
             max_seq_length: 4096,
             load_in_4bit: true,
             is_lora: false,
@@ -366,8 +369,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
     try {
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-GGUF",
-        hf_token: null,
-        max_seq_length: 4096,
+        hf_token: hfToken,
+        max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
@@ -391,7 +394,10 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         supportsTools: loadResp.supports_tools ?? false,
-        toolsEnabled: false,
+        toolsEnabled: loadResp.supports_tools ?? false,
+        codeToolsEnabled: loadResp.supports_tools ?? false,
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
       });
@@ -410,8 +416,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
-      const runtime = useChatRuntimeStore.getState();
-      const { params } = runtime;
+      let runtime = useChatRuntimeStore.getState();
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -430,6 +435,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       }
 
+      // Re-read store after potential auto-load / model ready wait
+      runtime = useChatRuntimeStore.getState();
+      const { params } = runtime;
       const {
         supportsTools,
         toolsEnabled,
