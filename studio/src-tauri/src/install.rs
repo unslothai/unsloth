@@ -1,14 +1,16 @@
+use command_group::{CommandGroup, GroupChild};
 use log::{error, info, warn};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
 // ── Types ──
 
 pub struct InstallProcess {
-    pub child: Option<Child>,
+    /// Process group handle — killing this kills the entire subprocess tree.
+    pub child: Option<GroupChild>,
     pub intentional_stop: bool,
     /// Packages needing elevated install, parsed from [TAURI:NEED_SUDO] output.
     pub needed_packages: Vec<String>,
@@ -87,8 +89,9 @@ fn emit_complete(app: &AppHandle) {
 
 // ── Spawn ──
 
-/// Spawns the install script. Returns (stdout, stderr) handles for streaming.
-/// Child is stored in state immediately so stop_install() can find it.
+/// Spawns the install script in a process group.
+/// Returns (stdout, stderr) handles for streaming.
+/// The GroupChild is stored in state so stop_install() can kill the entire tree.
 fn spawn_script(
     script: &Path,
     args: &[String],
@@ -110,29 +113,33 @@ fn spawn_script(
     }
 
     #[cfg(unix)]
-    let mut child = Command::new("bash")
-        .arg(script)
+    let mut cmd = Command::new("bash");
+    #[cfg(unix)]
+    cmd.arg(script)
         .args(args)
         .current_dir(&work_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn install script: {}", e))?;
+        .stderr(Stdio::piped());
 
     #[cfg(windows)]
-    let mut child = Command::new("powershell")
-        .args(["-ExecutionPolicy", "Bypass", "-File"])
+    let mut cmd = Command::new("powershell");
+    #[cfg(windows)]
+    cmd.args(["-ExecutionPolicy", "Bypass", "-File"])
         .arg(script)
         .args(args)
         .current_dir(&work_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Spawn in a process group so kill() terminates the entire tree
+    let mut group_child = cmd
+        .group()
         .spawn()
         .map_err(|e| format!("Failed to spawn install script: {}", e))?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    install.child = Some(child);
+    let stdout = group_child.inner().stdout.take();
+    let stderr = group_child.inner().stderr.take();
+    install.child = Some(group_child);
     Ok((stdout, stderr))
 }
 
@@ -284,6 +291,7 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
 }
 
 /// Stop a running install process.
+/// Kills the entire process group (bash/powershell + all subprocesses like uv, cmake, pip).
 pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let mut child = {
         let mut install = state.lock().map_err(|e| e.to_string())?;
@@ -296,14 +304,12 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     };
 
     let pid = child.id();
-    info!("Stopping installer process (pid {})", pid);
-    // Note: child.kill() only kills the direct bash/powershell process, not its
-    // subprocess tree (uv, cmake, etc.). Those orphans will finish on their own.
-    // This is acceptable because the install scripts nuke and recreate the venv
-    // on re-run, so partial state from orphaned subprocesses is cleaned up.
+    info!("Stopping installer process group (pid {})", pid);
+    // GroupChild::kill() sends SIGKILL to the entire process group on Unix
+    // and terminates all processes in the job object on Windows.
     let _ = child.kill();
     let _ = child.wait();
-    info!("Installer process stopped");
+    info!("Installer process group stopped");
     Ok(())
 }
 
@@ -311,7 +317,17 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
 /// Uses `elevated-command` crate for native auth dialog.
 #[cfg(target_os = "linux")]
 pub fn install_system_packages(packages: &[String]) -> Result<(), String> {
+    use regex::Regex;
     use std::process::Command as StdCommand;
+
+    // Validate package names to prevent injection via elevated command.
+    // Only allow standard Debian package name characters.
+    let valid_pkg = Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$").unwrap();
+    for pkg in packages {
+        if !valid_pkg.is_match(pkg) {
+            return Err(format!("Invalid package name: {}", pkg));
+        }
+    }
 
     info!(
         "[install] Elevated install of packages: {}",

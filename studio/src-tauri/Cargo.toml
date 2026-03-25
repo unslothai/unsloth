@@ -18,6 +18,7 @@ simplelog = "0.12"
 dirs = "6"
 regex = "1"
 open = "5"
+command-group = "5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
