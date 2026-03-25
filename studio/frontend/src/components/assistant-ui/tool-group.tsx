@@ -26,11 +26,11 @@ const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
       outline: "corner-squircle rounded-lg border py-3",
-      ghost: "",
+      ghost: "rounded-lg bg-muted/10 py-2",
       muted: "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
   },
-  defaultVariants: { variant: "outline" },
+  defaultVariants: { variant: "ghost" },
 });
 
 export type ToolGroupRootProps = Omit<
@@ -76,7 +76,7 @@ function ToolGroupRoot({
     <Collapsible
       ref={collapsibleRef}
       data-slot="tool-group-root"
-      data-variant={variant ?? "outline"}
+      data-variant={variant ?? "ghost"}
       open={isOpen}
       onOpenChange={handleOpenChange}
       className={cn(
@@ -111,9 +111,10 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        "aui-tool-group-trigger group/trigger flex items-center gap-2 text-sm transition-colors",
-        "group-data-[variant=outline]/tool-group-root:w-full group-data-[variant=outline]/tool-group-root:px-4",
-        "group-data-[variant=muted]/tool-group-root:w-full group-data-[variant=muted]/tool-group-root:px-4",
+        "aui-tool-group-trigger group/trigger flex w-full items-center gap-2 text-sm transition-colors",
+        "group-data-[variant=outline]/tool-group-root:px-4",
+        "group-data-[variant=muted]/tool-group-root:px-4",
+        "group-data-[variant=ghost]/tool-group-root:px-0",
         className,
       )}
       {...props}
@@ -134,9 +135,7 @@ function ToolGroupTrigger({
       <span
         data-slot="tool-group-trigger-label"
         className={cn(
-          "aui-tool-group-trigger-label-wrapper relative inline-block text-left font-medium leading-none",
-          "group-data-[variant=outline]/tool-group-root:grow",
-          "group-data-[variant=muted]/tool-group-root:grow",
+          "aui-tool-group-trigger-label-wrapper relative inline-block grow text-left font-medium leading-none",
         )}
       >
         <span>{label}</span>
@@ -189,6 +188,7 @@ function ToolGroupContent({
           "mt-2 flex flex-col gap-2",
           "group-data-[variant=outline]/tool-group-root:mt-3 group-data-[variant=outline]/tool-group-root:border-t group-data-[variant=outline]/tool-group-root:px-4 group-data-[variant=outline]/tool-group-root:pt-3",
           "group-data-[variant=muted]/tool-group-root:mt-3 group-data-[variant=muted]/tool-group-root:border-t group-data-[variant=muted]/tool-group-root:px-4 group-data-[variant=muted]/tool-group-root:pt-3",
+          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1",
         )}
       >
         {children}
