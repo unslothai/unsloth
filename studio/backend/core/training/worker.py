@@ -71,28 +71,32 @@ def _causal_conv1d_platform_tag() -> str | None:
 
 
 def _probe_causal_conv1d_env() -> dict[str, str] | None:
-    probe = _sp.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import json, sys, re, torch; "
-                "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
-                "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
-                "torch_mm = parts[0] + '.' + minor; "
-                "print(json.dumps({"
-                "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                "'torch_mm': torch_mm, "
-                "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
-                "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
-                "}))"
-            ),
-        ],
-        stdout = _sp.PIPE,
-        stderr = _sp.PIPE,
-        text = True,
-        timeout = 30,
-    )
+    try:
+        probe = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json, sys, re, torch; "
+                    "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
+                    "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
+                    "torch_mm = parts[0] + '.' + minor; "
+                    "print(json.dumps({"
+                    "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
+                    "'torch_mm': torch_mm, "
+                    "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                    "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
+                    "}))"
+                ),
+            ],
+            stdout = _sp.PIPE,
+            stderr = _sp.PIPE,
+            text = True,
+            timeout = 30,
+        )
+    except _sp.TimeoutExpired:
+        logger.warning("Torch environment probe timed out after 30s")
+        return None
     if probe.returncode != 0:
         logger.warning(
             "Failed to probe torch environment for causal-conv1d wheel:\n%s",
@@ -160,7 +164,7 @@ def _install_package_wheel_first(
         __import__(import_name)
         logger.info("%s already installed", display_name)
         return
-    except Exception:
+    except ImportError:
         pass
 
     env = _probe_causal_conv1d_env()
