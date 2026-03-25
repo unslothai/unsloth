@@ -69,6 +69,7 @@ _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
+        ! -name 'bun.lock' \
         -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
     # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
     if [ -z "$_changed" ]; then
@@ -96,7 +97,7 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
         echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements. Skipping nvm install."
         NEED_NODE=false
     else
-        if [ "$IS_COLAB" = true ]; then
+        if [ "$IS_COLAB" = true ] && [ "$NODE_OK" = true ]; then
             echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
             # In Colab, just upgrade npm directly - nvm doesn't work well
             if [ "$NPM_MAJOR" -lt 11 ]; then
