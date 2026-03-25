@@ -7,7 +7,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
 import { CheckIcon, CodeIcon, CopyIcon, LoaderIcon } from "lucide-react";
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
   ToolFallbackContent,
@@ -28,6 +28,15 @@ function truncate(text: string): string {
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+    };
+  }, []);
+
   const copy = useCallback(() => {
     if (copyToClipboard(text)) {
       setCopied(true);
@@ -98,14 +107,14 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         icon={CodeIcon}
       />
       <ToolFallbackContent>
-        <div className="flex flex-col px-4">
+        <div className="border-l-2 border-muted-foreground/20 pl-2">
           {/* Code + copy */}
           {code && (
             <div className="flex justify-end">
               <CopyBtn text={code} />
             </div>
           )}
-          <HighlightedCode code={code} language="python" />
+          {code && <HighlightedCode code={code} language="python" />}
 
           {/* Output */}
           {isRunning ? (
