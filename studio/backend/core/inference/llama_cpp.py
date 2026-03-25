@@ -969,6 +969,46 @@ class LlamaCppBackend:
 
                 lib_dirs = [binary_dir]
                 _arch = platform.machine()  # x86_64, aarch64, etc.
+
+                # Pip-installed nvidia CUDA runtime libs (e.g. torch's
+                # bundled cuda-bindings).  The prebuilt llama.cpp binary
+                # links against libcudart.so.13 / libcublas.so.13 which
+                # live here, not in /usr/local/cuda.
+                import glob as _glob
+
+                for _nv_pattern in [
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "cu*",
+                        "lib",
+                    ),
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "cudnn",
+                        "lib",
+                    ),
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "nvjitlink",
+                        "lib",
+                    ),
+                ]:
+                    for _nv_dir in _glob.glob(_nv_pattern):
+                        if os.path.isdir(_nv_dir):
+                            lib_dirs.append(_nv_dir)
+
                 for cuda_lib in [
                     "/usr/local/cuda/lib64",
                     f"/usr/local/cuda/targets/{_arch}-linux/lib",
