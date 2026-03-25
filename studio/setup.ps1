@@ -1746,8 +1746,9 @@ if (-not $NeedLlamaSourceBuild) {
 # ============================================
 Write-Host ""
 $doneLine = if ($env:SKIP_STUDIO_BASE -eq "1") { "Setup Complete!" } else { "Update Complete!" }
+$doneContent = "           $doneLine"
 Write-Host "+===============================================+" -ForegroundColor Green
-Write-Host "|           $doneLine                    |" -ForegroundColor Green
+Write-Host ("|" + $doneContent.PadRight(47) + "|") -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "|  Launch with:                                 |" -ForegroundColor Green
 Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green

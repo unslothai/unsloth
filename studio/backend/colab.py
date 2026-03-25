@@ -18,6 +18,30 @@ if _backend_dir not in sys.path:
 import _platform_compat  # noqa: F401
 
 
+def _is_colab() -> bool:
+    """Detect Google Colab by checking for COLAB_ prefixed env vars."""
+    import os
+
+    return any(k.startswith("COLAB_") for k in os.environ)
+
+
+def _pip_install_backend_deps() -> None:
+    """Install Studio backend dependencies directly into the current Python.
+
+    Used on Colab when the Studio venv does not exist (install.sh was not
+    run).  Reads the requirements from studio.txt next to this file.
+    """
+    import subprocess
+
+    req_file = Path(__file__).parent / "requirements" / "studio.txt"
+    if not req_file.exists():
+        return
+    print("Installing Studio backend dependencies ...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
+    )
+
+
 def _bootstrap_studio_venv() -> None:
     """Expose the Studio venv's site-packages to the current interpreter.
 
@@ -25,9 +49,16 @@ def _bootstrap_studio_venv() -> None:
     installing the full stack into system Python, we prepend the venv's
     site-packages so that packages like structlog, fastapi, etc. are
     importable from notebook cells and take priority over system copies.
+
+    If the venv does not exist and we are running on Colab, fall back to
+    pip-installing the backend dependencies into the current environment
+    so that imports like structlog and fastapi succeed.
     """
     venv_lib = Path.home() / ".unsloth" / "studio" / "unsloth_studio" / "lib"
     if not venv_lib.exists():
+        if _is_colab():
+            _pip_install_backend_deps()
+            return
         import warnings
 
         warnings.warn(
