@@ -578,11 +578,9 @@ shell.Run cmd, 0, False
     #
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
-        # in the new venv location, while preserving existing torch/CUDA.
-        # --index-url ensures the resolver can find CUDA wheels if it needs to
-        # re-resolve torch as a transitive dependency.
+        # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
-        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo --index-url $TorchIndexUrl "unsloth>=2026.3.11" unsloth-zoo
+        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.11" unsloth-zoo
     } elseif ($TorchIndexUrl) {
         Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
         uv pip install --python $VenvPython torch torchvision torchaudio --index-url $TorchIndexUrl
