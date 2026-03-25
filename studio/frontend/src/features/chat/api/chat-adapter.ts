@@ -415,8 +415,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
-      const runtime = useChatRuntimeStore.getState();
-      const { params } = runtime;
+      let runtime = useChatRuntimeStore.getState();
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -435,13 +434,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       }
 
-      // Re-read store after potential auto-load so tool flags are current
-      const currentRuntime = useChatRuntimeStore.getState();
+      // Re-read store after potential auto-load / model ready wait
+      runtime = useChatRuntimeStore.getState();
+      const { params } = runtime;
       const {
         supportsTools,
         toolsEnabled,
         codeToolsEnabled,
-      } = currentRuntime;
+      } = runtime;
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
