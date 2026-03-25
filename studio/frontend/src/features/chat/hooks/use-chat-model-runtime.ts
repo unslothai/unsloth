@@ -372,7 +372,11 @@ export function useChatModelRuntime() {
             }
 
             const { chatTemplateOverride, kvCacheDtype, customContextLength } = useChatRuntimeStore.getState();
-            const effectiveMaxSeqLength = customContextLength ?? 0;
+            // GGUF: use custom context length, or 0 = model's native context
+            // Non-GGUF: use the Max Seq Length slider value for finetuning/inference
+            const effectiveMaxSeqLength = customContextLength != null
+              ? customContextLength
+              : ggufVariant != null ? 0 : maxSeqLength;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
