@@ -1314,7 +1314,10 @@ if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
     if ($resolveOutput) {
         $resolveOutput | ForEach-Object { Write-Host $_ }
     }
-    $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag 2>$null
+    # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
+    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
+    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
+    $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
     $fallbackExit = $LASTEXITCODE
     $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
         ($fallbackOutput | Select-Object -Last 1).ToString().Trim()

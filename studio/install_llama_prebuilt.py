@@ -1285,9 +1285,39 @@ def pinned_published_release_bundle(
 
 def resolve_requested_llama_tag(
     requested_tag: str | None,
+    published_repo: str = "",
 ) -> str:
+    """Resolve a llama.cpp tag for source-build fallback.
+
+    Resolution order:
+      1. Concrete tag (e.g. "b8508") -- returned as-is.
+      2. "latest" with published_repo -- query the Unsloth release repo
+         (e.g. unslothai/llama.cpp) for its latest release tag. This is the
+         tested/approved version that matches the prebuilt binaries.
+      3. "latest" without published_repo or if (2) fails -- query the upstream
+         ggml-org/llama.cpp repo. This may return a newer, untested tag.
+
+    The Unsloth repo is preferred because its releases are pinned to specific
+    upstream tags that have been validated with Unsloth Studio. Using the
+    upstream bleeding-edge tag risks API/ABI incompatibilities.
+    """
     if requested_tag and requested_tag != "latest":
         return requested_tag
+    # Prefer the Unsloth release repo tag (tested/approved) over bleeding-edge
+    # upstream. For example, unslothai/llama.cpp may publish b8508 while
+    # ggml-org/llama.cpp latest is b8514. The source-build fallback should
+    # compile the same version the prebuilt path would have installed.
+    if published_repo:
+        try:
+            payload = fetch_json(
+                f"https://api.github.com/repos/{published_repo}/releases/latest"
+            )
+            tag = payload.get("tag_name")
+            if isinstance(tag, str) and tag:
+                return tag
+        except Exception:
+            pass
+    # Fall back to upstream ggml-org latest release tag
     return latest_upstream_release_tag()
 
 
@@ -3360,7 +3390,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.resolve_llama_tag is not None:
-        print(resolve_requested_llama_tag(args.resolve_llama_tag))
+        # Pass published_repo so the resolver prefers the Unsloth release tag
+        # (tested/approved) over the upstream ggml-org bleeding-edge tag.
+        print(
+            resolve_requested_llama_tag(
+                args.resolve_llama_tag, args.published_repo
+            )
+        )
         return EXIT_SUCCESS
 
     if args.resolve_install_tag is not None:
