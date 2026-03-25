@@ -76,7 +76,6 @@ def _safe_print(*args: object, **kwargs: object) -> None:
         )
 
 
-
 # -- Color support ------------------------------------------------------
 
 

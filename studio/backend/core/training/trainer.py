@@ -3394,7 +3394,9 @@ class UnslothTrainer:
         """
         config_path = os.path.join(output_dir, "adapter_config.json")
         if not os.path.exists(config_path):
-            logger.info("No adapter_config.json found -- skipping training method patch")
+            logger.info(
+                "No adapter_config.json found -- skipping training method patch"
+            )
             return
 
         try:
