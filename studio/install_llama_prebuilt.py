@@ -2134,15 +2134,26 @@ def install_lock(lock_path: Path) -> Iterator[None]:
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
                 os.write(fd, f"{os.getpid()}\n".encode())
+                os.fsync(fd)
                 break
             except FileExistsError:
                 # Check if the holder process is still alive
                 stale = False
                 try:
-                    holder_pid = int(lock_path.read_text().strip())
+                    raw = lock_path.read_text().strip()
+                except FileNotFoundError:
+                    # Lock vanished between our open attempt and read -- retry
+                    continue
+                if not raw:
+                    # File exists but PID not yet written -- another process
+                    # just created it. Wait briefly for the write to land.
+                    time.sleep(0.1)
+                    continue
+                try:
+                    holder_pid = int(raw)
                     os.kill(holder_pid, 0)  # signal 0 = existence check
-                except (ValueError, FileNotFoundError):
-                    # PID unreadable or lock file vanished
+                except ValueError:
+                    # PID unreadable (corrupted file)
                     stale = True
                 except ProcessLookupError:
                     # Process is dead

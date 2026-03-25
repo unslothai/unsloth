@@ -1433,6 +1433,7 @@ if ($NeedLlamaSourceBuild) {
 #   - llama-server:   for GGUF model inference (with HTTPS if OpenSSL available)
 #   - llama-quantize: for GGUF export quantization
 # Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
+$OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
@@ -1536,31 +1537,27 @@ if (-not $NeedLlamaSourceBuild) {
         }
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
-        $cloneTmp = "$LlamaCppDir.clone.$PID"
-        if (Test-Path $cloneTmp) { Remove-Item -Recurse -Force $cloneTmp }
+        $buildTmp = "$LlamaCppDir.build.$PID"
+        if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
         $cloneArgs = @("clone", "--depth", "1")
         if ($UseConcreteRef) {
             $cloneArgs += @("--branch", $ResolvedLlamaTag)
         }
-        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $cloneTmp)
+        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $buildTmp)
         git @cloneArgs 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"
-            if (Test-Path $cloneTmp) { Remove-Item -Recurse -Force $cloneTmp }
-        } else {
-            if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
-            Move-Item $cloneTmp $LlamaCppDir
+            if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+        }
+        # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
+        if ($BuildOk) {
+            $LlamaCppDir = $buildTmp
+            $BuildDir = Join-Path $LlamaCppDir "build"
         }
     }
 
     # -- Step B: cmake configure --
-    # Clean stale CMake cache to prevent previous CUDA settings from leaking
-    # into a CPU-only rebuild (or vice versa).
-    $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path $CmakeCacheFile) {
-        Remove-Item -Recurse -Force $BuildDir
-    }
 
     if ($BuildOk) {
         Write-Host ""
@@ -1659,6 +1656,21 @@ if (-not $NeedLlamaSourceBuild) {
             Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
             Write-Host $output -ForegroundColor Yellow
         }
+    }
+
+    # Swap temp build dir into final location (only if we built in a temp dir)
+    if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
+        if (Test-Path $OriginalLlamaCppDir) { Remove-Item -Recurse -Force $OriginalLlamaCppDir }
+        Move-Item $LlamaCppDir $OriginalLlamaCppDir
+        $LlamaCppDir = $OriginalLlamaCppDir
+        $BuildDir = Join-Path $LlamaCppDir "build"
+        $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
+    } elseif (-not $BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
+        # Build failed -- clean up temp dir, preserve existing install
+        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+        $LlamaCppDir = $OriginalLlamaCppDir
+        $BuildDir = Join-Path $LlamaCppDir "build"
+        $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
     }
 
     # Restore ErrorActionPreference
