@@ -255,7 +255,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                     updated_at = None
                 found.append(
                     LocalModelInfo(
-                        id = model_id,
+                        id = str(model_dir),
                         model_id = model_id,
                         display_name = model_dir.name,
                         path = str(model_dir),
@@ -304,8 +304,6 @@ async def list_local_models(
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if legacy_hf.is_dir():
         allowed_roots.append(legacy_hf)
-    for d in lm_dirs:
-        allowed_roots.append(d)
     try:
         from utils.paths import studio_root, outputs_root
 
@@ -950,8 +948,8 @@ async def list_cached_gguf(
         if legacy_hf.is_dir():
             try:
                 cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not scan legacy HF cache %s: %s", legacy_hf, exc)
 
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
@@ -1001,8 +999,8 @@ async def list_cached_models(
         if legacy_hf.is_dir():
             try:
                 cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not scan legacy HF cache %s: %s", legacy_hf, exc)
 
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
@@ -1086,14 +1084,25 @@ async def delete_cached_model(
 
     try:
         from huggingface_hub import scan_cache_dir
+        from utils.paths import legacy_hf_cache_dir
 
-        hf_cache = scan_cache_dir()
+        legacy_hf = legacy_hf_cache_dir()
+        cache_scans = [scan_cache_dir()]
+        if legacy_hf.is_dir():
+            try:
+                cache_scans.append(scan_cache_dir(cache_dir = str(legacy_hf)))
+            except Exception as exc:
+                logger.warning("Could not scan legacy HF cache %s: %s", legacy_hf, exc)
+
         target_repo = None
-        for repo_info in hf_cache.repos:
-            if repo_info.repo_type != "model":
-                continue
-            if repo_info.repo_id.lower() == repo_id.lower():
-                target_repo = repo_info
+        for hf_cache in cache_scans:
+            for repo_info in hf_cache.repos:
+                if repo_info.repo_type != "model":
+                    continue
+                if repo_info.repo_id.lower() == repo_id.lower():
+                    target_repo = repo_info
+                    break
+            if target_repo is not None:
                 break
 
         if target_repo is None:

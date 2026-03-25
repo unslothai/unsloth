@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 import tempfile
 
@@ -92,6 +91,13 @@ def legacy_hf_cache_dir() -> Path:
 def lmstudio_model_dirs() -> list[Path]:
     """Return LM Studio model directories that exist on disk."""
     dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(p: Path) -> None:
+        resolved = p.resolve()
+        if resolved not in seen and p.is_dir():
+            seen.add(resolved)
+            dirs.append(p)
 
     # 1. Check LM Studio settings.json for custom downloads folder
     settings_path = Path.home() / ".lmstudio" / "settings.json"
@@ -101,41 +107,43 @@ def lmstudio_model_dirs() -> list[Path]:
                 settings = json.load(f)
             downloads = settings.get("downloadsFolder", "")
             if downloads:
-                p = Path(downloads).expanduser()
-                if p.is_dir():
-                    dirs.append(p)
+                _add(Path(downloads).expanduser())
         except Exception:
             pass
 
-    # 2. Legacy LM Studio cache (Linux/macOS)
-    if sys.platform == "win32":
-        legacy = Path.home() / ".cache" / "lm-studio" / "models"
-    else:
-        legacy = Path.home() / ".cache" / "lm-studio" / "models"
-    if legacy.is_dir():
-        dirs.append(legacy)
+    # 2. LM Studio current default models directory (all platforms)
+    _add(Path.home() / ".lmstudio" / "models")
+
+    # 3. Legacy LM Studio cache location
+    _add(Path.home() / ".cache" / "lm-studio" / "models")
 
     return dirs
 
 
 def _setup_cache_env() -> None:
-    """Set cache environment variables for uv and vLLM.
+    """Set cache environment variables for HuggingFace, uv, and vLLM.
 
-    HuggingFace cache variables (HF_HOME, HF_HUB_CACHE, HF_XET_CACHE)
-    are no longer overridden — HF uses its own defaults unless the user
-    has explicitly set them.  The legacy Unsloth HF cache at
-    ``~/.unsloth/studio/cache/huggingface/hub`` is still scanned for
-    backward compatibility via :func:`legacy_hf_cache_dir`.
+    HuggingFace cache variables are only set when the legacy Unsloth HF
+    cache already exists, preserving existing model locations.  New
+    installations leave HF at its own defaults.
 
     Only sets variables that are not already set by the user, so
-    explicit overrides are respected.
+    explicit overrides (e.g. HF_HOME=/data/hf) are respected.
     Works on Linux, macOS, and Windows.
     """
     root = cache_root()
-    defaults = {
+    hf_dir = root / "huggingface"
+    defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
+    # Preserve legacy HF cache for existing installations
+    legacy_hub = hf_dir / "hub"
+    if legacy_hub.is_dir() and any(legacy_hub.iterdir()):
+        defaults["HF_HOME"] = str(hf_dir)
+        defaults["HF_HUB_CACHE"] = str(legacy_hub)
+        defaults["HF_XET_CACHE"] = str(hf_dir / "xet")
+
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value

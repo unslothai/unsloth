@@ -181,6 +181,7 @@ export function ModelSection() {
   const trainableLocalModels = useMemo(
     () =>
       localModels.filter((m) => {
+        if (m.source === "lmstudio") return false;
         if (m.path.endsWith(".gguf")) return false;
         if (m.id.toLowerCase().includes("-gguf")) return false;
         return true;
