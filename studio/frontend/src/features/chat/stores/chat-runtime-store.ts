@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { toast } from "sonner";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type ChatLoraSummary,
@@ -13,6 +14,8 @@ const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
 const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
+const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
+let hasShownInferencePersistenceWarning = false;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -59,6 +62,65 @@ function saveInt(key: string, value: number): void {
   }
 }
 
+function asFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function loadInferenceParams(): InferenceParams {
+  if (!canUseStorage()) return DEFAULT_INFERENCE_PARAMS;
+  try {
+    const raw = localStorage.getItem(INFERENCE_PARAMS_KEY);
+    if (!raw) return DEFAULT_INFERENCE_PARAMS;
+    const parsed = JSON.parse(raw) as Partial<InferenceParams>;
+    return {
+      temperature: asFiniteNumber(parsed.temperature, DEFAULT_INFERENCE_PARAMS.temperature),
+      topP: asFiniteNumber(parsed.topP, DEFAULT_INFERENCE_PARAMS.topP),
+      topK: asFiniteNumber(parsed.topK, DEFAULT_INFERENCE_PARAMS.topK),
+      minP: asFiniteNumber(parsed.minP, DEFAULT_INFERENCE_PARAMS.minP),
+      repetitionPenalty: asFiniteNumber(
+        parsed.repetitionPenalty,
+        DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
+      ),
+      presencePenalty: asFiniteNumber(
+        parsed.presencePenalty,
+        DEFAULT_INFERENCE_PARAMS.presencePenalty,
+      ),
+      maxSeqLength: asFiniteNumber(
+        parsed.maxSeqLength,
+        DEFAULT_INFERENCE_PARAMS.maxSeqLength,
+      ),
+      maxTokens: asFiniteNumber(parsed.maxTokens, DEFAULT_INFERENCE_PARAMS.maxTokens),
+      systemPrompt: asString(parsed.systemPrompt, DEFAULT_INFERENCE_PARAMS.systemPrompt),
+      checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
+      trustRemoteCode: asBoolean(
+        parsed.trustRemoteCode,
+        DEFAULT_INFERENCE_PARAMS.trustRemoteCode ?? false,
+      ),
+    };
+  } catch {
+    return DEFAULT_INFERENCE_PARAMS;
+  }
+}
+
+function saveInferenceParams(params: InferenceParams): boolean {
+  if (!canUseStorage()) return false;
+  try {
+    const { checkpoint: _, ...rest } = params;
+    localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type ChatRuntimeStore = {
   params: InferenceParams;
   models: ChatModelSummary[];
@@ -84,6 +146,12 @@ type ChatRuntimeStore = {
   activeThreadId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
+  contextUsage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cachedTokens: number;
+  } | null;
   modelLoading: boolean;
   setModelLoading: (loading: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -107,10 +175,11 @@ type ChatRuntimeStore = {
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
+  setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
-  params: DEFAULT_INFERENCE_PARAMS,
+  params: loadInferenceParams(),
   models: [],
   loras: [],
   runningByThreadId: {},
@@ -134,9 +203,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   activeThreadId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
+  contextUsage: null,
   modelLoading: false,
   setModelLoading: (loading) => set({ modelLoading: loading }),
-  setParams: (params) => set({ params }),
+  setParams: (params) =>
+    set(() => {
+      const persisted = saveInferenceParams(params);
+      if (!persisted && !hasShownInferencePersistenceWarning) {
+        hasShownInferencePersistenceWarning = true;
+        toast.warning("Chat settings could not be persisted", {
+          description:
+            "Your changes apply now, but may reset after refresh.",
+        });
+      }
+      return { params };
+    }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
   setThreadRunning: (threadId, running) =>
@@ -163,7 +244,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: ggufVariant ?? null,
     })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId }),
+  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
@@ -172,6 +253,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: null,
       ggufContextLength: null,
+      contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,
       supportsTools: false,
@@ -208,4 +290,5 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
     set({ pendingAudioBase64: null, pendingAudioName: null }),
+  setContextUsage: (contextUsage) => set({ contextUsage }),
 }));

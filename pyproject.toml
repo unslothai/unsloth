@@ -46,12 +46,9 @@ studio = [
     "*.ps1",
     "*.bat",
     "frontend/dist/**/*",
-    "frontend/public/**/*",
-    "frontend/src/**/*",
     "frontend/*.json",
     "frontend/*.ts",
     "frontend/*.js",
-    "frontend/*.lock",
     "frontend/*.html",
     "frontend/*.yaml",
     "frontend/.git*",
@@ -90,7 +87,7 @@ huggingfacenotorch = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.3.4",
+    "unsloth_zoo>=2026.3.5",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -580,7 +577,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.3.4",
+    "unsloth_zoo>=2026.3.5",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0",

@@ -92,6 +92,24 @@ def _resolve_base_model(model_name: str) -> str:
         except Exception as exc:
             logger.debug("Could not read %s: %s", adapter_cfg_path, exc)
 
+    # --- config.json fallback (works for both LoRA and full fine-tune) ------
+    config_json_path = local_path / "config.json"
+    if config_json_path.is_file():
+        try:
+            with open(config_json_path) as f:
+                cfg = json.load(f)
+            # Unsloth writes "model_name"; HF writes "_name_or_path"
+            base = cfg.get("model_name") or cfg.get("_name_or_path")
+            if base and base != str(local_path):
+                logger.info(
+                    "Resolved checkpoint '%s' → base model '%s' (via config.json)",
+                    model_name,
+                    base,
+                )
+                return base
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", config_json_path, exc)
+
     # --- Only try the heavier fallback for local directories ----------------
     if local_path.is_dir():
         try:
@@ -126,6 +144,27 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
     if model_name in _tokenizer_class_cache:
         return _tokenizer_class_cache[model_name]
 
+    # --- Check local tokenizer_config.json first ---------------------------
+    local_path = Path(model_name)
+    local_tc = local_path / "tokenizer_config.json"
+    if local_tc.is_file():
+        try:
+            with open(local_tc) as f:
+                data = json.load(f)
+            tokenizer_class = data.get("tokenizer_class", "")
+            result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
+            if result:
+                logger.info(
+                    "Local check: %s uses tokenizer_class=%s (requires transformers 5.x)",
+                    model_name,
+                    tokenizer_class,
+                )
+            _tokenizer_class_cache[model_name] = result
+            return result
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", local_tc, exc)
+
+    # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"

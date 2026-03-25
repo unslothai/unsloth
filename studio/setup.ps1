@@ -176,7 +176,7 @@ function Get-PytorchCudaTag {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($cmd) { $cmd.Source } else { $null }
     }
-    if (-not $smiExe) { return "cu124" }
+    if (-not $smiExe) { return "cu126" }
 
     try {
         # 2>&1 | Out-String merges stderr into stdout then converts to a single
@@ -190,11 +190,13 @@ function Get-PytorchCudaTag {
             if ($major -ge 13) { return "cu130" }
             if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
             if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
-            return "cu124"
+            if ($major -ge 12) { return "cu124" }
+            if ($major -ge 11) { return "cu118" }
+            return "cpu"
         }
     } catch { }
 
-    return "cu124"
+    return "cu126"
 }
 
 # Find Visual Studio Build Tools for cmake -G flag.
@@ -726,16 +728,22 @@ if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping Node/npm check" -ForegroundColor Green
 } else {
     # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-    # Node >= 20, npm >= 11.
+    # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
     $NeedNode = $true
     try {
         $NodeVersion = (node -v 2>$null)
         $NpmVersion = (npm -v 2>$null)
         if ($NodeVersion -and $NpmVersion) {
-            $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
+            $NodeParts = ($NodeVersion -replace 'v','').Split('.')
+            $NodeMajor = [int]$NodeParts[0]
+            $NodeMinor = [int]$NodeParts[1]
             $NpmMajor = [int]$NpmVersion.Split('.')[0]
 
-            if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
+            # Vite 8: ^20.19.0 || >=22.12.0
+            $NodeOk = ($NodeMajor -eq 20 -and $NodeMinor -ge 19) -or
+                      ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or
+                      ($NodeMajor -ge 23)
+            if ($NodeOk -and $NpmMajor -ge 11) {
                 Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
                 $NeedNode = $false
             } else {
@@ -759,6 +767,24 @@ if ($IsPipInstall) {
     }
 
     Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
+
+    # ── bun (optional, faster package installs) ──
+    # Installed via npm — Node is already guaranteed above. Works on all platforms.
+    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        Write-Host "   Installing bun (faster frontend package installs)..." -ForegroundColor DarkGray
+        $prevEAP_bun = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        npm install -g bun 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP_bun
+        Refresh-Environment
+        if (Get-Command bun -ErrorAction SilentlyContinue) {
+            Write-Host "[OK] bun installed ($(bun --version))" -ForegroundColor Green
+        } else {
+            Write-Host "[OK] bun install skipped (npm will be used instead)" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "[OK] bun already installed ($(bun --version))" -ForegroundColor Green
+    }
 }
 
 # ============================================
@@ -842,10 +868,10 @@ if ($IsPipInstall) {
             if ($NewerFile) { break }
         }
     }
-    # Also check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
+    # Also check all top-level files (package.json, vite.config.ts, index.html, etc.)
     if (-not $NewerFile) {
         $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -gt $DistTime } |
+            Where-Object { $_.Name -ne "bun.lock" -and $_.LastWriteTime -gt $DistTime } |
             Select-Object -First 1
     }
     if (-not $NewerFile) {
@@ -855,33 +881,91 @@ if ($IsPipInstall) {
         Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
     }
 }
-$NeedFrontendBuild = $true
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
-    # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
-    # treat them as terminating errors (same pattern as the pip section below).
+
+    # ── Tailwind v4 .gitignore workaround ──
+    # Tailwind v4's oxide scanner respects .gitignore in parent directories.
+    # Python venvs create a .gitignore with "*" (ignore everything), which
+    # prevents Tailwind from scanning .tsx source files for class names.
+    # Temporarily hide any such .gitignore during the build, then restore it.
+    $HiddenGitignores = @()
+    $WalkDir = (Get-Item $FrontendDir).Parent.FullName
+    while ($WalkDir -and $WalkDir -ne [System.IO.Path]::GetPathRoot($WalkDir)) {
+        $gi = Join-Path $WalkDir ".gitignore"
+        if (Test-Path $gi) {
+            $content = Get-Content $gi -Raw -ErrorAction SilentlyContinue
+            if ($content -and ($content.Trim() -match '^\*$')) {
+                $hidden = "$gi._twbuild"
+                Rename-Item -Path $gi -NewName (Split-Path $hidden -Leaf) -Force
+                $HiddenGitignores += $gi
+                Write-Host "   [INFO] Temporarily hiding $gi (venv .gitignore blocks Tailwind scanner)" -ForegroundColor DarkGray
+            }
+        }
+        $WalkDir = Split-Path $WalkDir -Parent
+    }
+
+    # Use bun if available (faster install), fall back to npm.
+    # Bun is used only as package manager; Node runs the actual build (Vite 8).
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    npm install 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        $ErrorActionPreference = $prevEAP_npm
-        Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
-        exit 1
+
+    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+
+    if ($UseBun) {
+        Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
+        & bun install *> $null
+        $bunExit = $LASTEXITCODE
+        if ($bunExit -ne 0) {
+            Write-Host "   [WARN] bun install failed (exit $bunExit), falling back to npm" -ForegroundColor Yellow
+            if (Test-Path "node_modules") {
+                Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $UseBun = $false
+        }
     }
-    npm run build 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $UseBun) {
+        & npm install *> $null
+        $npmExit = $LASTEXITCODE
+        if ($npmExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_npm
+            foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
+            Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
+            Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            exit 1
+        }
+    }
+
+    # Always use npm to run the build (Node runtime — avoids bun Windows runtime issues)
+    & npm run build *> $null
+    $buildExit = $LASTEXITCODE
+    if ($buildExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
-        Write-Host "[ERROR] npm run build failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
+        Write-Host "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
         exit 1
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
-    Write-Host "[OK] Frontend built to frontend/dist" -ForegroundColor Green
+
+    # ── Restore hidden .gitignore files ──
+    foreach ($gi in $HiddenGitignores) {
+        Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── Validate CSS output ──
+    $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
+    $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
+    if ($MaxCssSize -lt 100000) {
+        Write-Host "[WARN] Largest CSS file is only $([math]::Round($MaxCssSize / 1024))KB -- Tailwind may not have scanned all source files." -ForegroundColor Yellow
+        Write-Host "       Expected >100KB. Check for .gitignore files blocking the Tailwind oxide scanner." -ForegroundColor Yellow
+    } else {
+        Write-Host "[OK] Frontend built to frontend/dist (CSS: $([math]::Round($MaxCssSize / 1024))KB)" -ForegroundColor Green
+    }
 }
 
 if (Test-Path $OxcValidatorDir) {
@@ -907,23 +991,85 @@ if (Test-Path $OxcValidatorDir) {
 Write-Host ""
 Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 
-# Find Python
+# Find Python -- skip Anaconda/Miniconda distributions.
+# Conda-bundled CPython ships modified DLL search paths that break
+# torch's c10.dll loading on Windows. Standalone CPython (python.org,
+# winget, uv) does not have this issue.
+# Uses Get-Command -All to look past conda entries that shadow a valid
+# standalone Python further down PATH, and probes py.exe (the Python
+# Launcher) which reliably finds python.org installs.
+#
+# NOTE: A venv created from conda Python inherits conda's base_prefix
+# even though the venv path itself does not contain "conda". We check
+# both the executable path AND sys.base_prefix to catch this case.
+$CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 $PythonCmd = $null
-foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
+
+# Helper: check if a Python executable is conda-based by inspecting
+# both the path and sys.base_prefix (catches venvs created from conda).
+function Test-IsConda {
+    param([string]$Exe)
+    if ($Exe -match $CondaSkipPattern) { return $true }
     try {
-        $ver = & $candidate --version 2>&1
-        if ($ver -match 'Python 3\.(\d+)') {
-            $minor = [int]$Matches[1]
-            if ($minor -ge 11 -and $minor -le 13) {
-                $PythonCmd = $candidate
-                break
-            }
-        }
+        $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+        if ($basePrefix -match $CondaSkipPattern) { return $true }
     } catch { }
+    return $false
+}
+
+# 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
+#    py.exe is installed by python.org and resolves to standalone CPython.
+$pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
+    foreach ($minor in @("3.13", "3.12", "3.11")) {
+        try {
+            $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
+            if ($out -match 'Python 3\.(\d+)') {
+                $pyMinor = [int]$Matches[1]
+                if ($pyMinor -ge 11 -and $pyMinor -le 13) {
+                    # Resolve the actual executable path so venv creation
+                    # does not re-resolve back to a conda interpreter.
+                    $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
+                        $PythonCmd = $resolvedExe
+                        break
+                    }
+                }
+            }
+        } catch { }
+    }
+}
+
+# 2. Fall back to scanning python3.x / python3 / python on PATH.
+#    Use Get-Command -All to look past conda entries.
+if (-not $PythonCmd) {
+    foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
+        foreach ($cmdInfo in @(Get-Command $candidate -All -ErrorAction SilentlyContinue)) {
+            try {
+                if (-not $cmdInfo.Source) { continue }
+                if ($cmdInfo.Source -like "*\WindowsApps\*") { continue }
+                if (Test-IsConda $cmdInfo.Source) {
+                    Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
+                    continue
+                }
+                $ver = & $cmdInfo.Source --version 2>&1
+                if ($ver -match 'Python 3\.(\d+)') {
+                    $minor = [int]$Matches[1]
+                    if ($minor -ge 11 -and $minor -le 13) {
+                        $PythonCmd = $cmdInfo.Source
+                        break
+                    }
+                }
+            } catch { }
+        }
+        if ($PythonCmd) { break }
+    }
 }
 
 if (-not $PythonCmd) {
-    Write-Host "[ERROR] No Python 3.11-3.13 found." -ForegroundColor Red
+    Write-Host "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
+    Write-Host "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
+    Write-Host "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
     exit 1
 }
 
@@ -932,6 +1078,67 @@ Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundC
 # Always create a .venv for isolation -- even for pip installs.
 # Created in the repo root (parent of studio/).
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
+
+# Stale-venv detection: if the venv exists but its torch flavor no longer
+# matches the current machine, wipe it so we get a clean install.
+if (Test-Path $VenvDir -PathType Container) {
+    $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    $installedTorchTag = $null
+    $shouldRebuild = $false
+
+    if (Test-Path $VenvPyExe) {
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $VenvPyExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
+            $finished = $proc.WaitForExit(30000)
+            if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
+                if ($torchVer -match '\+(cu\d+)') {
+                    $installedTorchTag = $Matches[1]
+                } elseif ($torchVer -match '\+cpu') {
+                    $installedTorchTag = "cpu"
+                } else {
+                    # Untagged wheel (plain "2.x.y" from PyPI) -- treat as cpu
+                    $installedTorchTag = "cpu"
+                }
+            } else {
+                if (-not $finished) { try { $proc.Kill() } catch {} }
+                $shouldRebuild = $true
+            }
+        } catch {
+            $shouldRebuild = $true
+        }
+    } else {
+        # Missing python.exe means the venv is incomplete -- rebuild it.
+        $shouldRebuild = $true
+    }
+
+    if (-not $shouldRebuild) {
+        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+            $shouldRebuild = $true
+        }
+    }
+
+    if ($shouldRebuild) {
+        $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
+        Write-Host "   [INFO] Stale venv detected ($reason) -- rebuilding..." -ForegroundColor Yellow
+        try {
+            Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
 if (-not (Test-Path $VenvDir)) {
     Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
@@ -1013,6 +1220,19 @@ Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH 
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} else {
+    $CuTag = "cpu"
+}
+
+if ($CuTag -eq "cpu") {
+    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        exit 1
+    }
+} else {
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
     Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
     $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
@@ -1030,14 +1250,6 @@ if ($HasNvidiaSmi) {
         Write-Host $output -ForegroundColor Yellow
     } else {
         Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
-    }
-} else {
-    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
-    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
-        exit 1
     }
 }
 
@@ -1374,6 +1586,6 @@ Write-Host "+===============================================+" -ForegroundColor 
 Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "|  Launch with:                                 |" -ForegroundColor Green
-Write-Host "|    unsloth studio -H 0.0.0.0 -p 8000          |" -ForegroundColor Green
+Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
 Write-Host "|                                               |" -ForegroundColor Green
 Write-Host "+===============================================+" -ForegroundColor Green

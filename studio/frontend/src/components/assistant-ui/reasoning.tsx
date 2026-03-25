@@ -151,7 +151,7 @@ function ReasoningTrigger({
     <CollapsibleTrigger
       data-slot="reasoning-trigger"
       className={cn(
-        "aui-reasoning-trigger group/trigger flex max-w-[75%] items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -219,22 +219,34 @@ function ReasoningText({
   ...props
 }: ComponentProps<"div"> & { streaming?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
 
   useEffect(() => {
     if (!(streaming && scrollRef.current)) {
       return;
     }
     const el = scrollRef.current;
+    const updateAutoScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      shouldAutoScrollRef.current = distanceFromBottom <= 24;
+    };
     const observer = new MutationObserver(() => {
-      el.scrollTop = el.scrollHeight;
+      if (shouldAutoScrollRef.current) {
+        el.scrollTop = el.scrollHeight;
+      }
     });
+    el.addEventListener("scroll", updateAutoScroll);
     observer.observe(el, {
       childList: true,
       subtree: true,
       characterData: true,
     });
+    shouldAutoScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", updateAutoScroll);
+    };
   }, [streaming]);
 
   return (
@@ -330,6 +342,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   const [manualOpen, setManualOpen] = useState(false);
+  const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -345,17 +358,23 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  const isOpen = isReasoningStreaming || manualOpen;
+  // Reset dismissed flag when a new stream starts
+  useEffect(() => {
+    if (isReasoningStreaming) {
+      setDismissedWhileStreaming(false);
+    }
+  }, [isReasoningStreaming]);
 
-  const variant = isReasoningStreaming
-    ? "outline"
-    : manualOpen
-      ? "outline"
-      : "ghost";
+  // Derived: open during streaming (unless dismissed), or if user manually opened after
+  const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
+  const variant = isOpen ? "outline" : "ghost";
 
+  // Allow closing during streaming (matches ChatGPT)
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (!isReasoningStreaming) {
+      if (isReasoningStreaming) {
+        setDismissedWhileStreaming(!open);
+      } else {
         setManualOpen(open);
       }
     },
@@ -368,14 +387,17 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
         <ReasoningTrigger
+          className="min-w-0 flex-1"
           active={isReasoningStreaming}
           duration={duration || persistedDuration}
         />
-        {isOpen && !isReasoningStreaming && (
-          <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
-        )}
+        <div className="flex w-16 shrink-0 justify-end">
+          {isOpen && !isReasoningStreaming && (
+            <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
+          )}
+        </div>
       </div>
       <ReasoningContent
         aria-busy={isReasoningStreaming}

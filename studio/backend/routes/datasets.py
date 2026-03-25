@@ -445,7 +445,7 @@ def check_format(
                     format_result = format_dataset(
                         preview_slice,
                         format_type = "auto",
-                        num_proc = 1,  # Only 10 preview rows — no need for multiprocessing
+                        num_proc = None,  # Only 10 preview rows -- no need for multiprocessing
                     )
                     processed = format_result["dataset"]
                     preview_samples = _serialize_preview_rows(processed)

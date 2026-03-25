@@ -549,10 +549,18 @@ class InferenceBackend:
                 # Clear GPU memory cache
                 clear_gpu_cache()
 
-                # Remove stale compiled cache so the next model gets a fresh one
+                # Remove stale compiled cache so the next model gets a fresh one.
+                # On spawn-based platforms, preserve trainer files so that any
+                # concurrent training dataset.map() workers can still import them.
+                import sys as _sys
                 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-                clear_unsloth_compiled_cache()
+                _preserve = (
+                    ["Unsloth*Trainer.py"]
+                    if _sys.platform in ("win32", "darwin")
+                    else None
+                )
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
@@ -919,6 +927,12 @@ class InferenceBackend:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
+        if system_prompt:
+            template_messages = [
+                {"role": "system", "content": system_prompt}
+            ] + messages
+        else:
+            template_messages = messages
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -929,7 +943,7 @@ class InferenceBackend:
                     f"one via tokenizer.chat_template before inference."
                 )
             formatted_prompt = tokenizer.apply_chat_template(
-                messages, tokenize = False, add_generation_prompt = True
+                template_messages, tokenize = False, add_generation_prompt = True
             )
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -984,19 +998,40 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            vision_messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-            ]
+            user_msg = {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": user_message},
+                ],
+            }
+            if system_prompt:
+                vision_messages = [
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": system_prompt}],
+                    },
+                    user_msg,
+                ]
+            else:
+                vision_messages = [user_msg]
 
-            input_text = processor.apply_chat_template(
-                vision_messages, add_generation_prompt = True, tokenize = False
-            )
+            try:
+                input_text = processor.apply_chat_template(
+                    vision_messages, add_generation_prompt = True, tokenize = False
+                )
+            except Exception as e:
+                if system_prompt:
+                    logger.warning(
+                        f"Vision processor for '{self.active_model_name}' may not support "
+                        f"system messages; retrying without. Original error: {e}"
+                    )
+                    vision_messages = [user_msg]
+                    input_text = processor.apply_chat_template(
+                        vision_messages, add_generation_prompt = True, tokenize = False
+                    )
+                else:
+                    raise
             inputs = processor(
                 image,
                 input_text,
