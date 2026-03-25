@@ -14,6 +14,14 @@ export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-st
 export { uploadTrainingDataset } from "./api/datasets-api";
 export { listLocalModels } from "./api/models-api";
 export type { LocalModelInfo } from "./api/models-api";
-export type { TrainingPhase } from "./types/runtime";
+export type { TrainingPhase, TrainingViewData, TrainingSeriesPoint } from "./types/runtime";
+export type {
+  TrainingRunSummary,
+  TrainingRunListResponse,
+  TrainingRunMetrics,
+  TrainingRunDetailResponse,
+  TrainingRunDeleteResponse,
+} from "./types/history";
+export { listTrainingRuns, getTrainingRun, deleteTrainingRun } from "./api/history-api";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export { validateTrainingConfig } from "./lib/validation";
