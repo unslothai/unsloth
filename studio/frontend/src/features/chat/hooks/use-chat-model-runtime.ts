@@ -371,11 +371,12 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype } = useChatRuntimeStore.getState();
+            const { chatTemplateOverride, kvCacheDtype, customContextLength } = useChatRuntimeStore.getState();
+            const effectiveMaxSeqLength = customContextLength ?? 0;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
-              max_seq_length: maxSeqLength,
+              max_seq_length: effectiveMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -403,6 +404,7 @@ export function useChatModelRuntime() {
                 }
               }
             }
+            const loadedKv = loadResponse.cache_type_kv ?? null;
             useChatRuntimeStore.setState({
               ggufContextLength: loadResponse.is_gguf
                 ? (loadResponse.context_length ?? 131072)
@@ -411,7 +413,9 @@ export function useChatModelRuntime() {
               reasoningEnabled: reasoningDefault,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: false,
-              kvCacheDtype: loadResponse.cache_type_kv ?? null,
+              kvCacheDtype: loadedKv,
+              loadedKvCacheDtype: loadedKv,
+              customContextLength: null,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });

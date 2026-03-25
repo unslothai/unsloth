@@ -279,6 +279,14 @@ export function ChatSettingsPanel({
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
+  const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const setCustomContextLength = useChatRuntimeStore((s) => s.setCustomContextLength);
+
+  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
+  const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
+  const ctxDirty = customContextLength !== null;
+  const modelSettingsDirty = kvDirty || ctxDirty;
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
@@ -471,14 +479,26 @@ export function ChatSettingsPanel({
                     <div className="min-w-0">
                       <div className="text-xs font-medium">Context Length</div>
                       <div className="text-[11px] text-muted-foreground">
-                        Reported by the loaded GGUF model.
+                        Max context window. 0 = model default.
                       </div>
                     </div>
                     <Input
-                      value={ggufContextLength ?? ""}
+                      type="number"
+                      value={ctxDisplayValue}
                       placeholder="Loading..."
-                      disabled={true}
+                      min={0}
                       className="h-7 w-[90px] text-xs"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw === "") {
+                          setCustomContextLength(null);
+                          return;
+                        }
+                        const v = parseInt(raw, 10);
+                        if (!Number.isNaN(v) && v >= 0) {
+                          setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                        }
+                      }}
                     />
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -492,7 +512,6 @@ export function ChatSettingsPanel({
                       value={kvCacheDtype ?? "f16"}
                       onValueChange={(v) => {
                         setKvCacheDtype(v === "f16" ? null : v);
-                        onReloadModel?.();
                       }}
                     >
                       <SelectTrigger className="h-7 w-[90px] text-xs">
@@ -507,6 +526,27 @@ export function ChatSettingsPanel({
                       </SelectContent>
                     </Select>
                   </div>
+                  {modelSettingsDirty && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => onReloadModel?.()}
+                        className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomContextLength(null);
+                          setKvCacheDtype(loadedKvCacheDtype);
+                        }}
+                        className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
               {!isGguf && (
