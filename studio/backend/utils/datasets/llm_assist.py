@@ -645,7 +645,7 @@ def _run_multi_pass_advisor(
                 "is_conversational": True,
                 "user_notification": (
                     "This dataset is already in conversational format. "
-                    "No conversion needed -- columns can be mapped directly."
+                    "No conversion needed — columns can be mapped directly."
                 ),
             }
 
