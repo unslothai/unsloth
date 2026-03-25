@@ -431,6 +431,10 @@ DESKTOP_EOF
         if [ -d "$HOME/Desktop" ]; then
             cp "$_css_desktop" "$HOME/Desktop/unsloth-studio.desktop" 2>/dev/null || true
             chmod +x "$HOME/Desktop/unsloth-studio.desktop" 2>/dev/null || true
+            # Mark as trusted so GNOME/Nautilus allows launching via double-click
+            if command -v gio >/dev/null 2>&1; then
+                gio set "$HOME/Desktop/unsloth-studio.desktop" metadata::trusted true 2>/dev/null || true
+            fi
         fi
 
         # Best-effort update database
