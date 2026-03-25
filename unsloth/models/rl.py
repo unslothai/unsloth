@@ -305,7 +305,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -335,12 +334,13 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Note: We intentionally do NOT call wandb.finish() here.
+        # Calling wandb.finish() after train() terminates the active W&B run,
+        # which breaks subsequent trainer.evaluate() or trainer.log() calls
+        # with "You must call wandb.init() before wandb.log()".
+        # Users who run multiple train() calls in one session should call
+        # wandb.finish() manually between runs to avoid overwriting data.
+        # See: https://github.com/unslothai/unsloth/issues/3954
         return output
     return wrapper
 pass
