@@ -337,7 +337,7 @@ export function SharedComposer({
       async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
         const resp = await loadModel({
           model_path: sel.id,
-          hf_token: null,
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: maxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
