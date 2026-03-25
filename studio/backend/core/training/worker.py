@@ -16,6 +16,8 @@ from __future__ import annotations
 import structlog
 from loggers import get_logger
 import os
+import platform
+import shutil
 import sys
 import time
 import traceback
@@ -45,20 +47,25 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
             "qwen3-next",
             "qwen3_next",
             "nemotron_h",
+            "nemotron-h",
             "nemotron-3-nano",
             "falcon_h1",
             "falcon-h1",
+            "granite-4.0-h",
+            "granitemoehybrid",
         )
     )
 
 
 def _causal_conv1d_platform_tag() -> str | None:
+    machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
-        return "linux_x86_64"
-    if sys.platform == "darwin":
+        if machine in {"x86_64", "amd64"}:
+            return "linux_x86_64"
+        if machine in {"aarch64", "arm64"}:
+            return "linux_aarch64"
         return None
-    if sys.platform == "win32":
-        return "win_amd64"
+    # No prebuilt wheels published for macOS or Windows
     return None
 
 
@@ -68,18 +75,22 @@ def _probe_causal_conv1d_env() -> dict[str, str] | None:
             sys.executable,
             "-c",
             (
-                "import json, sys, torch; "
+                "import json, sys, re, torch; "
+                "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
+                "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
+                "torch_mm = parts[0] + '.' + minor; "
                 "print(json.dumps({"
                 "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                "'torch_mm': '.'.join(torch.__version__.split('+', 1)[0].split('.')[:2]), "
+                "'torch_mm': torch_mm, "
                 "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
                 "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
                 "}))"
             ),
         ],
         stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
+        stderr = _sp.PIPE,
         text = True,
+        timeout = 30,
     )
     if probe.returncode != 0:
         logger.warning(
@@ -148,7 +159,7 @@ def _install_package_wheel_first(
         __import__(import_name)
         logger.info("%s already installed", display_name)
         return
-    except ImportError:
+    except Exception:
         pass
 
     env = _probe_causal_conv1d_env()
@@ -165,26 +176,31 @@ def _install_package_wheel_first(
     else:
         if _url_exists(wheel_url):
             _send_status(event_queue, f"Installing prebuilt {display_name} wheel...")
-            uv_cmd = [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--torch-backend=auto",
-                "--no-deps",
-                wheel_url,
-            ]
-            result = _sp.run(
-                uv_cmd,
-                stdout = _sp.PIPE,
-                stderr = _sp.STDOUT,
-                text = True,
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "uv failed to install %s wheel:\n%s", display_name, result.stdout
+            installed = False
+            # Try uv first if available, then fall back to pip
+            if shutil.which("uv"):
+                uv_cmd = [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    sys.executable,
+                    "--no-deps",
+                    wheel_url,
+                ]
+                result = _sp.run(
+                    uv_cmd,
+                    stdout = _sp.PIPE,
+                    stderr = _sp.STDOUT,
+                    text = True,
                 )
+                if result.returncode == 0:
+                    installed = True
+                else:
+                    logger.warning(
+                        "uv failed to install %s wheel:\n%s", display_name, result.stdout
+                    )
+            if not installed:
                 pip_cmd = [
                     sys.executable,
                     "-m",
@@ -200,13 +216,13 @@ def _install_package_wheel_first(
                     text = True,
                 )
                 if result.returncode == 0:
-                    logger.info("Installed prebuilt %s wheel", display_name)
-                    return
-                logger.warning(
-                    "pip failed to install %s wheel:\n%s", display_name, result.stdout
-                )
-            else:
-                logger.info("Installed prebuilt %s wheel", display_name)
+                    installed = True
+                else:
+                    logger.warning(
+                        "pip failed to install %s wheel:\n%s", display_name, result.stdout
+                    )
+            if installed:
+                logger.info("Installed prebuilt %s wheel successfully", display_name)
                 return
         else:
             logger.info("No published %s wheel found: %s", display_name, wheel_url)
@@ -251,8 +267,14 @@ def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
     )
 
 
+_SSM_MODEL_SUBSTRINGS = (
+    "nemotron_h", "nemotron-h", "nemotron-3-nano",
+    "falcon_h1", "falcon-h1",
+    "granite-4.0-h", "granitemoehybrid",
+)
+
+
 def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    _SSM_MODEL_SUBSTRINGS = ("nemotron_h", "nemotron-3-nano", "falcon_h1", "falcon-h1")
     if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
         return
 
@@ -366,8 +388,11 @@ def run_training_process(
         )
 
     # ── 1b. Set up causal-conv1d first, then install mamba-ssm if needed ──
-    _ensure_causal_conv1d_fast_path(event_queue, model_name)
-    _ensure_mamba_ssm(event_queue, model_name)
+    try:
+        _ensure_causal_conv1d_fast_path(event_queue, model_name)
+        _ensure_mamba_ssm(event_queue, model_name)
+    except Exception as exc:
+        logger.warning("Optional SSM dependency install failed: %s", exc)
 
     # ── 1c. Set fork start method so dataset.map() can multiprocess ──
     # The parent launched us via spawn (clean process), but the compiled

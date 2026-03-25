@@ -300,13 +300,16 @@ def install_python_stack() -> int:
     # Try to use uv for faster installs
     USE_UV = _bootstrap_uv()
 
-    # 2. Preinstall torch to a wheel-friendly line for causal-conv1d and mamba-ssm happy-path testing
-    # TODO: update this once 2.11 builds are available and stable :)
-    _progress("torch<=2.10.0 for easier hybrid model training")
+    # 2. Pin torch to a range where prebuilt causal-conv1d / mamba-ssm wheels exist.
+    # Wheels are published for torch 2.6 through 2.10 at:
+    #   https://github.com/Dao-AILab/causal-conv1d/releases
+    #   https://github.com/state-spaces/mamba/releases
+    # Bump the upper bound once upstream publishes wheels for newer torch versions.
+    _progress("torch for hybrid model wheel compatibility")
     pip_install(
         "Installing pinned torch stack",
         "--no-cache-dir",
-        "torch<=2.10.0",
+        "torch>=2.6.0,<2.11.0",
         "torchvision",
         "torchaudio",
         constrain = False,
