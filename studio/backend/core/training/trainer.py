@@ -33,7 +33,13 @@ if sys.platform in ("win32", "darwin"):
         sys.path.insert(0, _compile_cache)
 
 import torch
-from utils.hardware import clear_gpu_cache, safe_num_proc, dataset_map_num_proc, get_device_map, get_visible_gpu_count
+from utils.hardware import (
+    clear_gpu_cache,
+    safe_num_proc,
+    dataset_map_num_proc,
+    get_device_map,
+    get_visible_gpu_count,
+)
 
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
@@ -625,7 +631,9 @@ class UnslothTrainer:
                         return False
 
             device_map = get_device_map()
-            logger.info(f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)")
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
 
             # Branch based on model type
             if self._audio_type == "csm":

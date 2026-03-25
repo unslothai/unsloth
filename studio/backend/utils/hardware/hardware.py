@@ -521,7 +521,9 @@ def get_parent_visible_gpu_ids() -> list[int]:
         cuda_visible = cuda_visible.strip()
         if cuda_visible == "" or cuda_visible == "-1":
             return []
-        return [int(value.strip()) for value in cuda_visible.split(",") if value.strip()]
+        return [
+            int(value.strip()) for value in cuda_visible.split(",") if value.strip()
+        ]
 
     return list(range(get_physical_gpu_count()))
 
@@ -548,9 +550,7 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
         )
 
     invalid_ids = [
-        gpu_id
-        for gpu_id in requested_ids
-        if gpu_id < 0 or gpu_id >= physical_gpu_count
+        gpu_id for gpu_id in requested_ids if gpu_id < 0 or gpu_id >= physical_gpu_count
     ]
     if invalid_ids:
         raise ValueError(

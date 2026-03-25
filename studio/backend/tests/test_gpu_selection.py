@@ -15,7 +15,11 @@ from fastapi import HTTPException
 from core.training.training import TrainingBackend
 from models.inference import LoadRequest
 from models.training import TrainingStartRequest
-from utils.hardware import DeviceType, get_parent_visible_gpu_ids, resolve_requested_gpu_ids
+from utils.hardware import (
+    DeviceType,
+    get_parent_visible_gpu_ids,
+    resolve_requested_gpu_ids,
+)
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
@@ -113,10 +117,19 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
         dummy_queue = object()
 
         with (
-            patch("core.training.training.resolve_requested_gpu_ids", return_value = [1, 2]),
-            patch("core.training.training._CTX.Queue", side_effect = [dummy_queue, dummy_queue]),
-            patch("core.training.training._CTX.Process", return_value = DummyProcess()) as mock_process,
-            patch("core.training.training.threading.Thread", return_value = DummyThread()),
+            patch(
+                "core.training.training.resolve_requested_gpu_ids", return_value = [1, 2]
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread", return_value = DummyThread()
+            ),
         ):
             backend.start_training(
                 model_name = "unsloth/test",
@@ -144,10 +157,19 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
         dummy_queue = object()
 
         with (
-            patch("core.training.training.resolve_requested_gpu_ids", return_value = [0, 1]),
-            patch("core.training.training._CTX.Queue", side_effect = [dummy_queue, dummy_queue]),
-            patch("core.training.training._CTX.Process", return_value = DummyProcess()) as mock_process,
-            patch("core.training.training.threading.Thread", return_value = DummyThread()),
+            patch(
+                "core.training.training.resolve_requested_gpu_ids", return_value = [0, 1]
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread", return_value = DummyThread()
+            ),
         ):
             backend.start_training(
                 model_name = "unsloth/test",
@@ -175,7 +197,10 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
         config = SimpleNamespace(identifier = "unsloth/test", gguf_variant = None)
 
         with (
-            patch("core.inference.orchestrator.resolve_requested_gpu_ids", return_value = [1]),
+            patch(
+                "core.inference.orchestrator.resolve_requested_gpu_ids",
+                return_value = [1],
+            ),
             patch.object(orchestrator, "_ensure_subprocess_alive", return_value = False),
             patch.object(orchestrator, "_spawn_subprocess") as mock_spawn,
             patch.object(
@@ -183,7 +208,9 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
                 "_wait_response",
                 return_value = {"success": True, "model_info": {}},
             ),
-            patch("utils.transformers_version.needs_transformers_5", return_value = False),
+            patch(
+                "utils.transformers_version.needs_transformers_5", return_value = False
+            ),
         ):
             self.assertTrue(orchestrator.load_model(config = config, gpu_ids = [1]))
 
@@ -218,14 +245,18 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(
                 training_route, "get_training_backend", return_value = DummyBackend()
             ),
-            patch("core.inference.get_inference_backend", return_value = SimpleNamespace(active_model_name = None)),
-            patch("core.export.get_export_backend", return_value = SimpleNamespace(current_checkpoint = None)),
+            patch(
+                "core.inference.get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(current_checkpoint = None),
+            ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    training_route.start_training(
-                        request, current_subject = "test-user"
-                    )
+                    training_route.start_training(request, current_subject = "test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -272,7 +303,10 @@ class TestRouteErrors(unittest.TestCase):
                 "get_llama_cpp_backend",
                 return_value = SimpleNamespace(is_loaded = False),
             ),
-            patch("core.export.get_export_backend", return_value = SimpleNamespace(current_checkpoint = None)),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(current_checkpoint = None),
+            ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
