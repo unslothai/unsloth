@@ -8,7 +8,6 @@ httpx-retries<1,>=0.4.2
 json-repair<1,>=0.48.0
 jsonpath-rust-bindings<2,>=1.0
 jsonschema<5,>=4.0.0
-litellm<1.80.12,>=1.73.6
 lxml<7,>=6.0.2
 marko<3,>=2.1.2
 networkx<4,>=3.0
