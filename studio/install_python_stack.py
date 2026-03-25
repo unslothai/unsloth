@@ -349,6 +349,8 @@ def install_python_stack() -> int:
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
     # When --package is used, install a different package name (e.g. roland-sloth for testing)
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
+    # When --local is used, overlay a local repo checkout after updating deps
+    local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
     base_total = 10 if IS_WINDOWS else 11
     _TOTAL = (base_total - 1) if skip_base else base_total
 
@@ -379,6 +381,28 @@ def install_python_stack() -> int:
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
         print(_green(f"✅ {package_name} already installed — skipping base packages"))
+    elif local_repo:
+        # Local dev install: update deps from base.txt, then overlay the
+        # local checkout as an editable install (--no-deps so torch is
+        # never re-resolved).
+        _progress("base packages")
+        pip_install(
+            "Updating base packages",
+            "--no-cache-dir",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
+            req = REQ_ROOT / "base.txt",
+        )
+        pip_install(
+            "Overlaying local repo (editable)",
+            "--no-cache-dir",
+            "--no-deps",
+            "-e",
+            local_repo,
+            constrain = False,
+        )
     elif package_name != "unsloth":
         # Custom package name (e.g. roland-sloth for testing) — install directly
         _progress("base packages")
