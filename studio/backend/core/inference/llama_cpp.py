@@ -857,6 +857,9 @@ class LlamaCppBackend:
 
             if use_fit:
                 cmd.extend(["--fit", "on"])
+            elif gpu_indices is not None:
+                # Model fits on selected GPU(s) -- offload all layers
+                cmd.extend(["-ngl", "-1"])
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
