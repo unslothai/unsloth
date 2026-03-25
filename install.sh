@@ -136,7 +136,7 @@ DATA_DIR="$HOME/.local/share/unsloth"
 if [ -f "$DATA_DIR/studio.conf" ]; then
     . "$DATA_DIR/studio.conf"
 fi
-if [ -z "$UNSLOTH_EXE" ] || [ ! -x "$UNSLOTH_EXE" ]; then
+if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     echo "Error: UNSLOTH_EXE not set or not executable. Re-run the installer." >&2
     exit 1
 fi
@@ -146,7 +146,7 @@ MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
 POLL_INTERVAL_SEC=1
 LOG_FILE="$DATA_DIR/studio.log"
-LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher.lock"
+LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"
 
 # ── HTTP GET helper (supports curl and wget) ──
 _http_get() {
