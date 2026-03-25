@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import { useArtifactStore } from "@/features/chat/stores/artifact-store";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 const { withSmoothContextProvider } = INTERNAL;
@@ -49,6 +50,15 @@ type CodeFence = {
   language: string | null;
   source: string;
 };
+
+function hashCode(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash + char) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
 
 function getMermaidSource(blockContent: string): string | null {
   const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
@@ -373,6 +383,28 @@ function StreamdownBlock(props: BlockProps) {
   if (codeFence) {
     const svgSource = !props.isIncomplete && isSvgFence(codeFence) ? sanitizeSvg(codeFence.source) : null;
     const htmlSource = !props.isIncomplete && isHtmlFence(codeFence) ? codeFence.source : null;
+
+    // Emit artifact for large code blocks or HTML/SVG/Mermaid
+    const lineCount = codeFence.source.split("\n").length;
+    const isArtifactWorthy =
+      !props.isIncomplete &&
+      (lineCount >= 20 || svgSource !== null || htmlSource !== null);
+    if (isArtifactWorthy) {
+      const artifactId = `artifact-${hashCode(codeFence.source)}`;
+      const store = useArtifactStore.getState();
+      if (!store.artifacts.some((a) => a.id === artifactId)) {
+        store.addArtifact({
+          id: artifactId,
+          title: codeFence.language
+            ? `${codeFence.language} snippet`
+            : "Code snippet",
+          language: codeFence.language,
+          content: codeFence.source,
+          createdAt: Date.now(),
+        });
+      }
+    }
+
     return (
       <>
         <div className="relative isolate">
