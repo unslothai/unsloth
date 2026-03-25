@@ -323,7 +323,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         text = True,
     )
     if result.returncode != 0:
-        _step(_LABEL, f"package {package_name} not found, skipping patch", _dim)
+        _step(_LABEL, f"package {package_name} not found, skipping patch", _red)
         return
 
     location = None
@@ -333,7 +333,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
             break
 
     if not location:
-        _step(_LABEL, f"could not locate {package_name}", _dim)
+        _step(_LABEL, f"could not locate {package_name}", _red)
         return
 
     dest = Path(location) / relative_path

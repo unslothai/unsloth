@@ -732,15 +732,19 @@ if (-not $NvccPath) {
             if ($BestVersion) {
                 $prevEAPCuda = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
-                winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+                $wingetCudaLog = winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
                 $ErrorActionPreference = $prevEAPCuda
+                if ($LASTEXITCODE -ne 0) { Write-Host $wingetCudaLog -ForegroundColor Red }
+                elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetCudaLog "DarkGray" }
                 Refresh-Environment
                 $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
             } else {
                 step "cuda" "no winget package <= $DriverMaxCuda" "Yellow"
             }
         } else {
-            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $wingetCudaLog = winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Host $wingetCudaLog -ForegroundColor Red }
+            elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetCudaLog "DarkGray" }
             Refresh-Environment
             $NvccPath = Find-Nvcc
         }
@@ -865,7 +869,9 @@ if ($IsPipInstall) {
         }
         substep "installing Node LTS (winget)..."
         try {
-            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $wingetNodeLog = winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Host $wingetNodeLog -ForegroundColor Red }
+            elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetNodeLog "DarkGray" }
             Refresh-Environment
         } catch {
             step "error" "Node install failed -- https://nodejs.org/" "Red"
@@ -896,7 +902,9 @@ if ($HasPython) {
     substep "installing Python 3.12 (winget)..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $wingetPyLog = winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Write-Host $wingetPyLog -ForegroundColor Red }
+        elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetPyLog "DarkGray" }
         Refresh-Environment
     }
     $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
@@ -1406,7 +1414,9 @@ if ($OpenSslRoot) {
     substep "OpenSSL dev (winget)..."
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $wingetSslLog = winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Write-Host $wingetSslLog -ForegroundColor Red }
+        elseif ($script:UnslothVerbose) { Write-SetupVerboseDetail $wingetSslLog "DarkGray" }
         foreach ($root in $OpenSslRoots) {
             if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
                 $OpenSslRoot = $root
@@ -1515,9 +1525,10 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         substep "git pull llama.cpp..."
-        git -C $LlamaCppDir pull 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0 -and $script:UnslothVerbose) {
+        $gitPullLog = git -C $LlamaCppDir pull 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
             substep "git pull failed; using tree on disk" "Yellow"
+            if ($script:UnslothVerbose) { Write-SetupVerboseDetail $gitPullLog "Yellow" }
         }
     } else {
         substep "git clone llama.cpp..."
