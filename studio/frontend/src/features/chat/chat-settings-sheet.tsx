@@ -483,6 +483,7 @@ export function ChatSettingsPanel({
                         value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
                         placeholder="..."
                         min={128}
+                        step={1024}
                         className="h-6 w-[100px] text-right text-xs tabular-nums"
                         onChange={(e) => {
                           const raw = e.target.value;
