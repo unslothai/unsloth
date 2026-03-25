@@ -608,14 +608,16 @@ class TestSourceCodePatterns:
         """git clone in source-build should use --branch via _CLONE_BRANCH_ARGS."""
         content = SETUP_SH.read_text()
         # The clone line should use _CLONE_BRANCH_ARGS (which conditionally includes --branch)
-        assert "_CLONE_BRANCH_ARGS" in content, "Clone should use _CLONE_BRANCH_ARGS array"
-        assert '--branch "$_RESOLVED_LLAMA_TAG"' in content, (
-            "_CLONE_BRANCH_ARGS should be set to --branch $_RESOLVED_LLAMA_TAG"
-        )
+        assert (
+            "_CLONE_BRANCH_ARGS" in content
+        ), "Clone should use _CLONE_BRANCH_ARGS array"
+        assert (
+            '--branch "$_RESOLVED_LLAMA_TAG"' in content
+        ), "_CLONE_BRANCH_ARGS should be set to --branch $_RESOLVED_LLAMA_TAG"
         # Verify the guard: --branch is only used when tag is not "latest"
-        assert '_RESOLVED_LLAMA_TAG" != "latest"' in content, (
-            "Should guard against literal 'latest' tag"
-        )
+        assert (
+            '_RESOLVED_LLAMA_TAG" != "latest"' in content
+        ), "Should guard against literal 'latest' tag"
 
     def test_setup_sh_latest_resolution_queries_unsloth_first(self):
         """The Unsloth repo should be queried before ggml-org."""
