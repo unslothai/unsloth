@@ -1101,15 +1101,10 @@ if (Test-Path $VenvDir -PathType Container) {
 }
 
 if (-not (Test-Path $VenvDir)) {
-    if ($env:SKIP_STUDIO_BASE -eq "1") {
-        # Called from install.ps1 which should have created the venv already.
-        # If it is missing at this point, something went wrong.
-        Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
-        Write-Host "        Re-run the installer: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
-        exit 1
-    }
-    Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
-    & $PythonCmd -m venv $VenvDir
+    Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
+    Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
+    Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    exit 1
 } else {
     Write-Host "   Reusing existing virtual environment at $VenvDir" -ForegroundColor Green
 }
