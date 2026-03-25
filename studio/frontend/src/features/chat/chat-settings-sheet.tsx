@@ -475,32 +475,21 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-3 py-1">
               {isGguf && (
                 <>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium">Context Length</div>
-                      <div className="text-[11px] text-muted-foreground">
-                        Max context window. 0 = model default.
-                      </div>
-                    </div>
-                    <Input
-                      type="number"
-                      value={ctxDisplayValue}
-                      placeholder="Loading..."
-                      min={0}
-                      className="h-7 w-[90px] text-xs"
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
-                          setCustomContextLength(null);
-                          return;
-                        }
-                        const v = parseInt(raw, 10);
-                        if (!Number.isNaN(v) && v >= 0) {
-                          setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
-                        }
-                      }}
-                    />
-                  </div>
+                  <ParamSlider
+                    label="Context Length"
+                    value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096)}
+                    min={512}
+                    max={ggufContextLength ?? 4096}
+                    step={512}
+                    onChange={(v) => {
+                      setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                    }}
+                    displayValue={
+                      (customContextLength == null || customContextLength === ggufContextLength)
+                        ? `${ggufContextLength ?? "..."} (Max)`
+                        : undefined
+                    }
+                  />
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium">KV Cache Dtype</div>
