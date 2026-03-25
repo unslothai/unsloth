@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 
@@ -82,19 +84,55 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+def legacy_hf_cache_dir() -> Path:
+    """Old Unsloth-specific HF hub cache, kept for backward-compat scanning."""
+    return cache_root() / "huggingface" / "hub"
+
+
+def lmstudio_model_dirs() -> list[Path]:
+    """Return LM Studio model directories that exist on disk."""
+    dirs: list[Path] = []
+
+    # 1. Check LM Studio settings.json for custom downloads folder
+    settings_path = Path.home() / ".lmstudio" / "settings.json"
+    if settings_path.is_file():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            downloads = settings.get("downloadsFolder", "")
+            if downloads:
+                p = Path(downloads).expanduser()
+                if p.is_dir():
+                    dirs.append(p)
+        except Exception:
+            pass
+
+    # 2. Legacy LM Studio cache (Linux/macOS)
+    if sys.platform == "win32":
+        legacy = Path.home() / ".cache" / "lm-studio" / "models"
+    else:
+        legacy = Path.home() / ".cache" / "lm-studio" / "models"
+    if legacy.is_dir():
+        dirs.append(legacy)
+
+    return dirs
+
+
 def _setup_cache_env() -> None:
-    """Set cache environment variables for HuggingFace, uv, and vLLM.
+    """Set cache environment variables for uv and vLLM.
+
+    HuggingFace cache variables (HF_HOME, HF_HUB_CACHE, HF_XET_CACHE)
+    are no longer overridden — HF uses its own defaults unless the user
+    has explicitly set them.  The legacy Unsloth HF cache at
+    ``~/.unsloth/studio/cache/huggingface/hub`` is still scanned for
+    backward compatibility via :func:`legacy_hf_cache_dir`.
 
     Only sets variables that are not already set by the user, so
-    explicit overrides (e.g. HF_HOME=/data/hf) are respected.
+    explicit overrides are respected.
     Works on Linux, macOS, and Windows.
     """
     root = cache_root()
-    hf_dir = root / "huggingface"
     defaults = {
-        "HF_HOME": str(hf_dir),
-        "HF_HUB_CACHE": str(hf_dir / "hub"),
-        "HF_XET_CACHE": str(hf_dir / "xet"),
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
