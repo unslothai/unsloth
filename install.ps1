@@ -706,4 +706,4 @@ shell.Run cmd, 0, False
     }
 }
 
-Install-UnslothStudio
+Install-UnslothStudio @args
