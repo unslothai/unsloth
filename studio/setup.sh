@@ -292,14 +292,27 @@ VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
 # Note: do NOT delete $STUDIO_HOME/.venv here — install.sh handles migration
 
+_COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
-    echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
-    echo "   Run install.sh first to create the environment:"
-    echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
-    exit 1
+    if [ "$IS_COLAB" = true ]; then
+        # On Colab there is no Studio venv -- install backend deps into system Python.
+        # Strip all version constraints so pip keeps Colab's pre-installed
+        # packages (huggingface-hub, datasets, transformers) and only pulls
+        # in genuinely missing ones (structlog, fastapi, etc.).
+        echo "   Colab detected, installing Studio backend dependencies..."
+        sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
+            | grep -v '^#' | grep -v '^$' \
+            | pip install -q -r /dev/stdin 2>/dev/null || true
+        _COLAB_NO_VENV=true
+    else
+        echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
+        echo "   Run install.sh first to create the environment:"
+        echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
+        exit 1
+    fi
+else
+    source "$VENV_DIR/bin/activate"
 fi
-
-source "$VENV_DIR/bin/activate"
 
 install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
@@ -323,6 +336,24 @@ fast_install() {
 }
 
 cd "$SCRIPT_DIR"
+
+# On Colab without a venv, skip all venv-dependent sections (Python deps
+# update, llama.cpp build) -- the backend deps were already installed above.
+if [ "$_COLAB_NO_VENV" = true ]; then
+    echo "✅ Studio backend dependencies installed into system Python"
+
+    echo ""
+    echo "╔══════════════════════════════════════╗"
+    echo "║          Setup Complete!             ║"
+    echo "╠══════════════════════════════════════╣"
+    echo "║ Unsloth Studio is ready to start     ║"
+    echo "║ in your Colab notebook!              ║"
+    echo "║                                      ║"
+    echo "║ from colab import start              ║"
+    echo "║ start()                              ║"
+    echo "╚══════════════════════════════════════╝"
+    exit 0
+fi
 
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.

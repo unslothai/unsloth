@@ -59,7 +59,6 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 If you don't have `curl`, use `wget`. Launch after setup via:
 ```bash
-source unsloth_studio/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
@@ -69,7 +68,7 @@ irm https://unsloth.ai/install.ps1 | iex
 ```
 Launch after setup via:
 ```powershell
-& .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
+unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Docker
@@ -84,60 +83,54 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 
 #### macOS, Linux, WSL developer installs:
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv unsloth_studio --python 3.13
-source unsloth_studio/bin/activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+./install.sh --local
 unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update --local
 ```
 
 #### Windows PowerShell developer installs:
 ```powershell
-winget install -e --id Python.Python.3.13
-winget install --id=astral-sh.uv  -e
-uv venv unsloth_studio --python 3.13
-.\unsloth_studio\Scripts\activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
 unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update --local
 ```
 
 #### Nightly - MacOS, Linux, WSL:
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
-cd unsloth_studio
-uv venv --python 3.13
-source .venv/bin/activate
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+git checkout nightly
+./install.sh --local
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
 ```bash
-cd unsloth_studio
-source .venv/bin/activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Nightly - Windows:
 Run in Windows Powershell:
 ```bash
-winget install -e --id Python.Python.3.13
-winget install --id=astral-sh.uv  -e
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
-cd unsloth_studio
-uv venv --python 3.13
-.\.venv\Scripts\activate
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+git checkout nightly
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to launch every time:
 ```bash
-cd unsloth_studio
-.\.venv\Scripts\activate
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
