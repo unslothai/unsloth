@@ -371,12 +371,12 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength } = useChatRuntimeStore.getState();
-            // GGUF: use custom context length, or 0 = model's native context
-            // Non-GGUF: use the Max Seq Length slider value for finetuning/inference
+            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength } = useChatRuntimeStore.getState();
+            // GGUF: use custom context length, or the model's native context length
+            // Non-GGUF: use the Max Seq Length slider value
             const effectiveMaxSeqLength = customContextLength != null
               ? customContextLength
-              : ggufVariant != null ? 0 : maxSeqLength;
+              : ggufVariant != null ? (ggufContextLength ?? maxSeqLength) : maxSeqLength;
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: null,
