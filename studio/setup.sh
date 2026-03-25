@@ -69,6 +69,7 @@ _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     # Check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
+        ! -name 'bun.lock' \
         -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
     # Check src/ and public/ recursively (|| true guards against set -e when dirs are missing)
     if [ -z "$_changed" ]; then
@@ -85,12 +86,18 @@ else
 NEED_NODE=true
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    NODE_MINOR=$(node -v | sed 's/v//' | cut -d. -f2)
     NPM_MAJOR=$(npm -v | cut -d. -f1)
-    if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
+    # Vite 8 requires Node ^20.19.0 || >=22.12.0
+    NODE_OK=false
+    if [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]; then NODE_OK=true; fi
+    if [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]; then NODE_OK=true; fi
+    if [ "$NODE_MAJOR" -ge 23 ]; then NODE_OK=true; fi
+    if [ "$NODE_OK" = true ] && [ "$NPM_MAJOR" -ge 11 ]; then
         echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements. Skipping nvm install."
         NEED_NODE=false
     else
-        if [ "$IS_COLAB" = true ]; then
+        if [ "$IS_COLAB" = true ] && [ "$NODE_OK" = true ]; then
             echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
             # In Colab, just upgrade npm directly - nvm doesn't work well
             if [ "$NPM_MAJOR" -lt 11 ]; then
@@ -150,6 +157,20 @@ fi
 
 echo "✅ Node $(node -v) | npm $(npm -v)"
 
+# ── Install bun (optional, faster package installs) ──
+# Uses npm to install bun globally — Node is already guaranteed above,
+# avoids platform-specific installers, PATH issues, and admin requirements.
+if ! command -v bun &>/dev/null; then
+    echo "   Installing bun (faster frontend package installs)..."
+    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
+        echo "✅ bun installed ($(bun --version))"
+    else
+        echo "   bun install skipped (npm will be used instead)"
+    fi
+else
+    echo "✅ bun already installed ($(bun --version))"
+fi
+
 # ── 5. Build frontend ──
 cd "$SCRIPT_DIR/frontend"
 
@@ -174,7 +195,27 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-run_quiet "npm install" npm install
+# Use bun for install if available (faster), fall back to npm.
+# Build always uses npm (Node runtime — avoids bun runtime issues on some platforms).
+# NOTE: We intentionally avoid run_quiet for the bun install attempt because
+# run_quiet calls exit on failure, which would kill the script before the npm
+# fallback can run. Instead we capture output manually and only show it on failure.
+if command -v bun &>/dev/null; then
+    echo "   Using bun for package install (faster)"
+    _bun_log=$(mktemp)
+    if bun install >"$_bun_log" 2>&1; then
+        rm -f "$_bun_log"
+    else
+        echo "   ⚠️  bun install failed, falling back to npm"
+        echo "   bun install output:"
+        sed 's/^/   | /' "$_bun_log" >&2
+        rm -f "$_bun_log"
+        rm -rf node_modules
+        run_quiet "npm install" npm install
+    fi
+else
+    run_quiet "npm install" npm install
+fi
 run_quiet "npm run build" npm run build
 
 _restore_gitignores
