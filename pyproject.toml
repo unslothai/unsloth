@@ -28,7 +28,7 @@ dependencies = [
     "unsloth_zoo>=2026.3.4",
     "wheel>=0.42.0",
     "packaging",
-    "torch>=2.4.0",
+    "torch>=2.4.0,<2.11.0",
     "torchvision",
     "numpy",
     "tqdm",
