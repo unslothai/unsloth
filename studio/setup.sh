@@ -542,10 +542,10 @@ rm -rf "$LLAMA_CPP_DIR"
                 # Detect AMD GPU architecture (gfx target)
                 GPU_TARGETS=""
                 if command -v rocminfo &>/dev/null; then
-                    _gfx_list=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]{3,4}[a-z]?' | sort -u || true)
+                    _gfx_list=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]{2,4}[a-z]?' | sort -u || true)
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
-                        if [[ "$_gfx" =~ ^gfx[0-9]{3,4}[a-z]?$ ]]; then
+                        if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done
