@@ -623,6 +623,19 @@ shell.Run cmd, 0, False
 
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
+    # ── Add venv Scripts dir to User PATH so `unsloth studio` works from any terminal ──
+    $ScriptsDir = Join-Path $VenvDir "Scripts"
+    $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $UserPath -or $UserPath -notlike "*$ScriptsDir*") {
+        if ($UserPath) {
+            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir;$UserPath", "User")
+        } else {
+            [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
+        }
+        Refresh-SessionPath
+        Write-Host "[OK] Added unsloth to PATH" -ForegroundColor Green
+    }
+
     Write-Host ""
     Write-Host "========================================="
     Write-Host "   Unsloth Studio installed!"
