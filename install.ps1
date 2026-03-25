@@ -101,7 +101,7 @@ function Test-StudioHealth {
     try {
         `$url = "http://127.0.0.1:`$Port/api/health"
         `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
-        return (`$resp -and `$resp.status -eq 'healthy')
+        return (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')
     } catch {
         return `$false
     }
@@ -145,7 +145,11 @@ if (`$existingPort) {
 `$launchMutex = [System.Threading.Mutex]::new(`$false, 'Local\UnslothStudioLauncher')
 `$haveMutex = `$false
 try {
-    `$haveMutex = `$launchMutex.WaitOne(0)
+    try {
+        `$haveMutex = `$launchMutex.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        `$haveMutex = `$true
+    }
     if (-not `$haveMutex) {
         # Another launcher is already running; wait for it to bring Studio up
         `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
