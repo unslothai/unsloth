@@ -1377,11 +1377,13 @@ class FastBaseModel:
         _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if "gemma3n" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
+
             def _gc_enable_reentrant(**kwargs):
                 gc_kwargs = kwargs.get("gradient_checkpointing_kwargs", {}) or {}
                 gc_kwargs["use_reentrant"] = True
                 kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
                 return _original_gc_enable(**kwargs)
+
             model.gradient_checkpointing_enable = _gc_enable_reentrant
 
         from transformers.trainer import Trainer
