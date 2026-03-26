@@ -9,6 +9,66 @@ Uses Colab's built-in proxy - no external tunneling needed!
 from pathlib import Path
 import sys
 
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+_backend_dir = str(Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+import _platform_compat  # noqa: F401
+
+
+def _is_colab() -> bool:
+    """Detect Google Colab by checking for COLAB_ prefixed env vars."""
+    import os
+
+    return any(k.startswith("COLAB_") for k in os.environ)
+
+
+def _pip_install_backend_deps() -> None:
+    """Install Studio backend dependencies directly into the current Python.
+
+    Used on Colab when the Studio venv does not exist (install.sh was not
+    run).  Reads the requirements from studio.txt next to this file.
+
+    Version constraints are stripped entirely so pip keeps whatever Colab
+    already has installed (e.g. huggingface-hub, datasets, transformers)
+    and only installs genuinely missing packages like structlog, fastapi.
+    """
+    import re
+    import subprocess
+
+    req_file = Path(__file__).parent / "requirements" / "studio.txt"
+    if not req_file.exists():
+        return
+
+    packages = []
+    for line in req_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Strip all version constraints -- just keep the package name
+        pkg_name = re.split(r"[><=!~;\[]", line)[0].strip()
+        if pkg_name:
+            packages.append(pkg_name)
+
+    if not packages:
+        return
+    print("Installing Studio backend dependencies ...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-q"] + packages,
+    )
+
+    # Colab ships huggingface-hub 0.36.x which removed is_offline_mode,
+    # breaking transformers. Upgrade to 1.0+ which restored it.
+    try:
+        from huggingface_hub import is_offline_mode  # noqa: F401
+    except ImportError:
+        print("Upgrading huggingface-hub (is_offline_mode missing) ...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-q", "huggingface-hub>=1.0"],
+        )
+
 
 def _bootstrap_studio_venv() -> None:
     """Expose the Studio venv's site-packages to the current interpreter.
@@ -17,9 +77,16 @@ def _bootstrap_studio_venv() -> None:
     installing the full stack into system Python, we prepend the venv's
     site-packages so that packages like structlog, fastapi, etc. are
     importable from notebook cells and take priority over system copies.
+
+    If the venv does not exist and we are running on Colab, fall back to
+    pip-installing the backend dependencies into the current environment
+    so that imports like structlog and fastapi succeed.
     """
-    venv_lib = Path.home() / ".unsloth" / "studio" / ".venv" / "lib"
+    venv_lib = Path.home() / ".unsloth" / "studio" / "unsloth_studio" / "lib"
     if not venv_lib.exists():
+        if _is_colab():
+            _pip_install_backend_deps()
+            return
         import warnings
 
         warnings.warn(
@@ -35,17 +102,12 @@ def _bootstrap_studio_venv() -> None:
 
 _bootstrap_studio_venv()
 
-# Add backend to path early so local modules like loggers can be imported
-backend_path = str(Path(__file__).parent)
-if backend_path not in sys.path:
-    sys.path.insert(0, backend_path)
-
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_colab_url(port: int = 8000) -> str:
+def get_colab_url(port: int = 8888) -> str:
     """
     Get the actual Colab proxy URL for a port.
     """
@@ -60,7 +122,7 @@ def get_colab_url(port: int = 8000) -> str:
         return f"http://localhost:{port}"
 
 
-def show_link(port: int = 8000):
+def show_link(port: int = 8888):
     """Display a styled clickable link to the UI."""
     from IPython.display import display, HTML
 
@@ -68,8 +130,8 @@ def show_link(port: int = 8000):
     url = get_colab_url(port)
 
     short_url = (
-        url[: url.index("-", url.index("8000-") + 5) + 1] + "..."
-        if "8000-" in url
+        url[: url.index("-", url.index(f"{port}-") + len(str(port)) + 1) + 1] + "..."
+        if f"{port}-" in url
         else url
     )
     html = f"""
@@ -96,7 +158,7 @@ def show_link(port: int = 8000):
     display(HTML(html))
 
 
-def start(port: int = 8000):
+def start(port: int = 8888):
     """
     Start Unsloth Studio server in Colab and display the URL.
 

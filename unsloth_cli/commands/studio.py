@@ -22,9 +22,9 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
-        p = STUDIO_HOME / ".venv" / "Scripts" / "python.exe"
+        p = STUDIO_HOME / "unsloth_studio" / "Scripts" / "python.exe"
     else:
-        p = STUDIO_HOME / ".venv" / "bin" / "python"
+        p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
     return p if p.is_file() else None
 
 
@@ -44,7 +44,7 @@ def _find_run_py() -> Optional[Path]:
         "lib/python*/site-packages/studio/backend/run.py",
         "Lib/site-packages/studio/backend/run.py",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
 
@@ -64,7 +64,7 @@ def _find_setup_script() -> Optional[Path]:
         f"lib/python*/site-packages/studio/{name}",
         f"Lib/site-packages/studio/{name}",
     ):
-        for match in (STUDIO_HOME / ".venv").glob(pattern):
+        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
 
@@ -75,7 +75,7 @@ def _find_setup_script() -> Optional[Path]:
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
-    port: int = typer.Option(8000, "--port", "-p"),
+    port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("0.0.0.0", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
@@ -85,7 +85,7 @@ def studio_default(
         return
 
     # Always use the studio venv if it exists and we're not already in it
-    studio_venv_dir = STUDIO_HOME / ".venv"
+    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
     if not in_studio_venv:
@@ -93,7 +93,7 @@ def studio_default(
         run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
-                typer.echo("Launching with studio venv...")
+                typer.echo("Launching Unsloth Studio... Please wait...")
             args = [
                 str(studio_python),
                 str(run_py),
@@ -118,11 +118,21 @@ def studio_default(
                 except KeyboardInterrupt:
                     # Child has its own signal handler — let it finish
                     rc = proc.wait()
+                if rc != 0:
+                    typer.echo(
+                        f"\nError: Studio server exited unexpectedly (code {rc}).",
+                        err = True,
+                    )
+                    typer.echo(
+                        "Check the error above. If a package is missing, "
+                        "re-run: unsloth studio setup",
+                        err = True,
+                    )
                 raise typer.Exit(rc)
             else:
                 os.execvp(str(studio_python), args)
         else:
-            typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
+            typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
     from studio.backend.run import run_server
@@ -133,12 +143,10 @@ def studio_default(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_server(
-        host = host,
-        port = port,
-        frontend_path = frontend,
-        silent = silent,
-    )
+    run_kwargs = dict(host = host, port = port, silent = silent)
+    if frontend is not None:
+        run_kwargs["frontend_path"] = frontend
+    run_server(**run_kwargs)
 
     from studio.backend.run import _shutdown_event
 
@@ -158,12 +166,79 @@ def studio_default(
         typer.echo("\nShutting down...")
 
 
-# ── unsloth studio setup ─────────────────────────────────────────────
+# ── unsloth studio stop ───────────────────────────────────────────────
+
+_PID_FILE = STUDIO_HOME / "studio.pid"
 
 
 @studio_app.command()
-def setup():
-    """Run one-time Studio environment setup."""
+def stop():
+    """Stop a running Unsloth Studio server.
+
+    Reads the PID from ~/.unsloth/studio/studio.pid and sends SIGTERM
+    (or TerminateProcess on Windows) to shut it down gracefully.
+    """
+    import signal as _signal
+
+    if not _PID_FILE.is_file():
+        typer.echo("No running Studio server found (no PID file).")
+        raise typer.Exit(0)
+
+    pid_text = _PID_FILE.read_text().strip()
+    if not pid_text.isdigit():
+        typer.echo(f"Invalid PID file contents: {pid_text}")
+        _PID_FILE.unlink(missing_ok = True)
+        raise typer.Exit(1)
+
+    pid = int(pid_text)
+
+    # Check if the process is still alive
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        typer.echo(
+            f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."
+        )
+        _PID_FILE.unlink(missing_ok = True)
+        raise typer.Exit(0)
+    except PermissionError:
+        pass  # process exists but we may not own it; try to signal anyway
+
+    # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check = True)
+        else:
+            os.kill(pid, _signal.SIGTERM)
+        typer.echo(f"Sent shutdown signal to Studio server (PID {pid}).")
+    except ProcessLookupError:
+        typer.echo(f"Studio server (PID {pid}) already exited.")
+        _PID_FILE.unlink(missing_ok = True)
+        raise typer.Exit(0)
+    except Exception as e:
+        typer.echo(f"Failed to stop Studio server (PID {pid}): {e}", err = True)
+        raise typer.Exit(1)
+
+    # Wait briefly for the process to exit and clean up
+    for _ in range(10):
+        time.sleep(0.5)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            _PID_FILE.unlink(missing_ok = True)
+            typer.echo("Studio server stopped.")
+            raise typer.Exit(0)
+        except PermissionError:
+            break
+
+    typer.echo("Studio server is shutting down (may take a few seconds).")
+
+
+# ── unsloth studio setup / update ─────────────────────────────────────
+
+
+def _run_setup_script() -> None:
+    """Find and run the studio setup/update script."""
     script = _find_setup_script()
     if not script:
         typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
@@ -178,6 +253,35 @@ def setup():
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
+
+
+@studio_app.command(hidden = True)
+def setup():
+    """Deprecated: use 'unsloth studio update' or re-run install.sh."""
+    typer.echo(
+        "Note: 'unsloth studio setup' is deprecated. Use 'unsloth studio update' or re-run install.sh."
+    )
+    _run_setup_script()
+
+
+@studio_app.command()
+def update(
+    local: bool = typer.Option(
+        False, "--local", help = "Install from local repo instead of PyPI"
+    ),
+    package: str = typer.Option(
+        "unsloth", "--package", help = "Package name to install/update (for testing)"
+    ),
+):
+    """Update Unsloth Studio dependencies and rebuild."""
+    os.environ["STUDIO_LOCAL_INSTALL"] = "1" if local else "0"
+    os.environ["STUDIO_PACKAGE_NAME"] = package
+    if local:
+        # Pass the repo root explicitly so install_python_stack.py doesn't
+        # have to guess from SCRIPT_DIR (which may be inside site-packages).
+        repo_root = Path(__file__).resolve().parents[2]
+        os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
+    _run_setup_script()
 
 
 # ── unsloth studio reset-password ────────────────────────────────────

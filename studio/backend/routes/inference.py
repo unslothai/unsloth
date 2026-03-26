@@ -19,6 +19,27 @@ import asyncio
 import threading
 
 
+import re as _re
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Extract a user-friendly message from known llama-server errors."""
+    msg = str(exc)
+    m = _re.search(
+        r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
+        msg,
+    )
+    if m:
+        return (
+            f"Message too long: {m.group(1)} tokens exceeds the {m.group(2)}-token "
+            f"context window. Try increasing the Context Length in Model settings, "
+            f"or shorten the conversation."
+        )
+    if "Lost connection to llama-server" in msg:
+        return "Lost connection to the model server. It may have crashed -- try reloading the model."
+    return "An internal error occurred"
+
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -55,6 +76,7 @@ from models.inference import (
     ChoiceDelta,
     CompletionChoice,
     CompletionMessage,
+    CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
 )
@@ -549,7 +571,7 @@ async def generate_stream(
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
-            yield f"data: {json.dumps({'error': 'An internal error occurred'})}\n\n"
+            yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
 
     return StreamingResponse(
         stream(),
@@ -943,7 +965,7 @@ async def openai_chat_completions(
                         logger.error(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
-                        yield f"data: {json.dumps({'error': {'message': 'An internal error occurred', 'type': 'server_error'}})}\n\n"
+                        yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
 
                 return StreamingResponse(
                     audio_input_stream(),
@@ -1083,6 +1105,8 @@ async def openai_chat_completions(
                     # the event loop stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
                     prev_text = ""
+                    _stream_usage = None
+                    _stream_timings = None
                     while True:
                         if await request.is_disconnected():
                             cancel_event.set()
@@ -1105,6 +1129,11 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
+                        if event["type"] == "metadata":
+                            _stream_usage = event.get("usage")
+                            _stream_timings = event.get("timings")
                             continue
 
                         # "content" type -- cumulative text
@@ -1138,6 +1167,24 @@ async def openai_chat_completions(
                         ],
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    # Usage chunk (OpenAI-standard: choices=[], usage populated)
+                    if _stream_usage or _stream_timings:
+                        usage_obj = CompletionUsage(
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
+                        )
+                        usage_chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [],
+                            usage = usage_obj,
+                            timings = _stream_timings,
+                        )
+                        yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -1150,7 +1197,7 @@ async def openai_chat_completions(
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     error_chunk = {
                         "error": {
-                            "message": "An internal error occurred",
+                            "message": _friendly_error(e),
                             "type": "server_error",
                         },
                     }
@@ -1207,6 +1254,8 @@ async def openai_chat_completions(
                     # the event loop stays free for disconnect detection.
                     gen = gguf_generate()
                     prev_text = ""
+                    _stream_usage = None
+                    _stream_timings = None
                     while True:
                         if await request.is_disconnected():
                             cancel_event.set()
@@ -1214,6 +1263,21 @@ async def openai_chat_completions(
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
                             break
+                        # Capture server metadata for final usage chunk
+                        if isinstance(cumulative, dict):
+                            if cumulative.get("type") == "metadata":
+                                _stream_usage = cumulative.get("usage")
+                                _stream_timings = cumulative.get("timings")
+                            else:
+                                logger.warning(
+                                    "gguf_stream_chunks: unexpected dict event: %s",
+                                    {
+                                        k: v
+                                        for k, v in cumulative.items()
+                                        if k != "timings"
+                                    },
+                                )
+                            continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
@@ -1244,6 +1308,24 @@ async def openai_chat_completions(
                         ],
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    # Usage chunk (OpenAI-standard: choices=[], usage populated)
+                    if _stream_usage or _stream_timings:
+                        usage_obj = CompletionUsage(
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
+                        )
+                        usage_chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [],
+                            usage = usage_obj,
+                            timings = _stream_timings,
+                        )
+                        yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -1253,7 +1335,7 @@ async def openai_chat_completions(
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
                     error_chunk = {
                         "error": {
-                            "message": "An internal error occurred",
+                            "message": _friendly_error(e),
                             "type": "server_error",
                         },
                     }
@@ -1272,6 +1354,8 @@ async def openai_chat_completions(
             try:
                 full_text = ""
                 for token in gguf_generate():
+                    if isinstance(token, dict):
+                        continue  # skip metadata dict in non-streaming path
                     full_text = token
 
                 response = ChatCompletion(
@@ -1432,7 +1516,7 @@ async def openai_chat_completions(
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 error_chunk = {
                     "error": {
-                        "message": "An internal error occurred",
+                        "message": _friendly_error(e),
                         "type": "server_error",
                     },
                 }

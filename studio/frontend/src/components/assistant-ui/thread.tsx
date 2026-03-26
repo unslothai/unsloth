@@ -9,13 +9,14 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
-import { Sources } from "@/components/assistant-ui/sources";
+import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { Button } from "@/components/ui/button";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -35,7 +36,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -88,9 +89,8 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
+        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
           <ThreadScrollToBottom />
-          <GeneratingSpinner />
           <AuiIf condition={({ thread }) => !thread.isEmpty}>
             {!hideComposer && <ComposerAnimated />}
           </AuiIf>
@@ -114,26 +114,62 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+const SUGGESTION_TOOLS: Record<string, Array<"thinking" | "search" | "code">> = {
+  "How do you fine-tune an audio model with Unsloth?": ["thinking", "search"],
+  "Create a live weather dashboard in HTML using no API key. Show me the code": ["thinking", "code", "search"],
+  "Solve the integral of x·sin(x), and verify it step by step": ["thinking", "code"],
+  "Draw an SVG of a cute sloth": ["thinking", "code", "search"],
+};
+
+const toolIconMap = {
+  thinking: { icon: LightbulbIcon, label: "Thinking" },
+  search: { icon: GlobeIcon, label: "Web search" },
+  code: { icon: TerminalIcon, label: "Code" },
+} as const;
+
 const SuggestionItem: FC = () => {
   const aui = useAui();
   const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
   const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const tools = SUGGESTION_TOOLS[prompt] ?? [];
 
   return (
     <button
       type="button"
       onClick={() => {
         if (!isDisabled && !isRunning) {
+          const store = useChatRuntimeStore.getState();
+          if (store.supportsReasoning) {
+            store.setReasoningEnabled(tools.includes("thinking"));
+          }
+          if (store.supportsTools) {
+            store.setToolsEnabled(tools.includes("search"));
+            store.setCodeToolsEnabled(tools.includes("code"));
+          }
           aui.thread().append(prompt);
           aui.composer().setText("");
           return;
         }
         aui.composer().setText(prompt);
       }}
-      className="fade-in slide-in-from-bottom-1 animate-in cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
+      className="fade-in slide-in-from-bottom-1 animate-in relative cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 pr-12 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
     >
       <SuggestionPrimitive.Title />
+      {tools.length > 0 && (
+        <div className="absolute bottom-2.5 right-3 flex items-center gap-1">
+          {tools.map((tool) => {
+            const { icon: Icon, label } = toolIconMap[tool];
+            return (
+              <Icon
+                key={tool}
+                className="size-3 text-muted-foreground/60"
+                aria-label={label}
+              />
+            );
+          })}
+        </div>
+      )}
     </button>
   );
 };
@@ -293,9 +329,6 @@ function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
   if (!checkpoint.includes("qwen3")) return;
-  // Qwen3 & Qwen3.5 share the same recommended settings:
-  // Thinking ON (general): temp=1.0, top_p=0.95, top_k=20
-  // Thinking OFF (general): temp=0.7, top_p=0.8, top_k=20
   const params = thinkingOn
     ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
     : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
@@ -303,15 +336,18 @@ function applyQwenThinkingParams(thinkingOn: boolean): void {
 }
 
 const ReasoningToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-
-  if (!supportsReasoning) return null;
+  const disabled = !modelLoaded || !supportsReasoning;
 
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => {
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
@@ -319,13 +355,15 @@ const ReasoningToggle: FC = () => {
       }}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        reasoningEnabled
-          ? "bg-primary/10 text-primary hover:bg-primary/20"
-          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : reasoningEnabled
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
     >
-      {reasoningEnabled ? (
+      {reasoningEnabled && !disabled ? (
         <LightbulbIcon className="size-3.5" />
       ) : (
         <LightbulbOffIcon className="size-3.5" />
@@ -336,21 +374,26 @@ const ReasoningToggle: FC = () => {
 };
 
 const WebSearchToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-
-  if (!supportsTools) return null;
+  const disabled = !modelLoaded || !supportsTools;
 
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => setToolsEnabled(!toolsEnabled)}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        toolsEnabled
-          ? "bg-primary/10 text-primary hover:bg-primary/20"
-          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : toolsEnabled
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
@@ -361,23 +404,28 @@ const WebSearchToggle: FC = () => {
 };
 
 const CodeToolsToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore(
     (s) => s.setCodeToolsEnabled,
   );
-
-  if (!supportsTools) return null;
+  const disabled = !modelLoaded || !supportsTools;
 
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className={cn(
         "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        codeToolsEnabled
-          ? "bg-primary/10 text-primary hover:bg-primary/20"
-          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : codeToolsEnabled
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
     >
@@ -493,6 +541,17 @@ const MessageError: FC = () => {
   );
 };
 
+const GeneratingIndicator: FC = () => {
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 && message.status?.type === "running",
+  );
+  if (!show) return null;
+  return (
+    <AnimatedShinyText className="text-sm">Generating...</AnimatedShinyText>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -500,6 +559,7 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
+        <GeneratingIndicator />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
@@ -517,6 +577,7 @@ const AssistantMessage: FC = () => {
             },
           }}
         />
+        <SourcesGroup />
         <MessageError />
       </div>
 

@@ -848,7 +848,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                "0",  # 0 = use model's native context size
+                str(n_ctx) if n_ctx > 0 else "0",  # 0 = model's native context size
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
@@ -857,6 +857,9 @@ class LlamaCppBackend:
 
             if use_fit:
                 cmd.extend(["--fit", "on"])
+            elif gpu_indices is not None:
+                # Model fits on selected GPU(s) -- offload all layers
+                cmd.extend(["-ngl", "-1"])
 
             if n_threads is not None:
                 cmd.extend(["--threads", str(n_threads)])
@@ -966,6 +969,46 @@ class LlamaCppBackend:
 
                 lib_dirs = [binary_dir]
                 _arch = platform.machine()  # x86_64, aarch64, etc.
+
+                # Pip-installed nvidia CUDA runtime libs (e.g. torch's
+                # bundled cuda-bindings).  The prebuilt llama.cpp binary
+                # links against libcudart.so.13 / libcublas.so.13 which
+                # live here, not in /usr/local/cuda.
+                import glob as _glob
+
+                for _nv_pattern in [
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "cu*",
+                        "lib",
+                    ),
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "cudnn",
+                        "lib",
+                    ),
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "nvjitlink",
+                        "lib",
+                    ),
+                ]:
+                    for _nv_dir in _glob.glob(_nv_pattern):
+                        if os.path.isdir(_nv_dir):
+                            lib_dirs.append(_nv_dir)
+
                 for cuda_lib in [
                     "/usr/local/cuda/lib64",
                     f"/usr/local/cuda/targets/{_arch}-linux/lib",
@@ -1459,7 +1502,7 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
 
@@ -1490,10 +1533,14 @@ class LlamaCppBackend:
             payload["max_tokens"] = max_tokens
         if stop:
             payload["stop"] = stop
+        payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
         in_thinking = False
+        _stream_done = False
+        _metadata_usage = None
+        _metadata_timings = None
 
         try:
             # _stream_with_retry uses a 120 s read timeout so prefill
@@ -1536,12 +1583,20 @@ class LlamaCppBackend:
                                         # as the main response, not as a thinking block.
                                         cumulative = reasoning_text
                                         yield cumulative
-                                return
+                                _stream_done = True
+                                break  # exit inner while
                             if not line.startswith("data: "):
                                 continue
 
                             try:
                                 data = json.loads(line[6:])
+                                # Capture server timings/usage from final chunks
+                                _chunk_timings = data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -1570,6 +1625,14 @@ class LlamaCppBackend:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
                                 )
+                        if _stream_done:
+                            break  # exit outer for
+                    if _metadata_usage or _metadata_timings:
+                        yield {
+                            "type": "metadata",
+                            "usage": _metadata_usage,
+                            "timings": _metadata_timings,
+                        }
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
@@ -1614,6 +1677,9 @@ class LlamaCppBackend:
 
         conversation = list(messages)
         url = f"{self.base_url}/v1/chat/completions"
+        _accumulated_completion_tokens = 0
+        _accumulated_predicted_ms = 0.0
+        _accumulated_predicted_n = 0
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -1710,6 +1776,13 @@ class LlamaCppBackend:
                     )
 
             if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
+                # Only accumulate metrics for responses that are actually used
+                _accumulated_completion_tokens += data.get("usage", {}).get(
+                    "completion_tokens", 0
+                )
+                _iter_timings = data.get("timings", {})
+                _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
+                _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
                 # Append the assistant message with tool_calls to conversation
                 assistant_msg = {"role": "assistant", "content": content_text}
                 if tool_calls:
@@ -1805,6 +1878,14 @@ class LlamaCppBackend:
             if iteration == 0 and content_text:
                 yield {"type": "status", "text": ""}
                 yield {"type": "content", "text": content_text}
+                _direct_usage = data.get("usage")
+                _direct_timings = data.get("timings")
+                if _direct_usage or _direct_timings:
+                    yield {
+                        "type": "metadata",
+                        "usage": _direct_usage,
+                        "timings": _direct_timings,
+                    }
                 return
 
             # Tools were called in previous iterations; do a final
@@ -1834,6 +1915,7 @@ class LlamaCppBackend:
             stream_payload["max_tokens"] = max_tokens
         if stop:
             stream_payload["stop"] = stop
+        stream_payload["stream_options"] = {"include_usage": True}
 
         import re as _re_final
 
@@ -1862,6 +1944,9 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        _metadata_usage = None
+        _metadata_timings = None
+        _stream_done = False
 
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
@@ -1899,12 +1984,20 @@ class LlamaCppBackend:
                                     else:
                                         cumulative = reasoning_text
                                         yield {"type": "content", "text": cumulative}
-                                return
+                                _stream_done = True
+                                break  # exit inner while
                             if not line.startswith("data: "):
                                 continue
 
                             try:
                                 chunk_data = json.loads(line[6:])
+                                # Capture server timings/usage from final chunks
+                                _chunk_timings = chunk_data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = chunk_data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
                                 choices = chunk_data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -1934,6 +2027,42 @@ class LlamaCppBackend:
                                 logger.debug(
                                     f"Skipping malformed SSE line: {line[:100]}"
                                 )
+                        if _stream_done:
+                            break  # exit outer for
+                    _final_usage = _metadata_usage or {}
+                    _final_completion = _final_usage.get("completion_tokens", 0)
+                    _final_prompt = _final_usage.get("prompt_tokens", 0)
+                    _total_completion = (
+                        _final_completion + _accumulated_completion_tokens
+                    )
+                    if _metadata_usage or _metadata_timings:
+                        _merged_timings = (
+                            dict(_metadata_timings) if _metadata_timings else {}
+                        )
+                        if _accumulated_predicted_ms or _accumulated_predicted_n:
+                            _merged_timings["predicted_ms"] = (
+                                _merged_timings.get("predicted_ms", 0)
+                                + _accumulated_predicted_ms
+                            )
+                            _total_predicted_n = (
+                                _merged_timings.get("predicted_n", 0)
+                                + _accumulated_predicted_n
+                            )
+                            _merged_timings["predicted_n"] = _total_predicted_n
+                            _total_predicted_ms = _merged_timings["predicted_ms"]
+                            if _total_predicted_ms > 0:
+                                _merged_timings["predicted_per_second"] = (
+                                    _total_predicted_n / (_total_predicted_ms / 1000.0)
+                                )
+                        yield {
+                            "type": "metadata",
+                            "usage": {
+                                "prompt_tokens": _final_prompt,
+                                "completion_tokens": _total_completion,
+                                "total_tokens": _final_prompt + _total_completion,
+                            },
+                            "timings": _merged_timings,
+                        }
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")

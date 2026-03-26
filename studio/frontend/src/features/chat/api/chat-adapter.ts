@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatModelAdapter } from "@assistant-ui/react";
-import type { MessageTiming } from "@assistant-ui/core";
+import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import {
   generateAudio,
@@ -20,6 +20,26 @@ import {
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 
+/** Server-side usage data from llama-server (via stream_options.include_usage). */
+interface ServerUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/** Server-side timing data from llama-server's timings object. */
+interface ServerTimings {
+  prompt_n: number;
+  cache_n: number;
+  prompt_ms: number;
+  prompt_per_token_ms: number;
+  prompt_per_second: number;
+  predicted_n: number;
+  predicted_ms: number;
+  predicted_per_token_ms: number;
+  predicted_per_second: number;
+}
+
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
@@ -27,21 +47,24 @@ type RunMessage = RunMessages[number];
 export const sentAudioNames = new Map<string, string>();
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] {
+function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
   if (!raw) return [];
   const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string }[] = [];
+  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] = [];
   for (const block of blocks) {
     const titleMatch = block.match(/Title:\s*(.+)/);
     const urlMatch = block.match(/URL:\s*(.+)/);
+    const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
       const url = urlMatch[1].trim();
+      const snippet = snippetMatch?.[1]?.trim();
       sources.push({
         type: "source" as const,
         sourceType: "url" as const,
         id: url,
         url,
         title: titleMatch[1].trim(),
+        ...(snippet ? { metadata: { description: snippet } } : {}),
       });
     }
   }
@@ -63,6 +86,7 @@ function buildTiming(
   totalStreamTime?: number,
   tokenCount?: number,
   toolCallCount = 0,
+  tokensPerSecondOverride?: number,
 ): MessageTiming {
   return {
     streamStartTime,
@@ -70,11 +94,12 @@ function buildTiming(
     totalStreamTime,
     tokenCount,
     tokensPerSecond:
-      typeof totalStreamTime === "number" &&
+      tokensPerSecondOverride ??
+      (typeof totalStreamTime === "number" &&
       totalStreamTime > 0 &&
       typeof tokenCount === "number"
         ? tokenCount / (totalStreamTime / 1000)
-        : undefined,
+        : undefined),
     totalChunks,
     toolCallCount,
   };
@@ -228,6 +253,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * falls back to smallest cached safetensors model.
  */
 async function autoLoadSmallestModel(): Promise<boolean> {
+  const hfToken = useChatRuntimeStore.getState().hfToken || null;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -253,8 +279,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             const variant = downloaded[0];
             const loadResp = await loadModel({
               model_path: repo.repo_id,
-              hf_token: null,
-              max_seq_length: 4096,
+              hf_token: hfToken,
+              max_seq_length: 0,
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
@@ -283,8 +309,10 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
               supportsTools: loadResp.supports_tools ?? false,
-              toolsEnabled: false,
-              codeToolsEnabled: false,
+              toolsEnabled: loadResp.supports_tools ?? false,
+              codeToolsEnabled: loadResp.supports_tools ?? false,
+              kvCacheDtype: loadResp.cache_type_kv ?? null,
+              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
             });
@@ -304,7 +332,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         try {
           const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
-            hf_token: null,
+            hf_token: hfToken,
             max_seq_length: 4096,
             load_in_4bit: true,
             is_lora: false,
@@ -341,8 +369,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
     try {
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-GGUF",
-        hf_token: null,
-        max_seq_length: 4096,
+        hf_token: hfToken,
+        max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
@@ -366,7 +394,10 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         supportsTools: loadResp.supports_tools ?? false,
-        toolsEnabled: false,
+        toolsEnabled: loadResp.supports_tools ?? false,
+        codeToolsEnabled: loadResp.supports_tools ?? false,
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
       });
@@ -385,8 +416,7 @@ async function autoLoadSmallestModel(): Promise<boolean> {
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
-      const runtime = useChatRuntimeStore.getState();
-      const { params } = runtime;
+      let runtime = useChatRuntimeStore.getState();
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -405,6 +435,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       }
 
+      // Re-read store after potential auto-load / model ready wait
+      runtime = useChatRuntimeStore.getState();
+      const { params } = runtime;
       const {
         supportsTools,
         toolsEnabled,
@@ -417,10 +450,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           Boolean(message),
         );
 
-      if (params.systemPrompt.trim()) {
+      const safeSystemPrompt =
+        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
+      if (safeSystemPrompt.trim()) {
         outboundMessages.unshift({
           role: "system",
-          content: params.systemPrompt.trim(),
+          content: safeSystemPrompt.trim(),
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);
@@ -527,7 +562,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningDuration = 0;
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
-      const toolCallParts: { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown>; result?: unknown }[] = [];
+      const toolCallParts: ToolCallMessagePart[] = [];
+      let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
       try {
         const { supportsReasoning, reasoningEnabled } = runtime;
@@ -582,11 +618,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           if (toolEvent !== undefined) {
             if (toolEvent.type === "tool_start") {
               const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+              const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
               toolCallParts.push({
                 type: "tool-call" as const,
                 toolCallId: id,
                 toolName: toolEvent.tool_name as string,
-                args: (toolEvent.arguments as Record<string, unknown>) ?? {},
+                argsText: JSON.stringify(toolArgs),
+                args: toolArgs,
               });
             } else if (toolEvent.type === "tool_end") {
               const id = (toolEvent.tool_call_id as string) ||
@@ -604,6 +642,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
                 custom: { reasoningDuration },
               },
+            };
+            continue;
+          }
+
+          // OpenAI-standard usage chunk: choices=[], usage populated
+          if (chunk.choices?.length === 0 && chunk.usage) {
+            serverMetadata = {
+              usage: chunk.usage,
+              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
             };
             continue;
           }
@@ -652,6 +699,37 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
         });
 
+        const meta = serverMetadata;
+        const finalTokenCount = meta?.usage?.completion_tokens
+          ?? estimateTokenCount(cumulativeText);
+        const finalTokPerSec = meta?.timings?.predicted_per_second;
+        const serverPromptEvalTime = meta?.timings?.prompt_ms;
+
+        // Update context usage in store if we got valid server data
+        if (
+          meta?.usage &&
+          typeof meta.usage.prompt_tokens === "number" &&
+          typeof meta.usage.completion_tokens === "number" &&
+          typeof meta.usage.total_tokens === "number"
+        ) {
+          useChatRuntimeStore.getState().setContextUsage({
+            promptTokens: meta.usage.prompt_tokens,
+            completionTokens: meta.usage.completion_tokens,
+            totalTokens: meta.usage.total_tokens,
+            cachedTokens: meta.timings?.cache_n ?? 0,
+          });
+        }
+
+        const finalTiming = buildTiming(
+          streamStartTime,
+          totalChunks,
+          serverPromptEvalTime ?? firstTokenTime,
+          Date.now() - streamStartTime,
+          finalTokenCount,
+          toolCallParts.length,
+          finalTokPerSec,
+        );
+
         yield {
           content: [
             ...toolCallParts,
@@ -659,15 +737,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...sourceParts,
           ],
           metadata: {
-            timing: buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(cumulativeText),
-              toolCallParts.length,
-            ),
-            custom: { reasoningDuration },
+            timing: finalTiming,
+            custom: {
+              reasoningDuration,
+              serverTimings: meta?.timings ?? undefined,
+              contextUsage: meta?.usage ? {
+                promptTokens: meta.usage.prompt_tokens,
+                completionTokens: meta.usage.completion_tokens,
+                totalTokens: meta.usage.total_tokens,
+                cachedTokens: meta.timings?.cache_n ?? 0,
+                modelId: params.checkpoint,
+              } : undefined,
+              timing: finalTiming,
+            },
           },
         };
       } catch (err) {

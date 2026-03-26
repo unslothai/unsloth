@@ -41,6 +41,10 @@ class ModelCheckpoints(BaseModel):
         None,
         description = "LoRA rank (r) if applicable",
     )
+    is_quantized: bool = Field(
+        False,
+        description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -161,7 +165,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -184,6 +188,10 @@ class LocalModelListResponse(BaseModel):
     hf_cache_dir: Optional[str] = Field(
         None,
         description = "HF cache root that was scanned",
+    )
+    lmstudio_dirs: List[str] = Field(
+        default_factory = list,
+        description = "LM Studio model directories that were scanned",
     )
     models: List[LocalModelInfo] = Field(
         default_factory = list,

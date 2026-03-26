@@ -6,12 +6,24 @@ Main FastAPI application for Unsloth UI Backend
 """
 
 import os
+import sys
+from pathlib import Path as _Path
 
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Ensure backend dir is on sys.path so _platform_compat is importable when
+# main.py is launched directly (e.g. `uvicorn main:app`).
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
+
 import shutil
-import sys
 import warnings
 from contextlib import asynccontextmanager
 
@@ -37,6 +49,7 @@ from routes import (
     export_router,
     inference_router,
     models_router,
+    training_history_router,
     training_router,
 )
 from auth import storage
@@ -60,6 +73,17 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
+
+    from storage.studio_db import cleanup_orphaned_runs
+
+    try:
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "cleanup_orphaned_runs failed at startup: %s", exc
+        )
 
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
     # Runs in a background thread so it doesn't block server startup.
@@ -137,6 +161,9 @@ app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(
+    training_history_router, prefix = "/api/train", tags = ["training-history"]
+)
 
 
 # ============ Health and System Endpoints ============
