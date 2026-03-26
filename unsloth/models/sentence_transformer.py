@@ -1302,6 +1302,39 @@ def _patch_efficient_pooling():
         warnings.warn(f"Unsloth: Failed to patch Pooling: {e}", stacklevel = 2)
 
 
+_DENSE_PATCHED = False
+
+
+def _patch_dense_dtype():
+    """Monkey-patch Dense.forward to cast input to match weight dtype.
+
+    Models like Gemma3 use high-precision RMSNorm that outputs float32, but
+    SentenceTransformer.__init__ casts Dense weights to the transformer's
+    param dtype (e.g. bf16). This causes a dtype mismatch in F.linear.
+    """
+    global _DENSE_PATCHED
+    if _DENSE_PATCHED:
+        return
+    _DENSE_PATCHED = True
+
+    try:
+        from sentence_transformers.models import Dense
+
+        _original_dense_forward = Dense.forward
+
+        def _dtype_safe_forward(self, features):
+            if "sentence_embedding" in features:
+                target_dtype = self.linear.weight.dtype
+                emb = features["sentence_embedding"]
+                if emb.dtype != target_dtype:
+                    features["sentence_embedding"] = emb.to(target_dtype)
+            return _original_dense_forward(self, features)
+
+        Dense.forward = _dtype_safe_forward
+    except Exception:
+        pass
+
+
 _MNRL_PATCHED = False
 
 
@@ -2290,6 +2323,7 @@ class FastSentenceTransformer(FastModel):
 
         _patch_mnrl_loss()
         _patch_efficient_pooling()
+        _patch_dense_dtype()
 
         transformers4 = Version(transformers.__version__).major < 5
         model_type = ""
