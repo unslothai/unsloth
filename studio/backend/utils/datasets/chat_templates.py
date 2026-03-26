@@ -8,8 +8,6 @@ This module contains functions for applying chat templates to datasets
 and generating dataset info summaries.
 """
 
-from torch.utils.data import IterableDataset
-
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
 from loggers import get_logger
@@ -290,6 +288,7 @@ def apply_chat_template_to_dataset(
                 'batch_size': batch_size,
             }
 
+            from torch.utils.data import IterableDataset
             if not isinstance(dataset, IterableDataset):
                 from utils.hardware import dataset_map_num_proc
                 if num_proc is None or type(num_proc) is not int:
@@ -351,6 +350,7 @@ def apply_chat_template_to_dataset(
             return {"text": texts}
 
         try:
+            from torch.utils.data import IterableDataset
             dataset_map_kwargs = {
                 'batched': True,
                 'batch_size': batch_size,

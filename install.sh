@@ -27,7 +27,7 @@ if [ "$_next_is_package" = true ]; then
     exit 1
 fi
 
-PYTHON_VERSION="3.13"
+PYTHON_VERSION=""  # resolved after platform detection
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
@@ -563,6 +563,26 @@ elif grep -qi microsoft /proc/version 2>/dev/null; then
 fi
 echo "==> Platform: $OS"
 
+# ── Architecture detection & Python version ──
+_ARCH=$(uname -m)
+MAC_INTEL=false
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
+    MAC_INTEL=true
+fi
+
+if [ "$MAC_INTEL" = true ]; then
+    PYTHON_VERSION="3.12"
+    echo ""
+    echo "  NOTE: Intel Mac (x86_64) detected."
+    echo "  PyTorch is unavailable for this platform (dropped Jan 2024)."
+    echo "  Studio will install in GGUF-only mode."
+    echo "  Chat, inference via GGUF, and data recipes will work."
+    echo "  Training requires Apple Silicon or Linux with GPU."
+    echo ""
+else
+    PYTHON_VERSION="3.13"
+fi
+
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
@@ -717,8 +737,23 @@ fi
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
     uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
-else
-    echo "==> Using migrated environment at ${VENV_DIR}"
+fi
+
+# Guard against Python 3.13.8 torch import bug on Apple Silicon
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _PY_VER=$("$VENV_DIR/bin/python" -c \
+        "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>/dev/null || echo "")
+    if [ "$_PY_VER" = "3.13.8" ]; then
+        echo "  WARNING: Python 3.13.8 has a known torch import bug."
+        echo "  Recreating venv with Python 3.12..."
+        rm -rf "$VENV_DIR"
+        PYTHON_VERSION="3.12"
+        uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
+fi
+
+if [ -x "$VENV_DIR/bin/python" ]; then
+    echo "==> Using environment at ${VENV_DIR}"
 fi
 
 # ── Resolve repo root (for --local installs) ──
@@ -773,10 +808,14 @@ if [ "$_MIGRATED" = true ]; then
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
-    # Fresh: Step 1 - install torch from explicit index
-    echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
-    uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
-        --index-url "$TORCH_INDEX_URL"
+    # Fresh: Step 1 - install torch from explicit index (skip on Intel Mac)
+    if [ "$MAC_INTEL" = true ]; then
+        echo "==> Skipping PyTorch (unavailable for Intel Mac x86_64)."
+    else
+        echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
+        uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
+            --index-url "$TORCH_INDEX_URL"
+    fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
@@ -837,10 +876,12 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
+    UNSLOTH_NO_TORCH="$MAC_INTEL" \
     bash "$SETUP_SH" </dev/null
 else
     SKIP_STUDIO_BASE=1 \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    UNSLOTH_NO_TORCH="$MAC_INTEL" \
     bash "$SETUP_SH" </dev/null
 fi
 

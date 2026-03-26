@@ -21,6 +21,8 @@ import urllib.request
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
+NO_TORCH = os.environ.get("UNSLOTH_NO_TORCH", "false").lower() in ("1", "true")
 
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
@@ -161,6 +163,9 @@ def run(
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 
+# Packages to skip when torch is unavailable (Intel Mac GGUF-only mode)
+NO_TORCH_SKIP_PACKAGES = {"torch-stoi", "timm", "torchcodec", "torch-c-dlpack-ext"}
+
 # -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -275,6 +280,8 @@ def pip_install(
     actual_req = req
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+    if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
     req_args: list[str] = []
     if actual_req is not None:
         req_args = ["-r", str(actual_req)]
@@ -462,16 +469,22 @@ def install_python_stack() -> int:
     )
 
     # 4. Overrides (torchao, transformers) -- force-reinstall
-    _progress("dependency overrides")
-    pip_install(
-        "Installing dependency overrides",
-        "--force-reinstall",
-        "--no-cache-dir",
-        req = REQ_ROOT / "overrides.txt",
-    )
+    #    Skip entirely when torch is unavailable (e.g. Intel Mac GGUF-only mode)
+    #    because overrides.txt contains torchao which requires torch.
+    if NO_TORCH:
+        _progress("dependency overrides (skipped, no torch)")
+    else:
+        _progress("dependency overrides")
+        pip_install(
+            "Installing dependency overrides",
+            "--force-reinstall",
+            "--no-cache-dir",
+            req = REQ_ROOT / "overrides.txt",
+        )
 
     # 5. Triton kernels (no-deps, from source)
-    if not IS_WINDOWS:
+    #    Skip on Windows (no support) and macOS (no support).
+    if not IS_WINDOWS and not IS_MACOS:
         _progress("triton kernels")
         pip_install(
             "Installing triton kernels",
