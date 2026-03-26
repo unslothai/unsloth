@@ -29,6 +29,8 @@ export function useTauriBackend() {
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
+  // Track seen step names to deduplicate (Strict Mode, event replay, etc.)
+  const seenStepsRef = useRef(new Set<string>());
 
   // Keep ref in sync for event listener closures
   useEffect(() => {
@@ -119,6 +121,7 @@ export function useTauriBackend() {
   async function startInstall() {
     setCurrentStepIndex(-1);
     setProgressDetail(null);
+    seenStepsRef.current.clear();
     setStatus("installing");
     setLogs([]);
     setError(null);
@@ -144,6 +147,7 @@ export function useTauriBackend() {
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     setElevationPackages([]);
+    seenStepsRef.current.clear();
     checkInstallAndStart();
   }, []);
 
@@ -199,7 +203,10 @@ export function useTauriBackend() {
         setCurrentStepIndex(999); // all steps done
       }).then((u) => cleanup.push(u));
 
-      listen<string>("install-step", () => {
+      listen<string>("install-step", (e) => {
+        const stepName = e.payload;
+        if (seenStepsRef.current.has(stepName)) return; // deduplicate
+        seenStepsRef.current.add(stepName);
         setCurrentStepIndex((prev) => prev + 1);
         setProgressDetail(null);
       }).then((u) => cleanup.push(u));
