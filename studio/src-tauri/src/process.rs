@@ -128,6 +128,16 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
+    // AppImage/Flatpak set LD_LIBRARY_PATH to their bundled libs, which breaks
+    // the spawned Python process (wrong libpython/libz → "No module named encodings").
+    // Clear these so the backend uses the system/venv libraries.
+    #[cfg(target_os = "linux")]
+    {
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+
     // On Windows, create a new process group so CTRL_BREAK_EVENT works.
     #[cfg(windows)]
     {
