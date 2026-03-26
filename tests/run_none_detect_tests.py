@@ -360,7 +360,9 @@ def test_new_p1_explicit_sharegpt_both_all_corrupt():
     'conversations' are all-corrupt in the first 100 rows, scan_dataset must scan
     'conversations' (the sharegpt column), NOT 'messages' (the generic probe's
     first candidate)."""
-    section("NEW P1 — explicit fmt='sharegpt' scans 'conversations' even when both columns all-corrupt")
+    section(
+        "NEW P1 — explicit fmt='sharegpt' scans 'conversations' even when both columns all-corrupt"
+    )
 
     # Both columns are all-corrupt: every row has None.
     rows = [{"messages": None, "conversations": None}] * 5
@@ -396,7 +398,9 @@ def test_new_p2_plain_string_messages_not_chatml():
     rows = [{"messages": "hello world"}] * 5
     mock_ds = _MockDataset(rows, ["messages"])
 
-    print(f"  Rows: {len(rows)} — messages='hello world' (plain strings, not conversation)")
+    print(
+        f"  Rows: {len(rows)} — messages='hello world' (plain strings, not conversation)"
+    )
     try:
         stats = scan_dataset(mock_ds, fmt = "auto")
         fmt = stats.get("format", "?")
@@ -410,8 +414,15 @@ def test_new_p2_plain_string_messages_not_chatml():
         return stats
     except ValueError as exc:
         # ValueError is also acceptable — the column isn't a valid conversation format.
-        print(f"  [PASS] New-P2 plain-string messages: scan_dataset raised ValueError (not chatml): {exc}")
-        return {"format": "unknown", "total_rows": 5, "bad_row_indices": [], "findings": []}
+        print(
+            f"  [PASS] New-P2 plain-string messages: scan_dataset raised ValueError (not chatml): {exc}"
+        )
+        return {
+            "format": "unknown",
+            "total_rows": 5,
+            "bad_row_indices": [],
+            "findings": [],
+        }
 
 
 def test_synthetic():
@@ -534,8 +545,12 @@ def main():
         )
         all_results["p2_explicit_col_priority"] = test_p2_explicit_fmt_col_priority()
         all_results["p2_gptoss_col_priority"] = test_p2_gptoss_col_priority()
-        all_results["new_p1_sharegpt_all_corrupt"] = test_new_p1_explicit_sharegpt_both_all_corrupt()
-        all_results["new_p2_plain_string_not_chatml"] = test_new_p2_plain_string_messages_not_chatml()
+        all_results["new_p1_sharegpt_all_corrupt"] = (
+            test_new_p1_explicit_sharegpt_both_all_corrupt()
+        )
+        all_results["new_p2_plain_string_not_chatml"] = (
+            test_new_p2_plain_string_messages_not_chatml()
+        )
         all_results["synthetic"] = test_synthetic()
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()

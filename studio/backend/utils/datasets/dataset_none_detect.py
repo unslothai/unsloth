@@ -465,11 +465,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     #   picks a different column than the format expects, e.g. scan_dataset(
     #   fmt='sharegpt') should always scan 'conversations', not 'messages'
     #   even when both columns are all-corrupt (P1 fix).
-    use_probed_col = (
-        conv_info is not None
-        and fmt != "alpaca"
-        and was_auto
-    )
+    use_probed_col = conv_info is not None and fmt != "alpaca" and was_auto
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])
     else:
