@@ -595,21 +595,20 @@ export function ChatPage(): ReactElement {
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
-    void refresh().then(() => {
-      listLocalModels().then((res) => {
-        setLocalModels(
-          res.models
-            .filter((m) => m.source === "lmstudio" || m.source === "models_dir")
-            .map((m) => ({
-              id: m.id,
-              name: m.display_name,
-              baseModel: m.source === "lmstudio" ? "LM Studio" : "Local models",
-              updatedAt: m.updated_at ?? undefined,
-              source: "local" as const,
-            })),
-        );
-      }).catch(() => {});
-    });
+    void refresh();
+    void listLocalModels().then((res) => {
+      setLocalModels(
+        res.models
+          .filter((m) => m.source === "lmstudio" || m.source === "models_dir")
+          .map((m) => ({
+            id: m.id,
+            name: m.display_name,
+            baseModel: m.source === "lmstudio" ? "LM Studio" : "Local models",
+            updatedAt: m.updated_at ?? undefined,
+            source: "local" as const,
+          })),
+      );
+    }).catch(() => {});
   }, [refresh]);
 
   useEffect(() => {
