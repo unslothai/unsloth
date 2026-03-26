@@ -13,10 +13,7 @@
 # limitations under the License.
 
 import torch
-import logging
 from typing import Optional
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "generate_with_grammar",
@@ -26,12 +23,10 @@ JSON_ARR_GBNF = r'''
 root ::= arr
 value ::= object | array | string | number | ("true" | "false" | "null") ws
 arr ::=
-  "[
-" ws (
+  "[" ws (
             value
-            (",
-" ws value)*
-        )? "]"
+            ("," ws value)*
+        )? "]" ws
 object ::=
   "{" ws (
             string ":" ws value
@@ -43,14 +38,77 @@ array ::=
             ("," ws value)*
         )? "]" ws
 string ::=
-  """ (
-    [^"\x7F\x00-\x1F] |
-    "" (["\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) # escapes
-  )* """ ws
-number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
-ws ::= ([ 	
-] ws)?
+  "\"" (
+    [^"\\\x7F\x00-\x1F] |
+    "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+  )* "\"" ws
+number ::= "-"? ([0-9] | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
+ws ::= ([ \t\n\r] ws)?
 '''
+
+
+def _build_tokenizer_resources(tokenizer):
+    """
+    Build ByteTrie and TokenizerMiddleMapping for the given tokenizer,
+    bypassing transformers-cfg's isinstance checks that fail on
+    transformers 5.x (where all tokenizers are TokenizersBackend).
+    """
+    from transformers_cfg.tokenization.byte_trie import ByteTrie
+    from transformers_cfg.tokenization.utils import get_tokenizer_charset
+    from transformers_cfg.tokenization.middle.TokenizerMiddleMapping import (
+        LLAMA1TokenizerMiddleMapping,
+        TokenizerMiddleMapping,
+    )
+
+    charset = get_tokenizer_charset(tokenizer)
+
+    if "\u2581" in charset:
+        # SentencePiece-style (LLaMA-2, Mistral v0.1, Gemma)
+        homomorphism = LLAMA1TokenizerMiddleMapping(tokenizer)
+    elif len(charset) >= 256 and len(charset) < 256 + 30:
+        # GPT2-style byte-proxy (Llama-3, GPT-2, Qwen2)
+        # Build mapping manually to avoid ByteProxyMapping loading a slow tokenizer
+        from transformers.convert_slow_tokenizer import bytes_to_unicode
+
+        byte_to_unicode = bytes_to_unicode()  # {byte_int: unicode_char}
+        unicode_to_byte = {v: k for k, v in byte_to_unicode.items()}
+
+        class _GPT2ManualMapping(TokenizerMiddleMapping):
+            def __init__(self, tok):
+                super().__init__(tok)
+                self._unicode_to_byte = unicode_to_byte
+
+            def map(self, token_id: int, verbose=False) -> bytes:
+                token_id = int(token_id)
+                token_str = self.tokenizer.convert_ids_to_tokens(token_id)
+                return bytes(
+                    self._unicode_to_byte.get(c, ord(c)) for c in token_str
+                )
+        pass
+
+        homomorphism = _GPT2ManualMapping(tokenizer)
+    else:
+        # Fallback: try transformers-cfg's auto_infer
+        homomorphism = TokenizerMiddleMapping.auto_infer(tokenizer)
+    pass
+
+    # Build the ByteTrie from the vocabulary
+    trie = ByteTrie()
+    vocab_size = len(tokenizer)
+    special_ids = set(tokenizer.all_special_ids)
+    for token_id in range(vocab_size):
+        if token_id in special_ids:
+            continue
+        try:
+            byte_repr = homomorphism.map(token_id)
+            if byte_repr:
+                trie.insert(byte_repr, token_id)
+        except Exception:
+            continue
+    pass
+
+    return trie, homomorphism
+pass
 
 
 def generate_with_grammar(
@@ -64,7 +122,7 @@ def generate_with_grammar(
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     do_sample: bool = False,
-    repetition_penalty: float = 1.1,
+    repetition_penalty: float = 1.0,
     num_return_sequences: int = 1,
     **kwargs,
 ):
@@ -86,10 +144,19 @@ def generate_with_grammar(
     if grammar_str is None:
         grammar_str = JSON_ARR_GBNF
 
+    trie, homomorphism = _build_tokenizer_resources(tokenizer)
     grammar = IncrementalGrammarConstraint(
-        grammar_str, start_rule_name = start_rule, tokenizer = tokenizer
+        grammar_str, start_rule_name=start_rule, tokenizer=tokenizer,
+        trie=trie, homomorphism=homomorphism,
     )
     grammar_processor = GrammarConstrainedLogitsProcessor(grammar)
+
+    extra_processors = kwargs.pop("logits_processor", None)
+    if extra_processors is not None:
+        if not isinstance(extra_processors, list):
+            extra_processors = list(extra_processors)
+    else:
+        extra_processors = []
 
     generation_kwargs = {
         "input_ids": input_ids,
@@ -97,7 +164,7 @@ def generate_with_grammar(
         "do_sample": do_sample,
         "repetition_penalty": repetition_penalty,
         "num_return_sequences": num_return_sequences,
-        "logits_processor": [grammar_processor],
+        "logits_processor": [grammar_processor] + extra_processors,
         **kwargs,
     }
 
@@ -108,10 +175,6 @@ def generate_with_grammar(
             generation_kwargs["top_p"] = top_p
         if top_k is not None:
             generation_kwargs["top_k"] = top_k
-    else:
-        generation_kwargs["temperature"] = None
-        generation_kwargs["top_p"] = None
-        generation_kwargs["top_k"] = None
 
     try:
         return model.generate(**generation_kwargs)
