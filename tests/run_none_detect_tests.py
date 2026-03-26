@@ -21,11 +21,14 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
-# Allow running from repo root without install
+# Allow running from repo root without install.
+# Insert the datasets directory directly so dataset_none_detect is imported
+# as a top-level module, bypassing utils/datasets/__init__.py which pulls in
+# torch, fastapi, and other heavy studio deps not needed for this utility.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "studio" / "backend"))
+sys.path.insert(0, str(REPO_ROOT / "studio" / "backend" / "utils" / "datasets"))
 
-from utils.datasets.dataset_none_detect import (
+from dataset_none_detect import (
     find_none_chatml,
     print_report,
     scan_dataset,
