@@ -349,9 +349,15 @@ class LlamaCppBackend:
 
         # Bytes per element depends on KV cache quantization
         bpe = {
-            "f32": 4.0, "f16": 2.0, "bf16": 2.0,
-            "q8_0": 1.125, "q5_1": 0.75, "q5_0": 0.6875,
-            "q4_1": 0.625, "q4_0": 0.5625, "iq4_nl": 0.5625,
+            "f32": 4.0,
+            "f16": 2.0,
+            "bf16": 2.0,
+            "q8_0": 1.125,
+            "q5_1": 0.75,
+            "q5_0": 0.6875,
+            "q4_1": 0.625,
+            "q4_0": 0.5625,
+            "iq4_nl": 0.5625,
         }.get(cache_type_kv or "f16", 2.0)
 
         # K + V caches: 2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe
