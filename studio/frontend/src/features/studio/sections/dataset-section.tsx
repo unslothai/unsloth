@@ -417,7 +417,7 @@ export function DatasetSection() {
         description="Select or upload training data"
         accent="indigo"
         className={`dark:shadow-border ${
-          advancedOpen || (datasetSource === "upload" && selectedLocalDataset)
+          advancedOpen || (datasetSource === "upload" && uploadedFile)
             ? "min-h-studio-config-column"
             : "h-studio-config-column"
         }`}
