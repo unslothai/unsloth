@@ -122,22 +122,22 @@ def _make_backend(**metadata):
 def _llama3_70b():
     """Llama-3 70B-like metadata."""
     return _make_backend(
-        n_layers=80,
-        n_kv_heads=8,
-        n_heads=64,
-        embedding_length=8192,
-        context_length=131072,
+        n_layers = 80,
+        n_kv_heads = 8,
+        n_heads = 64,
+        embedding_length = 8192,
+        context_length = 131072,
     )
 
 
 def _qwen35_9b():
     """Qwen3.5-9B-like metadata: 48 layers, 8 KV heads, 32 heads, 3584 emb, 262k ctx."""
     return _make_backend(
-        n_layers=48,
-        n_kv_heads=8,
-        n_heads=32,
-        embedding_length=3584,
-        context_length=262144,
+        n_layers = 48,
+        n_kv_heads = 8,
+        n_heads = 32,
+        embedding_length = 3584,
+        context_length = 262144,
     )
 
 
@@ -169,11 +169,11 @@ class TestEstimateKvCacheBytes:
 
     def test_n_kv_heads_none_falls_back_to_n_heads(self):
         b = _make_backend(
-            n_layers=32, n_kv_heads=None, n_heads=32, embedding_length=4096
+            n_layers = 32, n_kv_heads = None, n_heads = 32, embedding_length = 4096
         )
         kv_fallback = b._estimate_kv_cache_bytes(4096, "f16")
         b2 = _make_backend(
-            n_layers=32, n_kv_heads=32, n_heads=32, embedding_length=4096
+            n_layers = 32, n_kv_heads = 32, n_heads = 32, embedding_length = 4096
         )
         kv_explicit = b2._estimate_kv_cache_bytes(4096, "f16")
         assert kv_fallback == kv_explicit
@@ -194,9 +194,7 @@ class TestEstimateKvCacheBytes:
 
     def test_q8_0_bpe_constant(self):
         """Bug 5: q8_0 should use 34/32 = 1.0625, not 1.125."""
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         head_dim = 4096 // 32  # 128
         n_ctx = 8192
         kv = b._estimate_kv_cache_bytes(n_ctx, "q8_0")
@@ -224,28 +222,24 @@ class TestFitContextToVram:
 
     def test_requested_ctx_fits(self):
         """If model + KV fits, return requested_ctx unchanged."""
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         # Small model, huge VRAM -- should fit
         result = b._fit_context_to_vram(
-            requested_ctx=8192,
-            available_mib=48000,
-            model_size_bytes=5 * GIB,
-            cache_type_kv="f16",
+            requested_ctx = 8192,
+            available_mib = 48000,
+            model_size_bytes = 5 * GIB,
+            cache_type_kv = "f16",
         )
         assert result == 8192
 
     def test_context_capped_to_fit(self):
         """When full context doesn't fit, cap it."""
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         result = b._fit_context_to_vram(
-            requested_ctx=131072,
-            available_mib=24000,
-            model_size_bytes=10 * GIB,
-            cache_type_kv="f16",
+            requested_ctx = 131072,
+            available_mib = 24000,
+            model_size_bytes = 10 * GIB,
+            cache_type_kv = "f16",
         )
         assert result < 131072
         assert result >= 2048
@@ -253,16 +247,14 @@ class TestFitContextToVram:
 
     def test_weights_exceed_budget_returns_requested_ctx(self):
         """Bug 3: When weights alone exceed 70% budget, return requested_ctx, not min_ctx."""
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         # 20GB model, 22GB GPU => budget = 22*1024*0.70 MiB = ~15.4 GiB
         # Model exceeds budget, so context reduction is pointless
         result = b._fit_context_to_vram(
-            requested_ctx=32768,
-            available_mib=22 * 1024,  # 22 GiB
-            model_size_bytes=20 * GIB,
-            cache_type_kv="f16",
+            requested_ctx = 32768,
+            available_mib = 22 * 1024,  # 22 GiB
+            model_size_bytes = 20 * GIB,
+            cache_type_kv = "f16",
         )
         # BUG: returns min_ctx=2048 instead of requested_ctx=32768
         assert result == 32768, (
@@ -277,9 +269,7 @@ class TestFitContextToVram:
         binary search is triggered.  The bug is lo=min_ctx=2048 > hi=requested_ctx,
         causing the search to skip and return best=2048 which is LARGER than requested.
         """
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         # KV at 1024 f16 = 128 MiB.  Make remaining budget < 128 MiB so
         # the binary search is entered.
         # budget = 4096 * 0.70 = 2867.2 MiB
@@ -287,10 +277,10 @@ class TestFitContextToVram:
         model_size = int(2767.2 * MIB)
         for requested in [128, 512, 1024, 1536]:
             result = b._fit_context_to_vram(
-                requested_ctx=requested,
-                available_mib=4096,
-                model_size_bytes=model_size,
-                cache_type_kv="f16",
+                requested_ctx = requested,
+                available_mib = 4096,
+                model_size_bytes = model_size,
+                cache_type_kv = "f16",
             )
             assert result <= requested, (
                 f"requested_ctx={requested}: result {result} should not "
@@ -299,9 +289,7 @@ class TestFitContextToVram:
 
     def test_exact_fit_boundary(self):
         """Model + KV for requested_ctx == budget exactly -> returns requested_ctx."""
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         kv = b._estimate_kv_cache_bytes(8192, "f16")
         model_size = 5 * GIB
         # Budget = available_mib * MIB * 0.70
@@ -309,35 +297,35 @@ class TestFitContextToVram:
         budget = model_size + kv
         available_mib = int(budget / (MIB * 0.70)) + 1  # +1 for rounding
         result = b._fit_context_to_vram(
-            requested_ctx=8192,
-            available_mib=available_mib,
-            model_size_bytes=model_size,
-            cache_type_kv="f16",
+            requested_ctx = 8192,
+            available_mib = available_mib,
+            model_size_bytes = model_size,
+            cache_type_kv = "f16",
         )
         assert result == 8192
 
     def test_256_alignment(self):
         """Capped value should be a multiple of 256."""
-        b = _make_backend(
-            n_layers=32, n_kv_heads=8, n_heads=32, embedding_length=4096
-        )
+        b = _make_backend(n_layers = 32, n_kv_heads = 8, n_heads = 32, embedding_length = 4096)
         result = b._fit_context_to_vram(
-            requested_ctx=100000,
-            available_mib=16000,
-            model_size_bytes=8 * GIB,
-            cache_type_kv="f16",
+            requested_ctx = 100000,
+            available_mib = 16000,
+            model_size_bytes = 8 * GIB,
+            cache_type_kv = "f16",
         )
         if result < 100000:
             assert result % 256 == 0, f"Capped context {result} is not 256-aligned"
 
     def test_metadata_unavailable_returns_requested(self):
         """When _can_estimate_kv() is False, return requested_ctx unchanged."""
-        b = _make_backend(n_layers=None, n_kv_heads=None, n_heads=None, embedding_length=None)
+        b = _make_backend(
+            n_layers = None, n_kv_heads = None, n_heads = None, embedding_length = None
+        )
         result = b._fit_context_to_vram(
-            requested_ctx=65536,
-            available_mib=24000,
-            model_size_bytes=10 * GIB,
-            cache_type_kv="f16",
+            requested_ctx = 65536,
+            available_mib = 24000,
+            model_size_bytes = 10 * GIB,
+            cache_type_kv = "f16",
         )
         assert result == 65536
 
@@ -352,17 +340,13 @@ class TestSelectGpus:
 
     def test_single_gpu_fits(self):
         # 10 GiB model, 24 GiB free (70% = ~16.8 GiB)
-        indices, use_fit = LlamaCppBackend._select_gpus(
-            10 * GIB, [(0, 24 * 1024)]
-        )
+        indices, use_fit = LlamaCppBackend._select_gpus(10 * GIB, [(0, 24 * 1024)])
         assert indices == [0]
         assert use_fit is False
 
     def test_single_gpu_too_small(self):
         # 20 GiB model, 24 GiB free (70% = ~16.8 GiB) - doesn't fit on 1
-        indices, use_fit = LlamaCppBackend._select_gpus(
-            20 * GIB, [(0, 24 * 1024)]
-        )
+        indices, use_fit = LlamaCppBackend._select_gpus(20 * GIB, [(0, 24 * 1024)])
         assert indices is None
         assert use_fit is True
 
@@ -402,7 +386,7 @@ class TestSelectGpus:
 class TestLoadModelIntegration:
     """Test load_model with monkeypatched externals to capture command lines."""
 
-    @pytest.fixture(autouse=True)
+    @pytest.fixture(autouse = True)
     def _setup(self, tmp_path):
         """Create a fake GGUF file and fake binary for all integration tests."""
         self.fake_gguf = tmp_path / "model.gguf"
@@ -415,8 +399,9 @@ class TestLoadModelIntegration:
         self.captured_cmd = None
         self.captured_env = None
 
-    def _run_load(self, backend, n_ctx=4096, cache_type_kv=None,
-                  gpus=None, model_size=10 * GIB):
+    def _run_load(
+        self, backend, n_ctx = 4096, cache_type_kv = None, gpus = None, model_size = 10 * GIB
+    ):
         """Run load_model with full monkeypatching. Returns (cmd, env)."""
         captured = {}
 
@@ -440,23 +425,28 @@ class TestLoadModelIntegration:
                 pass
 
         with (
-            patch.object(type(backend), "_find_llama_server_binary",
-                         staticmethod(lambda: str(self.fake_binary))),
-            patch.object(type(backend), "_get_gpu_free_memory",
-                         staticmethod(lambda: gpus or [])),
-            patch.object(type(backend), "_get_gguf_size_bytes",
-                         staticmethod(lambda p: model_size)),
-            patch.object(type(backend), "_read_gguf_metadata",
-                         lambda self, p: None),
-            patch.object(type(backend), "_wait_for_health",
-                         lambda self, **kw: True),
+            patch.object(
+                type(backend),
+                "_find_llama_server_binary",
+                staticmethod(lambda: str(self.fake_binary)),
+            ),
+            patch.object(
+                type(backend), "_get_gpu_free_memory", staticmethod(lambda: gpus or [])
+            ),
+            patch.object(
+                type(backend),
+                "_get_gguf_size_bytes",
+                staticmethod(lambda p: model_size),
+            ),
+            patch.object(type(backend), "_read_gguf_metadata", lambda self, p: None),
+            patch.object(type(backend), "_wait_for_health", lambda self, **kw: True),
             patch("subprocess.Popen", FakePopen),
         ):
             backend.load_model(
-                gguf_path=str(self.fake_gguf),
-                model_identifier="test-model",
-                n_ctx=n_ctx,
-                cache_type_kv=cache_type_kv,
+                gguf_path = str(self.fake_gguf),
+                model_identifier = "test-model",
+                n_ctx = n_ctx,
+                cache_type_kv = cache_type_kv,
             )
 
         self.captured_cmd = captured.get("cmd")
@@ -465,15 +455,15 @@ class TestLoadModelIntegration:
 
     def test_basic_command_construction(self):
         b = _make_backend()
-        cmd, env = self._run_load(b, n_ctx=4096)
+        cmd, env = self._run_load(b, n_ctx = 4096)
         assert "-c" in cmd
         idx = cmd.index("-c")
         assert cmd[idx + 1] == "4096"
 
     def test_n_ctx_zero_metadata_missing(self):
         """Bug 2: n_ctx=0 with _context_length=None should produce -c 0, not -c 4096."""
-        b = _make_backend(context_length=None)
-        cmd, env = self._run_load(b, n_ctx=0)
+        b = _make_backend(context_length = None)
+        cmd, env = self._run_load(b, n_ctx = 0)
         idx = cmd.index("-c")
         # BUG: produces "-c 4096" because (self._context_length or 4096) = 4096
         assert cmd[idx + 1] == "0", (
@@ -484,11 +474,11 @@ class TestLoadModelIntegration:
     def test_multi_gpu_auto_cap(self):
         """Bug 1: Multi-GPU should use aggregate budget, not single-GPU max."""
         b = _make_backend(
-            n_layers=80,
-            n_kv_heads=8,
-            n_heads=64,
-            embedding_length=8192,
-            context_length=131072,
+            n_layers = 80,
+            n_kv_heads = 8,
+            n_heads = 64,
+            embedding_length = 8192,
+            context_length = 131072,
         )
         # 2x 24 GiB GPUs, 18 GiB model, 131k f16 KV ~43 GiB total
         # Single GPU budget: 24*1024*0.7 = ~16.8 GiB (too small)
@@ -518,23 +508,24 @@ class TestLoadModelIntegration:
                 pass
 
         with (
-            patch.object(type(b), "_find_llama_server_binary",
-                         staticmethod(lambda: str(self.fake_binary))),
-            patch.object(type(b), "_get_gpu_free_memory",
-                         staticmethod(lambda: gpus)),
-            patch.object(type(b), "_get_gguf_size_bytes",
-                         staticmethod(lambda p: 18 * GIB)),
-            patch.object(type(b), "_read_gguf_metadata",
-                         lambda self, p: None),
-            patch.object(type(b), "_wait_for_health",
-                         lambda self, **kw: True),
+            patch.object(
+                type(b),
+                "_find_llama_server_binary",
+                staticmethod(lambda: str(self.fake_binary)),
+            ),
+            patch.object(type(b), "_get_gpu_free_memory", staticmethod(lambda: gpus)),
+            patch.object(
+                type(b), "_get_gguf_size_bytes", staticmethod(lambda p: 18 * GIB)
+            ),
+            patch.object(type(b), "_read_gguf_metadata", lambda self, p: None),
+            patch.object(type(b), "_wait_for_health", lambda self, **kw: True),
             patch("subprocess.Popen", FakePopen),
         ):
             b.load_model(
-                gguf_path=str(self.fake_gguf),
-                model_identifier="test-model",
-                n_ctx=131072,
-                cache_type_kv="f16",
+                gguf_path = str(self.fake_gguf),
+                model_identifier = "test-model",
+                n_ctx = 131072,
+                cache_type_kv = "f16",
             )
 
         cmd = captured["cmd"]
@@ -553,11 +544,11 @@ class TestLoadModelIntegration:
     def test_context_length_not_overwritten(self):
         """Bug 6: _context_length should not be overwritten with capped value."""
         b = _make_backend(
-            n_layers=80,
-            n_kv_heads=8,
-            n_heads=64,
-            embedding_length=8192,
-            context_length=262144,
+            n_layers = 80,
+            n_kv_heads = 8,
+            n_heads = 64,
+            embedding_length = 8192,
+            context_length = 262144,
         )
         gpus = [(0, 24 * 1024)]
 
@@ -579,23 +570,24 @@ class TestLoadModelIntegration:
                 pass
 
         with (
-            patch.object(type(b), "_find_llama_server_binary",
-                         staticmethod(lambda: str(self.fake_binary))),
-            patch.object(type(b), "_get_gpu_free_memory",
-                         staticmethod(lambda: gpus)),
-            patch.object(type(b), "_get_gguf_size_bytes",
-                         staticmethod(lambda p: 5 * GIB)),
-            patch.object(type(b), "_read_gguf_metadata",
-                         lambda self, p: None),
-            patch.object(type(b), "_wait_for_health",
-                         lambda self, **kw: True),
+            patch.object(
+                type(b),
+                "_find_llama_server_binary",
+                staticmethod(lambda: str(self.fake_binary)),
+            ),
+            patch.object(type(b), "_get_gpu_free_memory", staticmethod(lambda: gpus)),
+            patch.object(
+                type(b), "_get_gguf_size_bytes", staticmethod(lambda p: 5 * GIB)
+            ),
+            patch.object(type(b), "_read_gguf_metadata", lambda self, p: None),
+            patch.object(type(b), "_wait_for_health", lambda self, **kw: True),
             patch("subprocess.Popen", FakePopen),
         ):
             b.load_model(
-                gguf_path=str(self.fake_gguf),
-                model_identifier="test-model",
-                n_ctx=262144,
-                cache_type_kv="f16",
+                gguf_path = str(self.fake_gguf),
+                model_identifier = "test-model",
+                n_ctx = 262144,
+                cache_type_kv = "f16",
             )
 
         # BUG: self._context_length = effective_ctx overwrites native 262k
@@ -607,14 +599,16 @@ class TestLoadModelIntegration:
     def test_fit_flag_when_gpus_none(self):
         """When GPU detection fails, --fit on should be in the command."""
         b = _make_backend()
-        cmd, _ = self._run_load(b, n_ctx=4096, gpus=[])
+        cmd, _ = self._run_load(b, n_ctx = 4096, gpus = [])
         assert "--fit" in cmd
         assert "on" in cmd
 
     def test_ngl_minus_one_when_gpus_selected(self):
         """When model fits on GPU(s), -ngl -1 should be in the command."""
         b = _make_backend()
-        cmd, _ = self._run_load(b, n_ctx=4096, gpus=[(0, 24 * 1024)], model_size=5 * GIB)
+        cmd, _ = self._run_load(
+            b, n_ctx = 4096, gpus = [(0, 24 * 1024)], model_size = 5 * GIB
+        )
         assert "-ngl" in cmd
         idx = cmd.index("-ngl")
         assert cmd[idx + 1] == "-1"
@@ -622,8 +616,9 @@ class TestLoadModelIntegration:
     def test_cuda_visible_devices_set(self):
         """CUDA_VISIBLE_DEVICES in env should match selected GPUs."""
         b = _make_backend()
-        cmd, env = self._run_load(b, n_ctx=4096, gpus=[(0, 24 * 1024), (1, 16 * 1024)],
-                                  model_size=20 * GIB)
+        cmd, env = self._run_load(
+            b, n_ctx = 4096, gpus = [(0, 24 * 1024), (1, 16 * 1024)], model_size = 20 * GIB
+        )
         if "CUDA_VISIBLE_DEVICES" in env:
             gpu_ids = env["CUDA_VISIBLE_DEVICES"].split(",")
             assert all(g.strip().isdigit() for g in gpu_ids)
@@ -654,21 +649,23 @@ class TestLoadModelIntegration:
             raise RuntimeError("nvidia-smi failed")
 
         with (
-            patch.object(type(b), "_find_llama_server_binary",
-                         staticmethod(lambda: str(self.fake_binary))),
+            patch.object(
+                type(b),
+                "_find_llama_server_binary",
+                staticmethod(lambda: str(self.fake_binary)),
+            ),
             patch.object(type(b), "_get_gpu_free_memory", staticmethod(_raise_gpu)),
-            patch.object(type(b), "_get_gguf_size_bytes",
-                         staticmethod(lambda p: 10 * GIB)),
-            patch.object(type(b), "_read_gguf_metadata",
-                         lambda self, p: None),
-            patch.object(type(b), "_wait_for_health",
-                         lambda self, **kw: True),
+            patch.object(
+                type(b), "_get_gguf_size_bytes", staticmethod(lambda p: 10 * GIB)
+            ),
+            patch.object(type(b), "_read_gguf_metadata", lambda self, p: None),
+            patch.object(type(b), "_wait_for_health", lambda self, **kw: True),
             patch("subprocess.Popen", FakePopen),
         ):
             b.load_model(
-                gguf_path=str(self.fake_gguf),
-                model_identifier="test-model",
-                n_ctx=4096,
+                gguf_path = str(self.fake_gguf),
+                model_identifier = "test-model",
+                n_ctx = 4096,
             )
         # If we get here without exception, the fallback worked
 
@@ -678,8 +675,15 @@ class TestLoadModelIntegration:
 # ==========================================================================
 
 
-def _make_minimal_gguf(path, arch="llama", ctx=4096, n_layers=32,
-                       n_heads=32, n_kv_heads=8, embedding_length=4096):
+def _make_minimal_gguf(
+    path,
+    arch = "llama",
+    ctx = 4096,
+    n_layers = 32,
+    n_heads = 32,
+    n_kv_heads = 8,
+    embedding_length = 4096,
+):
     """Create a minimal valid GGUF file with the given metadata."""
     with open(path, "wb") as f:
         # Magic: GGUF
@@ -727,8 +731,15 @@ class TestReadGgufMetadata:
 
     def test_parse_llama_architecture(self, tmp_path):
         gguf = tmp_path / "llama.gguf"
-        _make_minimal_gguf(gguf, arch="llama", ctx=131072, n_layers=80,
-                           n_heads=64, n_kv_heads=8, embedding_length=8192)
+        _make_minimal_gguf(
+            gguf,
+            arch = "llama",
+            ctx = 131072,
+            n_layers = 80,
+            n_heads = 64,
+            n_kv_heads = 8,
+            embedding_length = 8192,
+        )
         b = _make_backend()
         b._read_gguf_metadata(str(gguf))
         assert b._context_length == 131072
@@ -747,12 +758,19 @@ class TestReadGgufMetadata:
             ("llama", 8192, 32, 32, 8, 4096),
         ],
     )
-    def test_parse_multiple_architectures(self, tmp_path, arch, ctx, layers,
-                                          heads, kv_heads, emb):
+    def test_parse_multiple_architectures(
+        self, tmp_path, arch, ctx, layers, heads, kv_heads, emb
+    ):
         gguf = tmp_path / f"{arch}.gguf"
-        _make_minimal_gguf(gguf, arch=arch, ctx=ctx, n_layers=layers,
-                           n_heads=heads, n_kv_heads=kv_heads,
-                           embedding_length=emb)
+        _make_minimal_gguf(
+            gguf,
+            arch = arch,
+            ctx = ctx,
+            n_layers = layers,
+            n_heads = heads,
+            n_kv_heads = kv_heads,
+            embedding_length = emb,
+        )
         b = _make_backend()
         b._read_gguf_metadata(str(gguf))
         assert b._context_length == ctx
@@ -809,9 +827,13 @@ class TestCanEstimateKv:
         assert b._can_estimate_kv() is False
 
     def test_missing_both_heads(self):
-        b = _make_backend(n_layers=32, n_kv_heads=None, n_heads=None, embedding_length=4096)
+        b = _make_backend(
+            n_layers = 32, n_kv_heads = None, n_heads = None, embedding_length = 4096
+        )
         assert b._can_estimate_kv() is False
 
     def test_n_kv_heads_none_but_n_heads_present(self):
-        b = _make_backend(n_layers=32, n_kv_heads=None, n_heads=32, embedding_length=4096)
+        b = _make_backend(
+            n_layers = 32, n_kv_heads = None, n_heads = 32, embedding_length = 4096
+        )
         assert b._can_estimate_kv() is True

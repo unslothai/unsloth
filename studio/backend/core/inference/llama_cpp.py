@@ -1222,7 +1222,9 @@ class LlamaCppBackend:
             # Store the effective (possibly capped) context separately.
             # Do NOT overwrite _context_length -- it holds the model's native
             # context length from GGUF metadata and is used for display/info.
-            self._effective_context_length = effective_ctx if effective_ctx > 0 else self._context_length
+            self._effective_context_length = (
+                effective_ctx if effective_ctx > 0 else self._context_length
+            )
 
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 120.0):
