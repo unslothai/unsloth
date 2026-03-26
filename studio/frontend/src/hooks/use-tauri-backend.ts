@@ -22,6 +22,8 @@ export function useTauriBackend() {
   const [error, setError] = useState<string | null>(null);
   // Guard against double startServer calls
   const startingRef = useRef(false);
+  // Guard against React Strict Mode double-mount
+  const mountedRef = useRef(false);
   // Track the discovered port from server-port event
   const portRef = useRef<number | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
@@ -165,8 +167,11 @@ export function useTauriBackend() {
     }
   }, [elevationPackages]);
 
-  // Initial check on mount
+  // Initial check on mount (guarded against Strict Mode double-mount)
   useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
+
     if (!isTauri) {
       setStatus("running");
       return;
