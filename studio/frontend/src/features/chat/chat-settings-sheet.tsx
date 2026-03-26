@@ -10,6 +10,16 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   ArrowDown01Icon,
   CodeIcon,
@@ -18,6 +28,8 @@ import {
   PencilEdit01Icon,
   Settings02Icon,
   SlidersHorizontalIcon,
+  UserSettings01Icon,
+  Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
@@ -30,7 +42,7 @@ import {
 } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
@@ -72,6 +84,52 @@ const BUILTIN_PRESETS: Preset[] = [
   },
 ];
 
+const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
+const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
+
+function canUseStorage(): boolean {
+  return typeof window !== "undefined";
+}
+
+function loadSavedCustomPresets(): Preset[] {
+  if (!canUseStorage()) return [];
+  try {
+    const raw = localStorage.getItem(CHAT_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Preset => {
+        if (!item || typeof item !== "object") return false;
+        const maybe = item as Partial<Preset>;
+        return typeof maybe.name === "string" && !!maybe.params;
+      })
+      .map((preset) => ({
+        name: preset.name.trim(),
+        params: {
+          ...defaultInferenceParams,
+          ...preset.params,
+        },
+      }))
+      .filter(
+        (preset) =>
+          preset.name.length > 0 &&
+          !BUILTIN_PRESETS.some((builtin) => builtin.name === preset.name),
+      );
+  } catch {
+    return [];
+  }
+}
+
+function loadSavedActivePreset(): string {
+  if (!canUseStorage()) return "Default";
+  try {
+    return localStorage.getItem(CHAT_ACTIVE_PRESET_KEY) ?? "Default";
+  } catch {
+    return "Default";
+  }
+}
+
 function ParamSlider({
   label,
   value,
@@ -108,6 +166,39 @@ function ParamSlider({
   );
 }
 
+const COLLAPSIBLE_STATE_KEY = "unsloth_chat_collapsible_state";
+
+function loadCollapsibleState(): Record<string, boolean> {
+  if (!canUseStorage()) return {};
+  try {
+    const raw = localStorage.getItem(COLLAPSIBLE_STATE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+      ),
+    );
+  } catch (error) {
+    console.warn("Failed to load collapsible state from localStorage:", error);
+    return {};
+  }
+}
+
+function saveCollapsibleOpen(label: string, open: boolean) {
+  if (!canUseStorage()) return;
+  try {
+    const state = loadCollapsibleState();
+    state[label] = open;
+    localStorage.setItem(COLLAPSIBLE_STATE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
+
 function CollapsibleSection({
   icon,
   label,
@@ -119,13 +210,20 @@ function CollapsibleSection({
   children?: ReactNode;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(() => {
+    const saved = loadCollapsibleState();
+    return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
+  });
 
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          saveCollapsibleOpen(label, next);
+        }}
         className="flex w-full items-center corner-squircle gap-2.5 rounded-md px-2 py-2 text-sm transition-colors hover:bg-accent"
       >
         <HugeiconsIcon icon={icon} className="size-4 text-muted-foreground" />
@@ -181,8 +279,24 @@ export function ChatSettingsPanel({
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
-  const [presets, setPresets] = useState<Preset[]>(BUILTIN_PRESETS);
-  const [activePreset, setActivePreset] = useState("Default");
+  const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const setCustomContextLength = useChatRuntimeStore((s) => s.setCustomContextLength);
+
+  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
+  const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
+  const ctxDirty = customContextLength !== null;
+  const modelSettingsDirty = kvDirty || ctxDirty;
+  const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
+    loadSavedCustomPresets(),
+  );
+  const [activePreset, setActivePreset] = useState(() => loadSavedActivePreset());
+  const [savePresetOpen, setSavePresetOpen] = useState(false);
+  const [presetNameDraft, setPresetNameDraft] = useState("");
+  const presets = useMemo(
+    () => [...BUILTIN_PRESETS, ...customPresets],
+    [customPresets],
+  );
   const isBuiltinPreset = BUILTIN_PRESETS.some((p) => p.name === activePreset);
 
   function set<K extends keyof InferenceParams>(key: K) {
@@ -199,31 +313,92 @@ export function ChatSettingsPanel({
         trustRemoteCode: params.trustRemoteCode,
       });
       setActivePreset(name);
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, name);
+        } catch {
+          // ignore
+        }
+      }
     }
   }
 
-  function savePreset() {
-    const name = prompt("Preset name:");
-    if (!name?.trim()) {
+  function openSavePresetDialog() {
+    setPresetNameDraft(activePreset === "Default" ? "" : activePreset);
+    setSavePresetOpen(true);
+  }
+
+  function savePresetWithName(rawName: string) {
+    const trimmed = rawName.trim();
+    if (!trimmed) {
       return;
     }
-    const trimmed = name.trim();
-    setPresets((prev) => [
-      ...prev.filter((p) => p.name !== trimmed),
-      { name: trimmed, params: { ...params } },
-    ]);
+    if (BUILTIN_PRESETS.some((preset) => preset.name === trimmed)) {
+      return;
+    }
+    setCustomPresets((prev) => {
+      const next = [
+        ...prev.filter((preset) => preset.name !== trimmed),
+        { name: trimmed, params: { ...params } },
+      ];
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }
+      return next;
+    });
+    if (canUseStorage()) {
+      try {
+        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, trimmed);
+      } catch {
+        // ignore
+      }
+    }
     setActivePreset(trimmed);
+    setSavePresetOpen(false);
   }
 
   function deletePreset(name: string) {
     if (BUILTIN_PRESETS.some((p) => p.name === name)) {
       return;
     }
-    setPresets((prev) => prev.filter((p) => p.name !== name));
+    setCustomPresets((prev) => {
+      const next = prev.filter((preset) => preset.name !== name);
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }
+      return next;
+    });
     if (activePreset === name) {
       setActivePreset("Default");
+      if (canUseStorage()) {
+        try {
+          localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
+        } catch {
+          // ignore
+        }
+      }
     }
   }
+
+  useEffect(() => {
+    if (presets.some((preset) => preset.name === activePreset)) return;
+    setActivePreset("Default");
+    if (canUseStorage()) {
+      try {
+        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
+      } catch {
+        // ignore
+      }
+    }
+  }, [activePreset, presets]);
 
   const settingsContent = (
     <>
@@ -255,7 +430,7 @@ export function ChatSettingsPanel({
               </Select>
               <button
                 type="button"
-                onClick={savePreset}
+                onClick={openSavePresetDialog}
                 className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
                 title="Save preset"
               >
@@ -295,6 +470,111 @@ export function ChatSettingsPanel({
               rows={3}
             />
           </div>
+
+          <CollapsibleSection icon={Settings02Icon} label="Model" defaultOpen={true}>
+            <div className="flex flex-col gap-3 py-1">
+              {isGguf && (
+                <>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium">Context Length</span>
+                      <Input
+                        type="number"
+                        value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
+                        placeholder="..."
+                        min={128}
+                        max={ggufContextLength ?? undefined}
+                        step={1024}
+                        className="h-6 w-[100px] text-right text-xs tabular-nums"
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === "") {
+                            setCustomContextLength(null);
+                            return;
+                          }
+                          const v = parseInt(raw, 10);
+                          if (!Number.isNaN(v) && v >= 0) {
+                            const maxCtx = ggufContextLength ?? Infinity;
+                            const clamped = Math.min(v, maxCtx);
+                            setCustomContextLength(clamped === (ggufContextLength ?? 0) ? null : clamped);
+                          }
+                        }}
+                      />
+                    </div>
+                    <Slider
+                      min={1024}
+                      max={ggufContextLength ?? 4096}
+                      step={1024}
+                      value={[Math.min(typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096), ggufContextLength ?? 4096)]}
+                      onValueChange={([v]) => {
+                        setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium">KV Cache Dtype</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Quantize KV cache to reduce VRAM.
+                      </div>
+                    </div>
+                    <Select
+                      value={kvCacheDtype ?? "f16"}
+                      onValueChange={(v) => {
+                        setKvCacheDtype(v === "f16" ? null : v);
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-[90px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="f16">f16</SelectItem>
+                        <SelectItem value="bf16">bf16</SelectItem>
+                        <SelectItem value="q8_0">q8_0</SelectItem>
+                        <SelectItem value="q5_1">q5_1</SelectItem>
+                        <SelectItem value="q4_1">q4_1</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {modelSettingsDirty && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => onReloadModel?.()}
+                        className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomContextLength(null);
+                          setKvCacheDtype(loadedKvCacheDtype);
+                        }}
+                        className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+              {!isGguf && params.checkpoint && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium">Enable custom code</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Allow models with custom code (e.g. Nemotron). Only enable if sure.
+                    </div>
+                  </div>
+                  <Switch
+                    checked={params.trustRemoteCode ?? false}
+                    onCheckedChange={set("trustRemoteCode")}
+                  />
+                </div>
+              )}
+            </div>
+          </CollapsibleSection>
 
           <CollapsibleSection
             icon={SlidersHorizontalIcon}
@@ -380,7 +660,15 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection icon={Settings02Icon} label="Settings" defaultOpen={true}>
+          <CollapsibleSection icon={Wrench01Icon} label="Tools">
+            <div className="flex flex-col gap-3 py-1">
+              <AutoHealToolCallsToggle />
+              <MaxToolCallsSlider />
+              <ToolCallTimeoutSlider />
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection icon={UserSettings01Icon} label="Preferences" defaultOpen={true}>
             <div className="flex flex-col gap-3 py-1">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -394,54 +682,57 @@ export function ChatSettingsPanel({
                   onCheckedChange={onAutoTitleChange}
                 />
               </div>
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium">Trust remote code</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Allow models with custom code (e.g. Nemotron). Only enable for repos you trust.
-                  </div>
-                </div>
-                <Switch
-                  checked={params.trustRemoteCode ?? false}
-                  onCheckedChange={set("trustRemoteCode")}
-                />
-              </div>
-              {isGguf && (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">KV Cache Dtype</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Quantize KV cache to reduce VRAM. Reload to apply.
-                    </div>
-                  </div>
-                  <Select
-                    value={kvCacheDtype ?? "f16"}
-                    onValueChange={(v) => {
-                      setKvCacheDtype(v === "f16" ? null : v);
-                      onReloadModel?.();
-                    }}
-                  >
-                    <SelectTrigger className="h-7 w-[90px] text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="f16">f16</SelectItem>
-                      <SelectItem value="bf16">bf16</SelectItem>
-                      <SelectItem value="q8_0">q8_0</SelectItem>
-                      <SelectItem value="q5_1">q5_1</SelectItem>
-                      <SelectItem value="q4_1">q4_1</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              <AutoHealToolCallsToggle />
-              <MaxToolCallsSlider />
-              <ToolCallTimeoutSlider />
+              <HfTokenField />
             </div>
           </CollapsibleSection>
 
           <ChatTemplateSection onReloadModel={onReloadModel} />
         </div>
+        <Dialog
+          open={savePresetOpen}
+          onOpenChange={(nextOpen) => {
+            setSavePresetOpen(nextOpen);
+            if (!nextOpen) {
+              setPresetNameDraft("");
+            }
+          }}
+        >
+          <DialogContent className="corner-squircle sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Save Preset</DialogTitle>
+              <DialogDescription>
+                Enter a name for this inference preset.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                savePresetWithName(presetNameDraft);
+              }}
+              className="space-y-4"
+            >
+              <Input
+                autoFocus={true}
+                value={presetNameDraft}
+                onChange={(event) => setPresetNameDraft(event.target.value)}
+                placeholder="Preset name"
+                maxLength={80}
+              />
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSavePresetOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={presetNameDraft.trim().length === 0}>
+                  Save
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </>
   );
 
@@ -530,6 +821,29 @@ function AutoHealToolCallsToggle() {
       <Switch
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function HfTokenField() {
+  const hfToken = useChatRuntimeStore((s) => s.hfToken);
+  const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="min-w-0">
+        <div className="text-xs font-medium">Hugging Face Token</div>
+        <div className="text-[11px] text-muted-foreground">
+          For downloading gated or private models.
+        </div>
+      </div>
+      <Input
+        type="password"
+        value={hfToken}
+        placeholder="hf_..."
+        className="h-7 text-xs font-mono"
+        onChange={(e) => setHfToken(e.target.value)}
       />
     </div>
   );

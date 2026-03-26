@@ -73,17 +73,78 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
+def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
+    """Return (pid, process_name) of the process listening on *port*, or None.
+
+    Uses psutil when available.  Falls back gracefully to None so callers
+    can still report the port conflict without process details.
+
+    Works on Windows, macOS, and Linux wherever psutil is installed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        for conn in psutil.net_connections(kind = "tcp"):
+            if conn.status == "LISTEN" and conn.laddr.port == port:
+                if conn.pid is None:
+                    return None
+                try:
+                    proc = psutil.Process(conn.pid)
+                    return (conn.pid, proc.name())
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return (conn.pid, "<unknown>")
+    except (psutil.AccessDenied, OSError) as e:
+        # psutil.net_connections() needs elevated privileges on some platforms
+        logger.debug("Failed to scan network connections for port %s: %s", port, e)
+    return None
+
+
 def _is_port_free(host: str, port: int) -> bool:
-    """Check if a port is available for binding."""
+    """Check if a port is available for binding.
+
+    When *host* is ``0.0.0.0`` (wildcard), we also check whether anything
+    is already listening on ``127.0.0.1`` (and ``::1`` when IPv6 is
+    available).  An SSH tunnel or similar process may hold the loopback
+    address while our wildcard bind still succeeds, making Unsloth Studio
+    unreachable via ``localhost``.
+
+    Works on Windows, macOS, and Linux.
+    """
     import socket
 
+    # 1. Can we bind to the requested address?
+    #    Use getaddrinfo so both IPv4 ("0.0.0.0") and IPv6 ("::") hosts
+    #    resolve to the correct address family automatically.
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        family, socktype, proto, _, sockaddr = addr_info[0]
+        with socket.socket(family, socktype, proto) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((host, port))
-            return True
+            s.bind(sockaddr)
     except OSError:
         return False
+
+    # 2. When binding to all interfaces, verify that localhost is not
+    #    already claimed by another process (e.g. an SSH -L tunnel).
+    #    We attempt a TCP connect -- if it succeeds something is listening.
+    if host in ("0.0.0.0", "::"):
+        for loopback, family in [
+            ("127.0.0.1", socket.AF_INET),
+            ("::1", socket.AF_INET6),
+        ]:
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as s:
+                    s.settimeout(1)
+                    if s.connect_ex((loopback, port)) == 0:
+                        # Connection succeeded -- port is taken on loopback
+                        return False
+            except OSError:
+                # IPv6 disabled or other OS-level restriction -- skip
+                continue
+
+    return True
 
 
 def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
@@ -97,6 +158,29 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
+_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+
+
+def _write_pid_file():
+    """Write the current process PID to the studio PID file."""
+    try:
+        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
+        _PID_FILE.write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _remove_pid_file():
+    """Remove the PID file if it belongs to this process."""
+    try:
+        if _PID_FILE.is_file():
+            stored = _PID_FILE.read_text().strip()
+            if stored == str(os.getpid()):
+                _PID_FILE.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def _graceful_shutdown(server = None):
     """Explicitly shut down all subprocess backends and the uvicorn server.
 
@@ -104,6 +188,7 @@ def _graceful_shutdown(server = None):
     before the parent exits. This is critical on Windows where atexit
     handlers are unreliable after Ctrl+C.
     """
+    _remove_pid_file()
     logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
 
     # 1. Shut down uvicorn server (releases the listening socket)
@@ -149,11 +234,11 @@ def _graceful_shutdown(server = None):
     logger.info("All subprocesses cleaned up")
 
 
-# The uvicorn server instance — set by run_server(), used by callers
+# The uvicorn server instance -- set by run_server(), used by callers
 # that need to tell the server to exit (e.g. signal handlers).
 _server = None
 
-# Shutdown event — used to wake the main loop on signal
+# Shutdown event -- used to wake the main loop on signal
 _shutdown_event = None
 
 
@@ -205,9 +290,22 @@ def run_server(
     # Auto-find free port if requested port is in use
     if not _is_port_free(host, port):
         original_port = port
-        port = _find_free_port(host, port)
+        blocker = _get_pid_on_port(port)
+        port = _find_free_port(host, port + 1)
         if not silent:
-            print(f"Port {original_port} is in use, using port {port} instead")
+            print("")
+            print("=" * 50)
+            if blocker:
+                pid, name = blocker
+                print(
+                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
+                )
+            else:
+                print(f"Port {original_port} is already in use.")
+            print(f"Unsloth Studio will use port {port} instead.")
+            print(f"Open http://localhost:{port} in your browser.")
+            print("=" * 50)
+            print("")
 
     # Setup frontend if path provided
     if frontend_path:
@@ -232,6 +330,11 @@ def run_server(
     thread = Thread(target = _run, daemon = True)
     thread.start()
     time.sleep(3)
+
+    _write_pid_file()
+    import atexit
+
+    atexit.register(_remove_pid_file)
 
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
@@ -297,7 +400,7 @@ if __name__ == "__main__":
         sys.stderr.flush()
         sys.exit(1)
 
-    # ── Signal handler — ensures subprocess cleanup on Ctrl+C ────
+    # Signal handler -- ensures subprocess cleanup on Ctrl+C
     def _signal_handler(signum, frame):
         _graceful_shutdown(_server)
         _shutdown_event.set()
