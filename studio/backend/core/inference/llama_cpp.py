@@ -1131,26 +1131,52 @@ class LlamaCppBackend:
     def _kill_orphaned_servers():
         """Kill orphaned llama-server processes started by studio.
 
-        Only kills processes whose binary lives under a known Studio install
-        directory to avoid terminating unrelated llama-server instances.
+        Only kills processes whose resolved binary lives under a known
+        Studio install directory (or matches an exact env-var override)
+        to avoid terminating unrelated llama-server instances.
+
+        Mirrors every location that _find_llama_server_binary() can
+        return from so that orphans from any supported install path
+        are still cleaned up.
         """
         import os
         import signal
+        import sys
 
         try:
-            # Collect all directories where Studio may have installed its
-            # llama-server binary.  Matches the search order in
-            # _find_llama_server_binary() so orphans from any supported
-            # install location are still cleaned up.
-            studio_dirs: list[str] = []
-            studio_dirs.append(str(Path.home() / ".unsloth" / "llama.cpp"))
+            # -- Build the ownership allowlist --------------------------------
+            # Two kinds of matches:
+            #   exact_binaries  -- env var overrides (exact path match only)
+            #   install_roots   -- directory trees that are Studio-owned
+            #                      (binary must be *under* one of these)
+            exact_binaries: set[Path] = set()
+            install_roots: list[Path] = []
+
+            # Primary install dir (setup.sh / prebuilt installer)
+            install_roots.append(
+                (Path.home() / ".unsloth" / "llama.cpp").resolve(strict = False)
+            )
+
+            # Legacy in-tree build dirs (older setup.sh versions)
+            project_root = Path(__file__).resolve().parents[4]
+            install_roots.append(
+                (project_root / "llama.cpp").resolve(strict = False)
+            )
+            install_roots.append(
+                (project_root / "bin").resolve(strict = False)
+            )
+
+            # LLAMA_SERVER_PATH -- exact binary, not its whole parent dir
             env_path = os.environ.get("LLAMA_SERVER_PATH")
             if env_path:
-                studio_dirs.append(str(Path(env_path).parent))
+                exact_binaries.add(Path(env_path).resolve(strict = False))
+
+            # UNSLOTH_LLAMA_CPP_PATH -- custom install root
             custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
             if custom_dir:
-                studio_dirs.append(str(Path(custom_dir)))
+                install_roots.append(Path(custom_dir).resolve(strict = False))
 
+            # -- Find candidate llama-server processes ------------------------
             result = subprocess.run(
                 ["pgrep", "-a", "-f", "llama-server"],
                 capture_output = True,
@@ -1159,21 +1185,38 @@ class LlamaCppBackend:
             )
             if result.returncode != 0:
                 return
+
             for line in result.stdout.strip().splitlines():
                 parts = line.strip().split(None, 1)
                 if len(parts) < 2:
                     continue
                 pid = int(parts[0])
-                cmdline = parts[1]
                 if pid == os.getpid():
                     continue
-                # Extract the binary path (first token of the cmdline).
-                # Only kill if the binary itself lives under a known Studio
-                # install dir -- not if "unsloth" merely appears in model
-                # path arguments (e.g. HF cache paths for unsloth/ repos).
-                binary_path = cmdline.split()[0] if cmdline.strip() else ""
-                if not any(d in binary_path for d in studio_dirs):
+
+                # Resolve the actual executable.  /proc/<pid>/exe is a
+                # symlink to the real binary and avoids all cmdline-parsing
+                # ambiguities (spaces in paths, argv rewriting, etc.).
+                # Fall back to the first cmdline token on non-Linux or if
+                # /proc is unavailable.
+                proc_exe = Path(f"/proc/{pid}/exe")
+                try:
+                    binary = proc_exe.resolve(strict = True)
+                except (OSError, ValueError):
+                    cmdline = parts[1]
+                    token = cmdline.split()[0] if cmdline.strip() else ""
+                    if not token:
+                        continue
+                    binary = Path(token).resolve(strict = False)
+
+                # Check ownership: exact binary match OR binary is under
+                # a known install root (proper ancestry, not substring).
+                owned = binary in exact_binaries or any(
+                    binary.is_relative_to(root) for root in install_roots
+                )
+                if not owned:
                     continue
+
                 try:
                     os.kill(pid, signal.SIGKILL)
                     logger.info(f"Killed orphaned llama-server process (pid={pid})")
