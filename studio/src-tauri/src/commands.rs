@@ -1,7 +1,7 @@
 use crate::install;
 use crate::process::{self, BackendState};
 use log::{error, info};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// Check if the unsloth binary is installed in the managed venv.
 #[tauri::command]
@@ -154,4 +154,16 @@ pub fn install_system_packages(packages: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 pub fn install_system_packages(_packages: Vec<String>) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
+}
+
+/// Close the native splash screen and show the main window.
+/// Called by the frontend once React has mounted.
+#[tauri::command]
+pub fn close_splashscreen(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("splashscreen") {
+        let _ = window.close();
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+    }
 }
