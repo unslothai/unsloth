@@ -337,30 +337,22 @@ fast_install() {
 
 cd "$SCRIPT_DIR"
 
-# On Colab without a venv, skip all venv-dependent sections (Python deps
-# update, llama.cpp build) -- the backend deps were already installed above.
+# On Colab without a venv, skip venv-dependent Python deps sections but
+# continue to llama.cpp install so GGUF inference is available.
 if [ "$_COLAB_NO_VENV" = true ]; then
     echo "✅ Studio backend dependencies installed into system Python"
-
-    echo ""
-    echo "╔══════════════════════════════════════╗"
-    echo "║          Setup Complete!             ║"
-    echo "╠══════════════════════════════════════╣"
-    echo "║ Unsloth Studio is ready to start     ║"
-    echo "║ in your Colab notebook!              ║"
-    echo "║                                      ║"
-    echo "║ from colab import start              ║"
-    echo "║ start()                              ║"
-    echo "╚══════════════════════════════════════╝"
-    exit 0
 fi
 
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
+# On Colab (no venv), skip the entire venv-dependent Python deps section.
+if [ "$_COLAB_NO_VENV" = true ]; then
+    _SKIP_PYTHON_DEPS=true
+fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
-_SKIP_PYTHON_DEPS=false
-if [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+_SKIP_PYTHON_DEPS="${_SKIP_PYTHON_DEPS:-false}"
+if [ "$_SKIP_PYTHON_DEPS" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 from importlib.metadata import version
