@@ -16,59 +16,78 @@ Key Components:
 """
 
 import time
-from typing import Callable
 
 import structlog
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = structlog.get_logger(__name__)
 
+# Paths and suffixes excluded from request logging.
+_EXCLUDED_PATHS = frozenset({
+    "/api/train/status",
+    "/api/train/metrics",
+    "/api/train/hardware",
+    "/api/system",
+})
+_EXCLUDED_SUFFIXES = (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
 
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+
+class LoggingMiddleware:
+    """Pure ASGI middleware for request logging.
+
+    Unlike Starlette's BaseHTTPMiddleware, this wraps the ``send``
+    callable directly -- no anyio memory channel, no extra coroutine
+    context switches per response body chunk.  This matters for SSE
+    streaming where hundreds of small chunks are sent per second.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         start_time = time.time()
+        status_code = None
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 0)
+            await send(message)
 
         try:
-            response = await call_next(request)
-
-            # Log response
-            process_time = (time.time() - start_time) * 1000
-
-            EXCLUDED_PATHS = {
-                "/api/train/status",
-                "/api/train/metrics",
-                "/api/train/hardware",
-                "/api/system",
-            }
-            is_excluded = (
-                request.url.path in EXCLUDED_PATHS
-                or request.url.path.startswith("/assets/")
-                or request.url.path.endswith(
-                    (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
-                )
-            )
-
-            if not is_excluded:
-                logger.info(
-                    "request_completed",
-                    method = request.method,
-                    path = request.url.path,
-                    status_code = response.status_code,
-                    process_time_ms = round(process_time, 2),
-                )
-
-            return response
-
+            await self.app(scope, receive, send_wrapper)
         except Exception as e:
+            path = scope.get("path", "")
+            method = scope.get("method", "")
             logger.error(
                 "request_failed",
-                path = request.url.path,
-                method = request.method,
-                error = str(e),
-                exc_info = True,
+                path=path,
+                method=method,
+                error=str(e),
+                exc_info=True,
             )
             raise
+
+        # Log after response completes (same exclusion logic as before)
+        process_time = (time.time() - start_time) * 1000
+        path = scope.get("path", "")
+        is_excluded = (
+            path in _EXCLUDED_PATHS
+            or path.startswith("/assets/")
+            or path.endswith(_EXCLUDED_SUFFIXES)
+        )
+        if not is_excluded:
+            method = scope.get("method", "")
+            logger.info(
+                "request_completed",
+                method=method,
+                path=path,
+                status_code=status_code,
+                process_time_ms=round(process_time, 2),
+            )
 
 
 def filter_sensitive_data(logger, method_name, event_dict):

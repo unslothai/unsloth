@@ -22,6 +22,40 @@ import threading
 import re as _re
 
 
+# ── Shared helper: run sync generator via background thread + asyncio.Queue ──
+# Replaces per-token asyncio.to_thread/run_in_executor calls with a single
+# thread that pushes items through call_soon_threadsafe (~2us vs ~50us).
+_queue_sentinel = object()
+_queue_error = object()
+
+async def _run_gen_to_queue(gen, cancel_event):
+    """Run a synchronous generator in a background thread, yield items via asyncio.Queue."""
+    loop = asyncio.get_running_loop()
+    q = asyncio.Queue()
+
+    def _producer():
+        try:
+            for item in gen:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                loop.call_soon_threadsafe(q.put_nowait, item)
+        except Exception as exc:
+            loop.call_soon_threadsafe(q.put_nowait, (_queue_error, exc))
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, _queue_sentinel)
+
+    thread = threading.Thread(target=_producer, daemon=True, name="sse-gen")
+    thread.start()
+
+    while True:
+        item = await q.get()
+        if item is _queue_sentinel:
+            break
+        if isinstance(item, tuple) and len(item) == 2 and item[0] is _queue_error:
+            raise item[1]
+        yield item
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     msg = str(exc)
@@ -1084,8 +1118,6 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                 )
 
-            _tool_sentinel = object()
-
             async def gguf_tool_stream():
                 try:
                     first_chunk = ChatCompletionChunk(
@@ -1101,21 +1133,17 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Iterate the synchronous generator in a thread so
-                    # the event loop stays free for disconnect detection.
+                    # Pre-compute static JSON envelope for content tokens (hot path)
+                    _chunk_prefix = f'{{"id":"{completion_id}","object":"chat.completion.chunk","created":{created},"model":{json.dumps(model_name)},"choices":[{{"index":0,"delta":{{"content":'
+                    _chunk_suffix = '},"finish_reason":null}]}'
+
                     gen = gguf_generate_with_tools()
                     prev_text = ""
                     _stream_usage = None
                     _stream_timings = None
-                    while True:
-                        if await request.is_disconnected():
-                            cancel_event.set()
-                            return
-
-                        event = await asyncio.to_thread(next, gen, _tool_sentinel)
-                        if event is _tool_sentinel:
-                            break
-
+                    _disconnect_check_interval = 20
+                    _token_count = 0
+                    async for event in _run_gen_to_queue(gen, cancel_event):
                         if event["type"] == "status":
                             # Emit tool status as a custom SSE event
                             status_data = json.dumps(
@@ -1142,18 +1170,12 @@ async def openai_chat_completions(
                         prev_text = cumulative
                         if not new_text:
                             continue
-                        chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(content = new_text),
-                                    finish_reason = None,
-                                )
-                            ],
-                        )
-                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                        _token_count += 1
+                        if _token_count % _disconnect_check_interval == 0:
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
+                        yield f"data: {_chunk_prefix}{json.dumps(new_text)}{_chunk_suffix}\n\n"
 
                     final_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -1230,8 +1252,6 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
             )
 
-        _gguf_sentinel = object()
-
         if payload.stream:
 
             async def gguf_stream_chunks():
@@ -1250,19 +1270,17 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Iterate the synchronous generator in a thread so
-                    # the event loop stays free for disconnect detection.
+                    # Pre-compute static JSON envelope for content tokens (hot path)
+                    _chunk_prefix = f'{{"id":"{completion_id}","object":"chat.completion.chunk","created":{created},"model":{json.dumps(model_name)},"choices":[{{"index":0,"delta":{{"content":'
+                    _chunk_suffix = '},"finish_reason":null}]}'
+
                     gen = gguf_generate()
                     prev_text = ""
                     _stream_usage = None
                     _stream_timings = None
-                    while True:
-                        if await request.is_disconnected():
-                            cancel_event.set()
-                            return
-                        cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
-                        if cumulative is _gguf_sentinel:
-                            break
+                    _disconnect_check_interval = 20
+                    _token_count = 0
+                    async for cumulative in _run_gen_to_queue(gen, cancel_event):
                         # Capture server metadata for final usage chunk
                         if isinstance(cumulative, dict):
                             if cumulative.get("type") == "metadata":
@@ -1282,18 +1300,12 @@ async def openai_chat_completions(
                         prev_text = cumulative
                         if not new_text:
                             continue
-                        chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(content = new_text),
-                                    finish_reason = None,
-                                )
-                            ],
-                        )
-                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                        _token_count += 1
+                        if _token_count % _disconnect_check_interval == 0:
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
+                        yield f"data: {_chunk_prefix}{json.dumps(new_text)}{_chunk_suffix}\n\n"
 
                     # Final chunk
                     final_chunk = ChatCompletionChunk(
@@ -1456,42 +1468,25 @@ async def openai_chat_completions(
                 yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
                 prev_text = ""
-                # Run sync generator in thread pool to avoid blocking
-                # the event loop. Critical for compare mode: two SSE
-                # requests arrive concurrently but the orchestrator
-                # serializes them via _gen_lock. Without run_in_executor
-                # the second request's blocking lock acquisition would
-                # freeze the entire event loop, stalling both streams.
-                _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
+                # Pre-compute static JSON envelope for content tokens (hot path)
+                _chunk_prefix = f'{{"id":"{completion_id}","object":"chat.completion.chunk","created":{created},"model":{json.dumps(model_name)},"choices":[{{"index":0,"delta":{{"content":'
+                _chunk_suffix = '},"finish_reason":null}]}'
+
                 gen = generate()
-                while True:
-                    # next(gen, _DONE) returns _DONE instead of raising
-                    # StopIteration — StopIteration cannot propagate
-                    # through asyncio futures (Python limitation).
-                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
-                    if cumulative is _DONE:
-                        break
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        backend.reset_generation_state()
-                        return
+                _disconnect_check_interval = 20
+                _token_count = 0
+                async for cumulative in _run_gen_to_queue(gen, cancel_event):
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
                         continue
-                    chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(content = new_text),
-                                finish_reason = None,
-                            )
-                        ],
-                    )
-                    yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                    _token_count += 1
+                    if _token_count % _disconnect_check_interval == 0:
+                        if await request.is_disconnected():
+                            cancel_event.set()
+                            backend.reset_generation_state()
+                            return
+                    yield f"data: {_chunk_prefix}{json.dumps(new_text)}{_chunk_suffix}\n\n"
 
                 final_chunk = ChatCompletionChunk(
                     id = completion_id,
