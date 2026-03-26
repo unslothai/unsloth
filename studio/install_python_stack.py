@@ -249,9 +249,20 @@ def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
 
 
 def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
-    """Build a standard pip install command."""
+    """Build a standard pip install command.
+
+    Strips uv-only flags like --upgrade-package that pip doesn't understand.
+    """
     cmd = [sys.executable, "-m", "pip", "install"]
-    cmd.extend(args)
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--upgrade-package":
+            skip_next = True  # skip the flag and its value
+            continue
+        cmd.append(arg)
     return cmd
 
 
@@ -265,7 +276,12 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     # the system Python (observed on Colab and similar environments).
     cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
-    cmd.append("--torch-backend=auto")
+    # Torch is pre-installed by install.sh/setup.ps1.  Do not add
+    # --torch-backend by default -- it can cause solver dead-ends on
+    # CPU-only machines.  Callers that need it can set UV_TORCH_BACKEND.
+    _tb = os.environ.get("UV_TORCH_BACKEND", "")
+    if _tb:
+        cmd.append(f"--torch-backend={_tb}")
     return cmd
 
 
@@ -347,22 +363,108 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL
     _STEP = 0
-    _TOTAL = 10 if IS_WINDOWS else 11
 
-    # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
-    _progress("pip upgrade")
-    run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    # When called from install.sh (which already installed unsloth into the venv),
+    # SKIP_STUDIO_BASE=1 is set to avoid redundant reinstallation of base packages.
+    # When called from "unsloth studio update", it is NOT set so base packages
+    # (unsloth + unsloth-zoo) are always reinstalled to pick up new versions.
+    skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
+    # When --package is used, install a different package name (e.g. roland-sloth for testing)
+    package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
+    # When --local is used, overlay a local repo checkout after updating deps
+    local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
+    base_total = 10 if IS_WINDOWS else 11
+    _TOTAL = (base_total - 1) if skip_base else base_total
 
-    # Try to use uv for faster installs
+    # 1. Try to use uv for faster installs (must happen before pip upgrade
+    #    because uv venvs don't include pip by default)
     USE_UV = _bootstrap_uv()
 
-    # 2. Core packages: unsloth-zoo + unsloth
-    _progress("base packages")
-    pip_install(
-        "Installing base packages",
-        "--no-cache-dir",
-        req = REQ_ROOT / "base.txt",
-    )
+    # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
+    _progress("pip bootstrap")
+    if USE_UV:
+        run(
+            "Bootstrapping pip via uv",
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "pip",
+            ],
+        )
+    else:
+        # pip may not exist yet (uv-created venvs omit it). Try ensurepip
+        # first, then upgrade. Only fall back to a direct upgrade when pip
+        # is already present.
+        _has_pip = (
+            subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+
+        if not _has_pip:
+            run(
+                "Bootstrapping pip via ensurepip",
+                [sys.executable, "-m", "ensurepip", "--upgrade"],
+            )
+        else:
+            run(
+                "Upgrading pip",
+                [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+            )
+
+    # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
+    if skip_base:
+        print(_green(f"✅ {package_name} already installed — skipping base packages"))
+    elif local_repo:
+        # Local dev install: update deps from base.txt, then overlay the
+        # local checkout as an editable install (--no-deps so torch is
+        # never re-resolved).
+        _progress("base packages")
+        pip_install(
+            "Updating base packages",
+            "--no-cache-dir",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
+            req = REQ_ROOT / "base.txt",
+        )
+        pip_install(
+            "Overlaying local repo (editable)",
+            "--no-cache-dir",
+            "--no-deps",
+            "-e",
+            local_repo,
+            constrain = False,
+        )
+    elif package_name != "unsloth":
+        # Custom package name (e.g. roland-sloth for testing) — install directly
+        _progress("base packages")
+        pip_install(
+            f"Installing {package_name}",
+            "--no-cache-dir",
+            package_name,
+        )
+    else:
+        # Update path: upgrade only unsloth + unsloth-zoo while preserving
+        # existing torch/CUDA installations.  Torch is pre-installed by
+        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+        _progress("base packages")
+        pip_install(
+            "Updating base packages",
+            "--no-cache-dir",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
+            req = REQ_ROOT / "base.txt",
+        )
 
     # 3. Extra dependencies
     _progress("unsloth extras")

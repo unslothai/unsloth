@@ -172,7 +172,7 @@ export function ThreadSidebar({
           <span>Learn more in docs</span>
         </a>
         <a
-          href="https://unsloth.ai/blog"
+          href="https://unsloth.ai/docs/new/changelog"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
