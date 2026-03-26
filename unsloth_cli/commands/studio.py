@@ -84,56 +84,58 @@ def studio_default(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Always use the studio venv if it exists and we're not already in it
-    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    # In Docker, packages live in /opt/conda — skip venv re-exec entirely.
+    if not os.environ.get("UNSLOTH_DOCKER"):
+        # Always use the studio venv if it exists and we're not already in it
+        studio_venv_dir = STUDIO_HOME / "unsloth_studio"
+        in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
-    if not in_studio_venv:
-        studio_python = _studio_venv_python()
-        run_py = _find_run_py()
-        if studio_python and run_py:
-            if not silent:
-                typer.echo("Launching Unsloth Studio... Please wait...")
-            args = [
-                str(studio_python),
-                str(run_py),
-                "--host",
-                host,
-                "--port",
-                str(port),
-            ]
-            if frontend:
-                args.extend(["--frontend", str(frontend)])
-            if silent:
-                args.append("--silent")
-            # On Windows, os.execvp() spawns a child but the parent lingers,
-            # so Ctrl+C only kills the parent leaving the child orphaned.
-            # Use subprocess.run() on Windows so the parent waits for the child.
-            if sys.platform == "win32":
-                import subprocess as _sp
+        if not in_studio_venv:
+            studio_python = _studio_venv_python()
+            run_py = _find_run_py()
+            if studio_python and run_py:
+                if not silent:
+                    typer.echo("Launching Unsloth Studio... Please wait...")
+                args = [
+                    str(studio_python),
+                    str(run_py),
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
+                ]
+                if frontend:
+                    args.extend(["--frontend", str(frontend)])
+                if silent:
+                    args.append("--silent")
+                # On Windows, os.execvp() spawns a child but the parent lingers,
+                # so Ctrl+C only kills the parent leaving the child orphaned.
+                # Use subprocess.run() on Windows so the parent waits for the child.
+                if sys.platform == "win32":
+                    import subprocess as _sp
 
-                proc = _sp.Popen(args)
-                try:
-                    rc = proc.wait()
-                except KeyboardInterrupt:
-                    # Child has its own signal handler — let it finish
-                    rc = proc.wait()
-                if rc != 0:
-                    typer.echo(
-                        f"\nError: Studio server exited unexpectedly (code {rc}).",
-                        err = True,
-                    )
-                    typer.echo(
-                        "Check the error above. If a package is missing, "
-                        "re-run: unsloth studio setup",
-                        err = True,
-                    )
-                raise typer.Exit(rc)
+                    proc = _sp.Popen(args)
+                    try:
+                        rc = proc.wait()
+                    except KeyboardInterrupt:
+                        # Child has its own signal handler — let it finish
+                        rc = proc.wait()
+                    if rc != 0:
+                        typer.echo(
+                            f"\nError: Studio server exited unexpectedly (code {rc}).",
+                            err = True,
+                        )
+                        typer.echo(
+                            "Check the error above. If a package is missing, "
+                            "re-run: unsloth studio setup",
+                            err = True,
+                        )
+                    raise typer.Exit(rc)
+                else:
+                    os.execvp(str(studio_python), args)
             else:
-                os.execvp(str(studio_python), args)
-        else:
-            typer.echo("Studio not set up. Run install.sh first.")
-            raise typer.Exit(1)
+                typer.echo("Studio not set up. Run install.sh first.")
+                raise typer.Exit(1)
 
     from studio.backend.run import run_server
 

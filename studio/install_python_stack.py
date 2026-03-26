@@ -354,132 +354,125 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     _TOTAL = (base_total - 1) if skip_base else base_total
 
-    # 1. Try to use uv for faster installs (must happen before pip upgrade
-    #    because uv venvs don't include pip by default)
-    USE_UV = _bootstrap_uv()
+    # # 1. Try to use uv for faster installs (must happen before pip upgrade
+    # #    because uv venvs don't include pip by default)
+    # USE_UV = _bootstrap_uv()
 
-    # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
-    _progress("pip bootstrap")
-    if USE_UV:
-        run(
-            "Bootstrapping pip via uv",
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "pip",
-            ],
-        )
-    else:
-        # pip may not exist yet (uv-created venvs omit it). Try ensurepip
-        # first, then upgrade. Only fall back to a direct upgrade when pip
-        # is already present.
-        _has_pip = (
-            subprocess.run(
-                [sys.executable, "-m", "pip", "--version"],
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-            ).returncode
-            == 0
-        )
+    # # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
+    # _progress("pip bootstrap")
+    # if USE_UV:
+    #     run(
+    #         "Bootstrapping pip via uv",
+    #         [
+    #             "uv",
+    #             "pip",
+    #             "install",
+    #             "--python",
+    #             sys.executable,
+    #             "pip",
+    #         ],
+    #     )
+    # else:
+    #     # pip may not exist yet (uv-created venvs omit it). Try ensurepip
+    #     # first, then upgrade. Only fall back to a direct upgrade when pip
+    #     # is already present.
+    #     _has_pip = (
+    #         subprocess.run(
+    #             [sys.executable, "-m", "pip", "--version"],
+    #             stdout = subprocess.DEVNULL,
+    #             stderr = subprocess.DEVNULL,
+    #         ).returncode
+    #         == 0
+    #     )
+    #
+    #     if not _has_pip:
+    #         run(
+    #             "Bootstrapping pip via ensurepip",
+    #             [sys.executable, "-m", "ensurepip", "--upgrade"],
+    #         )
+    #     else:
+    #         run(
+    #             "Upgrading pip",
+    #             [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+    #         )
 
-        if not _has_pip:
-            run(
-                "Bootstrapping pip via ensurepip",
-                [sys.executable, "-m", "ensurepip", "--upgrade"],
-            )
-        else:
-            run(
-                "Upgrading pip",
-                [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
-            )
+    # # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
+    # if skip_base:
+    #     print(_green(f"✅ {package_name} already installed — skipping base packages"))
+    # elif local_repo:
+    #     _progress("base packages")
+    #     pip_install(
+    #         "Updating base packages",
+    #         "--no-cache-dir",
+    #         "--upgrade-package",
+    #         "unsloth",
+    #         "--upgrade-package",
+    #         "unsloth-zoo",
+    #         req = REQ_ROOT / "base.txt",
+    #     )
+    #     pip_install(
+    #         "Overlaying local repo (editable)",
+    #         "--no-cache-dir",
+    #         "--no-deps",
+    #         "-e",
+    #         local_repo,
+    #         constrain = False,
+    #     )
+    # elif package_name != "unsloth":
+    #     _progress("base packages")
+    #     pip_install(
+    #         f"Installing {package_name}",
+    #         "--no-cache-dir",
+    #         package_name,
+    #     )
+    # else:
+    #     _progress("base packages")
+    #     pip_install(
+    #         "Updating base packages",
+    #         "--no-cache-dir",
+    #         "--upgrade-package",
+    #         "unsloth",
+    #         "--upgrade-package",
+    #         "unsloth-zoo",
+    #         req = REQ_ROOT / "base.txt",
+    #     )
 
-    # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
-    if skip_base:
-        print(_green(f"✅ {package_name} already installed — skipping base packages"))
-    elif local_repo:
-        # Local dev install: update deps from base.txt, then overlay the
-        # local checkout as an editable install (--no-deps so torch is
-        # never re-resolved).
-        _progress("base packages")
-        pip_install(
-            "Updating base packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
-        )
-        pip_install(
-            "Overlaying local repo (editable)",
-            "--no-cache-dir",
-            "--no-deps",
-            "-e",
-            local_repo,
-            constrain = False,
-        )
-    elif package_name != "unsloth":
-        # Custom package name (e.g. roland-sloth for testing) — install directly
-        _progress("base packages")
-        pip_install(
-            f"Installing {package_name}",
-            "--no-cache-dir",
-            package_name,
-        )
-    else:
-        # Update path: upgrade only unsloth + unsloth-zoo while preserving
-        # existing torch/CUDA installations.  Torch is pre-installed by
-        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
-        _progress("base packages")
-        pip_install(
-            "Updating base packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
-        )
+    # # 3. Extra dependencies
+    # _progress("unsloth extras")
+    # pip_install(
+    #     "Installing additional unsloth dependencies",
+    #     "--no-cache-dir",
+    #     req = REQ_ROOT / "extras.txt",
+    # )
 
-    # 3. Extra dependencies
-    _progress("unsloth extras")
-    pip_install(
-        "Installing additional unsloth dependencies",
-        "--no-cache-dir",
-        req = REQ_ROOT / "extras.txt",
-    )
+    # # 3b. Extra dependencies (no-deps) -- audio model support etc.
+    # _progress("extra codecs")
+    # pip_install(
+    #     "Installing extras (no-deps)",
+    #     "--no-deps",
+    #     "--no-cache-dir",
+    #     req = REQ_ROOT / "extras-no-deps.txt",
+    # )
 
-    # 3b. Extra dependencies (no-deps) -- audio model support etc.
-    _progress("extra codecs")
-    pip_install(
-        "Installing extras (no-deps)",
-        "--no-deps",
-        "--no-cache-dir",
-        req = REQ_ROOT / "extras-no-deps.txt",
-    )
+    # # 4. Overrides (torchao, transformers) -- force-reinstall
+    # _progress("dependency overrides")
+    # pip_install(
+    #     "Installing dependency overrides",
+    #     "--force-reinstall",
+    #     "--no-cache-dir",
+    #     req = REQ_ROOT / "overrides.txt",
+    # )
 
-    # 4. Overrides (torchao, transformers) -- force-reinstall
-    _progress("dependency overrides")
-    pip_install(
-        "Installing dependency overrides",
-        "--force-reinstall",
-        "--no-cache-dir",
-        req = REQ_ROOT / "overrides.txt",
-    )
-
-    # 5. Triton kernels (no-deps, from source)
-    if not IS_WINDOWS:
-        _progress("triton kernels")
-        pip_install(
-            "Installing triton kernels",
-            "--no-deps",
-            "--no-cache-dir",
-            req = REQ_ROOT / "triton-kernels.txt",
-            constrain = False,
-        )
+    # # 5. Triton kernels (no-deps, from source)
+    # if not IS_WINDOWS:
+    #     _progress("triton kernels")
+    #     pip_install(
+    #         "Installing triton kernels",
+    #         "--no-deps",
+    #         "--no-cache-dir",
+    #         req = REQ_ROOT / "triton-kernels.txt",
+    #         constrain = False,
+    #     )
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
