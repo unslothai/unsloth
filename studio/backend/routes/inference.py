@@ -1134,9 +1134,10 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Pre-compute static JSON envelope for content tokens (hot path)
+                    # Pre-compute static JSON envelope for content tokens (hot path).
+                    # Must match model_dump_json(exclude_none=True): no finish_reason when null.
                     _chunk_prefix = f'{{"id":"{completion_id}","object":"chat.completion.chunk","created":{created},"model":{json.dumps(model_name)},"choices":[{{"index":0,"delta":{{"content":'
-                    _chunk_suffix = '},"finish_reason":null}]}'
+                    _chunk_suffix = '}}]}'
 
                     gen = gguf_generate_with_tools()
                     prev_text = ""
@@ -1271,9 +1272,10 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Pre-compute static JSON envelope for content tokens (hot path)
+                    # Pre-compute static JSON envelope for content tokens (hot path).
+                    # Must match model_dump_json(exclude_none=True): no finish_reason when null.
                     _chunk_prefix = f'{{"id":"{completion_id}","object":"chat.completion.chunk","created":{created},"model":{json.dumps(model_name)},"choices":[{{"index":0,"delta":{{"content":'
-                    _chunk_suffix = '},"finish_reason":null}]}'
+                    _chunk_suffix = '}}]}'
 
                     gen = gguf_generate()
                     prev_text = ""
@@ -1469,9 +1471,10 @@ async def openai_chat_completions(
                 yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
                 prev_text = ""
-                # Pre-compute static JSON envelope for content tokens (hot path)
+                # Pre-compute static JSON envelope for content tokens (hot path).
+                # Must match model_dump_json(exclude_none=True): no finish_reason when null.
                 _chunk_prefix = f'{{"id":"{completion_id}","object":"chat.completion.chunk","created":{created},"model":{json.dumps(model_name)},"choices":[{{"index":0,"delta":{{"content":'
-                _chunk_suffix = '},"finish_reason":null}]}'
+                _chunk_suffix = '}}]}'
 
                 gen = generate()
                 _disconnect_check_interval = 20
