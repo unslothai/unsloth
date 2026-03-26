@@ -346,13 +346,11 @@ fi
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
-# On Colab (no venv), skip the entire venv-dependent Python deps section.
+# On Colab (no venv), skip this version check (it needs $VENV_DIR/bin/python)
+# but still run install_python_stack below (it uses sys.executable).
 _SKIP_PYTHON_DEPS=false
-if [ "$_COLAB_NO_VENV" = true ]; then
-    _SKIP_PYTHON_DEPS=true
-fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
-if [ "$_SKIP_PYTHON_DEPS" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+if [ "$_COLAB_NO_VENV" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 from importlib.metadata import version
