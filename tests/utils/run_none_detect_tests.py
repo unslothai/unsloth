@@ -510,7 +510,9 @@ def _brute_force_bad_rows(ds, fmt: str) -> set:
                 bad.add(i)
                 continue
             for turn in msgs:
-                if turn is None or (isinstance(turn, dict) and _blank(turn.get("content"))):
+                if turn is None or (
+                    isinstance(turn, dict) and _blank(turn.get("content"))
+                ):
                     bad.add(i)
                     break
         elif fmt == "sharegpt":
@@ -519,7 +521,9 @@ def _brute_force_bad_rows(ds, fmt: str) -> set:
                 bad.add(i)
                 continue
             for turn in convs:
-                if turn is None or (isinstance(turn, dict) and _blank(turn.get("value"))):
+                if turn is None or (
+                    isinstance(turn, dict) and _blank(turn.get("value"))
+                ):
                     bad.add(i)
                     break
         elif fmt == "alpaca":
@@ -541,8 +545,8 @@ def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
     print(f"  Running brute-force independent scan (fmt={fmt!r}, {len(ds)} rows)...")
     brute_bad = _brute_force_bad_rows(ds, fmt)
 
-    missed = brute_bad - module_bad   # rows brute-force found but module missed
-    extra = module_bad - brute_bad    # rows module flagged that brute-force didn't
+    missed = brute_bad - module_bad  # rows brute-force found but module missed
+    extra = module_bad - brute_bad  # rows module flagged that brute-force didn't
 
     no_misses = len(missed) == 0
     snippet = ""
