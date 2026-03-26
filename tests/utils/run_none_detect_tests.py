@@ -9,7 +9,7 @@ Runs dataset_none_detect.py against:
 Writes a detailed log to tests/logs/none_detect_results.log
 
 Usage (from repo root, with venv active):
-    python tests/run_none_detect_tests.py
+    python tests/utils/run_none_detect_tests.py
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 # Insert the datasets directory directly so dataset_none_detect is imported
 # as a top-level module, bypassing utils/datasets/__init__.py which pulls in
 # torch, fastapi, and other heavy studio deps not needed for this utility.
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "studio" / "backend" / "utils" / "datasets"))
 
 from dataset_none_detect import (
@@ -85,6 +85,25 @@ def assert_bad_rows(stats: dict, expected_min: int, label: str):
     return status == "PASS"
 
 
+def assert_exact_recall(stats: dict, expected_bad: set, label: str):
+    """Every injected bad row index must appear in bad_row_indices — no misses."""
+    actual_bad = set(stats.get("bad_row_indices", []))
+    missed = expected_bad - actual_bad
+    all_caught = len(missed) == 0
+    status = "PASS" if all_caught else "FAIL"
+    caught_count = len(expected_bad) - len(missed)
+    print(
+        f"  [{status}] {label}: exact recall — "
+        f"{caught_count}/{len(expected_bad)} injected bad rows caught",
+        end = "",
+    )
+    if missed:
+        print(f"  (missed rows: {sorted(missed)})")
+    else:
+        print()
+    return all_caught
+
+
 # ---------------------------------------------------------------------------
 # 1. Synthetic datasets
 # ---------------------------------------------------------------------------
@@ -118,7 +137,7 @@ def test_p1_fix():
     """Verify that find_none_chatml records rows where messages is None or non-list."""
     section("P1 Fix Verification — non-list conversation column values")
 
-    sys.path.insert(0, str(REPO_ROOT / "tests"))
+    sys.path.insert(0, str(REPO_ROOT / "tests" / "utils"))
     from generate_dataset_with_none import make_chatml_p1_rows
 
     p1_rows = make_chatml_p1_rows()
@@ -428,7 +447,7 @@ def test_new_p2_plain_string_messages_not_chatml():
 def test_synthetic():
     section("1. Synthetic Datasets (generated in-memory)")
 
-    sys.path.insert(0, str(REPO_ROOT / "tests"))
+    sys.path.insert(0, str(REPO_ROOT / "tests" / "utils"))
     from generate_dataset_with_none import (
         make_alpaca_dataset,
         make_chatml_dataset,
@@ -437,22 +456,25 @@ def test_synthetic():
 
     results = {}
 
-    # ChatML
+    # ChatML — 10 clean rows (0-9), 8 bad rows (10-17)
     ds_chatml = make_chatml_dataset()
     stats = run_scan(ds_chatml, "Synthetic ChatML (messages/role/content)")
     assert_bad_rows(stats, 8, "ChatML bad rows")
+    assert_exact_recall(stats, set(range(10, 18)), "ChatML exact recall")
     results["chatml"] = stats
 
-    # ShareGPT
+    # ShareGPT — 5 clean rows (0-4), 5 bad rows (5-9)
     ds_sgpt = make_sharegpt_dataset()
     stats = run_scan(ds_sgpt, "Synthetic ShareGPT (conversations/from/value)")
     assert_bad_rows(stats, 3, "ShareGPT bad rows")
+    assert_exact_recall(stats, set(range(5, 10)), "ShareGPT exact recall")
     results["sharegpt"] = stats
 
-    # Alpaca
+    # Alpaca — 5 clean rows (0-4), 5 bad rows (5-9)
     ds_alpaca = make_alpaca_dataset()
     stats = run_scan(ds_alpaca, "Synthetic Alpaca (instruction/output)")
     assert_bad_rows(stats, 4, "Alpaca bad rows")
+    assert_exact_recall(stats, set(range(5, 10)), "Alpaca exact recall")
     results["alpaca"] = stats
 
     return results
@@ -461,6 +483,87 @@ def test_synthetic():
 # ---------------------------------------------------------------------------
 # 2. HuggingFace: peteromallet/dataclaw-peteromallet
 # ---------------------------------------------------------------------------
+
+
+def _brute_force_bad_rows(ds, fmt: str) -> set:
+    """Pure-Python ground-truth scanner — zero shared code with dataset_none_detect.
+
+    Iterates every row and flags it bad if any field/turn contains None, empty,
+    or whitespace-only content.  Returns the set of bad row indices.
+
+    Intentionally re-implements the same logic from scratch so that agreement
+    between this and scan_dataset() constitutes independent proof of correctness.
+    """
+
+    def _blank(val) -> bool:
+        if val is None:
+            return True
+        if isinstance(val, str) and val.strip() == "":
+            return True
+        return False
+
+    bad: set = set()
+    for i, row in enumerate(ds):
+        if fmt in ("chatml", "gptoss"):
+            msgs = row.get("messages")
+            if msgs is None or not isinstance(msgs, list):
+                bad.add(i)
+                continue
+            for turn in msgs:
+                if turn is None or (isinstance(turn, dict) and _blank(turn.get("content"))):
+                    bad.add(i)
+                    break
+        elif fmt == "sharegpt":
+            convs = row.get("conversations")
+            if convs is None or not isinstance(convs, list):
+                bad.add(i)
+                continue
+            for turn in convs:
+                if turn is None or (isinstance(turn, dict) and _blank(turn.get("value"))):
+                    bad.add(i)
+                    break
+        elif fmt == "alpaca":
+            if _blank(row.get("instruction")) or _blank(row.get("output")):
+                bad.add(i)
+    return bad
+
+
+def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
+    """Independent ground-truth check: verify scan_dataset() found every bad row
+    that brute-force row-by-row iteration also finds.
+
+    brute_force_bad ⊆ module_bad  →  no misses (the key assertion)
+    module_bad ⊆ brute_force_bad  →  no false positives (informational)
+    """
+    fmt = stats.get("format", "unknown")
+    module_bad = set(stats.get("bad_row_indices", []))
+
+    print(f"  Running brute-force independent scan (fmt={fmt!r}, {len(ds)} rows)...")
+    brute_bad = _brute_force_bad_rows(ds, fmt)
+
+    missed = brute_bad - module_bad   # rows brute-force found but module missed
+    extra = module_bad - brute_bad    # rows module flagged that brute-force didn't
+
+    no_misses = len(missed) == 0
+    snippet = ""
+    if missed:
+        sample = sorted(missed)[:10]
+        snippet = f"  (first missed rows: {sample}{'...' if len(missed) > 10 else ''})"
+    status = "PASS" if no_misses else "FAIL"
+    print(
+        f"  [{status}] {label} no-miss check — "
+        f"brute-force: {len(brute_bad)} bad rows  |  "
+        f"module: {len(module_bad)} bad rows  |  "
+        f"missed: {len(missed)}{snippet}"
+    )
+    if extra:
+        # Module may legitimately flag more rows than brute-force (e.g. extra
+        # structural checks) — informational only, not a failure.
+        print(
+            f"  [INFO] {label} — module flagged {len(extra)} rows not in brute-force "
+            f"(may reflect additional structural checks, not false positives)"
+        )
+    return no_misses
 
 
 def test_dataclaw():
@@ -476,6 +579,8 @@ def test_dataclaw():
         )
         print(f"  Loaded {len(ds)} rows, columns: {ds.column_names}")
         stats = run_scan(ds, "dataclaw-peteromallet")
+        if stats:
+            _assert_hf_no_misses(ds, stats, "dataclaw-peteromallet")
         return stats
     except Exception as exc:
         print(f"  [ERROR] Could not load dataclaw dataset: {exc}")
@@ -511,6 +616,8 @@ def test_codex_data():
         ds = Dataset.from_list(rows)
         print(f"  Loaded {len(ds)} rows, columns: {ds.column_names}")
         stats = run_scan(ds, "my-personal-codex-data")
+        if stats:
+            _assert_hf_no_misses(ds, stats, "my-personal-codex-data")
         return stats
     except Exception as exc:
         print(f"  [ERROR] Could not load codex dataset: {exc}")
