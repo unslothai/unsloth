@@ -107,20 +107,24 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
         proc.intentional_stop = false;
     }
 
+    // --api-only skips frontend serving (Tauri has its own). Only pass it
+    // in dev mode where we control the CLI. The PyPI release may not have
+    // this flag yet, and the backend works fine without it.
+    let use_api_only = cfg!(debug_assertions);
+
     info!(
-        "Starting backend: {:?} studio --api-only -H 127.0.0.1 -p {}",
-        bin, port
+        "Starting backend: {:?} studio {}-H 127.0.0.1 -p {}",
+        bin,
+        if use_api_only { "--api-only " } else { "" },
+        port
     );
 
     let mut cmd = Command::new(&bin);
-    cmd.args([
-        "studio",
-        "--api-only",
-        "-H",
-        "127.0.0.1",
-        "-p",
-        &port.to_string(),
-    ])
+    cmd.arg("studio");
+    if use_api_only {
+        cmd.arg("--api-only");
+    }
+    cmd.args(["-H", "127.0.0.1", "-p", &port.to_string()])
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
