@@ -2,14 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Navbar } from "@/components/navbar";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import {
   Outlet,
   createRootRoute,
   redirect,
   useRouterState,
 } from "@tanstack/react-router";
-import { AnimatePresence, motion } from "motion/react";
 import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
@@ -22,7 +21,10 @@ function isChatOnlyAllowed(pathname: string): boolean {
 }
 
 export const Route = createRootRoute({
-  beforeLoad: ({ location }) => {
+  beforeLoad: async ({ location }) => {
+    // Ensure platform info is fetched before checking chat-only guard.
+    // fetchDeviceType caches after first call, so subsequent navigations are instant.
+    await fetchDeviceType();
     const chatOnly = usePlatformStore.getState().isChatOnly();
     if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
       throw redirect({ to: "/chat" });
@@ -40,20 +42,9 @@ function RootLayout() {
   return (
     <AppProvider>
       {!hideNavbar && <Navbar />}
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
-          key={pathname}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="flex-1"
-        >
-          <Suspense fallback={null}>
-            <Outlet />
-          </Suspense>
-        </motion.div>
-      </AnimatePresence>
+      <Suspense fallback={null}>
+        <Outlet />
+      </Suspense>
     </AppProvider>
   );
 }
