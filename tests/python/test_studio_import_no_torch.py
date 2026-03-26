@@ -69,9 +69,9 @@ def no_torch_venv(request, tmp_path_factory):
         [str(venv_python), "-c", "import torch"],
         capture_output = True,
     )
-    assert check.returncode != 0, (
-        f"torch should NOT be importable in fresh {py_version} venv"
-    )
+    assert (
+        check.returncode != 0
+    ), f"torch should NOT be importable in fresh {py_version} venv"
 
     return str(venv_python)
 
@@ -174,9 +174,9 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, (
-            f"data_collators.py failed in no-torch venv:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"data_collators.py failed in no-torch venv:\n{result.stderr.decode()}"
         assert b"OK: exec succeeded" in result.stdout
 
     def test_dataclass_speech_collator_instantiable(self, no_torch_venv):
@@ -196,9 +196,9 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, (
-            f"DataCollatorSpeechSeq2SeqWithPadding failed:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"DataCollatorSpeechSeq2SeqWithPadding failed:\n{result.stderr.decode()}"
         assert b"OK: DataCollatorSpeechSeq2SeqWithPadding instantiated" in result.stdout
 
     def test_dataclass_deepseek_collator_instantiable(self, no_torch_venv):
@@ -220,9 +220,9 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, (
-            f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: DeepSeekOCRDataCollator instantiated" in result.stdout
 
     def test_dataclass_vlm_collator_instantiable(self, no_torch_venv):
@@ -243,9 +243,9 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, (
-            f"VLMDataCollator failed:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
@@ -292,9 +292,9 @@ class TestChatTemplatesNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, (
-            f"chat_templates.py failed in no-torch venv:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"chat_templates.py failed in no-torch venv:\n{result.stderr.decode()}"
         assert b"OK: chat_templates.py exec succeeded" in result.stdout
 
     def test_default_alpaca_template_defined(self, no_torch_venv):
@@ -331,9 +331,9 @@ class TestChatTemplatesNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, (
-            f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
 
 
@@ -365,9 +365,9 @@ class TestNegativeControls:
                 capture_output = True,
                 timeout = 30,
             )
-            assert result.returncode != 0, (
-                "Expected failure when 'import torch' is prepended"
-            )
+            assert (
+                result.returncode != 0
+            ), "Expected failure when 'import torch' is prepended"
             assert (
                 b"ModuleNotFoundError" in result.stderr
                 or b"ImportError" in result.stderr
@@ -401,9 +401,9 @@ class TestNegativeControls:
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,
             )
-            assert check.returncode != 0, (
-                "torch should not be importable -- torchao would fail at runtime"
-            )
+            assert (
+                check.returncode != 0
+            ), "torch should not be importable -- torchao would fail at runtime"
 
     def test_direct_torch_import_fails(self, no_torch_venv):
         """Direct 'import torch' fails in the no-torch venv."""
@@ -414,6 +414,5 @@ class TestNegativeControls:
         )
         assert result.returncode != 0, "import torch should fail in no-torch venv"
         assert (
-            b"ModuleNotFoundError" in result.stderr
-            or b"ImportError" in result.stderr
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
         )
