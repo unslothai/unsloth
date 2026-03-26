@@ -9,6 +9,7 @@ type BackendStatus =
   | "not-installed"
   | "installing"
   | "install-error"
+  | "needs-elevation"
   | "starting"
   | "running"
   | "stopped"
@@ -23,6 +24,9 @@ export function useTauriBackend() {
   const startingRef = useRef(false);
   // Track the discovered port from server-port event
   const portRef = useRef<number | null>(null);
+  const [currentStepIndex, setCurrentStepIndex] = useState(-1);
+  const [elevationPackages, setElevationPackages] = useState<string[]>([]);
+  const [progressDetail, setProgressDetail] = useState<string | null>(null);
 
   // Keep ref in sync for event listener closures
   useEffect(() => {
@@ -111,6 +115,8 @@ export function useTauriBackend() {
   }
 
   async function startInstall() {
+    setCurrentStepIndex(-1);
+    setProgressDetail(null);
     setStatus("installing");
     setLogs([]);
     setError(null);
@@ -133,6 +139,9 @@ export function useTauriBackend() {
     setLogs([]);
     startingRef.current = false;
     portRef.current = null;
+    setCurrentStepIndex(-1);
+    setProgressDetail(null);
+    setElevationPackages([]);
     checkInstallAndStart();
   }, []);
 
@@ -142,12 +151,30 @@ export function useTauriBackend() {
     setStatus("not-installed");
   }, []);
 
+  const approveElevation = useCallback(async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("install_system_packages", { packages: elevationPackages });
+      // Packages installed successfully, retry the full install
+      setCurrentStepIndex(-1);
+      setProgressDetail(null);
+      await startInstall();
+    } catch (e) {
+      setStatus("install-error");
+      setError(String(e));
+    }
+  }, [elevationPackages]);
+
   // Initial check on mount
   useEffect(() => {
     if (!isTauri) {
       setStatus("running");
       return;
     }
+    // Close native splash immediately when React renders
+    import("@tauri-apps/api/core").then(({ invoke }) => {
+      invoke("close_splashscreen");
+    });
     checkInstallAndStart();
   }, []);
 
@@ -164,7 +191,21 @@ export function useTauriBackend() {
       // install-complete is informational only — does NOT trigger startServer.
       // The invoke("start_install") success path handles that to avoid races.
       listen<void>("install-complete", () => {
-        // Just update logs; the invoke path handles the transition
+        setCurrentStepIndex(999); // all steps done
+      }).then((u) => cleanup.push(u));
+
+      listen<string>("install-step", () => {
+        setCurrentStepIndex((prev) => prev + 1);
+        setProgressDetail(null);
+      }).then((u) => cleanup.push(u));
+
+      listen<string[]>("install-needs-elevation", (e) => {
+        setElevationPackages(e.payload);
+        setStatus("needs-elevation");
+      }).then((u) => cleanup.push(u));
+
+      listen<string>("install-progress-detail", (e) => {
+        setProgressDetail(e.payload);
       }).then((u) => cleanup.push(u));
 
       listen<string>("install-failed", (e) => {
@@ -205,13 +246,9 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status,
-    logs,
-    error,
-    startServer,
-    stopServer,
-    startInstall,
-    retry,
-    retryInstall,
+    status, logs, error,
+    currentStepIndex, progressDetail, elevationPackages,
+    startServer, stopServer, startInstall,
+    retry, retryInstall, approveElevation,
   };
 }
