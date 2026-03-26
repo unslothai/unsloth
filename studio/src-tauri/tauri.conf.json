@@ -19,7 +19,18 @@
         "width": 1280,
         "height": 800,
         "minWidth": 900,
-        "minHeight": 600
+        "minHeight": 600,
+        "visible": false
+      },
+      {
+        "label": "splashscreen",
+        "url": "/splashscreen.html",
+        "width": 400,
+        "height": 300,
+        "center": true,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true
       }
     ],
     "trayIcon": {
@@ -40,6 +51,12 @@
       "icons/128x128.png",
       "icons/icon.ico",
       "icons/icon.icns"
-    ]
+    ],
+    "macOS": {
+      "dmg": {
+        "appPosition": { "x": 180, "y": 220 },
+        "applicationFolderPosition": { "x": 480, "y": 220 }
+      }
+    }
   }
 }
