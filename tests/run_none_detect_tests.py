@@ -415,13 +415,24 @@ def test_dataclaw():
 def test_codex_data():
     section("3. HuggingFace — peteromallet/my-personal-codex-data")
     try:
-        from datasets import load_dataset
+        # load_dataset fails on this repo because ujson chokes on the large
+        # JSONL batch.  Download the raw file and parse it ourselves instead.
+        from huggingface_hub import hf_hub_download
+        from datasets import Dataset
 
-        print("  Loading dataset...")
-        ds = load_dataset(
+        print("  Downloading conversations.jsonl via huggingface_hub...")
+        path = hf_hub_download(
             "peteromallet/my-personal-codex-data",
-            split = "train",
+            "conversations.jsonl",
+            repo_type = "dataset",
         )
+        rows = []
+        with open(path, encoding = "utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        ds = Dataset.from_list(rows)
         print(f"  Loaded {len(ds)} rows, columns: {ds.column_names}")
         stats = run_scan(ds, "my-personal-codex-data")
         return stats
