@@ -37,18 +37,18 @@ irm https://unsloth.ai/install.ps1 | iex
 uv venv unsloth_studio --python 3.13
 source unsloth_studio/bin/activate
 uv pip install unsloth --torch-backend=auto
-unsloth studio setup
+unsloth studio update
 ```
 
 ### Minimal install (CLI only, then set up Studio separately)
 
 ```bash
 pip install unsloth
-unsloth studio setup
+unsloth studio update
 ```
 
-- Python 3.11-3.13 is required inside the studio venv (created by `unsloth studio setup`). The system Python can differ — the CLI re-executes in the studio venv automatically.
-- After setup, commands like `train`, `inference`, `export`, `list-checkpoints` re-launch inside `~/.unsloth/studio/.venv` (you'll see "Launching with studio venv..." in output). Dependencies are resolved from the studio venv, not the user's environment.
+- Python 3.11-3.13 is required inside the studio venv (created by `unsloth studio update` or the one-liner install). The system Python can differ — the CLI re-executes in the studio venv automatically.
+- After setup, commands like `train`, `inference`, `export`, `list-checkpoints` re-launch inside `~/.unsloth/studio/unsloth_studio` (you'll see "Launching with studio venv..." in output). Dependencies are resolved from the studio venv, not the user's environment.
 - Training requires a supported GPU. For chat-only inference on macOS / CPU-only systems, use GGUF models so the CLI routes to the llama.cpp backend.
 - Environment variables: `HF_TOKEN` (HuggingFace), `WANDB_API_KEY` (Weights & Biases)
 
@@ -129,11 +129,11 @@ unsloth export ./outputs/checkpoint-100 ./exported \
 ## Studio Server
 
 ```bash
-unsloth studio setup
+unsloth studio update
 unsloth studio -H 0.0.0.0 -p 8000
 unsloth studio --silent
+unsloth studio stop
 unsloth studio reset-password
-unsloth ui -p 8000
 ```
 
 ## References
@@ -150,7 +150,7 @@ unsloth ui -p 8000
 - Config file approach is preferred for agents (handles lists, avoids shell quoting issues)
 - Use **non-GGUF** model IDs for training (e.g. `unsloth/Qwen3-0.6B`, not `-GGUF`)
 - For inference, **GGUF** model IDs/files use `llama-server` while non-GGUF model IDs use the standard Unsloth backend; on macOS or other chat-only environments, prefer GGUF models.
-- CLI commands auto-relaunch inside `~/.unsloth/studio/.venv` ("Launching with studio venv..." in output). Dependencies come from the studio venv, not the user's environment.
+- CLI commands auto-relaunch inside `~/.unsloth/studio/unsloth_studio` ("Launching with studio venv..." in output). Dependencies come from the studio venv, not the user's environment.
 - Studio home directory: `~/.unsloth/studio/`, default training output: `./outputs`
 - CLI flags override config file values (precedence: CLI > config > defaults)
 - Boolean flags use `--flag / --no-flag` pattern (e.g. `--load-in-4bit / --no-load-in-4bit`)

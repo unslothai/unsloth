@@ -6,7 +6,7 @@
       "prompt": "I want to get started with Unsloth. Verify it's set up correctly and show me what commands are available.",
       "expectations": [
         "Verifies unsloth CLI is installed (e.g. unsloth --help, which unsloth, or pip show)",
-        "Verifies studio venv exists or runs unsloth studio setup",
+        "Verifies studio venv exists or runs unsloth studio update",
         "Shows available commands (train, inference, export, list-checkpoints, studio)",
         "Runs a quick sanity check (e.g. unsloth train --dry-run or unsloth list-checkpoints)",
         "No errors in the verification commands"
@@ -23,7 +23,7 @@
       "prompt": "Install Unsloth from scratch and set up the Studio environment. This is a clean machine with nothing installed.",
       "expectations": [
         "Installs unsloth via one-liner (curl -fsSL https://unsloth.ai/install.sh | sh), pip install unsloth, or uv pip install unsloth",
-        "Studio setup is included (either via the one-liner or explicit unsloth studio setup)",
+        "Studio setup is included (either via the one-liner or explicit unsloth studio update)",
         "Install comes before studio setup",
         "Verifies the CLI works after install (e.g. unsloth --help)",
         "No unnecessary exploration before installing"
@@ -43,7 +43,7 @@
         "Runs a Docker container with a clean Ubuntu image (e.g. ubuntu:24.04)",
         "Installs curl if not present (apt-get install curl)",
         "Runs the one-liner: curl -fsSL https://unsloth.ai/install.sh | sh",
-        "The install completes successfully (uv, Python 3.13, unsloth, and studio setup all finish)",
+        "The install completes successfully (uv, Python 3.13, unsloth, and studio dependencies all finish)",
         "Verifies the CLI works inside the container (e.g. unsloth --help or unsloth list-checkpoints)",
         "No errors in the install output (torchcodec platform warnings are acceptable)"
       ],
@@ -62,7 +62,7 @@
       "prompt": "I need to install Unsloth on a fresh Windows machine using PowerShell. Run the one-liner install and set up the Studio environment.",
       "expectations": [
         "Uses the PowerShell one-liner: irm https://unsloth.ai/install.ps1 | iex",
-        "The install completes successfully (Python, uv, unsloth, and studio setup all finish)",
+        "The install completes successfully (Python, uv, unsloth, and studio dependencies all finish)",
         "Activates the venv after install: .\\unsloth_studio\\Scripts\\activate",
         "Verifies the CLI works (e.g. unsloth --help)",
         "No unnecessary exploration before installing"
