@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import weakref
+
 import torch
 from typing import Optional
 
@@ -47,12 +49,43 @@ ws ::= ([ \t\n\r] ws)?
 """
 
 
+def _bytes_to_unicode():
+    """
+    GPT-2 byte-to-unicode mapping. Inlined to avoid depending on
+    private transformers internals that may change across versions.
+    """
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("\xa1"), ord("\xac") + 1))
+        + list(range(ord("\xae"), ord("\xff") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return dict(zip(bs, (chr(c) for c in cs)))
+pass
+
+
+_TOKENIZER_RESOURCE_CACHE = weakref.WeakKeyDictionary()
+
+
 def _build_tokenizer_resources(tokenizer):
     """
     Build ByteTrie and TokenizerMiddleMapping for the given tokenizer,
     bypassing transformers-cfg's isinstance checks that fail on
     transformers 5.x (where all tokenizers are TokenizersBackend).
+
+    Results are cached per tokenizer instance to avoid rebuilding the
+    O(vocab_size) trie on every call.
     """
+    cached = _TOKENIZER_RESOURCE_CACHE.get(tokenizer)
+    if cached is not None:
+        return cached
+
     from transformers_cfg.tokenization.byte_trie import ByteTrie
     from transformers_cfg.tokenization.utils import get_tokenizer_charset
     from transformers_cfg.tokenization.middle.TokenizerMiddleMapping import (
@@ -68,9 +101,7 @@ def _build_tokenizer_resources(tokenizer):
     elif len(charset) >= 256 and len(charset) < 256 + 30:
         # GPT2-style byte-proxy (Llama-3, GPT-2, Qwen2)
         # Build mapping manually to avoid ByteProxyMapping loading a slow tokenizer
-        from transformers.convert_slow_tokenizer import bytes_to_unicode
-
-        byte_to_unicode = bytes_to_unicode()  # {byte_int: unicode_char}
+        byte_to_unicode = _bytes_to_unicode()  # {byte_int: unicode_char}
         unicode_to_byte = {v: k for k, v in byte_to_unicode.items()}
 
         class _GPT2ManualMapping(TokenizerMiddleMapping):
@@ -104,9 +135,9 @@ def _build_tokenizer_resources(tokenizer):
         except Exception:
             continue
 
-    return trie, homomorphism
-
-
+    result = (trie, homomorphism)
+    _TOKENIZER_RESOURCE_CACHE[tokenizer] = result
+    return result
 
 
 def generate_with_grammar(
@@ -137,6 +168,17 @@ def generate_with_grammar(
         raise ImportError(
             "Unsloth: Please install transformers-cfg to use grammar-constrained generation: "
             "`pip install transformers-cfg`"
+        )
+
+    # Beam search reorders hypotheses and breaks IncrementalGrammarConstraint state
+    num_beams = int(kwargs.get("num_beams", 1) or 1)
+    num_beam_groups = int(kwargs.get("num_beam_groups", 1) or 1)
+    if num_beams > 1 or num_beam_groups > 1:
+        raise ValueError(
+            "Unsloth: generate_with_grammar currently supports greedy/sampling "
+            "decoding only. Beam search reorders hypotheses and breaks "
+            "IncrementalGrammarConstraint state; set num_beams=1 and "
+            "num_beam_groups=1."
         )
 
     if grammar_str is None:
