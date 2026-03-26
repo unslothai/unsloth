@@ -53,6 +53,11 @@ class LlamaCppBackend:
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        # KV-cache estimation fields (populated by _read_gguf_metadata)
+        self._n_layers: Optional[int] = None
+        self._n_kv_heads: Optional[int] = None
+        self._n_heads: Optional[int] = None
+        self._embedding_length: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -283,11 +288,11 @@ class LlamaCppBackend:
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
     ) -> tuple[Optional[list[int]], bool]:
-        """Pick GPU(s) for a model based on file size and free memory.
+        """Pick GPU(s) for a model based on estimated VRAM and free memory.
 
-        Uses GGUF file size as a rough proxy for VRAM usage (actual usage
-        is higher due to KV cache and compute buffers, but 70% threshold
-        accounts for that).
+        ``model_size_bytes`` should include both model weights and estimated
+        KV cache.  The 70% threshold provides headroom for compute buffers,
+        CUDA context, and other runtime overhead.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       model fits on 1 GPU at 70% of free
@@ -317,6 +322,87 @@ class LlamaCppBackend:
 
         # Model is too large even for all GPUs, let --fit handle it
         return None, True
+
+    # ── KV cache VRAM estimation ─────────────────────────────────────
+
+    def _can_estimate_kv(self) -> bool:
+        """True if we have enough GGUF metadata to estimate KV cache size."""
+        return (
+            self._n_layers is not None
+            and self._embedding_length is not None
+            and (self._n_kv_heads is not None or self._n_heads is not None)
+        )
+
+    def _estimate_kv_cache_bytes(
+        self, n_ctx: int, cache_type_kv: Optional[str] = None
+    ) -> int:
+        """Estimate KV cache VRAM for a given context length.
+
+        Returns 0 if metadata is insufficient for estimation.
+        """
+        if not self._can_estimate_kv() or n_ctx <= 0:
+            return 0
+
+        n_layers = self._n_layers  # type: ignore[assignment]
+        n_kv_heads = self._n_kv_heads or self._n_heads  # type: ignore[assignment]
+        head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+
+        # Bytes per element depends on KV cache quantization
+        bpe = {
+            "f32": 4.0, "f16": 2.0, "bf16": 2.0,
+            "q8_0": 1.125, "q5_1": 0.75, "q5_0": 0.6875,
+            "q4_1": 0.625, "q4_0": 0.5625, "iq4_nl": 0.5625,
+        }.get(cache_type_kv or "f16", 2.0)
+
+        # K + V caches: 2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe
+        return int(2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe)
+
+    def _fit_context_to_vram(
+        self,
+        requested_ctx: int,
+        available_mib: int,
+        model_size_bytes: int,
+        cache_type_kv: Optional[str] = None,
+        min_ctx: int = 2048,
+    ) -> int:
+        """Return the largest context length that fits in GPU VRAM.
+
+        Uses 70% of available VRAM as the budget (matching _select_gpus
+        threshold -- 30% reserved for compute buffers, CUDA context,
+        scratch space, flash-attn workspace, etc.).
+        If the model weights alone don't fit, returns min_ctx unchanged.
+        """
+        if not self._can_estimate_kv():
+            return requested_ctx
+
+        budget_bytes = available_mib * 1024 * 1024 * 0.70
+        model_footprint = model_size_bytes
+
+        # Check if requested context already fits
+        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
+        if model_footprint + kv <= budget_bytes:
+            return requested_ctx
+
+        # Model weights alone exceed budget -- can't help by reducing ctx
+        if model_footprint >= budget_bytes:
+            return min_ctx
+
+        # Binary search for max context that fits
+        remaining = budget_bytes - model_footprint
+        lo, hi = min_ctx, requested_ctx
+        best = min_ctx
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
+            if kv <= remaining:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        # Round down to nearest 256 for alignment
+        best = max(min_ctx, (best // 256) * 256)
+        return best
 
     # ── Variant fallback ────────────────────────────────────────────
 
@@ -442,7 +528,7 @@ class LlamaCppBackend:
                     LlamaCppBackend._gguf_skip_value(f, atype)
 
     def _read_gguf_metadata(self, gguf_path: str) -> None:
-        """Read context_length and chat_template from a GGUF file's KV header.
+        """Read context_length, architecture params, and chat_template from a GGUF header.
 
         Parses only the KV pairs we need (~30ms even for multi-GB files).
         For split GGUFs, metadata is always in shard 1.
@@ -453,11 +539,17 @@ class LlamaCppBackend:
         self._chat_template = None
         self._supports_reasoning = False
         self._supports_tools = False
+        self._n_layers = None
+        self._n_kv_heads = None
+        self._n_heads = None
+        self._embedding_length = None
 
         try:
             WANTED = {"general.architecture", "tokenizer.chat_template"}
+            # Additional arch-specific keys are added dynamically once
+            # we know the architecture name.
+            arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
-            ctx_key = None
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -471,24 +563,49 @@ class LlamaCppBackend:
                     key = f.read(key_len).decode("utf-8")
                     vtype = struct.unpack("<I", f.read(4))[0]
 
-                    if key in WANTED or (ctx_key and key == ctx_key):
+                    if key in WANTED or key in arch_keys:
                         # Read this value
                         if vtype == 8:  # STRING
                             slen = struct.unpack("<Q", f.read(8))[0]
                             val_s = f.read(slen).decode("utf-8")
                             if key == "general.architecture":
                                 arch = val_s
-                                ctx_key = f"{arch}.context_length"
+                                # Register arch-specific keys to look for
+                                arch_keys = {
+                                    f"{arch}.context_length": "context_length",
+                                    f"{arch}.block_count": "n_layers",
+                                    f"{arch}.attention.head_count_kv": "n_kv_heads",
+                                    f"{arch}.attention.head_count": "n_heads",
+                                    f"{arch}.embedding_length": "embedding_length",
+                                }
                             elif key == "tokenizer.chat_template":
                                 self._chat_template = val_s
                         elif vtype == 4:  # UINT32
                             val_i = struct.unpack("<I", f.read(4))[0]
-                            if ctx_key and key == ctx_key:
+                            attr = arch_keys.get(key)
+                            if attr == "context_length":
                                 self._context_length = val_i
+                            elif attr == "n_layers":
+                                self._n_layers = val_i
+                            elif attr == "n_kv_heads":
+                                self._n_kv_heads = val_i
+                            elif attr == "n_heads":
+                                self._n_heads = val_i
+                            elif attr == "embedding_length":
+                                self._embedding_length = val_i
                         elif vtype == 10:  # UINT64
                             val_i = struct.unpack("<Q", f.read(8))[0]
-                            if ctx_key and key == ctx_key:
+                            attr = arch_keys.get(key)
+                            if attr == "context_length":
                                 self._context_length = val_i
+                            elif attr == "n_layers":
+                                self._n_layers = val_i
+                            elif attr == "n_kv_heads":
+                                self._n_kv_heads = val_i
+                            elif attr == "n_heads":
+                                self._n_heads = val_i
+                            elif attr == "embedding_length":
+                                self._embedding_length = val_i
                         else:
                             self._gguf_skip_value(f, vtype)
                     else:
@@ -828,18 +945,48 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size and free memory
+            # Select GPU(s) based on model size + estimated KV cache
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
-                gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+
+                # Resolve effective context: 0 means model's native length
+                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 4096)
+                original_ctx = effective_ctx
+
+                # Auto-cap context to fit in GPU VRAM when possible
+                if gpus and self._can_estimate_kv():
+                    best_free_mib = max(free for _, free in gpus)
+                    effective_ctx = self._fit_context_to_vram(
+                        effective_ctx, best_free_mib, model_size, cache_type_kv
+                    )
+                    if effective_ctx < original_ctx:
+                        kv_est = self._estimate_kv_cache_bytes(
+                            effective_ctx, cache_type_kv
+                        )
+                        logger.info(
+                            f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
+                            f"to fit in {best_free_mib} MiB GPU VRAM "
+                            f"(model: {model_size / (1024**3):.1f} GB, "
+                            f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                        )
+
+                # Include KV cache in GPU fit check
+                kv_cache_bytes = self._estimate_kv_cache_bytes(
+                    effective_ctx, cache_type_kv
+                )
+                total_vram = model_size + kv_cache_bytes
+                gpu_indices, use_fit = self._select_gpus(total_vram, gpus)
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                    f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                    f"context: {effective_ctx}, "
                     f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                 )
             except Exception as e:
                 logger.warning(f"GPU selection failed ({e}), using --fit on")
                 gpu_indices, use_fit = None, True
+                effective_ctx = n_ctx  # fall back to original
 
             cmd = [
                 binary,
@@ -848,7 +995,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                str(n_ctx) if n_ctx > 0 else "0",  # 0 = model's native context size
+                str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
@@ -1053,6 +1200,10 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
+            # Update context_length to reflect the effective (possibly capped) value
+            if effective_ctx > 0:
+                self._context_length = effective_ctx
+
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 120.0):
                 self._kill_process()
@@ -1089,6 +1240,10 @@ class LlamaCppBackend:
             self._supports_reasoning = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._n_layers = None
+            self._n_kv_heads = None
+            self._n_heads = None
+            self._embedding_length = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
