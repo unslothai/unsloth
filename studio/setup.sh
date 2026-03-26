@@ -303,6 +303,17 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
             | grep -v '^#' | grep -v '^$' \
             | pip install -q -r /dev/stdin 2>/dev/null || true
+
+        # Install core ML packages (unsloth + unsloth-zoo) and training
+        # extras (trl, transformers, etc.) into system Python.  Without
+        # these the training/inference/export workers fail at import time
+        # with "Failed to import ML libraries: Please install unsloth_zoo".
+        echo "   Installing core ML packages for training..."
+        pip install -q -r "$SCRIPT_DIR/backend/requirements/base.txt" 2>/dev/null || true
+        sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/extras.txt" \
+            | grep -v '^#' | grep -v '^$' \
+            | pip install -q -r /dev/stdin 2>/dev/null || true
+
         _COLAB_NO_VENV=true
     else
         echo "❌ ERROR: Virtual environment not found at $VENV_DIR"
