@@ -18,8 +18,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { deleteCachedModel, listCachedGguf, listCachedModels, listGgufVariants } from "@/features/chat/api/chat-api";
-import type { CachedGgufRepo, CachedModelRepo } from "@/features/chat/api/chat-api";
+import { deleteCachedModel, listCachedGguf, listCachedModels, listGgufVariants, listLocalModels } from "@/features/chat/api/chat-api";
+import type { CachedGgufRepo, CachedModelRepo, LocalModelInfo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -413,9 +413,15 @@ export function HubModelPicker({
   const alreadyCached = _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
 
+  // LM Studio local models
+  const [lmStudioModels, setLmStudioModels] = useState<LocalModelInfo[]>([]);
+
   const refreshCachedLists = useCallback(() => {
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
+    listLocalModels().then((res) => {
+      setLmStudioModels(res.models.filter((m) => m.source === "lmstudio"));
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -424,6 +430,9 @@ export function HubModelPicker({
     const check = () => { if (++done >= 2) setCachedReady(true); };
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {}).finally(check);
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {}).finally(check);
+    listLocalModels().then((res) => {
+      setLmStudioModels(res.models.filter((m) => m.source === "lmstudio"));
+    }).catch(() => {});
   }, [alreadyCached]);
 
   const handleDeleteConfirm = useCallback(async () => {
@@ -682,6 +691,22 @@ export function HubModelPicker({
                     <Trash2Icon className="size-3.5" />
                   </button>
                 </div>
+              ))}
+            </>
+          ) : null}
+
+          {!showHfSection && lmStudioModels.length > 0 ? (
+            <>
+              <ListLabel>LM Studio</ListLabel>
+              {lmStudioModels.map((m) => (
+                <ModelRow
+                  key={m.id}
+                  label={m.display_name}
+                  meta={m.path.endsWith(".gguf") ? "GGUF" : "Local"}
+                  selected={value === m.id}
+                  onClick={() => onSelect(m.id, { source: "local", isLora: false, isDownloaded: true })}
+                  vramStatus={null}
+                />
               ))}
             </>
           ) : null}
