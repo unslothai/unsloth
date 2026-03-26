@@ -47,6 +47,11 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+/** Normalize a string for fuzzy search: lowercase, strip separators. */
+function normalizeForSearch(s: string): string {
+  return s.toLowerCase().replace(/[\s\-_\.]/g, "");
+}
+
 function ListLabel({ children }: { children: ReactNode }) {
   return (
     <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -496,8 +501,8 @@ export function HubModelPicker({
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
-    const q = debouncedQuery.trim().toLowerCase();
-    return recommendedIds.filter((id) => id.toLowerCase().includes(q));
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
   }, [showHfSection, debouncedQuery, recommendedIds]);
 
   const recommendedSet = useMemo(
@@ -852,11 +857,11 @@ export function LoraModelPicker({
   );
 
   const grouped = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = normalizeForSearch(query.trim());
     const out = new Map<string, LoraModelOption[]>();
 
     for (const model of normalized) {
-      const searchText = `${model.name} ${model.baseModel} ${model.id}`.toLowerCase();
+      const searchText = normalizeForSearch(`${model.name} ${model.baseModel} ${model.id}`);
       if (needle && !searchText.includes(needle)) continue;
 
       const key = model.baseModel || "Unknown base model";
