@@ -755,11 +755,13 @@ export function HubModelPicker({
 
           {showHfSection ? (
             <>
-              <ListLabel>Hugging Face</ListLabel>
+              {(hfIds.length > 0 || isLoading) && <ListLabel>Hugging Face</ListLabel>}
               {hfIds.length === 0 && !isLoading ? (
-                <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                  No matching models.
-                </div>
+                filteredRecommendedIds.length === 0 ? (
+                  <div className="px-2.5 py-2 text-xs text-muted-foreground">
+                    No matching models.
+                  </div>
+                ) : null
               ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
