@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ConnectionOverlay } from "@/components/tauri/connection-overlay";
-import { SetupWizard } from "@/components/tauri/setup-wizard";
+import { StartupScreen } from "@/components/tauri/startup-screen";
 import { Toaster } from "@/components/ui/sonner";
 import { useTauriBackend } from "@/hooks/use-tauri-backend";
 import { isTauri } from "@/lib/api-base";
 import { ThemeProvider } from "next-themes";
-import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
 
 interface AppProviderProps {
@@ -15,83 +13,30 @@ interface AppProviderProps {
 }
 
 function TauriWrapper({ children }: { children: ReactNode }) {
-  const { status, logs, error, startInstall, retry, retryInstall } = useTauriBackend();
-  const [showLogs, setShowLogs] = useState(false);
+  const {
+    status, logs, error,
+    currentStepIndex, progressDetail, elevationPackages,
+    startInstall, retry, retryInstall, approveElevation,
+  } = useTauriBackend();
 
-  const handleViewLogs = useCallback(async () => {
-    if (isTauri) {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("open_logs_dir");
-      } catch {
-        setShowLogs(true);
-      }
-    } else {
-      setShowLogs(true);
-    }
-  }, []);
-
-  // Non-Tauri mode: render children directly
   if (!isTauri) return <>{children}</>;
+  if (status === "running") return <>{children}</>;
 
-  // First-time install flow (including install errors — keep user on wizard)
-  if (status === "not-installed" || status === "installing" || status === "install-error") {
-    return (
-      <SetupWizard
-        logs={logs}
-        onInstall={startInstall}
-        status={status === "install-error" ? "not-installed" : status}
-        error={status === "install-error" ? error : null}
-        onRetry={retryInstall}
-      />
-    );
-  }
-
-  // Checking status — show nothing while determining state
-  if (status === "checking") {
-    return null;
-  }
-
-  // Starting, stopped, or error: show children with overlay
-  if (status === "starting" || status === "stopped" || status === "error") {
-    return (
-      <>
-        {children}
-        <ConnectionOverlay
-          status={status}
-          error={error}
-          logs={logs}
-          onRetry={retry}
-          onViewLogs={handleViewLogs}
-        />
-        {showLogs && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-background/90">
-            <div className="w-full max-w-3xl space-y-4 p-6">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">Server Logs</h3>
-                <button
-                  onClick={() => setShowLogs(false)}
-                  className="rounded bg-muted px-3 py-1 text-sm"
-                >
-                  Close
-                </button>
-              </div>
-              <div className="h-96 overflow-y-auto rounded-lg bg-muted p-4 font-mono text-xs">
-                {logs.map((line, i) => (
-                  <div key={i} className="whitespace-pre-wrap">
-                    {line}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </>
-    );
-  }
-
-  // Running: render children normally
-  return <>{children}</>;
+  return (
+    <StartupScreen
+      status={status}
+      logs={logs}
+      error={error}
+      currentStepIndex={currentStepIndex}
+      progressDetail={progressDetail}
+      elevationPackages={elevationPackages}
+      onInstall={startInstall}
+      onRetry={retry}
+      onRetryInstall={retryInstall}
+      onApproveElevation={approveElevation}
+      onStartServer={retry}
+    />
+  );
 }
 
 export function AppProvider({ children }: AppProviderProps) {
