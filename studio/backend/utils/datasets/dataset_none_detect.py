@@ -656,8 +656,12 @@ examples:
   python dataset_none_detect.py org/my-dataset --token hf_...
         """,
     )
-    parser.add_argument("dataset", help="HuggingFace dataset repo id (e.g. org/my-dataset)")
-    parser.add_argument("--split", default = "train", help="Dataset split to load (default: train)")
+    parser.add_argument(
+        "dataset", help = "HuggingFace dataset repo id (e.g. org/my-dataset)"
+    )
+    parser.add_argument(
+        "--split", default = "train", help = "Dataset split to load (default: train)"
+    )
     parser.add_argument(
         "--format",
         default = "auto",
@@ -679,7 +683,10 @@ examples:
     try:
         from datasets import load_dataset
     except ImportError:
-        print("Error: 'datasets' package not found. Install with: pip install datasets", file = sys.stderr)
+        print(
+            "Error: 'datasets' package not found. Install with: pip install datasets",
+            file = sys.stderr,
+        )
         sys.exit(1)
 
     print(f"Loading {args.dataset!r} (split={args.split!r})...")
