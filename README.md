@@ -57,18 +57,19 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
-If you don't have `curl`, use `wget`. Launch after setup via:
-```bash
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
-Launch after setup via:
-```powershell
+
+#### Launch
+```bash
 unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Update
+```bash
+unsloth studio update
 ```
 
 #### Docker
@@ -81,7 +82,7 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
   unsloth/unsloth
   ```
 
-#### macOS, Linux, WSL developer installs:
+#### Developer installs: macOS, Linux, WSL:
 ```bash
 git clone https://github.com/unslothai/unsloth
 cd unsloth
@@ -93,7 +94,7 @@ Then to update :
 unsloth studio update --local
 ```
 
-#### Windows PowerShell developer installs:
+#### Developer installs: Windows PowerShell:
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
@@ -106,7 +107,7 @@ Then to update :
 unsloth studio update --local
 ```
 
-#### Nightly - MacOS, Linux, WSL:
+#### Nightly: MacOS, Linux, WSL:
 ```bash
 git clone https://github.com/unslothai/unsloth
 cd unsloth
@@ -119,7 +120,7 @@ Then to launch every time:
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 
-#### Nightly - Windows:
+#### Nightly: Windows:
 Run in Windows Powershell:
 ```bash
 git clone https://github.com/unslothai/unsloth.git
@@ -133,6 +134,9 @@ Then to launch every time:
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
+
+#### Uninstall
+You can uninstall Unsloth Studio by deleting its folder. For example, run `rm -rf ~/.unsloth/studio`. Only use `rm -rf ~/.unsloth/` if you want to remove all Unsloth files, not just Studio.
 
 ### Unsloth Core (code-based)
 #### Linux, WSL:

@@ -234,6 +234,10 @@ def prefer_flex_attn_if_supported(model_class, config):
             model_class, "_supports_flex_attn", False
         ):
             return None
+
+        attention_dropout = getattr(config, "attention_dropout", 0) or 0
+        if attention_dropout > 0:
+            return None
         # GPT-OSS, Mllama and Gemma3N use eager/sdpa attention during
         # inference since flex attention returns incorrect results or errors out.
         # GPT-OSS: left padding issues cause incorrect outputs.
