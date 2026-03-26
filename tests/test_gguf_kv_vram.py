@@ -84,6 +84,7 @@ def _patched_init(self):
     self._is_vision = False
     self._healthy = False
     self._context_length = None
+    self._effective_context_length = None
     self._chat_template = None
     self._supports_reasoning = False
     self._supports_tools = False
@@ -594,6 +595,12 @@ class TestLoadModelIntegration:
         assert b._context_length == 262144, (
             f"_context_length should remain at native 262144, "
             f"got {b._context_length} (capped value leaked)"
+        )
+        # The property should return the effective (capped) value for the UI
+        assert b.context_length is not None
+        assert b.context_length < 262144, (
+            f"context_length property should return the capped value, "
+            f"got {b.context_length}"
         )
 
     def test_fit_flag_when_gpus_none(self):

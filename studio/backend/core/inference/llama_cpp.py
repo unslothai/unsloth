@@ -48,6 +48,7 @@ class LlamaCppBackend:
         self._is_vision: bool = False
         self._healthy = False
         self._context_length: Optional[int] = None
+        self._effective_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._supports_tools: bool = False
@@ -95,7 +96,8 @@ class LlamaCppBackend:
 
     @property
     def context_length(self) -> Optional[int]:
-        return self._context_length
+        """Return the effective (possibly capped) context length the server is using."""
+        return self._effective_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -1258,6 +1260,7 @@ class LlamaCppBackend:
             self._port = None
             self._healthy = False
             self._context_length = None
+            self._effective_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
             self._supports_tools = False
