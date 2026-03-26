@@ -29,6 +29,14 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   isChatOnly: () => get().chatOnly,
 }));
 
+// Client-side platform detection as fallback when backend isn't ready yet.
+function detectLocalPlatform(): DeviceType {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("mac")) return "mac";
+  if (ua.includes("win")) return "windows";
+  return "linux";
+}
+
 export async function fetchDeviceType(): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched) return usePlatformStore.getState().deviceType;
@@ -37,13 +45,18 @@ export async function fetchDeviceType(): Promise<DeviceType> {
     const res = await fetch(apiUrl("/api/health"));
     if (res.ok) {
       const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
-      const deviceType = data.device_type ?? "linux";
+      const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? deviceType === "mac";
       usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
       return deviceType;
     }
-  } catch (err) {
-    console.warn("[platform] Failed to fetch device type, will retry", err);
+  } catch {
+    // Backend not ready — use client-side detection so chat-only guard
+    // still works on initial load (important for macOS).
+    const deviceType = detectLocalPlatform();
+    const chatOnly = deviceType === "mac";
+    usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
+    return deviceType;
   }
 
   return usePlatformStore.getState().deviceType;
