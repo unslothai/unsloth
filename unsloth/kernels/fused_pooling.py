@@ -16,7 +16,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_gpu_device
+from .utils import calculate_settings, torch_gpu_device, torch_amp_custom_fwd, torch_amp_custom_bwd
 
 
 @triton.jit
@@ -58,7 +58,7 @@ def _fused_layernorm_mean_pool_backward(
         grad_pooled + sentence_idx * grad_pooled_stride + col_offsets,
         mask = mask,
         other = 0,
-    ).to(tl.float32) / seq_len.to(tl.float32)
+    ).to(tl.float32) / tl.maximum(seq_len.to(tl.float32), 1.0)
 
     X_row = tl.load(X + row_idx * X_row_stride + col_offsets, mask = mask, other = 0).to(
         tl.float32
@@ -145,7 +145,7 @@ def _fused_layernorm_mean_pool_forward(
             pool_acc += normed
 
     # Divide by sequence length to get mean pool
-    pool_acc = pool_acc / seq_len.to(tl.float32)
+    pool_acc = pool_acc / tl.maximum(seq_len.to(tl.float32), 1.0)
 
     # Store output for this sentence
     Out += sentence_idx * Out_row_stride
@@ -154,12 +154,13 @@ def _fused_layernorm_mean_pool_forward(
 
 class FusedLayerNormMeanPool(torch.autograd.Function):
     @staticmethod
+    @torch_amp_custom_fwd
     def forward(ctx, X, W, bias, attention_mask, eps = 1e-12):
         batch_size, seq_len, hidden_dim = X.shape
         device = X.device
 
         # Flatten X to (batch*seq, hidden_dim)
-        X_flat = X.view(-1, hidden_dim)
+        X_flat = X.reshape(-1, hidden_dim)
         n_rows = X_flat.shape[0]
 
         # Per-sentence real token counts
@@ -169,8 +170,8 @@ class FusedLayerNormMeanPool(torch.autograd.Function):
         Out = torch.empty((batch_size, hidden_dim), dtype = X.dtype, device = device)
 
         # Allocate inv_var and mu for all tokens (needed for backward)
-        inv_var = torch.empty(n_rows, dtype = torch.float32, device = device)
-        mu_buf = torch.empty(n_rows, dtype = torch.float32, device = device)
+        inv_var = torch.zeros(n_rows, dtype = torch.float32, device = device)
+        mu_buf = torch.zeros(n_rows, dtype = torch.float32, device = device)
 
         BLOCK_SIZE, num_warps = calculate_settings(hidden_dim)
 
@@ -198,8 +199,10 @@ class FusedLayerNormMeanPool(torch.autograd.Function):
         return Out
 
     @staticmethod
+    @torch_amp_custom_bwd
     def backward(ctx, grad_pooled):
         # grad_pooled: (batch_size, hidden_dim)
+        grad_pooled = grad_pooled.contiguous()
         X_flat, W, bias, inv_var, mu_buf, seq_lengths = ctx.saved_tensors
         batch_size, seq_len, hidden_dim = ctx.shape
         device = X_flat.device
@@ -239,7 +242,7 @@ class FusedLayerNormMeanPool(torch.autograd.Function):
         )
         per_token_grad = (
             grad_pooled[sentence_idx].float()
-            / seq_lengths[sentence_idx].unsqueeze(1).float()
+            / seq_lengths[sentence_idx].unsqueeze(1).float().clamp(min=1)
         )
 
         # Mask out padding rows
@@ -268,6 +271,7 @@ def fused_layernorm_mean_pool(layernorm, X, attention_mask):
         Pooled output of shape (batch_size, hidden_dim).
     """
     assert layernorm.elementwise_affine is True
+    assert layernorm.bias is not None, "Fused pooling requires LayerNorm with bias"
     W = layernorm.weight
     bias = layernorm.bias
     eps = (

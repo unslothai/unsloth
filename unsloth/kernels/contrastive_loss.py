@@ -23,6 +23,7 @@ Supports non-square matrices (B_a != B_b) for multi-positive setups.
 
 import torch
 import torch.nn.functional as F
+from .utils import torch_amp_custom_fwd, torch_amp_custom_bwd
 
 
 class FusedContrastiveLoss(torch.autograd.Function):
@@ -41,9 +42,17 @@ class FusedContrastiveLoss(torch.autograd.Function):
     """
 
     @staticmethod
+    @torch_amp_custom_fwd
     def forward(ctx, embeddings_a, embeddings_b, scale = 20.0):
         B_a, _dim = embeddings_a.shape
         B_b = embeddings_b.shape[0]
+
+        if B_a == 0 or B_b == 0:
+            return torch.tensor(0.0, device=embeddings_a.device, dtype=embeddings_a.dtype,
+                                requires_grad=embeddings_a.requires_grad)
+
+        assert B_a <= B_b, f"FusedContrastiveLoss requires B_a <= B_b, got {B_a} and {B_b}"
+
         CHUNK = min(64, B_b)
 
         row_max = torch.full(
@@ -77,19 +86,16 @@ class FusedContrastiveLoss(torch.autograd.Function):
         row_lse = row_lse.log()
         loss = (-pos_logits + row_lse).mean()
 
-        ctx.save_for_backward(embeddings_a, embeddings_b)
+        ctx.save_for_backward(embeddings_a, embeddings_b, row_max, row_lse)
         ctx.scale = scale
-        ctx.row_max = row_max
-        ctx.row_lse = row_lse
 
         return loss
 
     @staticmethod
+    @torch_amp_custom_bwd
     def backward(ctx, grad_output):
-        embeddings_a, embeddings_b = ctx.saved_tensors
+        embeddings_a, embeddings_b, row_max, row_lse = ctx.saved_tensors
         scale = ctx.scale
-        row_max = ctx.row_max
-        row_lse = ctx.row_lse
 
         B_a = embeddings_a.shape[0]
         B_b = embeddings_b.shape[0]
@@ -139,6 +145,12 @@ class FastMultipleNegativesRankingLoss(torch.nn.Module):
         self.scale = scale
 
     def forward(self, sentence_features, labels = None):
+        if labels is not None:
+            import warnings
+            warnings.warn(
+                "Unsloth: labels is ignored by FusedContrastiveLoss (positive pairs are diagonal).",
+                stacklevel=2,
+            )
         reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
         embeddings_a = reps[0]
         embeddings_b = torch.cat(reps[1:], dim = 0)

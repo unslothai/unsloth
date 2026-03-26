@@ -81,7 +81,7 @@ def get_encoder_seq_info(attention_mask):
     cu_seqlens[0] = 0
     torch.cumsum(seq_lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
 
-    max_seqlen = seq_lengths.max()
+    max_seqlen = int(seq_lengths.max().item())
     indices = torch.nonzero(attention_mask.flatten(), as_tuple = False).squeeze(-1)
 
     return EncoderSeqInfo(seq_lengths, cu_seqlens, max_seqlen, indices)
@@ -541,7 +541,8 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
         w.mul_(mask)
 
         base._dense_weight = w.clone()
-        base.weight = torch.nn.Parameter(to_sparse_semi_structured(w))
+        _rg = base.weight.requires_grad
+        base.weight = torch.nn.Parameter(to_sparse_semi_structured(w), requires_grad=_rg)
         count += 1
 
     return count
@@ -555,7 +556,7 @@ def _remove_sparsity_from_base_weights(peft_model):
         if base is None or not isinstance(base, torch.nn.Linear):
             continue
         if hasattr(base, "_dense_weight"):
-            base.weight = torch.nn.Parameter(base._dense_weight)
+            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad=False)
             del base._dense_weight
             count += 1
     return count
@@ -578,6 +579,16 @@ def _patch_fused_pooling(st_model):
         return False
 
     if not getattr(pooling_mod, "pooling_mode_mean_tokens", False):
+        return False
+
+    if (
+        getattr(pooling_mod, "pooling_mode_cls_token", False)
+        or getattr(pooling_mod, "pooling_mode_max_tokens", False)
+        or getattr(pooling_mod, "pooling_mode_mean_sqrt_len_tokens", False)
+        or getattr(pooling_mod, "pooling_mode_weightedmean_tokens", False)
+        or getattr(pooling_mod, "pooling_mode_lasttoken", False)
+        or not getattr(pooling_mod, "include_prompt", True)
+    ):
         return False
 
     # unwrap PEFT if needed
@@ -610,6 +621,10 @@ def _patch_fused_pooling(st_model):
     setattr(parent, parts[-1], torch.nn.Identity())
 
     _original_pooling_forward = pooling_mod.forward
+    pooling_mod._fused_ln = stored_ln
+    pooling_mod._fused_ln_parent = parent
+    pooling_mod._fused_ln_attr = parts[-1]
+    pooling_mod._original_pooling_forward = _original_pooling_forward
 
     def _fused_pooling_forward(features):
         token_embeddings = features["token_embeddings"]
@@ -626,8 +641,34 @@ def _patch_fused_pooling(st_model):
         features["sentence_embedding"] = pooled
         return features
 
+    pooling_mod._fused_pooling_forward = _fused_pooling_forward
     pooling_mod.forward = _fused_pooling_forward
     return True
+
+
+@contextlib.contextmanager
+def _restore_fused_pooling_ln(st_model):
+    """Temporarily restore original LayerNorm for save operations."""
+    pooling_mod = None
+    for mod in st_model:
+        if hasattr(mod, "_fused_ln"):
+            pooling_mod = mod
+            break
+    if pooling_mod is None:
+        yield
+        return
+    parent = pooling_mod._fused_ln_parent
+    attr = pooling_mod._fused_ln_attr
+    ln = pooling_mod._fused_ln
+    identity = getattr(parent, attr)
+    setattr(parent, attr, ln)
+    old_fwd = pooling_mod.forward
+    pooling_mod.forward = pooling_mod._original_pooling_forward
+    try:
+        yield
+    finally:
+        setattr(parent, attr, identity)
+        pooling_mod.forward = old_fwd
 
 
 # modernbert excluded — has native unpadding (indices, cu_seqlens args)
@@ -638,6 +679,7 @@ _UNPAD_SUPPORTED_TYPES = {
     "albert",
     "electra",
     "mpnet",
+    "distilbert",
 }
 _UNPAD_MIN_PADDING_RATIO = 0.15
 
@@ -822,6 +864,11 @@ def _patch_unpadded_encoder(st_model, model_type):
         )
         _original_sdpa = torch.nn.functional.scaled_dot_product_attention
 
+        # NOTE: Thread-safety limitation (transformers 4.x path only).
+        # The below closure monkey-patches the global F.scaled_dot_product_attention for the
+        # duration of a forward pass. Two concurrent forward passes will race on the global.
+        # The transformers 5.x path (ALL_ATTENTION_FUNCTIONS registry) does not have this issue.
+        # Resolution: upgrade to transformers >=5.0, or use single-threaded DataLoader.
         def _varlen_sdpa(
             query,
             key,
@@ -1008,7 +1055,7 @@ def _patch_unpadded_encoder(st_model, model_type):
             # Transformers 5.x: varlen via ALL_ATTENTION_FUNCTIONS
             config._attn_implementation = "unsloth_varlen"
             config._unsloth_cu_seqlens = seq_info.cu_seqlens
-            config._unsloth_max_seqlen = int(seq_info.max_seqlen.item())
+            config._unsloth_max_seqlen = seq_info.max_seqlen
             config._unsloth_seq_lengths = seq_info.seq_lengths
             try:
                 outputs = auto_model(
@@ -1025,7 +1072,7 @@ def _patch_unpadded_encoder(st_model, model_type):
             # Transformers 4.x Tier 1: monkey-patch F.sdpa → varlen kernels
             config._attn_implementation = "sdpa"
             config._unsloth_cu_seqlens = seq_info.cu_seqlens
-            config._unsloth_max_seqlen = int(seq_info.max_seqlen.item())
+            config._unsloth_max_seqlen = seq_info.max_seqlen
             config._unsloth_seq_lengths = seq_info.seq_lengths
             torch.nn.functional.scaled_dot_product_attention = _varlen_sdpa
             try:
@@ -1187,9 +1234,13 @@ def _patch_efficient_pooling():
             if not self.include_prompt and "prompt_length" in features:
                 prompt_length = features["prompt_length"]
                 if isinstance(prompt_length, torch.Tensor):
-                    prompt_length = prompt_length[0].item()
+                    prompt_length = int(prompt_length[0].item())
                 attention_mask = attention_mask.clone()
-                attention_mask[:, :prompt_length] = 0
+                # Handle left-padded sequences
+                pad_lengths = (attention_mask == 0).to(torch.int32).argmin(dim=1)
+                for i in range(attention_mask.shape[0]):
+                    start = int(pad_lengths[i].item())
+                    attention_mask[i, start:start + prompt_length] = 0
 
             output_vectors = []
 
@@ -1238,8 +1289,9 @@ def _patch_efficient_pooling():
             return features
 
         Pooling.forward = _efficient_forward
-    except:
-        pass
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Unsloth: Failed to patch Pooling: {e}", stacklevel=2)
 
 
 _MNRL_PATCHED = False
@@ -1260,7 +1312,16 @@ def _patch_mnrl_loss():
 
         def _fused_forward(self, sentence_features, labels = None):
             first_ids = sentence_features[0].get("input_ids")
-            if first_ids is not None and first_ids.shape[0] < 512:
+            if first_ids is not None and first_ids.shape[0] < 8:
+                return _original_forward(self, sentence_features, labels)
+
+            # Fall back for non-default MNRL configurations
+            if (
+                getattr(self, "gather_across_devices", False)
+                or getattr(self, "directions", None) not in (None, ("query_to_doc",))
+                or getattr(self, "partition_mode", None) not in (None, "disabled", "joint")
+                or getattr(self, "hardness_mode", None) is not None
+            ):
                 return _original_forward(self, sentence_features, labels)
 
             reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
@@ -1285,8 +1346,9 @@ def _patch_mnrl_loss():
         print(
             "Unsloth: Patched MultipleNegativesRankingLoss with fused contrastive loss"
         )
-    except:
-        pass
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Unsloth: Failed to patch MultipleNegativesRankingLoss: {e}", stacklevel=2)
 
 
 def _save_pretrained_torchao(
@@ -1297,7 +1359,8 @@ def _save_pretrained_torchao(
     push_to_hub = False,
     token = None,
 ):
-    self.save_pretrained(save_directory)
+    with _restore_fused_pooling_ln(self):
+        self.save_pretrained(save_directory)
 
     # grab inner model
     inner_model = self[0].auto_model
@@ -2407,22 +2470,23 @@ class FastSentenceTransformer(FastModel):
                     )
 
             def _save_pretrained_merged(self, save_directory, **save_kwargs):
-                self.save_pretrained(save_directory)
-                tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
-                if hasattr(self[0], "auto_model"):
-                    inner = self[0].auto_model
-                    if hasattr(inner, "_orig_mod"):
-                        inner = inner._orig_mod
-                    if getattr(self, "_sparsity_applied", False):
-                        _remove_sparsity_from_base_weights(inner)
-                    if hasattr(inner, "merge_and_unload"):
-                        merged = inner.merge_and_unload()
-                        merged.save_pretrained(save_directory)
-                    elif hasattr(inner, "save_pretrained"):
-                        inner.save_pretrained(save_directory)
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
-                FastSentenceTransformer._add_unsloth_branding(save_directory)
+                with _restore_fused_pooling_ln(self):
+                    self.save_pretrained(save_directory)
+                    tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
+                    if hasattr(self[0], "auto_model"):
+                        inner = self[0].auto_model
+                        if hasattr(inner, "_orig_mod"):
+                            inner = inner._orig_mod
+                        if getattr(self, "_sparsity_applied", False):
+                            _remove_sparsity_from_base_weights(inner)
+                        if hasattr(inner, "merge_and_unload"):
+                            merged = inner.merge_and_unload()
+                            merged.save_pretrained(save_directory)
+                        elif hasattr(inner, "save_pretrained"):
+                            inner.save_pretrained(save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                    FastSentenceTransformer._add_unsloth_branding(save_directory)
 
             st_model.save_pretrained_merged = types.MethodType(
                 _save_pretrained_merged, st_model
@@ -2578,6 +2642,7 @@ class FastSentenceTransformer(FastModel):
                 _am_unwrap = _am._orig_mod if hasattr(_am, "_orig_mod") else _am
                 _cfg = getattr(_am_unwrap, "config", None)
                 _is_bidirectional = getattr(_cfg, "use_bidirectional_attention", False)
+                _is_decoder = bool(getattr(_cfg, "is_decoder", False))
                 if (
                     _cfg is not None
                     and getattr(_cfg, "_attn_implementation", None) == "flex_attention"
@@ -2633,7 +2698,7 @@ class FastSentenceTransformer(FastModel):
 
         # Skip bidirectional decoders — Unsloth patch closure prevents varlen injection
         _unpad_env = os.environ.get("UNSLOTH_UNPADDING", "1")
-        if _unpad_env == "1" and not _is_bidirectional:
+        if _unpad_env == "1" and _is_decoder and not _is_bidirectional:
             if _patch_unpadded_decoder(st_model):
                 _backend = getattr(st_model[0], "_unpadding_backend", "unknown")
                 print(
@@ -2641,55 +2706,56 @@ class FastSentenceTransformer(FastModel):
                 )
 
         def _save_pretrained_merged(self, save_directory, **kwargs):
-            # check which adapter files exist before save_pretrained
-            adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
-            existing_before = {
-                f
-                for f in adapter_files
-                if os.path.exists(os.path.join(save_directory, f))
-            }
+            with _restore_fused_pooling_ln(self):
+                # check which adapter files exist before save_pretrained
+                adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
+                existing_before = {
+                    f
+                    for f in adapter_files
+                    if os.path.exists(os.path.join(save_directory, f))
+                }
 
-            self.save_pretrained(save_directory)
+                self.save_pretrained(save_directory)
 
-            for file in adapter_files:
-                if file not in existing_before:
-                    try:
-                        os.remove(os.path.join(save_directory, file))
-                    except:
-                        pass
+                for file in adapter_files:
+                    if file not in existing_before:
+                        try:
+                            os.remove(os.path.join(save_directory, file))
+                        except:
+                            pass
 
-            tokenizer = kwargs.pop("tokenizer", self.tokenizer)
-            if self.no_modules:
-                print(
-                    "Unsloth: No modules detected. Using standard merge_and_unload for saving..."
-                )
-                safe_kwargs = kwargs.copy()
-                unsloth_args = [
-                    "save_method",
-                    "temporary_location",
-                    "maximum_memory_usage",
-                ]
-                for k in unsloth_args:
-                    safe_kwargs.pop(k, None)
+                tokenizer = kwargs.pop("tokenizer", self.tokenizer)
+                if self.no_modules:
+                    print(
+                        "Unsloth: No modules detected. Using standard merge_and_unload for saving..."
+                    )
+                    safe_kwargs = kwargs.copy()
+                    unsloth_args = [
+                        "save_method",
+                        "temporary_location",
+                        "maximum_memory_usage",
+                    ]
+                    for k in unsloth_args:
+                        safe_kwargs.pop(k, None)
 
-                inner_auto = self[0].auto_model
-                if getattr(self, "_sparsity_applied", False):
-                    _remove_sparsity_from_base_weights(inner_auto)
-                merged_model = inner_auto.merge_and_unload()
-                merged_model.save_pretrained(save_directory, **safe_kwargs)
-                if tokenizer is not None:
-                    tokenizer.save_pretrained(save_directory)
-            else:
-                if getattr(self, "_sparsity_applied", False):
-                    _remove_sparsity_from_base_weights(self[0].auto_model)
-                self[0].auto_model.save_pretrained_merged(
-                    save_directory, tokenizer = tokenizer, **kwargs
-                )
+                    inner_auto = self[0].auto_model
+                    if getattr(self, "_sparsity_applied", False):
+                        _remove_sparsity_from_base_weights(inner_auto)
+                    merged_model = inner_auto.merge_and_unload()
+                    merged_model.save_pretrained(save_directory, **safe_kwargs)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                else:
+                    if getattr(self, "_sparsity_applied", False):
+                        _remove_sparsity_from_base_weights(self[0].auto_model)
+                    self[0].auto_model.save_pretrained_merged(
+                        save_directory, tokenizer = tokenizer, **kwargs
+                    )
 
-            try:
-                FastSentenceTransformer._add_unsloth_branding(save_directory)
-            except Exception as e:
-                print(f"Unsloth Warning: Failed to add branding to README: {e}")
+                try:
+                    FastSentenceTransformer._add_unsloth_branding(save_directory)
+                except Exception as e:
+                    print(f"Unsloth Warning: Failed to add branding to README: {e}")
 
         st_model.save_pretrained_merged = types.MethodType(
             _save_pretrained_merged, st_model
@@ -3034,7 +3100,8 @@ def _patch_sentence_transformer_trainer():
         if hasattr(self, "args") and self.args is not None:
             if not self.args.dataloader_pin_memory:
                 self.args.dataloader_pin_memory = True
-            if self.args.dataloader_num_workers == 0:
+            if self.args.dataloader_num_workers == 0 and os.environ.get("UNSLOTH_NUM_WORKERS") != "0":
+                print("Unsloth: Setting dataloader_num_workers=2. Set UNSLOTH_NUM_WORKERS=0 to disable.")
                 self.args.dataloader_num_workers = 2
 
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
