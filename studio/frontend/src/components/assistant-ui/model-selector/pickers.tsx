@@ -905,15 +905,18 @@ export function LoraModelPicker({
                 {index > 0 ? <div className="my-1" /> : null}
                 <ListLabel>{baseModel}</ListLabel>
                 {adapters.map((adapter) => {
+                  const isLocal = adapter.source === "local";
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
-                  const tag = isGguf
-                    ? "GGUF"
-                    : isExported
-                      ? isMerged ? "Merged" : "LoRA"
-                      : "LoRA";
-                  const meta = isExported ? `${tag} · Exported` : tag;
+                  const tag = isLocal
+                    ? "Local"
+                    : isGguf
+                      ? "GGUF"
+                      : isExported
+                        ? isMerged ? "Merged" : "LoRA"
+                        : "LoRA";
+                  const meta = isLocal ? "Local" : isExported ? `${tag} · Exported` : tag;
                   return (
                     <ModelRow
                       key={adapter.id}
@@ -921,8 +924,8 @@ export function LoraModelPicker({
                       meta={meta}
                       selected={value === adapter.id}
                       onClick={() => onSelect(adapter.id, {
-                        source: isExported ? "exported" : "lora",
-                        isLora: !isMerged && !isGguf,
+                        source: isLocal ? "local" : isExported ? "exported" : "lora",
+                        isLora: !isLocal && !isMerged && !isGguf,
                       })}
                       tooltipText={
                         <>
