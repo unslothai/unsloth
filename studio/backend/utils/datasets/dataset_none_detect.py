@@ -89,11 +89,20 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             # and continue probing the remaining candidates.  A later column
             # may be healthy and should take priority.
             if all_corrupt_fallback is None:
+                # P2 fix: only treat the column as a corrupt conversation column
+                # when its values are list or None.  Plain scalars (strings,
+                # ints, etc.) indicate a non-conversation column that happens
+                # to share a candidate name — they should not match chatml.
+                has_list_or_none = any(
+                    isinstance(dataset[i][col], list) or dataset[i][col] is None
+                    for i in range(min(len(dataset), 100))
+                )
                 all_corrupt_fallback = {
                     "column": col,
                     "turn_keys": set(),
                     "roles": set(),
                     "all_corrupt": True,
+                    "has_list_or_none": has_list_or_none,
                 }
             continue
 
@@ -195,20 +204,11 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
     per bad turn with row_index, turn_index, role, value_type, and raw_value.
     """
     if col is None:
-        for candidate in ("messages", "conversations", "texts"):
-            if candidate not in dataset.column_names:
-                continue
-            # Validate it's actually a chat column, same as _probe_conversation.
-            turn_keys = set()
-            for i in range(min(len(dataset), 100)):
-                conv = dataset[i][candidate]
-                if isinstance(conv, list):
-                    for t in conv:
-                        if isinstance(t, dict):
-                            turn_keys.update(t.keys())
-            if any(keys <= turn_keys for keys in _CHAT_KEY_SETS):
-                col = candidate
-                break
+        # Reuse _probe_conversation so the all_corrupt path (fully malformed
+        # columns) is handled correctly without duplicating probe logic here.
+        _cinfo = _probe_conversation(dataset)
+        if _cinfo is not None:
+            col = _cinfo["column"]
 
     if col is None or col not in dataset.column_names:
         raise ValueError(
@@ -402,9 +402,10 @@ FORMAT_REGISTRY = [
             conv is not None
             and (
                 {"role", "content"} <= conv["turn_keys"]
-                or conv.get(
-                    "all_corrupt"
-                )  # P1 fix: probe found the col but all rows are corrupt
+                # all_corrupt path: probe found the column but every row is
+                # malformed.  Require has_list_or_none so plain-string or
+                # other scalar columns are not misclassified as chatml (P2 fix).
+                or (conv.get("all_corrupt") and conv.get("has_list_or_none"))
             )
         ),
         "scan": find_none_chatml,
@@ -458,15 +459,16 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
         raise ValueError(f"Unknown or unsupported format: '{fmt}'")
     # Column forwarding rules:
     # - auto-detect: always pass the probed column (probe already chose best)
-    # - explicit format + all_corrupt probe: pass probed column so the scanner
-    #   doesn't re-probe and raise ValueError on the corrupt column
-    # - explicit format + healthy probe: let the scanner use its own per-format
-    #   column priority (e.g. find_none_sharegpt prefers 'conversations' over
-    #   'messages' even if probe landed on 'messages')
+    # - explicit format: let each scanner's own per-format probe handle column
+    #   selection.  Forwarding the generic probe's column for explicit formats
+    #   breaks semantics when the generic probe (ordered messages→conversations)
+    #   picks a different column than the format expects, e.g. scan_dataset(
+    #   fmt='sharegpt') should always scan 'conversations', not 'messages'
+    #   even when both columns are all-corrupt (P1 fix).
     use_probed_col = (
         conv_info is not None
         and fmt != "alpaca"
-        and (was_auto or conv_info.get("all_corrupt"))
+        and was_auto
     )
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])

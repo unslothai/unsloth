@@ -171,9 +171,11 @@ def test_probe_p1_fix():
 
 
 def test_probe_string_corrupt():
-    """Verify all-corrupt probe path also handles non-list values like strings
-    (previously has_list_values guard would skip those columns)."""
-    section("P1 Fix Verification — all-corrupt probe with non-list string values")
+    """Verify that a plain-string 'messages' column is NOT classified as chatml.
+    The all_corrupt+has_list_or_none guard (P2 fix) must prevent plain-string
+    columns from triggering the chatml path — scan_dataset should raise
+    ValueError('unknown format') rather than misclassifying as chatml."""
+    section("P2 Fix Verification — plain-string messages not classified as chatml")
 
     string_rows = [{"messages": "this is a string, not a list"}] * 5
     mock_ds = _MockDataset(string_rows, ["messages"])
@@ -181,16 +183,20 @@ def test_probe_string_corrupt():
     print(f"  Rows under test: {len(string_rows)} rows all with messages='string'")
     try:
         stats = scan_dataset(mock_ds, fmt = "auto")
-        print_report(stats, stats.get("format", "?"))
-        bad = len(stats.get("bad_row_indices", []))
-        status = "PASS" if bad == len(string_rows) else "FAIL"
+        fmt = stats.get("format", "?")
+        # Plain strings must NOT be classified as chatml.
+        not_chatml = fmt != "chatml"
+        status = "PASS" if not_chatml else "FAIL"
         print(
-            f"  [{status}] String-corrupt probe fix: {bad}/{len(string_rows)} rows caught via auto-detect"
+            f"  [{status}] String-corrupt probe: detected fmt={fmt!r} "
+            f"(expected: anything except 'chatml')"
         )
         return stats
     except ValueError as exc:
+        # ValueError (unknown format) is the CORRECT outcome — plain strings
+        # are not a conversation column and should not match any format.
         print(
-            f"  [FAIL] scan_dataset raised ValueError (string-corrupt probe NOT fixed): {exc}"
+            f"  [PASS] String-corrupt probe: scan_dataset raised ValueError (not chatml, as expected): {exc}"
         )
         return None
 
@@ -349,6 +355,65 @@ def test_p2_gptoss_col_priority():
         return None
 
 
+def test_new_p1_explicit_sharegpt_both_all_corrupt():
+    """NEW P1 (commit eb7fea3b7e): when fmt='sharegpt' and both 'messages' and
+    'conversations' are all-corrupt in the first 100 rows, scan_dataset must scan
+    'conversations' (the sharegpt column), NOT 'messages' (the generic probe's
+    first candidate)."""
+    section("NEW P1 — explicit fmt='sharegpt' scans 'conversations' even when both columns all-corrupt")
+
+    # Both columns are all-corrupt: every row has None.
+    rows = [{"messages": None, "conversations": None}] * 5
+    mock_ds = _MockDataset(rows, ["messages", "conversations"])
+
+    print(f"  Rows: {len(rows)} — messages=None, conversations=None (both all-corrupt)")
+    try:
+        stats = scan_dataset(mock_ds, fmt = "sharegpt")
+        col = stats.get("column", "?")
+        bad = len(stats.get("bad_row_indices", []))
+        # MUST scan 'conversations', not 'messages'.
+        correct_col = col == "conversations"
+        correct_bad = bad == 5
+        status = "PASS" if (correct_col and correct_bad) else "FAIL"
+        print(
+            f"  [{status}] New-P1 explicit sharegpt: col={col!r} bad_rows={bad} "
+            f"(expected col='conversations' bad=5)"
+        )
+        print_report(stats, "sharegpt")
+        return stats
+    except ValueError as exc:
+        print(f"  [FAIL] scan_dataset raised ValueError: {exc}")
+        return None
+
+
+def test_new_p2_plain_string_messages_not_chatml():
+    """NEW P2 (commit eb7fea3b7e): a dataset where 'messages' contains plain
+    strings (not lists) must NOT be auto-classified as chatml.  The all_corrupt
+    path in FORMAT_REGISTRY chatml match previously triggered here too."""
+    section("NEW P2 — plain-string 'messages' column must NOT be classified as chatml")
+
+    # messages is a plain text column, not a conversation column at all.
+    rows = [{"messages": "hello world"}] * 5
+    mock_ds = _MockDataset(rows, ["messages"])
+
+    print(f"  Rows: {len(rows)} — messages='hello world' (plain strings, not conversation)")
+    try:
+        stats = scan_dataset(mock_ds, fmt = "auto")
+        fmt = stats.get("format", "?")
+        # Classifying as chatml is wrong; 'unknown' or another non-chatml result expected.
+        not_chatml = fmt != "chatml"
+        status = "PASS" if not_chatml else "FAIL"
+        print(
+            f"  [{status}] New-P2 plain-string messages: detected fmt={fmt!r} "
+            f"(expected: anything except 'chatml')"
+        )
+        return stats
+    except ValueError as exc:
+        # ValueError is also acceptable — the column isn't a valid conversation format.
+        print(f"  [PASS] New-P2 plain-string messages: scan_dataset raised ValueError (not chatml): {exc}")
+        return {"format": "unknown", "total_rows": 5, "bad_row_indices": [], "findings": []}
+
+
 def test_synthetic():
     section("1. Synthetic Datasets (generated in-memory)")
 
@@ -469,6 +534,8 @@ def main():
         )
         all_results["p2_explicit_col_priority"] = test_p2_explicit_fmt_col_priority()
         all_results["p2_gptoss_col_priority"] = test_p2_gptoss_col_priority()
+        all_results["new_p1_sharegpt_all_corrupt"] = test_new_p1_explicit_sharegpt_both_all_corrupt()
+        all_results["new_p2_plain_string_not_chatml"] = test_new_p2_plain_string_messages_not_chatml()
         all_results["synthetic"] = test_synthetic()
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()
