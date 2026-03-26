@@ -16,7 +16,12 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_gpu_device, torch_amp_custom_fwd, torch_amp_custom_bwd
+from .utils import (
+    calculate_settings,
+    torch_gpu_device,
+    torch_amp_custom_fwd,
+    torch_amp_custom_bwd,
+)
 
 
 @triton.jit
@@ -240,10 +245,9 @@ class FusedLayerNormMeanPool(torch.autograd.Function):
         sentence_idx = torch.arange(batch_size, device = device).repeat_interleave(
             seq_len
         )
-        per_token_grad = (
-            grad_pooled[sentence_idx].float()
-            / seq_lengths[sentence_idx].unsqueeze(1).float().clamp(min=1)
-        )
+        per_token_grad = grad_pooled[sentence_idx].float() / seq_lengths[
+            sentence_idx
+        ].unsqueeze(1).float().clamp(min = 1)
 
         # Mask out padding rows
         tok_offsets = torch.arange(seq_len, device = device).repeat(batch_size)

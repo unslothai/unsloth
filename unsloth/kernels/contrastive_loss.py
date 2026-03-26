@@ -48,10 +48,16 @@ class FusedContrastiveLoss(torch.autograd.Function):
         B_b = embeddings_b.shape[0]
 
         if B_a == 0 or B_b == 0:
-            return torch.tensor(0.0, device=embeddings_a.device, dtype=embeddings_a.dtype,
-                                requires_grad=embeddings_a.requires_grad)
+            return torch.tensor(
+                0.0,
+                device = embeddings_a.device,
+                dtype = embeddings_a.dtype,
+                requires_grad = embeddings_a.requires_grad,
+            )
 
-        assert B_a <= B_b, f"FusedContrastiveLoss requires B_a <= B_b, got {B_a} and {B_b}"
+        assert (
+            B_a <= B_b
+        ), f"FusedContrastiveLoss requires B_a <= B_b, got {B_a} and {B_b}"
 
         CHUNK = min(64, B_b)
 
@@ -147,9 +153,10 @@ class FastMultipleNegativesRankingLoss(torch.nn.Module):
     def forward(self, sentence_features, labels = None):
         if labels is not None:
             import warnings
+
             warnings.warn(
                 "Unsloth: labels is ignored by FusedContrastiveLoss (positive pairs are diagonal).",
-                stacklevel=2,
+                stacklevel = 2,
             )
         reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
         embeddings_a = reps[0]

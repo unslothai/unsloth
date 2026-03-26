@@ -542,7 +542,9 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
 
         base._dense_weight = w.clone()
         _rg = base.weight.requires_grad
-        base.weight = torch.nn.Parameter(to_sparse_semi_structured(w), requires_grad=_rg)
+        base.weight = torch.nn.Parameter(
+            to_sparse_semi_structured(w), requires_grad = _rg
+        )
         count += 1
 
     return count
@@ -556,7 +558,7 @@ def _remove_sparsity_from_base_weights(peft_model):
         if base is None or not isinstance(base, torch.nn.Linear):
             continue
         if hasattr(base, "_dense_weight"):
-            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad=False)
+            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad = False)
             del base._dense_weight
             count += 1
     return count
@@ -1237,10 +1239,10 @@ def _patch_efficient_pooling():
                     prompt_length = int(prompt_length[0].item())
                 attention_mask = attention_mask.clone()
                 # Handle left-padded sequences
-                pad_lengths = (attention_mask == 0).to(torch.int32).argmin(dim=1)
+                pad_lengths = (attention_mask == 0).to(torch.int32).argmin(dim = 1)
                 for i in range(attention_mask.shape[0]):
                     start = int(pad_lengths[i].item())
-                    attention_mask[i, start:start + prompt_length] = 0
+                    attention_mask[i, start : start + prompt_length] = 0
 
             output_vectors = []
 
@@ -1291,7 +1293,8 @@ def _patch_efficient_pooling():
         Pooling.forward = _efficient_forward
     except Exception as e:
         import warnings
-        warnings.warn(f"Unsloth: Failed to patch Pooling: {e}", stacklevel=2)
+
+        warnings.warn(f"Unsloth: Failed to patch Pooling: {e}", stacklevel = 2)
 
 
 _MNRL_PATCHED = False
@@ -1319,7 +1322,8 @@ def _patch_mnrl_loss():
             if (
                 getattr(self, "gather_across_devices", False)
                 or getattr(self, "directions", None) not in (None, ("query_to_doc",))
-                or getattr(self, "partition_mode", None) not in (None, "disabled", "joint")
+                or getattr(self, "partition_mode", None)
+                not in (None, "disabled", "joint")
                 or getattr(self, "hardness_mode", None) is not None
             ):
                 return _original_forward(self, sentence_features, labels)
@@ -1348,7 +1352,10 @@ def _patch_mnrl_loss():
         )
     except Exception as e:
         import warnings
-        warnings.warn(f"Unsloth: Failed to patch MultipleNegativesRankingLoss: {e}", stacklevel=2)
+
+        warnings.warn(
+            f"Unsloth: Failed to patch MultipleNegativesRankingLoss: {e}", stacklevel = 2
+        )
 
 
 def _save_pretrained_torchao(
@@ -3100,8 +3107,13 @@ def _patch_sentence_transformer_trainer():
         if hasattr(self, "args") and self.args is not None:
             if not self.args.dataloader_pin_memory:
                 self.args.dataloader_pin_memory = True
-            if self.args.dataloader_num_workers == 0 and os.environ.get("UNSLOTH_NUM_WORKERS") != "0":
-                print("Unsloth: Setting dataloader_num_workers=2. Set UNSLOTH_NUM_WORKERS=0 to disable.")
+            if (
+                self.args.dataloader_num_workers == 0
+                and os.environ.get("UNSLOTH_NUM_WORKERS") != "0"
+            ):
+                print(
+                    "Unsloth: Setting dataloader_num_workers=2. Set UNSLOTH_NUM_WORKERS=0 to disable."
+                )
                 self.args.dataloader_num_workers = 2
 
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
