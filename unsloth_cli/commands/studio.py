@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -115,6 +116,87 @@ def _find_setup_script() -> Optional[Path]:
         for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
+
+
+def _stage_setup_script_if_needed(
+    script: Path,
+) -> tuple[Path, Optional[tempfile.TemporaryDirectory]]:
+    """Stage setup assets outside the Studio venv when the source lives inside it.
+
+    `unsloth studio setup` recreates the studio venv. When the setup
+    script itself is being executed from that venv's site-packages directory, the
+    script can delete its own source tree mid-run. Copy the whole `studio/`
+    package to a temp directory first so the script has stable relative paths.
+    """
+    try:
+        script = Path(script).resolve()
+    except FileNotFoundError:
+        return script, None
+
+    venv_root = (STUDIO_HOME / "unsloth_studio").resolve()
+    if venv_root not in script.parents:
+        return script, None
+
+    temp_dir = tempfile.TemporaryDirectory(prefix = "unsloth-studio-setup-")
+    staged_root = Path(temp_dir.name) / "studio"
+    shutil.copytree(script.parent, staged_root)
+    return staged_root / script.name, temp_dir
+
+
+def _in_studio_venv() -> bool:
+    """Return True when the current Python already points at the Studio venv."""
+    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
+    return sys.prefix.startswith(str(studio_venv_dir))
+
+
+def _reexec_cli_in_studio_venv(command_args: list[str], silent: bool = False) -> None:
+    """Re-exec the CLI inside the Studio venv when available.
+
+    Commands like train/inference/export need the Studio-managed runtime, but may
+    be launched from a lighter outer environment where only the `unsloth` entry
+    point is installed. This mirrors the existing studio/ui venv handoff.
+    """
+    if _in_studio_venv():
+        # Already in the venv — just ensure studio/backend is on sys.path
+        # so bare imports like ``from loggers import ...`` work.
+        backend_dir = str(_PACKAGE_ROOT / "studio" / "backend")
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        return
+
+    studio_python = _studio_venv_python()
+    if not studio_python:
+        typer.echo("Studio not set up. Run 'unsloth studio setup' first.")
+        raise typer.Exit(1)
+
+    # Propagate studio/backend onto PYTHONPATH so the re-exec'd process can
+    # resolve bare imports (e.g. ``from loggers import get_logger``).
+    # For editable installs, also add the checkout root so the child process
+    # uses the local code instead of a stale venv wheel.
+    backend_dir = str(_PACKAGE_ROOT / "studio" / "backend")
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    extra_paths = [backend_dir]
+    # Detect editable install: _PACKAGE_ROOT contains pyproject.toml
+    if (_PACKAGE_ROOT / "pyproject.toml").is_file():
+        extra_paths.insert(0, str(_PACKAGE_ROOT))
+    extra = os.pathsep.join(extra_paths)
+    env["PYTHONPATH"] = f"{extra}{os.pathsep}{existing}" if existing else extra
+
+    args = [str(studio_python), "-m", "unsloth_cli", *command_args]
+
+    if sys.platform == "win32":
+        proc = subprocess.Popen(args, env = env)
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            rc = proc.wait()
+        raise typer.Exit(rc)
+    else:
+        if not silent:
+            typer.echo("Launching with studio venv...")
+        os.environ.update(env)
+        os.execvp(str(studio_python), args)
 
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
@@ -428,8 +510,7 @@ def studio_default(
         return
 
     # Always use the studio venv if it exists and we're not already in it
-    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _in_studio_venv()
 
     if not in_studio_venv:
         studio_python = _studio_venv_python()
