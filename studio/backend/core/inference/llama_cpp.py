@@ -1131,19 +1131,26 @@ class LlamaCppBackend:
     def _kill_orphaned_servers():
         """Kill orphaned llama-server processes started by studio.
 
-        Only kills processes whose binary lives under ~/.unsloth/llama.cpp/
-        to avoid terminating unrelated llama-server instances on the machine.
+        Only kills processes whose binary lives under a known Studio install
+        directory to avoid terminating unrelated llama-server instances.
         """
         import os
         import signal
 
-        # Only match servers whose binary lives under the Studio install dir.
-        # The old check matched "unsloth" anywhere in the cmdline, which
-        # incorrectly killed the user's own llama-server when it was serving
-        # models from unsloth/ HF repos (the model path contains "unsloth").
-        studio_llama_dir = str(Path.home() / ".unsloth" / "llama.cpp")
-
         try:
+            # Collect all directories where Studio may have installed its
+            # llama-server binary.  Matches the search order in
+            # _find_llama_server_binary() so orphans from any supported
+            # install location are still cleaned up.
+            studio_dirs: list[str] = []
+            studio_dirs.append(str(Path.home() / ".unsloth" / "llama.cpp"))
+            env_path = os.environ.get("LLAMA_SERVER_PATH")
+            if env_path:
+                studio_dirs.append(str(Path(env_path).parent))
+            custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+            if custom_dir:
+                studio_dirs.append(str(Path(custom_dir)))
+
             result = subprocess.run(
                 ["pgrep", "-a", "-f", "llama-server"],
                 capture_output = True,
@@ -1160,11 +1167,12 @@ class LlamaCppBackend:
                 cmdline = parts[1]
                 if pid == os.getpid():
                     continue
-                # Extract the binary path (first token). Only kill if the
-                # binary itself lives under ~/.unsloth/llama.cpp/, not if
-                # "unsloth" merely appears in model path arguments.
+                # Extract the binary path (first token of the cmdline).
+                # Only kill if the binary itself lives under a known Studio
+                # install dir -- not if "unsloth" merely appears in model
+                # path arguments (e.g. HF cache paths for unsloth/ repos).
                 binary_path = cmdline.split()[0] if cmdline.strip() else ""
-                if studio_llama_dir not in binary_path:
+                if not any(d in binary_path for d in studio_dirs):
                     continue
                 try:
                     os.kill(pid, signal.SIGKILL)
