@@ -492,7 +492,18 @@ export function HubModelPicker({
     useRecommendedModelVram(recommendedIds);
 
   const showHfSection = debouncedQuery.trim().length > 0;
-  const recommendedSet = useMemo(() => new Set(visibleRecommendedIds), [visibleRecommendedIds]);
+
+  // Recommended models that match the current search query
+  const filteredRecommendedIds = useMemo(() => {
+    if (!showHfSection) return [];
+    const q = debouncedQuery.trim().toLowerCase();
+    return recommendedIds.filter((id) => id.toLowerCase().includes(q));
+  }, [showHfSection, debouncedQuery, recommendedIds]);
+
+  const recommendedSet = useMemo(
+    () => new Set(showHfSection ? filteredRecommendedIds : visibleRecommendedIds),
+    [showHfSection, filteredRecommendedIds, visibleRecommendedIds],
+  );
 
   const hfIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -543,7 +554,8 @@ export function HubModelPicker({
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
-    for (const id of visibleRecommendedIds) {
+    const ids = showHfSection ? filteredRecommendedIds : visibleRecommendedIds;
+    for (const id of ids) {
       const totalParams = recommendedParamCountById.get(id);
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
@@ -555,7 +567,7 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [visibleRecommendedIds, recommendedParamCountById, gpu]);
+  }, [showHfSection, filteredRecommendedIds, visibleRecommendedIds, recommendedParamCountById, gpu]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, results.length);
 
@@ -709,6 +721,35 @@ export function HubModelPicker({
                   </div>
                 </>
               )}
+            </>
+          ) : null}
+
+          {showHfSection && filteredRecommendedIds.length > 0 ? (
+            <>
+              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              {filteredRecommendedIds.map((id) => {
+                const vram = recommendedVramMap.get(id);
+                return (
+                  <div key={id}>
+                    <ModelRow
+                      label={id}
+                      meta={
+                        isGgufRepo(id)
+                          ? "GGUF"
+                          : vram?.detail ?? extractParamLabel(id)
+                      }
+                      selected={value === id}
+                      onClick={() => handleModelClick(id)}
+                      vramStatus={isGgufRepo(id) ? null : vram?.status ?? null}
+                      vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                    />
+                    {expandedGguf === id && (
+                      <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                    )}
+                  </div>
+                );
+              })}
             </>
           ) : null}
 
