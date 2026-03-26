@@ -2694,21 +2694,17 @@ class FastSentenceTransformer(FastModel):
                     and getattr(_cfg, "_attn_implementation", None) == "flex_attention"
                 ):
                     if _is_bidirectional:
-                        # Short seqs don't need sliding window BlockMask; SDPA is faster
-                        _sw = getattr(_cfg, "sliding_window", None) or float("inf")
-                        if max_seq_length < _sw:
-                            _cfg._attn_implementation = "sdpa"
-                            if hasattr(_cfg, "attn_implementation"):
-                                _cfg.attn_implementation = "sdpa"
-                            print(
-                                f"Unsloth: Overriding flex_attention → sdpa for bidirectional model "
-                                f"(max_seq_length={max_seq_length} < sliding_window={_sw})"
-                            )
-                        else:
-                            print(
-                                f"Unsloth: Keeping flex_attention for bidirectional model "
-                                f"(max_seq_length={max_seq_length} >= sliding_window={_sw})"
-                            )
+                        # flex_attention's create_block_mask Triton kernel can crash
+                        # with illegal memory access on variable-length batches during
+                        # training. SDPA handles sliding window via explicit masks and
+                        # is stable for sentence transformer workloads.
+                        _cfg._attn_implementation = "sdpa"
+                        if hasattr(_cfg, "attn_implementation"):
+                            _cfg.attn_implementation = "sdpa"
+                        print(
+                            "Unsloth: Overriding flex_attention -> sdpa for "
+                            "bidirectional sentence transformer training"
+                        )
                     else:
                         _has_fa2 = False
                         try:
