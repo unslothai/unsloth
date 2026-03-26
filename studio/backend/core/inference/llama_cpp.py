@@ -1137,8 +1137,13 @@ class LlamaCppBackend:
         import os
         import signal
 
+        # Only match servers whose binary lives under the Studio install dir.
+        # The old check matched "unsloth" anywhere in the cmdline, which
+        # incorrectly killed the user's own llama-server when it was serving
+        # models from unsloth/ HF repos (the model path contains "unsloth").
+        studio_llama_dir = str(Path.home() / ".unsloth" / "llama.cpp")
+
         try:
-            # Use pgrep with full command match to identify studio-managed servers
             result = subprocess.run(
                 ["pgrep", "-a", "-f", "llama-server"],
                 capture_output = True,
@@ -1155,8 +1160,11 @@ class LlamaCppBackend:
                 cmdline = parts[1]
                 if pid == os.getpid():
                     continue
-                # Only kill if it's a studio-managed server (lives under .unsloth/)
-                if ".unsloth/" not in cmdline and "unsloth" not in cmdline.lower():
+                # Extract the binary path (first token). Only kill if the
+                # binary itself lives under ~/.unsloth/llama.cpp/, not if
+                # "unsloth" merely appears in model path arguments.
+                binary_path = cmdline.split()[0] if cmdline.strip() else ""
+                if studio_llama_dir not in binary_path:
                     continue
                 try:
                     os.kill(pid, signal.SIGKILL)
