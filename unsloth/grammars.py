@@ -67,7 +67,8 @@ def _bytes_to_unicode():
             cs.append(256 + n)
             n += 1
     return dict(zip(bs, (chr(c) for c in cs)))
-pass
+
+
 
 
 _TOKENIZER_RESOURCE_CACHE = weakref.WeakKeyDictionary()
