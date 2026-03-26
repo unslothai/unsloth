@@ -461,13 +461,25 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 4. Overrides (torchao, transformers) -- force-reinstall
+    # 4. Overrides (torchao) -- force-reinstall
     _progress("dependency overrides")
     pip_install(
         "Installing dependency overrides",
         "--force-reinstall",
         "--no-cache-dir",
         req = REQ_ROOT / "overrides.txt",
+    )
+
+    # 4b. pytorch_tokenizers & kernels -- --no-deps to avoid cascading into
+    # huggingface_hub -> pyyaml whose _yaml.pyd is locked on Windows (os error 5).
+    # Their deps (huggingface_hub, tokenizers, pyyaml, etc.) are already installed.
+    pip_install(
+        "Installing pytorch_tokenizers and kernels",
+        "--force-reinstall",
+        "--no-deps",
+        "--no-cache-dir",
+        "pytorch_tokenizers",
+        "kernels",
     )
 
     # 5. Triton kernels (no-deps, from source)
