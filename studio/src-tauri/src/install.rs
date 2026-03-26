@@ -131,6 +131,15 @@ fn spawn_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // AppImage/Flatpak set LD_LIBRARY_PATH to their bundled libs, which breaks
+    // Python spawned by the install script. Clear these env vars.
+    #[cfg(target_os = "linux")]
+    {
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+
     // Spawn in a process group so kill() terminates the entire tree
     let mut group_child = cmd
         .group()
