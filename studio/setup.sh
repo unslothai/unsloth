@@ -304,15 +304,24 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
             | grep -v '^#' | grep -v '^$' \
             | pip install -q -r /dev/stdin 2>/dev/null || true
 
-        # Install core ML packages (unsloth + unsloth-zoo) and training
-        # extras (trl, transformers, etc.) into system Python.  Without
-        # these the training/inference/export workers fail at import time
-        # with "Failed to import ML libraries: Please install unsloth_zoo".
+        # Install the same ML package groups that install_python_stack.py
+        # uses for the normal (venv) path.  Without these the training,
+        # inference, and export workers fail at import time with:
+        #   "Failed to import ML libraries: Please install unsloth_zoo"
+        # base.txt must succeed -- it has unsloth + unsloth-zoo.
         echo "   Installing core ML packages for training..."
-        pip install -q -r "$SCRIPT_DIR/backend/requirements/base.txt" 2>/dev/null || true
+        pip install -q -r "$SCRIPT_DIR/backend/requirements/base.txt" || {
+            echo "Failed to install base ML packages (unsloth + unsloth-zoo)"
+            exit 1
+        }
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/extras.txt" \
             | grep -v '^#' | grep -v '^$' \
             | pip install -q -r /dev/stdin 2>/dev/null || true
+        # trl, transformers, sentence_transformers live in extras-no-deps.txt
+        pip install -q --no-deps \
+            -r "$SCRIPT_DIR/backend/requirements/extras-no-deps.txt" 2>/dev/null || true
+        pip install -q --force-reinstall \
+            -r "$SCRIPT_DIR/backend/requirements/overrides.txt" 2>/dev/null || true
 
         _COLAB_NO_VENV=true
     else
