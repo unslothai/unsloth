@@ -65,8 +65,8 @@ def _detect_gpu() -> str:
 
 # Extra context for evals where unsloth is already installed
 ENV_CONTEXT_INSTALLED = """
-- unsloth CLI is already installed. Studio venv exists at ~/.unsloth/studio/.venv (Python 3.11).
-- `unsloth studio setup` is already done.
+- unsloth CLI is already installed. Studio venv exists at ~/.unsloth/studio/unsloth_studio (Python 3.11).
+- Studio is already set up (unsloth studio update has been run).
 """.strip()
 
 
