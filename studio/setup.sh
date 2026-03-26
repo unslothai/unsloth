@@ -7,6 +7,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Parse arguments ──
+for arg in "$@"; do
+    case "$arg" in
+        --local)
+            export STUDIO_LOCAL_INSTALL=1
+            export STUDIO_LOCAL_REPO="$REPO_ROOT"
+            ;;
+    esac
+done
+
 # ── Helper: run command quietly, show output only on failure ──
 _run_quiet() {
     local on_fail=$1
@@ -371,6 +381,13 @@ print(version('$_PKG_NAME'))
     elif [ -z "$LATEST_VER" ]; then
         echo "⚠️  Could not reach PyPI, updating dependencies to be safe..."
     fi
+fi
+
+# On Colab with --local, still call install_python_stack to install
+# unsloth + unsloth_zoo and overlay the local repo — only the version check
+# above needed skipping (it requires $VENV_DIR/bin/python which doesn't exist).
+if [ "$_COLAB_NO_VENV" = true ] && [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
+    _SKIP_PYTHON_DEPS=false
 fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
