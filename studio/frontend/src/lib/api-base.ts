@@ -5,11 +5,11 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window
 const isViteDev = import.meta.env.DEV
 
 if (isTauri && !isViteDev) {
-  apiBase = 'http://localhost:8888'
+  apiBase = 'http://127.0.0.1:8888'
 }
 
 export function setApiBase(port: number) {
-  apiBase = `http://localhost:${port}`
+  apiBase = `http://127.0.0.1:${port}`
 }
 
 export function getApiBase(): string {
