@@ -36,7 +36,7 @@ _run_quiet() {
 
     local tmplog
     tmplog=$(mktemp) || {
-        step "error" "Failed to create temporary file" "$C_ERR"
+        step "error" "Failed to create temporary file" "$C_ERR" >&2
         [ "$on_fail" = "exit" ] && exit 1 || return 1
     }
 
@@ -45,7 +45,7 @@ _run_quiet() {
         return 0
     else
         local exit_code=$?
-        step "error" "$label failed (exit code $exit_code)" "$C_ERR"
+        step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         cat "$tmplog" >&2
         rm -f "$tmplog"
 
