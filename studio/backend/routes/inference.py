@@ -28,6 +28,7 @@ import re as _re
 _queue_sentinel = object()
 _queue_error = object()
 
+
 async def _run_gen_to_queue(gen, cancel_event):
     """Run a synchronous generator in a background thread, yield items via asyncio.Queue."""
     loop = asyncio.get_running_loop()
@@ -44,7 +45,7 @@ async def _run_gen_to_queue(gen, cancel_event):
         finally:
             loop.call_soon_threadsafe(q.put_nowait, _queue_sentinel)
 
-    thread = threading.Thread(target=_producer, daemon=True, name="sse-gen")
+    thread = threading.Thread(target = _producer, daemon = True, name = "sse-gen")
     thread.start()
 
     while True:

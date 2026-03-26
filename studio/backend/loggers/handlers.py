@@ -22,12 +22,14 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 # Paths and suffixes excluded from request logging.
-_EXCLUDED_PATHS = frozenset({
-    "/api/train/status",
-    "/api/train/metrics",
-    "/api/train/hardware",
-    "/api/system",
-})
+_EXCLUDED_PATHS = frozenset(
+    {
+        "/api/train/status",
+        "/api/train/metrics",
+        "/api/train/hardware",
+        "/api/system",
+    }
+)
 _EXCLUDED_SUFFIXES = (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
 
 
@@ -64,10 +66,10 @@ class LoggingMiddleware:
             method = scope.get("method", "")
             logger.error(
                 "request_failed",
-                path=path,
-                method=method,
-                error=str(e),
-                exc_info=True,
+                path = path,
+                method = method,
+                error = str(e),
+                exc_info = True,
             )
             raise
 
@@ -83,10 +85,10 @@ class LoggingMiddleware:
             method = scope.get("method", "")
             logger.info(
                 "request_completed",
-                method=method,
-                path=path,
-                status_code=status_code,
-                process_time_ms=round(process_time, 2),
+                method = method,
+                path = path,
+                status_code = status_code,
+                process_time_ms = round(process_time, 2),
             )
 
 
