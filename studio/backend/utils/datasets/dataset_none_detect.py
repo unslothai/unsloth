@@ -632,3 +632,69 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     print(f"  [{i:>3d}] {role:<12s} {preview}{status}")
 
         print(f"{'=' * 64}")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog = "dataset_none_detect",
+        description = "Scan a HuggingFace dataset for None/empty content turns.",
+        formatter_class = argparse.RawDescriptionHelpFormatter,
+        epilog = """
+examples:
+  python dataset_none_detect.py org/my-dataset
+  python dataset_none_detect.py org/my-dataset --split train
+  python dataset_none_detect.py org/my-dataset --format sharegpt
+  python dataset_none_detect.py org/my-dataset --summary-only
+  python dataset_none_detect.py org/my-dataset --token hf_...
+        """,
+    )
+    parser.add_argument("dataset", help="HuggingFace dataset repo id (e.g. org/my-dataset)")
+    parser.add_argument("--split", default = "train", help="Dataset split to load (default: train)")
+    parser.add_argument(
+        "--format",
+        default = "auto",
+        choices = ["auto"] + FORMAT_NAMES,
+        help = "Force a specific format instead of auto-detecting (default: auto)",
+    )
+    parser.add_argument(
+        "--summary-only",
+        action = "store_true",
+        help = "Print summary header only — skip the per-turn findings list",
+    )
+    parser.add_argument(
+        "--token",
+        default = os.environ.get("HF_TOKEN"),
+        help = "HuggingFace API token for private datasets (default: $HF_TOKEN)",
+    )
+    args = parser.parse_args()
+
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("Error: 'datasets' package not found. Install with: pip install datasets", file = sys.stderr)
+        sys.exit(1)
+
+    print(f"Loading {args.dataset!r} (split={args.split!r})...")
+    try:
+        ds = load_dataset(args.dataset, split = args.split, token = args.token)
+    except Exception as exc:
+        print(f"Error loading dataset: {exc}", file = sys.stderr)
+        sys.exit(1)
+
+    print(f"Loaded {len(ds)} rows, columns: {ds.column_names}")
+
+    try:
+        stats = scan_dataset(ds, fmt = args.format)
+    except ValueError as exc:
+        print(f"Error: {exc}", file = sys.stderr)
+        sys.exit(1)
+
+    print_report(stats, stats["format"], summary_only = args.summary_only)
