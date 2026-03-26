@@ -166,7 +166,7 @@ export function ParamsSection(): ReactElement {
         title="Parameters"
         description="Configure training hyperparameters"
         accent="orange"
-        className={`${loraOpen || hyperOpen
+        className={`${(isLora && loraOpen) || hyperOpen
           ? "min-h-studio-config-column"
           : "h-studio-config-column"} duration-150`}
       >

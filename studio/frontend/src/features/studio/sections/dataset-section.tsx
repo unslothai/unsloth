@@ -416,7 +416,11 @@ export function DatasetSection() {
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className={`dark:shadow-border ${advancedOpen ? "min-h-studio-config-column" : "h-studio-config-column"}`}
+        className={`dark:shadow-border ${
+          advancedOpen || (datasetSource === "upload" && selectedLocalDataset)
+            ? "min-h-studio-config-column"
+            : "h-studio-config-column"
+        }`}
       >
         <div className="flex min-w-0 flex-col gap-4">
           <div className="flex min-w-0 flex-col gap-2">
