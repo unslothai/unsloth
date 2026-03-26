@@ -98,13 +98,13 @@ export function TrainingSection() {
   };
 
   return (
-    <div data-tour="studio-training" className="col-span-1 xl:col-span-4">
+    <div data-tour="studio-training" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
         title="Training"
         description="Monitor and control training"
         accent="blue"
-        className="md:min-h-[470px]"
+        className="h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}
