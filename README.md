@@ -63,7 +63,6 @@ irm https://unsloth.ai/install.ps1 | iex
 ```
 
 #### Launch
-If you don't have `curl`, use `wget`. Launch after setup via:
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
