@@ -35,8 +35,8 @@ export const phaseColors: Record<TrainingPhase, string> = {
   stopped: "bg-muted text-muted-foreground",
 };
 
-export function formatDuration(seconds: number | null): string {
-  if (seconds == null || seconds < 0) return "--";
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "--";
   const total = Math.floor(seconds);
   const d = Math.floor(total / 86400);
   const h = Math.floor((total % 86400) / 3600);
@@ -44,7 +44,8 @@ export function formatDuration(seconds: number | null): string {
   const s = total % 60;
   if (d > 0) return `${d}d ${h}h ${m}m`;
   if (h > 0) return `${h}h ${m}m ${s}s`;
-  return `${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 export function formatNumber(value: number | null | undefined, digits: number): string {
