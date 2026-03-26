@@ -855,7 +855,10 @@ def _patch_unpadded_encoder(st_model, model_type):
 
     _original_forward = transformer_mod.forward
 
-    _use_attn_interface = _VARLEN_ATTN_REGISTERED
+    # Only use the ALL_ATTENTION_FUNCTIONS registry on transformers 5.x+.
+    # On 4.x, BERT/RoBERTa bake their attention class at __init__ time,
+    # so changing config._attn_implementation after construction has no effect.
+    _use_attn_interface = _VARLEN_ATTN_REGISTERED and Version(transformers.__version__).major >= 5
 
     if not _use_attn_interface:
         # transformers 4.x: F.sdpa monkey-patching
