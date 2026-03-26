@@ -352,7 +352,7 @@ class LlamaCppBackend:
             "f32": 4.0,
             "f16": 2.0,
             "bf16": 2.0,
-            "q8_0": 1.125,
+            "q8_0": 34 / 32,
             "q5_1": 0.75,
             "q5_0": 0.6875,
             "q4_1": 0.625,
@@ -389,14 +389,16 @@ class LlamaCppBackend:
         if model_footprint + kv <= budget_bytes:
             return requested_ctx
 
-        # Model weights alone exceed budget -- can't help by reducing ctx
+        # Model weights alone exceed budget -- can't help by reducing ctx.
+        # Return requested_ctx unchanged; --fit will handle VRAM management.
         if model_footprint >= budget_bytes:
-            return min_ctx
+            return requested_ctx
 
         # Binary search for max context that fits
         remaining = budget_bytes - model_footprint
-        lo, hi = min_ctx, requested_ctx
-        best = min_ctx
+        effective_min = min(min_ctx, requested_ctx)
+        lo, hi = effective_min, requested_ctx
+        best = effective_min
         while lo <= hi:
             mid = (lo + hi) // 2
             kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
@@ -406,8 +408,10 @@ class LlamaCppBackend:
             else:
                 hi = mid - 1
 
-        # Round down to nearest 256 for alignment
-        best = max(min_ctx, (best // 256) * 256)
+        # Round down to nearest 256 for alignment, but never exceed requested_ctx
+        best = (best // 256) * 256
+        best = max(effective_min, best)
+        best = min(best, requested_ctx)
         return best
 
     # ── Variant fallback ────────────────────────────────────────────
@@ -956,15 +960,24 @@ class LlamaCppBackend:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
 
-                # Resolve effective context: 0 means model's native length
-                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 4096)
+                # Resolve effective context: 0 means let llama-server use the
+                # model's native length.  Only expand to a known native length
+                # if metadata is available; otherwise preserve 0 as a sentinel.
+                if n_ctx > 0:
+                    effective_ctx = n_ctx
+                elif self._context_length is not None:
+                    effective_ctx = self._context_length
+                else:
+                    effective_ctx = 0
                 original_ctx = effective_ctx
 
-                # Auto-cap context to fit in GPU VRAM when possible
+                # Auto-cap context to fit in GPU VRAM when possible.
+                # Use aggregate free memory across all GPUs (not just the
+                # single best GPU) so multi-GPU setups get a fair budget.
                 if gpus and self._can_estimate_kv():
-                    best_free_mib = max(free for _, free in gpus)
+                    total_free_mib = sum(free for _, free in gpus)
                     effective_ctx = self._fit_context_to_vram(
-                        effective_ctx, best_free_mib, model_size, cache_type_kv
+                        effective_ctx, total_free_mib, model_size, cache_type_kv
                     )
                     if effective_ctx < original_ctx:
                         kv_est = self._estimate_kv_cache_bytes(
@@ -972,7 +985,7 @@ class LlamaCppBackend:
                         )
                         logger.info(
                             f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
-                            f"to fit in {best_free_mib} MiB GPU VRAM "
+                            f"to fit in {total_free_mib} MiB total GPU VRAM "
                             f"(model: {model_size / (1024**3):.1f} GB, "
                             f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
                         )
@@ -1206,9 +1219,10 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
-            # Update context_length to reflect the effective (possibly capped) value
-            if effective_ctx > 0:
-                self._context_length = effective_ctx
+            # Store the effective (possibly capped) context separately.
+            # Do NOT overwrite _context_length -- it holds the model's native
+            # context length from GGUF metadata and is used for display/info.
+            self._effective_context_length = effective_ctx if effective_ctx > 0 else self._context_length
 
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 120.0):
