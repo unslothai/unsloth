@@ -450,12 +450,31 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           Boolean(message),
         );
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+      // Build system prompt with memory injection
+      let systemContent =
+        typeof params.systemPrompt === "string" ? params.systemPrompt.trim() : "";
+      try {
+        const allMemories = await db.memory.toArray();
+        const enabledMemories = allMemories.filter(
+          (m: { enabled: boolean }) => m.enabled,
+        );
+        if (enabledMemories.length > 0) {
+          const memoryBlock =
+            "[Memory]\n" +
+            enabledMemories
+              .map((m: { content: string }) => `- ${m.content}`)
+              .join("\n");
+          systemContent = systemContent
+            ? `${memoryBlock}\n\n${systemContent}`
+            : memoryBlock;
+        }
+      } catch (err) {
+        console.warn("Memory injection skipped:", err);
+      }
+      if (systemContent) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: systemContent,
         });
       }
       const imageBase64 = findLatestUserImageBase64(messages);
@@ -521,6 +540,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           runtime.setThreadRunning(threadKey, false);
         }
         return;
+      }
+
+      // Screen wake lock: keep screen on during long generations
+      let wakeLock: WakeLockSentinel | null = null;
+      try {
+        if ("wakeLock" in navigator) {
+          wakeLock = await navigator.wakeLock.request("screen");
+        }
+      } catch {
+        // Wake lock not available or denied -- continue without it
       }
 
       const threadKey = unstable_threadId || "__default";
@@ -776,6 +805,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
         }
         runtime.setThreadRunning(threadKey, false);
+        // Release screen wake lock
+        if (wakeLock) {
+          void wakeLock.release().catch(() => {});
+          wakeLock = null;
+        }
       }
     },
   };

@@ -49,6 +49,7 @@ import {
 } from "./types/runtime";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { Switch } from "@/components/ui/switch";
+import { MemoryPanel } from "./components/memory-panel";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 export type { InferenceParams } from "./types/runtime";
@@ -684,6 +685,10 @@ export function ChatSettingsPanel({
               </div>
               <HfTokenField />
             </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection icon={UserSettings01Icon} label="Memory" defaultOpen={false}>
+            <MemoryPanel />
           </CollapsibleSection>
 
           <ChatTemplateSection onReloadModel={onReloadModel} />

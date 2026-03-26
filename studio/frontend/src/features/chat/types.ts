@@ -15,6 +15,12 @@ export interface ThreadRecord {
   pairId?: string;
   archived: boolean;
   createdAt: number;
+  /** First ~500 chars of first user message for search indexing */
+  searchText?: string;
+  /** Folder this thread belongs to */
+  folderId?: string;
+  /** Pin thread to top of sidebar */
+  pinned?: boolean;
 }
 
 export interface MessageRecord {
@@ -25,4 +31,29 @@ export interface MessageRecord {
   attachments?: import("@assistant-ui/react").ThreadMessage["attachments"];
   metadata?: Record<string, unknown>;
   createdAt: number;
+  /** User feedback on assistant messages */
+  feedback?: "thumbs_up" | "thumbs_down";
+}
+
+export interface FolderRecord {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+export interface PromptRecord {
+  id: string;
+  name: string;
+  content: string;
+  variables: string[];
+  tags: string[];
+  createdAt: number;
+}
+
+export interface MemoryRecord {
+  id: string;
+  content: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
 }
