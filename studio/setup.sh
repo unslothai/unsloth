@@ -365,6 +365,11 @@ fi
 if [ "$_DOCKER_NO_VENV" = true ]; then
     echo "   Docker detected — skipping venv activation."
 
+    # Install branch's unsloth/unsloth_cli/studio into /opt/conda
+    # (overwrites PyPI version with Docker-aware code)
+    echo "   Installing local unsloth from branch..."
+    pip install --force-reinstall --no-deps "$REPO_ROOT"
+
     # Install only missing deps (studio, data-designer, plugin, metadata patch).
     # Heavy packages (torch, unsloth, vllm, etc.) are already in /opt/conda.
     # install_python_stack.py has steps 1-5 commented out for this branch.
