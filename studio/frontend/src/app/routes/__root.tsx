@@ -9,7 +9,7 @@ import {
   redirect,
   useRouterState,
 } from "@tanstack/react-router";
-import { Suspense } from "react";
+import { motion } from "motion/react";
 import { AppProvider } from "../provider";
 
 const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
@@ -42,9 +42,15 @@ function RootLayout() {
   return (
     <AppProvider>
       {!hideNavbar && <Navbar />}
-      <Suspense fallback={null}>
+      <motion.main
+        key={pathname}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.12, ease: [0.165, 0.84, 0.44, 1] }}
+        className="flex-1"
+      >
         <Outlet />
-      </Suspense>
+      </motion.main>
     </AppProvider>
   );
 }
