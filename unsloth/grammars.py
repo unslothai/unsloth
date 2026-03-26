@@ -19,7 +19,7 @@ __all__ = [
     "generate_with_grammar",
 ]
 
-JSON_ARR_GBNF = r'''
+JSON_ARR_GBNF = r"""
 root ::= arr
 value ::= object | array | string | number | ("true" | "false" | "null") ws
 arr ::=
@@ -44,7 +44,7 @@ string ::=
   )* "\"" ws
 number ::= "-"? ([0-9] | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
 ws ::= ([ \t\n\r] ws)?
-'''
+"""
 
 
 def _build_tokenizer_resources(tokenizer):
@@ -78,19 +78,17 @@ def _build_tokenizer_resources(tokenizer):
                 super().__init__(tok)
                 self._unicode_to_byte = unicode_to_byte
 
-            def map(self, token_id: int, verbose=False) -> bytes:
+            def map(self, token_id: int, verbose = False) -> bytes:
                 token_id = int(token_id)
                 token_str = self.tokenizer.convert_ids_to_tokens(token_id)
-                return bytes(
-                    self._unicode_to_byte.get(c, ord(c)) for c in token_str
-                )
+                return bytes(self._unicode_to_byte.get(c, ord(c)) for c in token_str)
+
         pass
 
         homomorphism = _GPT2ManualMapping(tokenizer)
     else:
         # Fallback: try transformers-cfg's auto_infer
         homomorphism = TokenizerMiddleMapping.auto_infer(tokenizer)
-    pass
 
     # Build the ByteTrie from the vocabulary
     trie = ByteTrie()
@@ -105,10 +103,10 @@ def _build_tokenizer_resources(tokenizer):
                 trie.insert(byte_repr, token_id)
         except Exception:
             continue
-    pass
 
     return trie, homomorphism
-pass
+
+
 
 
 def generate_with_grammar(
@@ -146,8 +144,11 @@ def generate_with_grammar(
 
     trie, homomorphism = _build_tokenizer_resources(tokenizer)
     grammar = IncrementalGrammarConstraint(
-        grammar_str, start_rule_name=start_rule, tokenizer=tokenizer,
-        trie=trie, homomorphism=homomorphism,
+        grammar_str,
+        start_rule_name = start_rule,
+        tokenizer = tokenizer,
+        trie = trie,
+        homomorphism = homomorphism,
     )
     grammar_processor = GrammarConstrainedLogitsProcessor(grammar)
 
