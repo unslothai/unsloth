@@ -172,6 +172,8 @@ fn stream_output(
                             }
                         } else if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
                             let _ = app_clone.emit("install-step", step);
+                        } else if let Some(detail) = text.strip_prefix("[TAURI:PROGRESS] ") {
+                            let _ = app_clone.emit("install-progress-detail", detail);
                         }
                         // Always forward the raw line
                         info!("[install][stdout] {}", text);
