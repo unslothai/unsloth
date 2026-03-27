@@ -273,9 +273,12 @@ def PatchRL(FastLanguageModel):
         with torch.no_grad():
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
-                    num_items_in_batch = self._get_num_items_in_batch(
-                        [inputs], self.args.device
-                    )
+                    try:
+                        num_items_in_batch = self._get_num_items_in_batch(
+                            [inputs], self.args.device
+                        )
+                    except (AttributeError, TypeError):
+                        num_items_in_batch = None
                     loss, outputs = self.compute_loss(
                         model,
                         inputs,
