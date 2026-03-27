@@ -1380,6 +1380,7 @@ class LlamaCppBackend:
         """
         import os
         import signal
+        import sys
 
         try:
             # -- Build the ownership allowlist --------------------------------
@@ -1471,6 +1472,8 @@ class LlamaCppBackend:
                         pass
             else:
                 # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
+                if sys.platform != "linux":
+                    return
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
                     capture_output = True,
@@ -1517,7 +1520,7 @@ class LlamaCppBackend:
                     except PermissionError:
                         pass
         except Exception:
-            pass
+            logger.warning("Error during orphan server cleanup", exc_info=True)
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
