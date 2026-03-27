@@ -400,14 +400,13 @@ def create_chat_thread(
     pair_id: str | None,
     created_at: int,
 ) -> None:
-    now = created_at
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO chat_threads (id, title, model_type, model_id, pair_id, archived, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
                ON CONFLICT(id) DO NOTHING""",
-            (thread_id, title, model_type, model_id, pair_id, now, now),
+            (thread_id, title, model_type, model_id, pair_id, created_at, created_at),
         )
         conn.commit()
     finally:

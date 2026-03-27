@@ -28,6 +28,31 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _thread_from_row(r: dict) -> ChatThreadResponse:
+    return ChatThreadResponse(
+        id = r["id"],
+        title = r["title"],
+        model_type = r["model_type"],
+        model_id = r["model_id"] or "",
+        pair_id = r["pair_id"],
+        archived = bool(r["archived"]),
+        created_at = r["created_at"],
+        updated_at = r["updated_at"],
+    )
+
+
+def _message_from_row(r: dict) -> ChatMessageResponse:
+    return ChatMessageResponse(
+        id = r["id"],
+        thread_id = r["thread_id"],
+        role = r["role"],
+        content = r["content"],
+        attachments = r["attachments"],
+        metadata = r["metadata"],
+        created_at = r["created_at"],
+    )
+
+
 @router.post("/threads", response_model = ChatThreadResponse, status_code = 201)
 async def create_thread(
     body: ChatThreadCreate,
@@ -59,19 +84,7 @@ async def list_threads(
     current_subject: str = Depends(get_current_subject),
 ):
     rows = list_chat_threads(model_type = model_type)
-    return [
-        ChatThreadResponse(
-            id = r["id"],
-            title = r["title"],
-            model_type = r["model_type"],
-            model_id = r["model_id"] or "",
-            pair_id = r["pair_id"],
-            archived = bool(r["archived"]),
-            created_at = r["created_at"],
-            updated_at = r["updated_at"],
-        )
-        for r in rows
-    ]
+    return [_thread_from_row(r) for r in rows]
 
 
 @router.patch("/threads/{thread_id}", status_code = 204)
@@ -102,18 +115,7 @@ async def get_messages(
     current_subject: str = Depends(get_current_subject),
 ):
     rows = get_chat_thread_messages(thread_id)
-    return [
-        ChatMessageResponse(
-            id = r["id"],
-            thread_id = r["thread_id"],
-            role = r["role"],
-            content = r["content"],
-            attachments = r["attachments"],
-            metadata = r["metadata"],
-            created_at = r["created_at"],
-        )
-        for r in rows
-    ]
+    return [_message_from_row(r) for r in rows]
 
 
 @router.post("/threads/{thread_id}/messages", response_model = ChatMessageResponse, status_code = 201)
@@ -148,29 +150,6 @@ async def hydrate(
 ):
     data = get_all_chat_data()
     return ChatHydrateResponse(
-        threads = [
-            ChatThreadResponse(
-                id = t["id"],
-                title = t["title"],
-                model_type = t["model_type"],
-                model_id = t["model_id"] or "",
-                pair_id = t["pair_id"],
-                archived = bool(t["archived"]),
-                created_at = t["created_at"],
-                updated_at = t["updated_at"],
-            )
-            for t in data["threads"]
-        ],
-        messages = [
-            ChatMessageResponse(
-                id = m["id"],
-                thread_id = m["thread_id"],
-                role = m["role"],
-                content = m["content"],
-                attachments = m["attachments"],
-                metadata = m["metadata"],
-                created_at = m["created_at"],
-            )
-            for m in data["messages"]
-        ],
+        threads = [_thread_from_row(t) for t in data["threads"]],
+        messages = [_message_from_row(m) for m in data["messages"]],
     )

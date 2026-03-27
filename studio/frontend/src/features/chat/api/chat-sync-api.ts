@@ -50,11 +50,7 @@ export function syncUpdateThread(
   threadId: string,
   data: { title?: string; archived?: boolean },
 ): void {
-  void syncFetch(`/api/chat/threads/${threadId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
+  void syncFetch(`/api/chat/threads/${threadId}`, { ...jsonBody(data), method: "PATCH" });
 }
 
 export function syncDeleteThread(threadId: string): void {

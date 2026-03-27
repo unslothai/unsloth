@@ -754,9 +754,13 @@ export function ChatRuntimeProvider({
       const data = await fetchHydrate();
       if (!data) return;
 
+      // Snapshot local threads before overwriting with backend data
+      const localThreads = await db.threads.toArray();
+      const localMessages = await db.messages.toArray();
+
       // Merge backend threads into Dexie (backend wins)
-      for (const t of data.threads) {
-        await db.threads.put({
+      await db.threads.bulkPut(
+        data.threads.map((t) => ({
           id: t.id,
           title: t.title,
           modelType: t.model_type as ModelType,
@@ -764,13 +768,14 @@ export function ChatRuntimeProvider({
           pairId: t.pair_id ?? undefined,
           archived: t.archived,
           createdAt: t.created_at,
-        });
-      }
+        })),
+      );
 
-      // Merge backend messages into Dexie
+      // Merge backend messages into Dexie (skip corrupt records)
+      const parsedMessages: MessageRecord[] = [];
       for (const m of data.messages) {
         try {
-          await db.messages.put({
+          parsedMessages.push({
             id: m.id,
             threadId: m.thread_id,
             role: m.role as MessageRecord["role"],
@@ -783,14 +788,20 @@ export function ChatRuntimeProvider({
           console.warn(`[chat-sync] Skipping corrupt message ${m.id}`);
         }
       }
+      await db.messages.bulkPut(parsedMessages);
 
       // Push local-only data to backend
       const backendThreadIds = new Set(data.threads.map((t) => t.id));
       const backendMessageIds = new Set(data.messages.map((m) => m.id));
-      const localThreads = await db.threads.toArray();
+      const messagesByThread = new Map<string, typeof localMessages>();
+      for (const msg of localMessages) {
+        const arr = messagesByThread.get(msg.threadId);
+        if (arr) arr.push(msg);
+        else messagesByThread.set(msg.threadId, [msg]);
+      }
+
       for (const lt of localThreads) {
         if (!backendThreadIds.has(lt.id)) {
-          // Thread missing from backend — push thread + all its messages
           syncCreateThread({
             id: lt.id,
             title: lt.title,
@@ -800,14 +811,10 @@ export function ChatRuntimeProvider({
             created_at: lt.createdAt,
           });
         }
-        // Push any local messages not on backend (covers both new threads and
-        // existing threads with missing messages from failed syncs)
-        const msgs = await db.messages.where("threadId").equals(lt.id).toArray();
-        for (const msg of msgs) {
+        for (const msg of messagesByThread.get(lt.id) ?? []) {
           if (backendMessageIds.has(msg.id)) continue;
-          // Same eligibility filter as append(): skip partial assistant messages
           const meta = msg.metadata as Record<string, unknown> | undefined;
-          if (msg.role === "assistant" && !(meta as Record<string, unknown> | undefined)?.contextUsage) continue;
+          if (msg.role === "assistant" && !meta?.contextUsage) continue;
           syncUpsertMessage(lt.id, {
             id: msg.id,
             role: msg.role,
