@@ -383,6 +383,7 @@ function extractParamLabel(id: string): string | undefined {
 // Module-level caches so re-mounting the popover shows results instantly
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
+let _lmStudioCache: LocalModelInfo[] = [];
 
 /** Sort LM Studio models with unsloth publisher first. */
 function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
