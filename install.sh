@@ -641,8 +641,10 @@ foreach (\$dir in \$locations) {
 WSLPS1_EOF
 
             # Convert WSL path to Windows path for powershell.exe
-            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null) || _css_ps1_win="$_css_ps1_tmp"
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
+            if [ -n "$_css_ps1_win" ]; then
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            fi
             rm -f "$_css_ps1_tmp"
         fi
     fi
