@@ -69,6 +69,14 @@ from .data_recipe import (
     ValidateResponse,
     JobCreateResponse,
 )
+from .chat import (
+    ChatThreadCreate,
+    ChatThreadUpdate,
+    ChatThreadResponse,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    ChatHydrateResponse,
+)
 
 __all__ = [
     # Training schemas
@@ -127,4 +135,11 @@ __all__ = [
     "ValidateError",
     "ValidateResponse",
     "JobCreateResponse",
+    # Chat schemas
+    "ChatThreadCreate",
+    "ChatThreadUpdate",
+    "ChatThreadResponse",
+    "ChatMessageCreate",
+    "ChatMessageResponse",
+    "ChatHydrateResponse",
 ]
