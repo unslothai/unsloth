@@ -15,7 +15,6 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
-import signal
 import socket
 import subprocess
 import threading
@@ -48,11 +47,17 @@ class LlamaCppBackend:
         self._is_vision: bool = False
         self._healthy = False
         self._context_length: Optional[int] = None
+        self._effective_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        # KV-cache estimation fields (populated by _read_gguf_metadata)
+        self._n_layers: Optional[int] = None
+        self._n_kv_heads: Optional[int] = None
+        self._n_heads: Optional[int] = None
+        self._embedding_length: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -91,7 +96,8 @@ class LlamaCppBackend:
 
     @property
     def context_length(self) -> Optional[int]:
-        return self._context_length
+        """Return the effective context length the server is running at."""
+        return self._effective_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -284,11 +290,11 @@ class LlamaCppBackend:
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
     ) -> tuple[Optional[list[int]], bool]:
-        """Pick GPU(s) for a model based on file size and free memory.
+        """Pick GPU(s) for a model based on estimated VRAM and free memory.
 
-        Uses GGUF file size as a rough proxy for VRAM usage (actual usage
-        is higher due to KV cache and compute buffers, but 70% threshold
-        accounts for that).
+        ``model_size_bytes`` should include both model weights and estimated
+        KV cache.  The 70% threshold provides headroom for compute buffers,
+        CUDA context, and other runtime overhead.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       model fits on 1 GPU at 70% of free
@@ -318,6 +324,97 @@ class LlamaCppBackend:
 
         # Model is too large even for all GPUs, let --fit handle it
         return None, True
+
+    # ── KV cache VRAM estimation ─────────────────────────────────────
+
+    def _can_estimate_kv(self) -> bool:
+        """True if we have enough GGUF metadata to estimate KV cache size."""
+        return (
+            self._n_layers is not None
+            and self._embedding_length is not None
+            and (self._n_kv_heads is not None or self._n_heads is not None)
+        )
+
+    def _estimate_kv_cache_bytes(
+        self, n_ctx: int, cache_type_kv: Optional[str] = None
+    ) -> int:
+        """Estimate KV cache VRAM for a given context length.
+
+        Returns 0 if metadata is insufficient for estimation.
+        """
+        if not self._can_estimate_kv() or n_ctx <= 0:
+            return 0
+
+        n_layers = self._n_layers  # type: ignore[assignment]
+        n_kv_heads = self._n_kv_heads or self._n_heads  # type: ignore[assignment]
+        head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+
+        # Bytes per element depends on KV cache quantization
+        bpe = {
+            "f32": 4.0,
+            "f16": 2.0,
+            "bf16": 2.0,
+            "q8_0": 34 / 32,
+            "q5_1": 0.75,
+            "q5_0": 0.6875,
+            "q4_1": 0.625,
+            "q4_0": 0.5625,
+            "iq4_nl": 0.5625,
+        }.get(cache_type_kv or "f16", 2.0)
+
+        # K + V caches: 2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe
+        return int(2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe)
+
+    def _fit_context_to_vram(
+        self,
+        requested_ctx: int,
+        available_mib: int,
+        model_size_bytes: int,
+        cache_type_kv: Optional[str] = None,
+        min_ctx: int = 4096,
+    ) -> int:
+        """Return the largest context length that fits in GPU VRAM.
+
+        Uses 70% of available VRAM as the budget (matching _select_gpus
+        threshold -- 30% reserved for compute buffers, CUDA context,
+        scratch space, flash-attn workspace, etc.).
+        If the model weights alone don't fit, returns min_ctx unchanged.
+        """
+        if not self._can_estimate_kv():
+            return requested_ctx
+
+        budget_bytes = available_mib * 1024 * 1024 * 0.70
+        model_footprint = model_size_bytes
+
+        # Check if requested context already fits
+        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
+        if model_footprint + kv <= budget_bytes:
+            return requested_ctx
+
+        # Model weights alone exceed budget -- can't help by reducing ctx.
+        # Return requested_ctx unchanged; --fit will handle VRAM management.
+        if model_footprint >= budget_bytes:
+            return requested_ctx
+
+        # Binary search for max context that fits
+        remaining = budget_bytes - model_footprint
+        effective_min = min(min_ctx, requested_ctx)
+        lo, hi = effective_min, requested_ctx
+        best = effective_min
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
+            if kv <= remaining:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        # Round down to nearest 256 for alignment, but never exceed requested_ctx
+        best = (best // 256) * 256
+        best = max(effective_min, best)
+        best = min(best, requested_ctx)
+        return best
 
     # ── Variant fallback ────────────────────────────────────────────
 
@@ -443,7 +540,7 @@ class LlamaCppBackend:
                     LlamaCppBackend._gguf_skip_value(f, atype)
 
     def _read_gguf_metadata(self, gguf_path: str) -> None:
-        """Read context_length and chat_template from a GGUF file's KV header.
+        """Read context_length, architecture params, and chat_template from a GGUF header.
 
         Parses only the KV pairs we need (~30ms even for multi-GB files).
         For split GGUFs, metadata is always in shard 1.
@@ -454,11 +551,17 @@ class LlamaCppBackend:
         self._chat_template = None
         self._supports_reasoning = False
         self._supports_tools = False
+        self._n_layers = None
+        self._n_kv_heads = None
+        self._n_heads = None
+        self._embedding_length = None
 
         try:
             WANTED = {"general.architecture", "tokenizer.chat_template"}
+            # Additional arch-specific keys are added dynamically once
+            # we know the architecture name.
+            arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
-            ctx_key = None
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -472,24 +575,32 @@ class LlamaCppBackend:
                     key = f.read(key_len).decode("utf-8")
                     vtype = struct.unpack("<I", f.read(4))[0]
 
-                    if key in WANTED or (ctx_key and key == ctx_key):
+                    if key in WANTED or key in arch_keys:
                         # Read this value
                         if vtype == 8:  # STRING
                             slen = struct.unpack("<Q", f.read(8))[0]
                             val_s = f.read(slen).decode("utf-8")
                             if key == "general.architecture":
                                 arch = val_s
-                                ctx_key = f"{arch}.context_length"
+                                # Register arch-specific keys to look for
+                                arch_keys = {
+                                    f"{arch}.context_length": "context_length",
+                                    f"{arch}.block_count": "n_layers",
+                                    f"{arch}.attention.head_count_kv": "n_kv_heads",
+                                    f"{arch}.attention.head_count": "n_heads",
+                                    f"{arch}.embedding_length": "embedding_length",
+                                }
                             elif key == "tokenizer.chat_template":
                                 self._chat_template = val_s
-                        elif vtype == 4:  # UINT32
-                            val_i = struct.unpack("<I", f.read(4))[0]
-                            if ctx_key and key == ctx_key:
-                                self._context_length = val_i
-                        elif vtype == 10:  # UINT64
-                            val_i = struct.unpack("<Q", f.read(8))[0]
-                            if ctx_key and key == ctx_key:
-                                self._context_length = val_i
+                        elif vtype in (4, 10):  # UINT32 or UINT64
+                            val_i = (
+                                struct.unpack("<I", f.read(4))[0]
+                                if vtype == 4
+                                else struct.unpack("<Q", f.read(8))[0]
+                            )
+                            attr = arch_keys.get(key)
+                            if attr:
+                                setattr(self, f"_{attr}", val_i)
                         else:
                             self._gguf_skip_value(f, vtype)
                     else:
@@ -829,18 +940,113 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size and free memory
+            # Select GPU(s) based on model size + estimated KV cache
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
-                gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+
+                # Resolve effective context: 0 means let llama-server use the
+                # model's native length.  Only expand to a known native length
+                # if metadata is available; otherwise preserve 0 as a sentinel.
+                if n_ctx > 0:
+                    effective_ctx = n_ctx
+                elif self._context_length is not None:
+                    effective_ctx = self._context_length
+                else:
+                    effective_ctx = 0
+                original_ctx = effective_ctx
+
+                # Auto-cap context to fit in GPU VRAM and select GPUs.
+                #
+                # Two policies depending on whether the user set n_ctx:
+                #
+                # Explicit n_ctx (user chose a context length):
+                #   Honor it. Try the full requested context with _select_gpus
+                #   (which uses as many GPUs as needed). Only cap if it doesn't
+                #   fit on any GPU combination.
+                #
+                # Auto n_ctx=0 (model's native context):
+                #   Prefer fewer GPUs with reduced context over more GPUs,
+                #   since multi-GPU is slower and the user didn't ask for a
+                #   specific context length.
+                gpu_indices, use_fit = None, True
+                explicit_ctx = n_ctx > 0
+
+                if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                    if explicit_ctx:
+                        # Try to honor the user's requested context exactly.
+                        requested_total = model_size + self._estimate_kv_cache_bytes(
+                            effective_ctx, cache_type_kv
+                        )
+                        gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
+
+                        # Full context doesn't fit anywhere -- cap it on the
+                        # best GPU subset we can find (fewest GPUs first).
+                        if use_fit:
+                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                            for n_gpus in range(1, len(ranked) + 1):
+                                subset = ranked[:n_gpus]
+                                pool_mib = sum(free for _, free in subset)
+                                capped = self._fit_context_to_vram(
+                                    effective_ctx,
+                                    pool_mib,
+                                    model_size,
+                                    cache_type_kv,
+                                )
+                                kv = self._estimate_kv_cache_bytes(
+                                    capped, cache_type_kv
+                                )
+                                total_mib = (model_size + kv) / (1024 * 1024)
+                                if total_mib <= pool_mib * 0.70:
+                                    effective_ctx = capped
+                                    gpu_indices = sorted(idx for idx, _ in subset)
+                                    use_fit = False
+                                    break
+                    else:
+                        # Auto context: prefer fewer GPUs, cap context to fit.
+                        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        for n_gpus in range(1, len(ranked) + 1):
+                            subset = ranked[:n_gpus]
+                            pool_mib = sum(free for _, free in subset)
+                            capped = self._fit_context_to_vram(
+                                effective_ctx,
+                                pool_mib,
+                                model_size,
+                                cache_type_kv,
+                            )
+                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            total_mib = (model_size + kv) / (1024 * 1024)
+                            if total_mib <= pool_mib * 0.70:
+                                effective_ctx = capped
+                                gpu_indices = sorted(idx for idx, _ in subset)
+                                use_fit = False
+                                break
+
+                elif gpus:
+                    # Can't estimate KV -- fall back to file-size-only check
+                    gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+
+                if effective_ctx < original_ctx:
+                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                    logger.info(
+                        f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
+                        f"(model: {model_size / (1024**3):.1f} GB, "
+                        f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                    )
+
+                kv_cache_bytes = self._estimate_kv_cache_bytes(
+                    effective_ctx, cache_type_kv
+                )
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                    f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                    f"context: {effective_ctx}, "
                     f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                 )
             except Exception as e:
                 logger.warning(f"GPU selection failed ({e}), using --fit on")
                 gpu_indices, use_fit = None, True
+                effective_ctx = n_ctx  # fall back to original
 
             cmd = [
                 binary,
@@ -849,7 +1055,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                str(n_ctx) if n_ctx > 0 else "0",  # 0 = model's native context size
+                str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
@@ -1070,6 +1276,13 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
+            # Store the effective (possibly capped) context separately.
+            # Do NOT overwrite _context_length -- it holds the model's native
+            # context length from GGUF metadata and is used for display/info.
+            self._effective_context_length = (
+                effective_ctx if effective_ctx > 0 else self._context_length
+            )
+
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 120.0):
                 self._kill_process()
@@ -1102,10 +1315,15 @@ class LlamaCppBackend:
             self._port = None
             self._healthy = False
             self._context_length = None
+            self._effective_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._n_layers = None
+            self._n_kv_heads = None
+            self._n_heads = None
+            self._embedding_length = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -1148,39 +1366,89 @@ class LlamaCppBackend:
     def _kill_orphaned_servers():
         """Kill orphaned llama-server processes started by studio.
 
-        Only kills processes whose binary lives under ~/.unsloth/llama.cpp/
-        to avoid terminating unrelated llama-server instances on the machine.
+        Only kills processes whose resolved binary lives under a known
+        Unsloth install directory to avoid terminating unrelated
+        llama-server instances on the machine.
+
+        Uses psutil for cross-platform support (Linux, macOS, Windows).
         """
         import os
-        import signal
 
         try:
-            # Use pgrep with full command match to identify studio-managed servers
-            result = subprocess.run(
-                ["pgrep", "-a", "-f", "llama-server"],
-                capture_output = True,
-                text = True,
-                timeout = 5,
-            )
-            if result.returncode != 0:
-                return
-            for line in result.stdout.strip().splitlines():
-                parts = line.strip().split(None, 1)
-                if len(parts) < 2:
-                    continue
-                pid = int(parts[0])
-                cmdline = parts[1]
-                if pid == os.getpid():
-                    continue
-                # Only kill if it's a studio-managed server (lives under .unsloth/)
-                if ".unsloth/" not in cmdline and "unsloth" not in cmdline.lower():
-                    continue
+            import psutil
+        except ImportError:
+            return
+
+        try:
+            # Build the same set of directories that _find_llama_server_binary
+            # searches, so we only kill servers we could have started.
+            install_roots: list[Path] = []
+
+            # ~/.unsloth/llama.cpp (primary install location)
+            install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
+
+            # Legacy: in-tree build
+            project_root = Path(__file__).resolve().parents[4]
+            install_roots.append(project_root / "llama.cpp")
+
+            # Legacy: extracted binary
+            install_roots.append(project_root / "bin")
+
+            # UNSLOTH_LLAMA_CPP_PATH env var (custom install dir)
+            custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+            if custom_dir:
+                install_roots.append(Path(custom_dir))
+
+            # LLAMA_SERVER_PATH env var (exact binary path)
+            exact_binaries: list[Path] = []
+            env_binary = os.environ.get("LLAMA_SERVER_PATH")
+            if env_binary:
                 try:
-                    os.kill(pid, signal.SIGKILL)
-                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
-                except ProcessLookupError:
+                    exact_binaries.append(Path(env_binary).resolve())
+                except OSError:
                     pass
-                except PermissionError:
+
+            # Resolve all roots so is_relative_to works reliably
+            resolved_roots: list[Path] = []
+            for root in install_roots:
+                try:
+                    resolved_roots.append(root.resolve())
+                except OSError:
+                    pass
+
+            my_pid = os.getpid()
+
+            for proc in psutil.process_iter(["pid", "name", "exe"]):
+                try:
+                    if proc.info["pid"] == my_pid:
+                        continue
+
+                    name = proc.info.get("name") or ""
+                    if not name.lower().startswith("llama-server"):
+                        continue
+
+                    exe = proc.info.get("exe")
+                    if not exe:
+                        continue
+
+                    exe_path = Path(exe).resolve()
+
+                    # Check if this binary is one we manage
+                    is_ours = exe_path in exact_binaries or any(
+                        exe_path.is_relative_to(root) for root in resolved_roots
+                    )
+                    if not is_ours:
+                        continue
+
+                    proc.kill()
+                    logger.info(
+                        f"Killed orphaned llama-server process (pid={proc.info['pid']})"
+                    )
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                ):
                     pass
         except Exception:
             pass
