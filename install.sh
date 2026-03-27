@@ -863,13 +863,19 @@ if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
-    _no_deps_arg=""
     if [ "$SKIP_TORCH" = true ]; then
-        _no_deps_arg="--no-deps"
+        # No-torch: install runtime deps via [huggingfacenotorch] extras,
+        # then unsloth-zoo with --no-deps to avoid pulling torch.
+        uv pip install --python "$_VENV_PY" \
+            --reinstall-package unsloth \
+            "unsloth[huggingfacenotorch]>=2026.3.14"
+        uv pip install --python "$_VENV_PY" --no-deps \
+            --reinstall-package unsloth-zoo unsloth-zoo
+    else
+        uv pip install --python "$_VENV_PY" \
+            --reinstall-package unsloth --reinstall-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
     fi
-    uv pip install --python "$_VENV_PY" $_no_deps_arg \
-        --reinstall-package unsloth --reinstall-package unsloth-zoo \
-        "unsloth>=2026.3.14" unsloth-zoo
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
@@ -885,17 +891,25 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
-    _no_deps_arg=""
     if [ "$SKIP_TORCH" = true ]; then
-        _no_deps_arg="--no-deps"
-    fi
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        uv pip install --python "$_VENV_PY" $_no_deps_arg \
+        # No-torch: install runtime deps via [huggingfacenotorch] extras,
+        # then unsloth-zoo with --no-deps to avoid pulling torch.
+        uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth \
+            "unsloth[huggingfacenotorch]>=2026.3.14"
+        uv pip install --python "$_VENV_PY" --no-deps \
+            --upgrade-package unsloth-zoo unsloth-zoo
+        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+            echo "==> Overlaying local repo (editable)..."
+            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        fi
+    elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        uv pip install --python "$_VENV_PY" $_no_deps_arg \
+        uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "$PACKAGE_NAME"
     fi
 else
