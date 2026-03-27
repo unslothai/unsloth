@@ -975,18 +975,16 @@ class LlamaCppBackend:
 
                 # Auto-cap context to fit in GPU VRAM and select GPUs.
                 #
-                # Strategy: try GPU subsets from smallest (1 GPU) to largest,
-                # capping context for each.  Pick the smallest subset where
-                # the capped context is acceptable (>= min_ctx or full fit).
-                # This avoids dragging in tiny GPUs that barely help and
-                # prefers single-GPU when possible (simpler, faster).
+                # Strategy: try GPU subsets from smallest (1 GPU) to largest.
+                # Stop as soon as the model fits on N GPUs -- even if adding
+                # more GPUs would allow higher context.  Multi-GPU inference
+                # is slower due to tensor-split overhead, so we prefer fewer
+                # GPUs with reduced context over more GPUs with full context.
                 gpu_indices, use_fit = None, True
                 kv_cache_bytes = 0
 
                 if gpus and self._can_estimate_kv():
                     ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                    best_ctx = 0
-                    best_indices = None
 
                     for n in range(1, len(ranked) + 1):
                         subset = ranked[:n]
@@ -1000,17 +998,13 @@ class LlamaCppBackend:
                         pool_budget = pool_mib * 0.70
 
                         if total_mib <= pool_budget:
-                            if capped > best_ctx:
-                                best_ctx = capped
-                                best_indices = sorted(idx for idx, _ in subset)
-                            # If full context fits, no need to try more GPUs
-                            if capped >= effective_ctx:
-                                break
-
-                    if best_indices is not None:
-                        effective_ctx = best_ctx
-                        gpu_indices = best_indices
-                        use_fit = False
+                            # Model + KV fits on this subset -- use it.
+                            # Don't try more GPUs even if they'd allow
+                            # higher context: fewer GPUs = faster inference.
+                            effective_ctx = capped
+                            gpu_indices = sorted(idx for idx, _ in subset)
+                            use_fit = False
+                            break
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check
