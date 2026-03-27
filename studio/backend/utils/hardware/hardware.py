@@ -523,8 +523,22 @@ def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
     num_kv_heads = getattr(text_config, "num_key_value_heads", num_heads)
     kv_size = (hidden_size // num_heads) * num_kv_heads
 
+    num_experts = None
+    for attr in ("num_local_experts", "num_experts", "n_routed_experts"):
+        num_experts = getattr(text_config, attr, None)
+        if num_experts is not None:
+            break
+
+    moe_intermediate = getattr(text_config, "moe_intermediate_size", None)
+    if moe_intermediate is not None:
+        intermediate_size = moe_intermediate
+
     qkvo = (hidden_size + kv_size + kv_size + hidden_size) * hidden_size
-    mlp = (hidden_size * intermediate_size) * 3
+    if num_experts and num_experts > 1:
+        mlp = (hidden_size * intermediate_size) * 3 * num_experts
+        mlp += num_experts * hidden_size
+    else:
+        mlp = (hidden_size * intermediate_size) * 3
     layernorms = 2 * hidden_size
     embed_tokens = vocab_size * hidden_size
     lm_head = (
@@ -586,24 +600,27 @@ def estimate_required_model_memory_gb(
     model_size_gb = model_size_bytes / (1024**3)
     metadata["model_size_gb"] = round(model_size_gb, 3)
     min_buffer_gb = 2.0
-    min_qlora_total_gb = 3.0
+    min_4bit_total_gb = 3.0
 
     if training_type is None:
-        required_gb = model_size_gb + max(model_size_gb * 0.3, min_buffer_gb)
+        if load_in_4bit:
+            required_gb = max((model_size_gb / 3.5) * 1.3, min_4bit_total_gb)
+        else:
+            required_gb = model_size_gb * 1.3 + min_buffer_gb
     elif training_type == "Full Finetuning":
         required_gb = model_size_gb * 6.0
     elif load_in_4bit:
         base_4bit_gb = model_size_gb / 4.0
         required_gb = max(
             base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb),
-            min_qlora_total_gb,
+            min_4bit_total_gb,
         )
     else:
-        required_gb = model_size_gb + max(model_size_gb * 0.3, min_buffer_gb)
+        required_gb = model_size_gb * 1.5 + min_buffer_gb
 
     metadata["required_gb"] = round(required_gb, 3)
     metadata["min_buffer_gb"] = min_buffer_gb
-    metadata["min_qlora_total_gb"] = min_qlora_total_gb
+    metadata["min_4bit_total_gb"] = min_4bit_total_gb
     return required_gb, metadata
 
 
@@ -633,9 +650,12 @@ def auto_select_gpu_ids(
 
     utilization = get_visible_gpu_utilization()
     devices = utilization.get("devices", [])
+    parent_ids = get_parent_visible_gpu_ids()
+
     if not devices:
         metadata["selection_mode"] = "fallback_all"
-        return None, metadata
+        metadata["selected_gpu_ids"] = parent_ids
+        return parent_ids, metadata
 
     gpu_candidates = []
     for device in devices:
@@ -653,19 +673,21 @@ def auto_select_gpu_ids(
 
     if not gpu_candidates:
         metadata["selection_mode"] = "fallback_all"
-        return None, metadata
+        metadata["selected_gpu_ids"] = parent_ids
+        return parent_ids, metadata
 
     ranked = sorted(gpu_candidates, key = lambda item: (-item["free_gb"], item["index"]))
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
+    multi_gpu_factor = 0.85 if training_type is None else 0.8
 
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
         else:
-            usable_gb = sum(free_by_index[gpu_id] * 0.8 for gpu_id in selected)
+            usable_gb = sum(free_by_index[gpu_id] * multi_gpu_factor for gpu_id in selected)
 
         if usable_gb >= required_gb:
             metadata["usable_gb"] = round(usable_gb, 3)
@@ -676,7 +698,7 @@ def auto_select_gpu_ids(
     fallback_all = [device["index"] for device in devices]
     metadata["selection_mode"] = "fallback_all"
     metadata["usable_gb"] = round(
-        sum(candidate["free_gb"] * 0.8 for candidate in ranked),
+        sum(candidate["free_gb"] * multi_gpu_factor for candidate in ranked),
         3,
     )
     metadata["selected_gpu_ids"] = fallback_all
