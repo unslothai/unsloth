@@ -133,16 +133,21 @@ def lmstudio_model_dirs() -> list[Path]:
 def _setup_cache_env() -> None:
     """Set cache environment variables for HuggingFace, uv, and vLLM.
 
-    Always defaults HF to the standard platform cache (~/.cache/huggingface).
-    The legacy Unsloth cache is still *scanned* for models but is never set
-    as the active download target.
+    Respects the standard HF cache resolution chain: explicit ``HF_HOME``
+    / ``HF_HUB_CACHE`` env vars take priority, then ``XDG_CACHE_HOME``,
+    then the platform default (``~/.cache/huggingface``).  The legacy
+    Unsloth cache is still *scanned* for models but is never set as the
+    active download target.
 
     Only sets variables that are not already set by the user, so
     explicit overrides (e.g. HF_HOME=/data/hf) are respected.
     Works on Linux, macOS, and Windows.
     """
     root = cache_root()
-    hf_default = Path.home() / ".cache" / "huggingface"
+    xdg_cache = Path(
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+    ).expanduser()
+    hf_default = xdg_cache / "huggingface"
     defaults: dict[str, str] = {
         "HF_HOME": str(hf_default),
         "HF_HUB_CACHE": str(hf_default / "hub"),

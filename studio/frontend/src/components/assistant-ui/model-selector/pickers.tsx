@@ -203,7 +203,7 @@ function GgufVariantExpander({
     };
   }, [repoId]);
 
-  const isLocalPath = repoId.startsWith("/");
+  const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(repoId);
 
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
@@ -415,26 +415,33 @@ export function HubModelPicker({
   const alreadyCached = _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
 
-  // LM Studio local models
-  const [lmStudioModels, setLmStudioModels] = useState<LocalModelInfo[]>([]);
+  // LM Studio local models -- module-level cache so re-mounting the
+  // popover does not flash an empty section (same pattern as GGUF/models).
+  const [lmStudioModels, setLmStudioModels] = useState<LocalModelInfo[]>(_lmStudioCache);
 
   const refreshCachedLists = useCallback(() => {
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
     listLocalModels().then((res) => {
-      setLmStudioModels(res.models.filter((m) => m.source === "lmstudio"));
+      const next = res.models.filter((m) => m.source === "lmstudio");
+      _lmStudioCache = next;
+      setLmStudioModels(next);
     }).catch(() => {});
   }, []);
 
   useEffect(() => {
+    // Always refresh LM Studio models (not gated by alreadyCached)
+    listLocalModels().then((res) => {
+      const next = res.models.filter((m) => m.source === "lmstudio");
+      _lmStudioCache = next;
+      setLmStudioModels(next);
+    }).catch(() => {});
+
     if (alreadyCached) return;
     let done = 0;
     const check = () => { if (++done >= 2) setCachedReady(true); };
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {}).finally(check);
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {}).finally(check);
-    listLocalModels().then((res) => {
-      setLmStudioModels(res.models.filter((m) => m.source === "lmstudio"));
-    }).catch(() => {});
   }, [alreadyCached]);
 
   const handleDeleteConfirm = useCallback(async () => {
