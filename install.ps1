@@ -167,7 +167,7 @@ function Test-PortBusy {
     param([Parameter(Mandatory = `$true)][int]`$Port)
     `$listener = `$null
     try {
-        `$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, `$Port)
+        `$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, `$Port)
         `$listener.Start()
         return `$false
     } catch {

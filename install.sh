@@ -324,6 +324,8 @@ _acquire_lock() {
 }
 
 _release_lock() {
+    [ -d "$LOCK_DIR" ] || return 0
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] || return 0
     rm -rf "$LOCK_DIR"
 }
 

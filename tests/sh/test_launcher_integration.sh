@@ -314,7 +314,9 @@ SANDBOX_PIDS+=("$_blocker_pid")
 mkdir -p "$LOCK_DIR_PATH"
 echo "$_blocker_pid" > "$LOCK_DIR_PATH/pid"
 
-# Mock curl: returns healthy for port 19000 after first call
+# Mock curl: returns healthy for port 19000 after 2nd call.
+# Call 1 = fast-path health check (must fail to reach _acquire_lock)
+# Call 2+ = lock-contention wait loop (succeed, proving we entered the lock path)
 _counter_file="$SANDBOX/calls/curl_counter_t4"
 echo "0" > "$_counter_file"
 cat > "$SANDBOX/bin/curl" <<MOCK
@@ -322,7 +324,7 @@ cat > "$SANDBOX/bin/curl" <<MOCK
 _count=\$(cat "$_counter_file" 2>/dev/null || echo 0)
 _count=\$((_count + 1))
 echo "\$_count" > "$_counter_file"
-if [ "\$_count" -ge 1 ]; then
+if [ "\$_count" -ge 2 ]; then
     echo '{"status":"healthy","service":"Unsloth UI Backend"}'
 else
     echo '{"status":"starting"}'
