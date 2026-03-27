@@ -410,16 +410,20 @@ export function DatasetSection() {
   }, [navigate]);
 
   return (
-    <div data-tour="studio-dataset" className="col-span-1 xl:col-span-4">
+    <div data-tour="studio-dataset" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
         title="Dataset"
         description="Select or upload training data"
         accent="indigo"
-        className="dark:shadow-border"
+        className={`dark:shadow-border ${
+          advancedOpen || (datasetSource === "upload" && uploadedFile)
+            ? "min-h-studio-config-column"
+            : "h-studio-config-column"
+        }`}
       >
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Choose dataset
               <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
@@ -453,6 +457,7 @@ export function DatasetSection() {
             </span>
             <div
               ref={comboboxAnchorRef}
+              className="min-w-0"
               onKeyDown={(event) => {
                 if (event.key !== "Enter") return;
                 if (!(event.target instanceof HTMLInputElement)) return;
@@ -521,7 +526,7 @@ export function DatasetSection() {
                       ? "Search Hugging Face datasets..."
                       : "Search local datasets..."
                   }
-                  className="w-full"
+                  className="w-full min-w-0 overflow-hidden leading-5"
                   showClear={true}
                 >
                   <InputGroupAddon>
