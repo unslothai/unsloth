@@ -1159,12 +1159,8 @@ class LlamaCppBackend:
 
             # Legacy in-tree build dirs (older setup.sh versions)
             project_root = Path(__file__).resolve().parents[4]
-            install_roots.append(
-                (project_root / "llama.cpp").resolve(strict = False)
-            )
-            install_roots.append(
-                (project_root / "bin").resolve(strict = False)
-            )
+            install_roots.append((project_root / "llama.cpp").resolve(strict = False))
+            install_roots.append((project_root / "bin").resolve(strict = False))
 
             # LLAMA_SERVER_PATH -- exact binary, not its whole parent dir
             env_path = os.environ.get("LLAMA_SERVER_PATH")
