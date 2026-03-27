@@ -973,31 +973,62 @@ class LlamaCppBackend:
                     effective_ctx = 0
                 original_ctx = effective_ctx
 
-                # Auto-cap context to fit in GPU VRAM when possible.
-                # Use aggregate free memory across all GPUs (not just the
-                # single best GPU) so multi-GPU setups get a fair budget.
-                if gpus and self._can_estimate_kv():
-                    total_free_mib = sum(free for _, free in gpus)
-                    effective_ctx = self._fit_context_to_vram(
-                        effective_ctx, total_free_mib, model_size, cache_type_kv
-                    )
-                    if effective_ctx < original_ctx:
-                        kv_est = self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv
-                        )
-                        logger.info(
-                            f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
-                            f"to fit in {total_free_mib} MiB total GPU VRAM "
-                            f"(model: {model_size / (1024**3):.1f} GB, "
-                            f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
-                        )
+                # Auto-cap context to fit in GPU VRAM and select GPUs.
+                #
+                # Strategy: try GPU subsets from smallest (1 GPU) to largest,
+                # capping context for each.  Pick the smallest subset where
+                # the capped context is acceptable (>= min_ctx or full fit).
+                # This avoids dragging in tiny GPUs that barely help and
+                # prefers single-GPU when possible (simpler, faster).
+                gpu_indices, use_fit = None, True
+                kv_cache_bytes = 0
 
-                # Include KV cache in GPU fit check
+                if gpus and self._can_estimate_kv():
+                    ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                    best_ctx = 0
+                    best_indices = None
+
+                    for n in range(1, len(ranked) + 1):
+                        subset = ranked[:n]
+                        pool_mib = sum(free for _, free in subset)
+                        capped = self._fit_context_to_vram(
+                            effective_ctx, pool_mib, model_size, cache_type_kv
+                        )
+                        kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                        total = model_size + kv
+                        total_mib = total / (1024 * 1024)
+                        pool_budget = pool_mib * 0.70
+
+                        if total_mib <= pool_budget:
+                            if capped > best_ctx:
+                                best_ctx = capped
+                                best_indices = sorted(idx for idx, _ in subset)
+                            # If full context fits, no need to try more GPUs
+                            if capped >= effective_ctx:
+                                break
+
+                    if best_indices is not None:
+                        effective_ctx = best_ctx
+                        gpu_indices = best_indices
+                        use_fit = False
+
+                elif gpus:
+                    # Can't estimate KV -- fall back to file-size-only check
+                    gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+
+                if effective_ctx < original_ctx:
+                    kv_est = self._estimate_kv_cache_bytes(
+                        effective_ctx, cache_type_kv
+                    )
+                    logger.info(
+                        f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
+                        f"(model: {model_size / (1024**3):.1f} GB, "
+                        f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                    )
+
                 kv_cache_bytes = self._estimate_kv_cache_bytes(
                     effective_ctx, cache_type_kv
                 )
-                total_vram = model_size + kv_cache_bytes
-                gpu_indices, use_fit = self._select_gpus(total_vram, gpus)
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
                     f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "

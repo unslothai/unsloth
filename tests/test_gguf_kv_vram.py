@@ -473,7 +473,13 @@ class TestLoadModelIntegration:
         )
 
     def test_multi_gpu_auto_cap(self):
-        """Bug 1: Multi-GPU should use aggregate budget, not single-GPU max."""
+        """Bug 1: Multi-GPU should use aggregate budget, not single-GPU max.
+
+        With 2x 24 GiB GPUs, 18 GiB model can't fit on 1 GPU at 70%
+        (budget=16.8 GiB), so multi-GPU is needed.  With both GPUs the
+        budget is ~33.6 GiB, leaving ~15.6 GiB for KV, allowing more
+        context than the old single-GPU cap of 2048.
+        """
         b = _make_backend(
             n_layers = 80,
             n_kv_heads = 8,
@@ -481,12 +487,8 @@ class TestLoadModelIntegration:
             embedding_length = 8192,
             context_length = 131072,
         )
-        # 2x 24 GiB GPUs, 18 GiB model, 131k f16 KV ~43 GiB total
-        # Single GPU budget: 24*1024*0.7 = ~16.8 GiB (too small)
-        # Multi GPU budget: 2*24*1024*0.7 = ~33.6 GiB (fits model, can do some context)
         gpus = [(0, 24 * 1024), (1, 24 * 1024)]
 
-        # Use custom patching to preserve metadata
         captured = {}
 
         class FakePopen:
@@ -532,14 +534,148 @@ class TestLoadModelIntegration:
         cmd = captured["cmd"]
         idx = cmd.index("-c")
         ctx_val = int(cmd[idx + 1])
+        env = captured["env"]
 
-        # BUG: auto-cap uses single-GPU budget (best_free_mib = max(free for _, free in gpus))
-        # and caps to 2048. With correct multi-GPU aggregate budget, context would be much
-        # higher than 2048 (though likely still capped below 131072).
+        # Context should be more than 2048 (old bug capped to 2048 using
+        # single-GPU budget).  Both GPUs should be selected.
         assert ctx_val > 2048, (
-            f"Multi-GPU should not cap context to 2048. Got -c {ctx_val}. "
-            f"Bug: load_model uses single-GPU budget (best_free_mib) instead "
-            f"of aggregate multi-GPU budget."
+            f"Multi-GPU should not cap context to 2048. Got -c {ctx_val}."
+        )
+        cvd = env.get("CUDA_VISIBLE_DEVICES", "")
+        selected = [int(x) for x in cvd.split(",") if x.strip()]
+        assert len(selected) == 2, (
+            f"Both GPUs should be selected, got CUDA_VISIBLE_DEVICES={cvd}"
+        )
+
+    def test_multi_gpu_prefers_fewer_gpus(self):
+        """Single GPU should be preferred when model+KV fits on one GPU."""
+        b = _make_backend(
+            n_layers = 32,
+            n_kv_heads = 8,
+            n_heads = 32,
+            embedding_length = 4096,
+            context_length = 8192,
+        )
+        # 5 GiB model, 8k ctx f16 KV ~0.5 GiB -> total ~5.5 GiB
+        # Single 24 GiB GPU: 70% = 16.8 GiB, easily fits
+        gpus = [(0, 24 * 1024), (1, 24 * 1024)]
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, **kw):
+                captured["cmd"] = cmd
+                captured["env"] = kw.get("env", {})
+                self.stdout = iter([])
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def wait(self, **kw):
+                pass
+
+            def kill(self):
+                pass
+
+        with (
+            patch.object(
+                type(b),
+                "_find_llama_server_binary",
+                staticmethod(lambda: str(self.fake_binary)),
+            ),
+            patch.object(type(b), "_get_gpu_free_memory", staticmethod(lambda: gpus)),
+            patch.object(
+                type(b), "_get_gguf_size_bytes", staticmethod(lambda p: 5 * GIB)
+            ),
+            patch.object(type(b), "_read_gguf_metadata", lambda self, p: None),
+            patch.object(type(b), "_wait_for_health", lambda self, **kw: True),
+            patch("subprocess.Popen", FakePopen),
+        ):
+            b.load_model(
+                gguf_path = str(self.fake_gguf),
+                model_identifier = "test-model",
+                n_ctx = 8192,
+                cache_type_kv = "f16",
+            )
+
+        cmd = captured["cmd"]
+        idx = cmd.index("-c")
+        ctx_val = int(cmd[idx + 1])
+        env = captured["env"]
+
+        # Full context should fit on 1 GPU
+        assert ctx_val == 8192, f"Full context should fit, got -c {ctx_val}"
+        cvd = env.get("CUDA_VISIBLE_DEVICES", "")
+        selected = [int(x) for x in cvd.split(",") if x.strip()]
+        assert len(selected) == 1, (
+            f"Should prefer 1 GPU when model fits, got {len(selected)}"
+        )
+
+    def test_multi_gpu_heterogeneous(self):
+        """With a big + tiny GPU, prefer the big GPU alone if it can fit."""
+        b = _make_backend(
+            n_layers = 32,
+            n_kv_heads = 8,
+            n_heads = 32,
+            embedding_length = 4096,
+            context_length = 32768,
+        )
+        # 10 GiB model.  GPU 0 (48 GiB) at 70% = 33.6 GiB, leaves 23.6 GiB for KV.
+        # GPU 1 (4 GiB) barely helps.
+        gpus = [(0, 48 * 1024), (1, 4 * 1024)]
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, **kw):
+                captured["cmd"] = cmd
+                captured["env"] = kw.get("env", {})
+                self.stdout = iter([])
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def wait(self, **kw):
+                pass
+
+            def kill(self):
+                pass
+
+        with (
+            patch.object(
+                type(b),
+                "_find_llama_server_binary",
+                staticmethod(lambda: str(self.fake_binary)),
+            ),
+            patch.object(type(b), "_get_gpu_free_memory", staticmethod(lambda: gpus)),
+            patch.object(
+                type(b), "_get_gguf_size_bytes", staticmethod(lambda p: 10 * GIB)
+            ),
+            patch.object(type(b), "_read_gguf_metadata", lambda self, p: None),
+            patch.object(type(b), "_wait_for_health", lambda self, **kw: True),
+            patch("subprocess.Popen", FakePopen),
+        ):
+            b.load_model(
+                gguf_path = str(self.fake_gguf),
+                model_identifier = "test-model",
+                n_ctx = 32768,
+                cache_type_kv = "f16",
+            )
+
+        env = captured["env"]
+        cvd = env.get("CUDA_VISIBLE_DEVICES", "")
+        selected = [int(x) for x in cvd.split(",") if x.strip()]
+        # Should use GPU 0 alone (48 GiB is plenty), not drag in the 4 GiB GPU
+        assert selected == [0], (
+            f"Should prefer the 48 GiB GPU alone, got CUDA_VISIBLE_DEVICES={cvd}"
         )
 
     def test_context_length_not_overwritten(self):
