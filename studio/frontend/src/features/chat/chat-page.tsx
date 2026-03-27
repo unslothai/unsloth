@@ -602,7 +602,7 @@ export function ChatPage(): ReactElement {
           .filter((m) => m.source === "lmstudio" || m.source === "models_dir")
           .map((m) => ({
             id: m.id,
-            name: m.display_name,
+            name: m.model_id ?? m.display_name,
             baseModel: m.source === "lmstudio" ? "LM Studio" : "Local models",
             updatedAt: m.updated_at ?? undefined,
             source: "local" as const,
