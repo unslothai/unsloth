@@ -14,6 +14,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 from typing import Optional
@@ -387,5 +388,119 @@ def cleanup_orphaned_runs() -> None:
             (datetime.now(timezone.utc).isoformat(),),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def create_chat_thread(
+    thread_id: str,
+    title: str,
+    model_type: str,
+    model_id: str,
+    pair_id: str | None,
+    created_at: int,
+) -> None:
+    now = created_at
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO chat_threads (id, title, model_type, model_id, pair_id, archived, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 0, ?, ?)""",
+            (thread_id, title, model_type, model_id, pair_id, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_chat_thread(thread_id: str, **fields) -> bool:
+    allowed = {"title", "archived"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = int(time.time() * 1000)
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [thread_id]
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            f"UPDATE chat_threads SET {set_clause} WHERE id = ?",
+            values,
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_chat_thread(thread_id: str) -> bool:
+    conn = get_connection()
+    try:
+        cursor = conn.execute("DELETE FROM chat_threads WHERE id = ?", (thread_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def upsert_chat_message(
+    message_id: str,
+    thread_id: str,
+    role: str,
+    content: str,
+    attachments: str | None,
+    metadata: str | None,
+    created_at: int,
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO chat_messages (id, thread_id, role, content, attachments, metadata, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (message_id, thread_id, role, content, attachments, metadata, created_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_all_chat_data() -> dict:
+    conn = get_connection()
+    try:
+        threads = conn.execute("SELECT * FROM chat_threads ORDER BY created_at DESC").fetchall()
+        messages = conn.execute("SELECT * FROM chat_messages ORDER BY created_at ASC").fetchall()
+        return {
+            "threads": [dict(t) for t in threads],
+            "messages": [dict(m) for m in messages],
+        }
+    finally:
+        conn.close()
+
+
+def list_chat_threads(model_type: str | None = None) -> list[dict]:
+    conn = get_connection()
+    try:
+        if model_type:
+            rows = conn.execute(
+                "SELECT * FROM chat_threads WHERE model_type = ? ORDER BY created_at DESC",
+                (model_type,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM chat_threads ORDER BY created_at DESC",
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_chat_thread_messages(thread_id: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC",
+            (thread_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
