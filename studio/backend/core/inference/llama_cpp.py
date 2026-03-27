@@ -1882,11 +1882,18 @@ class LlamaCppBackend:
                                                 ] += func["arguments"]
                                         continue
 
-                                    # ── Reasoning tokens (bypass buffer) ──
-                                    reasoning = delta.get("reasoning_content", "")
+                                    # ── Reasoning tokens ──
+                                    # Only yield in STREAMING state. In BUFFERING
+                                    # and DRAINING, accumulate silently so we don't
+                                    # corrupt the consumer's prev_text tracker
+                                    # (routes/inference.py never resets prev_text
+                                    # between tool iterations).
+                                    reasoning = delta.get(
+                                        "reasoning_content", ""
+                                    )
                                     if reasoning:
                                         reasoning_accum += reasoning
-                                        if detect_state != _S_DRAINING:
+                                        if detect_state == _S_STREAMING:
                                             if not in_thinking:
                                                 cumulative_display += "<think>"
                                                 in_thinking = True
@@ -1948,9 +1955,12 @@ class LlamaCppBackend:
                                             else:
                                                 # Not a tool -- flush buffer
                                                 detect_state = _S_STREAMING
-                                                if in_thinking:
+                                                # Flush any reasoning accumulated
+                                                # during BUFFERING phase
+                                                if reasoning_accum:
+                                                    cumulative_display += "<think>"
+                                                    cumulative_display += reasoning_accum
                                                     cumulative_display += "</think>"
-                                                    in_thinking = False
                                                 cumulative_display += content_buffer
                                                 cleaned = _strip_tool_markup(
                                                     cumulative_display,
@@ -1981,9 +1991,11 @@ class LlamaCppBackend:
                     elif content_accum or reasoning_accum:
                         detect_state = _S_STREAMING
                         if content_buffer:
-                            if in_thinking:
+                            # Flush any reasoning accumulated first
+                            if reasoning_accum:
+                                cumulative_display += "<think>"
+                                cumulative_display += reasoning_accum
                                 cumulative_display += "</think>"
-                                in_thinking = False
                             cumulative_display += content_buffer
                             yield {
                                 "type": "content",
@@ -1991,6 +2003,16 @@ class LlamaCppBackend:
                                     cumulative_display,
                                     final = True,
                                 ),
+                            }
+                        elif reasoning_accum and not has_content_tokens:
+                            # Reasoning-only response (no content tokens):
+                            # show reasoning as plain text, matching
+                            # the final streaming pass behavior for
+                            # models that put everything in reasoning.
+                            cumulative_display = reasoning_accum
+                            yield {
+                                "type": "content",
+                                "text": cumulative_display,
                             }
                     else:
                         return
@@ -2039,33 +2061,9 @@ class LlamaCppBackend:
 
                     # Safety net caught tool XML -- treat as tool call
                     tool_calls = _safety_tc
-                    content_text = content_accum
-                    import re
-
-                    content_text = re.sub(
-                        r"<tool_call>.*?</tool_call>",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
+                    content_text = _strip_tool_markup(
+                        content_accum, final = True,
                     )
-                    content_text = re.sub(
-                        r"<tool_call>.*$",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    content_text = re.sub(
-                        r"<function=\w+>.*?</function>",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    content_text = re.sub(
-                        r"<function=\w+>.*$",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    ).strip()
                     logger.info(
                         f"Safety net: parsed {len(tool_calls)} tool call(s) "
                         f"from streamed content"
@@ -2085,32 +2083,9 @@ class LlamaCppBackend:
                             content_accum,
                         )
                     if tool_calls and not has_structured_tc:
-                        import re
-
-                        content_text = re.sub(
-                            r"<tool_call>.*?</tool_call>",
-                            "",
-                            content_text,
-                            flags = re.DOTALL,
+                        content_text = _strip_tool_markup(
+                            content_text, final = True,
                         )
-                        content_text = re.sub(
-                            r"<tool_call>.*$",
-                            "",
-                            content_text,
-                            flags = re.DOTALL,
-                        )
-                        content_text = re.sub(
-                            r"<function=\w+>.*?</function>",
-                            "",
-                            content_text,
-                            flags = re.DOTALL,
-                        )
-                        content_text = re.sub(
-                            r"<function=\w+>.*$",
-                            "",
-                            content_text,
-                            flags = re.DOTALL,
-                        ).strip()
                     if tool_calls:
                         logger.info(
                             f"Parsed {len(tool_calls)} tool call(s) from "
