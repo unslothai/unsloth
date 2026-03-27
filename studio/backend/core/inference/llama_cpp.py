@@ -1017,9 +1017,7 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
 
                 if effective_ctx < original_ctx:
-                    kv_est = self._estimate_kv_cache_bytes(
-                        effective_ctx, cache_type_kv
-                    )
+                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
                     logger.info(
                         f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
                         f"(model: {model_size / (1024**3):.1f} GB, "

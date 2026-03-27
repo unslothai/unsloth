@@ -538,14 +538,14 @@ class TestLoadModelIntegration:
 
         # Context should be more than 2048 (old bug capped to 2048 using
         # single-GPU budget).  Both GPUs should be selected.
-        assert ctx_val > 2048, (
-            f"Multi-GPU should not cap context to 2048. Got -c {ctx_val}."
-        )
+        assert (
+            ctx_val > 2048
+        ), f"Multi-GPU should not cap context to 2048. Got -c {ctx_val}."
         cvd = env.get("CUDA_VISIBLE_DEVICES", "")
         selected = [int(x) for x in cvd.split(",") if x.strip()]
-        assert len(selected) == 2, (
-            f"Both GPUs should be selected, got CUDA_VISIBLE_DEVICES={cvd}"
-        )
+        assert (
+            len(selected) == 2
+        ), f"Both GPUs should be selected, got CUDA_VISIBLE_DEVICES={cvd}"
 
     def test_multi_gpu_prefers_fewer_gpus(self):
         """Single GPU should be preferred when model+KV fits on one GPU."""
@@ -611,9 +611,9 @@ class TestLoadModelIntegration:
         assert ctx_val == 8192, f"Full context should fit, got -c {ctx_val}"
         cvd = env.get("CUDA_VISIBLE_DEVICES", "")
         selected = [int(x) for x in cvd.split(",") if x.strip()]
-        assert len(selected) == 1, (
-            f"Should prefer 1 GPU when model fits, got {len(selected)}"
-        )
+        assert (
+            len(selected) == 1
+        ), f"Should prefer 1 GPU when model fits, got {len(selected)}"
 
     def test_multi_gpu_heterogeneous(self):
         """With a big + tiny GPU, prefer the big GPU alone if it can fit."""
@@ -674,9 +674,9 @@ class TestLoadModelIntegration:
         cvd = env.get("CUDA_VISIBLE_DEVICES", "")
         selected = [int(x) for x in cvd.split(",") if x.strip()]
         # Should use GPU 0 alone (48 GiB is plenty), not drag in the 4 GiB GPU
-        assert selected == [0], (
-            f"Should prefer the 48 GiB GPU alone, got CUDA_VISIBLE_DEVICES={cvd}"
-        )
+        assert selected == [
+            0
+        ], f"Should prefer the 48 GiB GPU alone, got CUDA_VISIBLE_DEVICES={cvd}"
 
     def test_context_length_not_overwritten(self):
         """Bug 6: _context_length should not be overwritten with capped value."""
