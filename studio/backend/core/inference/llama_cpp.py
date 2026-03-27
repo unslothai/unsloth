@@ -2027,10 +2027,16 @@ class LlamaCppBackend:
 
                 # ── STREAMING path: no tool call ──
                 if detect_state == _S_STREAMING:
-                    # Safety net: check for XML tool signals in content
+                    # Safety net: check for XML tool signals in content.
+                    # Only if we have NOT already emitted visible text --
+                    # retroactively switching to tool mode after the user
+                    # has seen content violates the streaming contract and
+                    # corrupts the route-layer cumulative delta tracker.
                     _safety_tc = None
-                    if auto_heal_tool_calls and any(
-                        s in content_accum for s in _TOOL_XML_SIGNALS
+                    if (
+                        auto_heal_tool_calls
+                        and not _last_emitted
+                        and any(s in content_accum for s in _TOOL_XML_SIGNALS)
                     ):
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
@@ -2102,15 +2108,46 @@ class LlamaCppBackend:
                             f"{'structured delta' if has_structured_tc else 'content text'}"
                         )
                     if not tool_calls:
-                        # DRAINING but no tool calls (false positive)
+                        # DRAINING but no tool calls (false positive).
+                        # Merge accumulated metrics from prior tool
+                        # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
-                        if _iter_usage or _iter_timings:
+                        _fu = _iter_usage or {}
+                        _fc = _fu.get("completion_tokens", 0)
+                        _fp = _fu.get("prompt_tokens", 0)
+                        _tc = _fc + _accumulated_completion_tokens
+                        if _iter_usage or _iter_timings or _accumulated_completion_tokens:
+                            _mt = (
+                                dict(_iter_timings) if _iter_timings else {}
+                            )
+                            if (
+                                _accumulated_predicted_ms
+                                or _accumulated_predicted_n
+                            ):
+                                _mt["predicted_ms"] = (
+                                    _mt.get("predicted_ms", 0)
+                                    + _accumulated_predicted_ms
+                                )
+                                _tn = (
+                                    _mt.get("predicted_n", 0)
+                                    + _accumulated_predicted_n
+                                )
+                                _mt["predicted_n"] = _tn
+                                _tms = _mt["predicted_ms"]
+                                if _tms > 0:
+                                    _mt["predicted_per_second"] = (
+                                        _tn / (_tms / 1000.0)
+                                    )
                             yield {
                                 "type": "metadata",
-                                "usage": _iter_usage,
-                                "timings": _iter_timings,
+                                "usage": {
+                                    "prompt_tokens": _fp,
+                                    "completion_tokens": _tc,
+                                    "total_tokens": _fp + _tc,
+                                },
+                                "timings": _mt,
                             }
                         return
 
