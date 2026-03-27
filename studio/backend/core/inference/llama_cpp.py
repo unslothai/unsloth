@@ -2493,7 +2493,7 @@ class LlamaCppBackend:
                         # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
-                            _safe = _strip_tool_markup(content_accum, final=True)
+                            _safe = _strip_tool_markup(content_accum, final = True)
                             if _safe.strip():
                                 yield {"type": "content", "text": _safe}
                         _fu = _iter_usage or {}

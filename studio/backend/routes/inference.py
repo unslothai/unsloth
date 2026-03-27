@@ -1055,8 +1055,8 @@ async def openai_chat_completions(
             # No format instructions -- each model's chat template handles
             # that.  Keeps tool use optional ("prefer", not "must").
             tool_names = {t["function"]["name"] for t in tools_to_use}
-            has_web   = "web_search" in tool_names
-            has_code  = "python" in tool_names or "terminal" in tool_names
+            has_web = "web_search" in tool_names
+            has_code = "python" in tool_names or "terminal" in tool_names
 
             nudge_parts = ["You are a helpful assistant with access to tools."]
             if has_code and has_web:
@@ -1092,6 +1092,7 @@ async def openai_chat_completions(
         # (the frontend may include prior assistant <tool_call> text
         # in follow-up user messages).
         import re as _re
+
         _tool_xml_strip = [
             _re.compile(r"<tool_call>.*?</tool_call>", _re.DOTALL),
             _re.compile(r"<tool_call>.*$", _re.DOTALL),
@@ -1117,6 +1118,7 @@ async def openai_chat_completions(
         created = int(time.time())
 
         if use_tools:
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
