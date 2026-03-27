@@ -591,32 +591,15 @@ class LlamaCppBackend:
                                 }
                             elif key == "tokenizer.chat_template":
                                 self._chat_template = val_s
-                        elif vtype == 4:  # UINT32
-                            val_i = struct.unpack("<I", f.read(4))[0]
+                        elif vtype in (4, 10):  # UINT32 or UINT64
+                            val_i = (
+                                struct.unpack("<I", f.read(4))[0]
+                                if vtype == 4
+                                else struct.unpack("<Q", f.read(8))[0]
+                            )
                             attr = arch_keys.get(key)
-                            if attr == "context_length":
-                                self._context_length = val_i
-                            elif attr == "n_layers":
-                                self._n_layers = val_i
-                            elif attr == "n_kv_heads":
-                                self._n_kv_heads = val_i
-                            elif attr == "n_heads":
-                                self._n_heads = val_i
-                            elif attr == "embedding_length":
-                                self._embedding_length = val_i
-                        elif vtype == 10:  # UINT64
-                            val_i = struct.unpack("<Q", f.read(8))[0]
-                            attr = arch_keys.get(key)
-                            if attr == "context_length":
-                                self._context_length = val_i
-                            elif attr == "n_layers":
-                                self._n_layers = val_i
-                            elif attr == "n_kv_heads":
-                                self._n_kv_heads = val_i
-                            elif attr == "n_heads":
-                                self._n_heads = val_i
-                            elif attr == "embedding_length":
-                                self._embedding_length = val_i
+                            if attr:
+                                setattr(self, f"_{attr}", val_i)
                         else:
                             self._gguf_skip_value(f, vtype)
                     else:
