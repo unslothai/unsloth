@@ -3,6 +3,7 @@
 # Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
 # Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
 # Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
+# Usage (no-torch): ./install.sh --no-torch  (skip PyTorch, GGUF-only mode)
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 # Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 set -e
@@ -11,6 +12,7 @@ set -e
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
 _USER_PYTHON=""
+_NO_TORCH_FLAG=false
 _next_is_package=false
 _next_is_python=false
 for arg in "$@"; do
@@ -28,6 +30,7 @@ for arg in "$@"; do
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
         --python) _next_is_python=true ;;
+        --no-torch) _NO_TORCH_FLAG=true ;;
     esac
 done
 
@@ -611,6 +614,12 @@ if [ "$MAC_INTEL" = true ]; then
     echo ""
 fi
 
+# ── Unified SKIP_TORCH: --no-torch flag OR Intel Mac auto-detection ──
+SKIP_TORCH=false
+if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
+    SKIP_TORCH=true
+fi
+
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
@@ -764,7 +773,7 @@ fi
 
 # If an Intel Mac has a stale 3.13 venv from a previous failed install, recreate
 # (skip when the user explicitly chose a version via --python)
-if [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
+if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
     _PY_MM=$("$VENV_DIR/bin/python" -c \
         "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>/dev/null || echo "")
     if [ "$_PY_MM" != "3.12" ]; then
@@ -834,14 +843,28 @@ get_torch_index_url() {
 }
 TORCH_INDEX_URL=$(get_torch_index_url)
 
+# ── Print CPU-only hint when no GPU detected ──
+case "$TORCH_INDEX_URL" in
+    */cpu)
+        if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
+            echo ""
+            echo "  NOTE: No NVIDIA GPU detected (nvidia-smi not found)."
+            echo "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
+            echo "  re-run with --no-torch for a faster, lighter install:"
+            echo "    curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
+            echo ""
+        fi
+        ;;
+esac
+
 # ── Install unsloth directly into the venv (no activation needed) ──
 _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
-    if [ "$MAC_INTEL" = true ] && [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        # Intel Mac GGUF-only: skip unsloth-zoo (depends on torch), editable only
+    if [ "$SKIP_TORCH" = true ] && [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        # No-torch mode: skip unsloth-zoo (depends on torch), editable only
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         uv pip install --python "$_VENV_PY" \
@@ -853,9 +876,9 @@ if [ "$_MIGRATED" = true ]; then
         fi
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
-    # Fresh: Step 1 - install torch from explicit index (skip on Intel Mac)
-    if [ "$MAC_INTEL" = true ]; then
-        echo "==> Skipping PyTorch (unavailable for Intel Mac x86_64)."
+    # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
+    if [ "$SKIP_TORCH" = true ]; then
+        echo "==> Skipping PyTorch (--no-torch or Intel Mac x86_64)."
     else
         echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
         uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
@@ -864,8 +887,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        if [ "$MAC_INTEL" = true ]; then
-            # Intel Mac GGUF-only: skip unsloth-zoo (depends on torch), editable only
+        if [ "$SKIP_TORCH" = true ]; then
+            # No-torch mode: skip unsloth-zoo (depends on torch), editable only
             uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         else
             uv pip install --python "$_VENV_PY" \
@@ -926,12 +949,12 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
-    UNSLOTH_NO_TORCH="$MAC_INTEL" \
+    UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
 else
     SKIP_STUDIO_BASE=1 \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
-    UNSLOTH_NO_TORCH="$MAC_INTEL" \
+    UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
 fi
 

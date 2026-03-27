@@ -29,6 +29,9 @@ DATA_COLLATORS = (
 CHAT_TEMPLATES = (
     REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
 )
+FORMAT_CONVERSION = (
+    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
+)
 
 
 def _has_uv() -> bool:
@@ -335,6 +338,162 @@ class TestChatTemplatesNoTorchVenv:
             result.returncode == 0
         ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
+
+
+# ── format_conversion.py: AST + runtime tests ────────────────────────
+
+
+class TestFormatConversionAST:
+    """Static analysis: format_conversion.py torch imports are guarded."""
+
+    def test_ast_parse(self):
+        """format_conversion.py must be valid Python syntax."""
+        source = FORMAT_CONVERSION.read_text(encoding = "utf-8")
+        tree = ast.parse(source, filename = str(FORMAT_CONVERSION))
+        assert tree is not None
+
+    def test_no_bare_torch_import_in_functions(self):
+        """All 'from torch' imports in function bodies must be inside try/except."""
+        source = FORMAT_CONVERSION.read_text(encoding = "utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    if isinstance(child, ast.ImportFrom) and child.module and child.module.startswith("torch"):
+                        # This torch import must be inside a Try node
+                        found_in_try = False
+                        for try_node in ast.walk(node):
+                            if isinstance(try_node, ast.Try):
+                                for try_child in ast.walk(try_node):
+                                    if try_child is child:
+                                        found_in_try = True
+                                        break
+                            if found_in_try:
+                                break
+                        assert found_in_try, (
+                            f"torch import at line {child.lineno} in {node.name}() "
+                            "is not inside a try/except block"
+                        )
+
+
+class TestFormatConversionNoTorchVenv:
+    """Run format_conversion.py functions in a no-torch venv."""
+
+    def test_convert_chatml_to_alpaca_no_torch(self, no_torch_venv):
+        """convert_chatml_to_alpaca works without torch (via try/except ImportError)."""
+        code = textwrap.dedent(f"""\
+            import sys, types
+
+            # Stub loggers
+            loggers = types.ModuleType('loggers')
+            loggers.get_logger = lambda n: type('L', (), {{
+                'info': lambda s, m: None,
+                'warning': lambda s, m: None,
+                'debug': lambda s, m: None,
+            }})()
+            sys.modules['loggers'] = loggers
+
+            # Stub datasets.IterableDataset (HF datasets, not torch)
+            datasets_mod = types.ModuleType('datasets')
+            datasets_mod.IterableDataset = type('IterableDataset', (), {{}})
+            sys.modules['datasets'] = datasets_mod
+
+            # Stub utils.hardware
+            utils_mod = types.ModuleType('utils')
+            hardware_mod = types.ModuleType('utils.hardware')
+            hardware_mod.dataset_map_num_proc = lambda n=None: 1
+            utils_mod.hardware = hardware_mod
+            sys.modules['utils'] = utils_mod
+            sys.modules['utils.hardware'] = hardware_mod
+
+            # Read and exec format_conversion.py
+            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = source.replace('from .format_detection import', 'from format_detection import')
+            ns = {{'__name__': '__test__'}}
+            exec(source, ns)
+
+            # Test convert_chatml_to_alpaca with a simple dataset
+            class FakeDataset:
+                def map(self, fn, **kw):
+                    result = fn({{
+                        'messages': [[
+                            {{'role': 'user', 'content': 'Hello'}},
+                            {{'role': 'assistant', 'content': 'Hi there'}},
+                        ]]
+                    }})
+                    return result
+
+            result = ns['convert_chatml_to_alpaca'](FakeDataset())
+            assert 'instruction' in result, f"Expected 'instruction' in result, got {{result.keys()}}"
+            assert result['instruction'] == ['Hello']
+            assert result['output'] == ['Hi there']
+            print("OK: convert_chatml_to_alpaca works without torch")
+        """)
+        result = subprocess.run(
+            [no_torch_venv, "-c", code],
+            capture_output = True,
+            timeout = 30,
+        )
+        assert (
+            result.returncode == 0
+        ), f"convert_chatml_to_alpaca failed without torch:\n{result.stderr.decode()}"
+        assert b"OK: convert_chatml_to_alpaca works without torch" in result.stdout
+
+    def test_convert_alpaca_to_chatml_no_torch(self, no_torch_venv):
+        """convert_alpaca_to_chatml works without torch (via try/except ImportError)."""
+        code = textwrap.dedent(f"""\
+            import sys, types
+
+            loggers = types.ModuleType('loggers')
+            loggers.get_logger = lambda n: type('L', (), {{
+                'info': lambda s, m: None,
+                'warning': lambda s, m: None,
+                'debug': lambda s, m: None,
+            }})()
+            sys.modules['loggers'] = loggers
+
+            datasets_mod = types.ModuleType('datasets')
+            datasets_mod.IterableDataset = type('IterableDataset', (), {{}})
+            sys.modules['datasets'] = datasets_mod
+
+            utils_mod = types.ModuleType('utils')
+            hardware_mod = types.ModuleType('utils.hardware')
+            hardware_mod.dataset_map_num_proc = lambda n=None: 1
+            utils_mod.hardware = hardware_mod
+            sys.modules['utils'] = utils_mod
+            sys.modules['utils.hardware'] = hardware_mod
+
+            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = source.replace('from .format_detection import', 'from format_detection import')
+            ns = {{'__name__': '__test__'}}
+            exec(source, ns)
+
+            class FakeDataset:
+                def map(self, fn, **kw):
+                    result = fn({{
+                        'instruction': ['Write a poem'],
+                        'input': [''],
+                        'output': ['Roses are red'],
+                    }})
+                    return result
+
+            result = ns['convert_alpaca_to_chatml'](FakeDataset())
+            assert 'conversations' in result
+            convo = result['conversations'][0]
+            assert convo[0]['role'] == 'user'
+            assert convo[1]['role'] == 'assistant'
+            print("OK: convert_alpaca_to_chatml works without torch")
+        """)
+        result = subprocess.run(
+            [no_torch_venv, "-c", code],
+            capture_output = True,
+            timeout = 30,
+        )
+        assert (
+            result.returncode == 0
+        ), f"convert_alpaca_to_chatml failed without torch:\n{result.stderr.decode()}"
+        assert b"OK: convert_alpaca_to_chatml works without torch" in result.stdout
 
 
 # ── Negative controls ─────────────────────────────────────────────────

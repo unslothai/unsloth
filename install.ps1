@@ -1,6 +1,7 @@
 # Unsloth Studio Installer for Windows PowerShell
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
 
 function Install-UnslothStudio {
@@ -10,11 +11,13 @@ function Install-UnslothStudio {
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
     $RepoRoot = ""
+    $SkipTorch = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
-            "--local"   { $StudioLocalInstall = $true }
-            "--package" {
+            "--local"    { $StudioLocalInstall = $true }
+            "--no-torch" { $SkipTorch = $true }
+            "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
                     Write-Host "[ERROR] --package requires an argument." -ForegroundColor Red
@@ -585,6 +588,16 @@ shell.Run cmd, 0, False
     }
     $TorchIndexUrl = Get-TorchIndexUrl
 
+    # ── Print CPU-only hint when no GPU detected ──
+    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+        Write-Host ""
+        Write-Host "  NOTE: No NVIDIA GPU detected." -ForegroundColor Yellow
+        Write-Host "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
+        Write-Host "  re-run with --no-torch for a faster, lighter install:"
+        Write-Host "    .\install.ps1 --no-torch"
+        Write-Host ""
+    }
+
     # ── Install PyTorch first, then unsloth separately ──
     #
     # Why two steps?
@@ -607,24 +620,38 @@ shell.Run cmd, 0, False
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
         # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
-        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
-        if ($StudioLocalInstall) {
-            Write-Host "==> Overlaying local repo (editable)..."
+        if ($SkipTorch -and $StudioLocalInstall) {
+            # No-torch mode: skip unsloth-zoo (depends on torch), editable only
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
+        } else {
+            uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            if ($StudioLocalInstall) {
+                Write-Host "==> Overlaying local repo (editable)..."
+                uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            }
         }
     } elseif ($TorchIndexUrl) {
-        Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-        uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
-            return
+        if ($SkipTorch) {
+            Write-Host "==> Skipping PyTorch (--no-torch flag set)."
+        } else {
+            Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
+            uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
+                return
+            }
         }
 
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
-            Write-Host "==> Overlaying local repo (editable)..."
-            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            if ($SkipTorch) {
+                # No-torch mode: skip unsloth-zoo (depends on torch), editable only
+                uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            } else {
+                uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+                Write-Host "==> Overlaying local repo (editable)..."
+                uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            }
         } else {
             uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName"
         }
@@ -659,6 +686,9 @@ shell.Run cmd, 0, False
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
+    if ($SkipTorch) {
+        $env:UNSLOTH_NO_TORCH = "true"
+    }
     if ($StudioLocalInstall) {
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot

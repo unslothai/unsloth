@@ -288,8 +288,13 @@ def apply_chat_template_to_dataset(
                 'batch_size': batch_size,
             }
 
-            from torch.utils.data import IterableDataset
-            if not isinstance(dataset, IterableDataset):
+            try:
+                from torch.utils.data import IterableDataset
+                _is_torch_iterable = isinstance(dataset, IterableDataset)
+            except ImportError:
+                _is_torch_iterable = False
+
+            if not _is_torch_iterable:
                 from utils.hardware import dataset_map_num_proc
                 if num_proc is None or type(num_proc) is not int:
                     num_proc = dataset_map_num_proc()
@@ -350,13 +355,18 @@ def apply_chat_template_to_dataset(
             return {"text": texts}
 
         try:
-            from torch.utils.data import IterableDataset
+            try:
+                from torch.utils.data import IterableDataset
+                _is_torch_iterable = isinstance(dataset, IterableDataset)
+            except ImportError:
+                _is_torch_iterable = False
+
             dataset_map_kwargs = {
                 'batched': True,
                 'batch_size': batch_size,
             }
 
-            if not isinstance(dataset, IterableDataset):
+            if not _is_torch_iterable:
                 from utils.hardware import dataset_map_num_proc
                 if num_proc is None or type(num_proc) is not int:
                     num_proc = dataset_map_num_proc()
@@ -367,7 +377,7 @@ def apply_chat_template_to_dataset(
 
             # Monitor tqdm progress from dataset.map() and relay to callback
             _tqdm_monitor_stop = None
-            if progress_callback and not isinstance(dataset, IterableDataset):
+            if progress_callback and not _is_torch_iterable:
                 import threading
                 from tqdm.auto import tqdm as _tqdm_cls
 

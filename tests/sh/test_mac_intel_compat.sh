@@ -222,13 +222,13 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Verify the value passed is "$MAC_INTEL" (the variable, not a hardcoded string)
-_mac_intel_count=$(grep 'UNSLOTH_NO_TORCH="\$MAC_INTEL"' "$INSTALL_SH" | wc -l)
-if [ "$_mac_intel_count" -ge 2 ]; then
-    echo "  PASS: UNSLOTH_NO_TORCH=\"\$MAC_INTEL\" in both branches ($_mac_intel_count found)"
+# Verify the value passed is "$SKIP_TORCH" (the unified variable, not MAC_INTEL)
+_skip_torch_count=$(grep 'UNSLOTH_NO_TORCH="\$SKIP_TORCH"' "$INSTALL_SH" | wc -l)
+if [ "$_skip_torch_count" -ge 2 ]; then
+    echo "  PASS: UNSLOTH_NO_TORCH=\"\$SKIP_TORCH\" in both branches ($_skip_torch_count found)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: UNSLOTH_NO_TORCH=\"\$MAC_INTEL\" should appear in >= 2 branches (found $_mac_intel_count)"
+    echo "  FAIL: UNSLOTH_NO_TORCH=\"\$SKIP_TORCH\" should appear in >= 2 branches (found $_skip_torch_count)"
     FAIL=$((FAIL + 1))
 fi
 
@@ -242,12 +242,21 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Verify the Intel Mac skip message exists
-if grep -q 'Skipping PyTorch.*Intel Mac' "$INSTALL_SH"; then
-    echo "  PASS: Intel Mac PyTorch skip message found"
+# Verify the PyTorch skip message exists (now covers both --no-torch and Intel Mac)
+if grep -q 'Skipping PyTorch' "$INSTALL_SH"; then
+    echo "  PASS: PyTorch skip message found"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: Intel Mac PyTorch skip message not found"
+    echo "  FAIL: PyTorch skip message not found"
+    FAIL=$((FAIL + 1))
+fi
+
+# Verify SKIP_TORCH unified variable exists
+if grep -q 'SKIP_TORCH=true' "$INSTALL_SH"; then
+    echo "  PASS: SKIP_TORCH=true assignment found"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: SKIP_TORCH=true not found in install.sh"
     FAIL=$((FAIL + 1))
 fi
 
@@ -283,7 +292,7 @@ else
 fi
 
 echo ""
-echo "=== E2E: torch install skipped when MAC_INTEL=true (mock uv shim) ==="
+echo "=== E2E: torch install skipped when SKIP_TORCH=true (mock uv shim) ==="
 
 # Create a mock uv that logs all calls instead of running them
 _MOCK_UV_DIR=$(mktemp -d)
@@ -295,14 +304,14 @@ echo "UV_CALL: \$*" >> "$_UV_LOG"
 MOCK_UV_EOF
 chmod +x "$_MOCK_UV_DIR/uv"
 
-# Extract the torch install block from install.sh and run with MAC_INTEL=true
+# Simulates the torch install decision from install.sh using SKIP_TORCH
 _TORCH_BLOCK=$(mktemp)
 cat > "$_TORCH_BLOCK" << 'TORCH_EOF'
 # Simulates the torch install decision from install.sh
 TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
 _VENV_PY="/fake/python"
-if [ "$MAC_INTEL" = true ]; then
-    echo "==> Skipping PyTorch (unavailable for Intel Mac x86_64)."
+if [ "$SKIP_TORCH" = true ]; then
+    echo "==> Skipping PyTorch (--no-torch or Intel Mac x86_64)."
 else
     echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
     uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
@@ -310,28 +319,28 @@ else
 fi
 TORCH_EOF
 
-# Test: MAC_INTEL=true -> torch install should be SKIPPED (no uv calls)
+# Test: SKIP_TORCH=true -> torch install should be SKIPPED (no uv calls)
 > "$_UV_LOG"  # clear log
-_torch_output=$(MAC_INTEL=true PATH="$_MOCK_UV_DIR:$PATH" bash "$_TORCH_BLOCK" 2>&1)
-assert_contains "MAC_INTEL=true prints skip message" "$_torch_output" "Skipping PyTorch"
+_torch_output=$(SKIP_TORCH=true PATH="$_MOCK_UV_DIR:$PATH" bash "$_TORCH_BLOCK" 2>&1)
+assert_contains "SKIP_TORCH=true prints skip message" "$_torch_output" "Skipping PyTorch"
 if [ -s "$_UV_LOG" ]; then
-    echo "  FAIL: uv was called when MAC_INTEL=true (should be skipped)"
+    echo "  FAIL: uv was called when SKIP_TORCH=true (should be skipped)"
     echo "    Log: $(cat "$_UV_LOG")"
     FAIL=$((FAIL + 1))
 else
-    echo "  PASS: no uv pip install torch when MAC_INTEL=true"
+    echo "  PASS: no uv pip install torch when SKIP_TORCH=true"
     PASS=$((PASS + 1))
 fi
 
-# Test: MAC_INTEL=false -> torch install should EXECUTE (uv called with torch)
+# Test: SKIP_TORCH=false -> torch install should EXECUTE (uv called with torch)
 > "$_UV_LOG"  # clear log
-_torch_output=$(MAC_INTEL=false PATH="$_MOCK_UV_DIR:$PATH" bash "$_TORCH_BLOCK" 2>&1)
-assert_contains "MAC_INTEL=false prints install message" "$_torch_output" "Installing PyTorch"
+_torch_output=$(SKIP_TORCH=false PATH="$_MOCK_UV_DIR:$PATH" bash "$_TORCH_BLOCK" 2>&1)
+assert_contains "SKIP_TORCH=false prints install message" "$_torch_output" "Installing PyTorch"
 if grep -q "torch" "$_UV_LOG"; then
-    echo "  PASS: uv pip install torch called when MAC_INTEL=false"
+    echo "  PASS: uv pip install torch called when SKIP_TORCH=false"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: uv pip install torch NOT called when MAC_INTEL=false"
+    echo "  FAIL: uv pip install torch NOT called when SKIP_TORCH=false"
     FAIL=$((FAIL + 1))
 fi
 
@@ -341,8 +350,7 @@ rm -rf "$_MOCK_UV_DIR"
 echo ""
 echo "=== E2E: UNSLOTH_NO_TORCH env propagation (dynamic test) ==="
 
-# Extract the setup.sh invocation block and replace `bash "$SETUP_SH"` with
-# `env | grep UNSLOTH` to capture the env variable without actually running setup.sh
+# Simulates the setup.sh invocation using SKIP_TORCH
 _ENV_BLOCK=$(mktemp)
 cat > "$_ENV_BLOCK" << 'ENV_EOF'
 # Simulates the setup.sh invocation block from install.sh
@@ -355,30 +363,30 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
-    UNSLOTH_NO_TORCH="$MAC_INTEL" \
+    UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     env | grep "^UNSLOTH_NO_TORCH="
 else
     SKIP_STUDIO_BASE=1 \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
-    UNSLOTH_NO_TORCH="$MAC_INTEL" \
+    UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     env | grep "^UNSLOTH_NO_TORCH="
 fi
 ENV_EOF
 
-# Test: MAC_INTEL=true -> UNSLOTH_NO_TORCH=true in env
-_env_result=$(MAC_INTEL=true STUDIO_LOCAL_INSTALL=false bash "$_ENV_BLOCK" 2>&1)
-assert_eq "non-local: UNSLOTH_NO_TORCH=true when MAC_INTEL=true" "UNSLOTH_NO_TORCH=true" "$_env_result"
+# Test: SKIP_TORCH=true -> UNSLOTH_NO_TORCH=true in env
+_env_result=$(SKIP_TORCH=true STUDIO_LOCAL_INSTALL=false bash "$_ENV_BLOCK" 2>&1)
+assert_eq "non-local: UNSLOTH_NO_TORCH=true when SKIP_TORCH=true" "UNSLOTH_NO_TORCH=true" "$_env_result"
 
-# Test: MAC_INTEL=false -> UNSLOTH_NO_TORCH=false in env
-_env_result=$(MAC_INTEL=false STUDIO_LOCAL_INSTALL=false bash "$_ENV_BLOCK" 2>&1)
-assert_eq "non-local: UNSLOTH_NO_TORCH=false when MAC_INTEL=false" "UNSLOTH_NO_TORCH=false" "$_env_result"
+# Test: SKIP_TORCH=false -> UNSLOTH_NO_TORCH=false in env
+_env_result=$(SKIP_TORCH=false STUDIO_LOCAL_INSTALL=false bash "$_ENV_BLOCK" 2>&1)
+assert_eq "non-local: UNSLOTH_NO_TORCH=false when SKIP_TORCH=false" "UNSLOTH_NO_TORCH=false" "$_env_result"
 
 # Test: local install path also propagates
-_env_result=$(MAC_INTEL=true STUDIO_LOCAL_INSTALL=true bash "$_ENV_BLOCK" 2>&1)
-assert_eq "local: UNSLOTH_NO_TORCH=true when MAC_INTEL=true" "UNSLOTH_NO_TORCH=true" "$_env_result"
+_env_result=$(SKIP_TORCH=true STUDIO_LOCAL_INSTALL=true bash "$_ENV_BLOCK" 2>&1)
+assert_eq "local: UNSLOTH_NO_TORCH=true when SKIP_TORCH=true" "UNSLOTH_NO_TORCH=true" "$_env_result"
 
-_env_result=$(MAC_INTEL=false STUDIO_LOCAL_INSTALL=true bash "$_ENV_BLOCK" 2>&1)
-assert_eq "local: UNSLOTH_NO_TORCH=false when MAC_INTEL=false" "UNSLOTH_NO_TORCH=false" "$_env_result"
+_env_result=$(SKIP_TORCH=false STUDIO_LOCAL_INSTALL=true bash "$_ENV_BLOCK" 2>&1)
+assert_eq "local: UNSLOTH_NO_TORCH=false when SKIP_TORCH=false" "UNSLOTH_NO_TORCH=false" "$_env_result"
 
 rm -f "$_ENV_BLOCK"
 
@@ -469,6 +477,103 @@ if [ "$_user_py_guards" -ge 4 ]; then
     PASS=$((PASS + 1))
 else
     echo "  FAIL: _USER_PYTHON should appear >= 4 times (found $_user_py_guards)"
+    FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "=== --no-torch flag parsing ==="
+
+# Test: --no-torch sets _NO_TORCH_FLAG=true
+_FLAG_SNIPPET=$(mktemp)
+cat > "$_FLAG_SNIPPET" << 'SNIPPET'
+_NO_TORCH_FLAG=false
+_next_is_package=false
+STUDIO_LOCAL_INSTALL=false
+PACKAGE_NAME="unsloth"
+for arg in "$@"; do
+    if [ "$_next_is_package" = true ]; then
+        PACKAGE_NAME="$arg"
+        _next_is_package=false
+        continue
+    fi
+    case "$arg" in
+        --local) STUDIO_LOCAL_INSTALL=true ;;
+        --package) _next_is_package=true ;;
+        --no-torch) _NO_TORCH_FLAG=true ;;
+    esac
+done
+echo "$_NO_TORCH_FLAG"
+SNIPPET
+
+_result=$(bash "$_FLAG_SNIPPET" --no-torch)
+assert_eq "--no-torch sets flag to true" "true" "$_result"
+
+_result=$(bash "$_FLAG_SNIPPET")
+assert_eq "no flags -> flag is false" "false" "$_result"
+
+_result=$(bash "$_FLAG_SNIPPET" --local --no-torch)
+assert_eq "--local --no-torch both work" "true" "$_result"
+
+_result=$(bash "$_FLAG_SNIPPET" --no-torch --package custom-pkg)
+assert_eq "--no-torch with --package works" "true" "$_result"
+
+rm -f "$_FLAG_SNIPPET"
+
+echo ""
+echo "=== SKIP_TORCH unification ==="
+
+# Test: SKIP_TORCH is set to true when --no-torch flag is set (even without MAC_INTEL)
+_SKIP_SNIPPET=$(mktemp)
+cat > "$_SKIP_SNIPPET" << 'SNIPPET'
+MAC_INTEL=false
+_NO_TORCH_FLAG=$1
+SKIP_TORCH=false
+if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
+    SKIP_TORCH=true
+fi
+echo "$SKIP_TORCH"
+SNIPPET
+
+_result=$(bash "$_SKIP_SNIPPET" true)
+assert_eq "--no-torch flag alone sets SKIP_TORCH=true" "true" "$_result"
+
+_result=$(bash "$_SKIP_SNIPPET" false)
+assert_eq "no flag, no MAC_INTEL -> SKIP_TORCH=false" "false" "$_result"
+
+# Test: MAC_INTEL=true alone also sets SKIP_TORCH=true
+_SKIP_SNIPPET2=$(mktemp)
+cat > "$_SKIP_SNIPPET2" << 'SNIPPET'
+MAC_INTEL=true
+_NO_TORCH_FLAG=false
+SKIP_TORCH=false
+if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
+    SKIP_TORCH=true
+fi
+echo "$SKIP_TORCH"
+SNIPPET
+
+_result=$(bash "$_SKIP_SNIPPET2")
+assert_eq "MAC_INTEL=true alone sets SKIP_TORCH=true" "true" "$_result"
+
+rm -f "$_SKIP_SNIPPET" "$_SKIP_SNIPPET2"
+
+echo ""
+echo "=== CPU hint printing ==="
+
+# Verify the CPU hint is present in install.sh source
+if grep -q 'No NVIDIA GPU detected' "$INSTALL_SH"; then
+    echo "  PASS: CPU hint message found in install.sh"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: CPU hint message not found in install.sh"
+    FAIL=$((FAIL + 1))
+fi
+
+if grep -q '\-\-no-torch' "$INSTALL_SH"; then
+    echo "  PASS: --no-torch appears in install.sh"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: --no-torch not found in install.sh"
     FAIL=$((FAIL + 1))
 fi
 
