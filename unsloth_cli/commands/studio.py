@@ -290,6 +290,8 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
+    # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
+    os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_LOCAL_INSTALL"] = "1" if local else "0"
     os.environ["STUDIO_PACKAGE_NAME"] = package
     if local:
