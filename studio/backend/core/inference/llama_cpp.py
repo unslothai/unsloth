@@ -57,6 +57,7 @@ class LlamaCppBackend:
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
+        self._api_key: Optional[str] = None
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -938,6 +939,17 @@ class LlamaCppBackend:
                     cmd.extend(["--mmproj", mmproj_path])
                     logger.info(f"Using mmproj for vision: {mmproj_path}")
 
+            # Option C: add --api-key for direct client access when enabled
+            import os as _os
+            import secrets as _secrets
+
+            if _os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                self._api_key = _secrets.token_urlsafe(32)
+                cmd.extend(["--api-key", self._api_key])
+                logger.info("llama-server started with --api-key for direct streaming")
+            else:
+                self._api_key = None
+
             logger.info(f"Starting llama-server: {' '.join(cmd)}")
 
             # Set library paths so llama-server can find its shared libs and CUDA DLLs
@@ -1407,6 +1419,7 @@ class LlamaCppBackend:
         url: str,
         payload: dict,
         cancel_event: Optional[threading.Event] = None,
+        headers: Optional[dict] = None,
     ):
         """Open an httpx streaming POST with cancel support.
 
@@ -1473,7 +1486,11 @@ class LlamaCppBackend:
                 pool = 10,
             )
             with client.stream(
-                "POST", url, json = payload, timeout = prefill_timeout
+                "POST",
+                url,
+                json = payload,
+                timeout = prefill_timeout,
+                headers = headers,
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
@@ -1547,9 +1564,16 @@ class LlamaCppBackend:
             # can finish.  Cancel during streaming is handled by the
             # watcher thread (closes the response on cancel_event).
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
-                    client, url, payload, cancel_event
+                    client,
+                    url,
+                    payload,
+                    cancel_event,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -1706,8 +1730,13 @@ class LlamaCppBackend:
                 payload["stop"] = stop
 
             try:
+                _auth_headers = (
+                    {"Authorization": f"Bearer {self._api_key}"}
+                    if self._api_key
+                    else None
+                )
                 with httpx.Client(timeout = None) as client:
-                    resp = client.post(url, json = payload)
+                    resp = client.post(url, json = payload, headers = _auth_headers)
                     if resp.status_code != 200:
                         raise RuntimeError(
                             f"llama-server returned {resp.status_code}: {resp.text}"
@@ -1950,9 +1979,16 @@ class LlamaCppBackend:
 
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
-                    client, url, stream_payload, cancel_event
+                    client,
+                    url,
+                    stream_payload,
+                    cancel_event,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -2078,7 +2114,10 @@ class LlamaCppBackend:
         if not self.is_loaded:
             return None
         try:
-            with httpx.Client(timeout = 10) as client:
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            )
+            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
                 def _detok(tid: int) -> str:
                     r = client.post(
@@ -2196,7 +2235,12 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10)) as client:
+        _auth_headers = (
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        )
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers
+        ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(
