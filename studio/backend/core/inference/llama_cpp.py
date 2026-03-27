@@ -1054,7 +1054,7 @@ class LlamaCppBackend:
             self._model_identifier = model_identifier
 
             # Wait for llama-server to become healthy
-            if not self._wait_for_health(timeout = 120.0):
+            if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "
