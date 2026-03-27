@@ -2033,15 +2033,12 @@ class LlamaCppBackend:
                 # ── STREAMING path: no tool call ──
                 if detect_state == _S_STREAMING:
                     # Safety net: check for XML tool signals in content.
-                    # Only if we have NOT already emitted visible text --
-                    # retroactively switching to tool mode after the user
-                    # has seen content violates the streaming contract and
-                    # corrupts the route-layer cumulative delta tracker.
+                    # The route layer resets prev_text on tool_start, so
+                    # post-tool synthesis streams correctly even if
+                    # content was already emitted before the tool XML.
                     _safety_tc = None
-                    if (
-                        auto_heal_tool_calls
-                        and not _last_emitted
-                        and any(s in content_accum for s in _TOOL_XML_SIGNALS)
+                    if auto_heal_tool_calls and any(
+                        s in content_accum for s in _TOOL_XML_SIGNALS
                     ):
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
