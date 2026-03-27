@@ -365,10 +365,23 @@ _launch_port=$(_find_launch_port) || {
 
 if [ -t 1 ]; then
     # ── Foreground mode (TTY available) ──
-    # Spawn background browser opener, then exec studio so the terminal
-    # process IS studio -- closing the terminal sends SIGHUP directly.
-    _open_browser_when_ready "$_launch_port" &
-    _release_lock
+    # Background subshell: wait for studio to become healthy, release the
+    # single-instance lock, then open the browser. The lock stays held until
+    # health is confirmed so a second launcher cannot race during startup.
+    (
+        _obwr_deadline=$(($(date +%s) + TIMEOUT_SEC))
+        while [ "$(date +%s)" -lt "$_obwr_deadline" ]; do
+            if _check_health "$_launch_port"; then
+                _release_lock
+                _open_browser "http://localhost:$_launch_port"
+                exit 0
+            fi
+            sleep "$POLL_INTERVAL_SEC"
+        done
+        # Timed out -- release the lock anyway so future launches are not blocked
+        _release_lock
+    ) &
+    # Clear traps so exec does not trigger _release_lock (the subshell owns it)
     trap - EXIT INT TERM
     exec "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port"
 else
@@ -578,12 +591,15 @@ STUB_EOF
         # Detect current WSL distro for targeted shortcut
         _css_distro="${WSL_DISTRO_NAME:-}"
 
-        # Build the wsl.exe arguments
+        # Build the wsl.exe arguments.
+        # Double-quote distro name and launcher path for Windows command line
+        # parsing so values with spaces (e.g. "Ubuntu Preview") are kept as
+        # single arguments.
         _css_wsl_args=""
         if [ -n "$_css_distro" ]; then
-            _css_wsl_args="-d $_css_distro "
+            _css_wsl_args="-d \"$_css_distro\" "
         fi
-        _css_wsl_args="${_css_wsl_args}-- bash -l -c \"exec $_css_launcher\""
+        _css_wsl_args="${_css_wsl_args}-- bash -l -c \"exec \\\"$_css_launcher\\\"\""
 
         # Detect whether Windows Terminal (wt.exe) is available (better UX)
         _css_use_wt=false

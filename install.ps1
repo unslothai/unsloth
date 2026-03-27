@@ -163,18 +163,39 @@ function Find-HealthyStudioPort {
     return `$null
 }
 
+function Test-PortBusy {
+    param([Parameter(Mandatory = `$true)][int]`$Port)
+    `$listener = `$null
+    try {
+        `$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, `$Port)
+        `$listener.Start()
+        return `$false
+    } catch {
+        return `$true
+    } finally {
+        if (`$listener) { try { `$listener.Stop() } catch {} }
+    }
+}
+
 function Find-FreeLaunchPort {
     `$maxPort = `$basePort + `$maxPortOffset
     try {
         `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
             Select-Object -ExpandProperty LocalPort
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (`$candidate -notin `$listening) {
+                return `$candidate
+            }
+        }
     } catch {
-        `$listening = @()
-    }
-    for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
-        `$candidate = `$basePort + `$offset
-        if (`$candidate -notin `$listening) {
-            return `$candidate
+        # Get-NetTCPConnection unavailable or restricted; probe ports directly
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (-not (Test-PortBusy -Port `$candidate)) {
+                return `$candidate
+            }
         }
     }
     return `$null
