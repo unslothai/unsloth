@@ -18,8 +18,8 @@ function Install-UnslothStudio {
         switch ($argList[$i]) {
             "--local"    { $StudioLocalInstall = $true }
             "--no-torch" { $SkipTorch = $true }
-            "--verbose"  { $script:UnslothVerbose = $true; $env:UNSLOTH_VERBOSE = "1" }
-            "-v"         { $script:UnslothVerbose = $true; $env:UNSLOTH_VERBOSE = "1" }
+            "--verbose"  { $script:UnslothVerbose = $true }
+            "-v"         { $script:UnslothVerbose = $true }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -920,9 +920,14 @@ shell.Run cmd, 0, False
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
     }
-    & $UnslothExe studio update
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] unsloth studio update failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+    if ($script:UnslothVerbose) {
+        & $UnslothExe studio update --verbose
+    } else {
+        & $UnslothExe studio update
+    }
+    $setupExit = $LASTEXITCODE
+    if ($setupExit -ne 0) {
+        Write-Host "[ERROR] unsloth studio update failed (exit code $setupExit)" -ForegroundColor Red
         return
     }
 

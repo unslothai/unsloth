@@ -14,7 +14,6 @@
 
     FULL / LEGACY LOGGING (defensible audit trail, detailed multi-line output):
       unsloth studio setup --verbose
-      (sets UNSLOTH_VERBOSE=1; same as install_python_stack.py)
       Or:  $env:UNSLOTH_VERBOSE='1'; powershell -File .\studio\setup.ps1
       Or:  .\setup.ps1 --verbose
 #>
@@ -23,14 +22,15 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
-# Same as: unsloth studio setup --verbose  (see unsloth_cli/commands/studio.py)
+# Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
+# Do not mutate the caller environment when parsing flags.
+$script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
     if ($a -eq '--verbose' -or $a -eq '-v') {
-        $env:UNSLOTH_VERBOSE = '1'
+        $script:UnslothVerbose = $true
         break
     }
 }
-$script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 $script:LlamaCppDegraded = $false
 
 # Detect if running from pip install (no frontend/ dir in studio)
