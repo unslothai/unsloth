@@ -15,7 +15,6 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
-import signal
 import socket
 import subprocess
 import threading
@@ -1334,39 +1333,89 @@ class LlamaCppBackend:
     def _kill_orphaned_servers():
         """Kill orphaned llama-server processes started by studio.
 
-        Only kills processes whose binary lives under ~/.unsloth/llama.cpp/
-        to avoid terminating unrelated llama-server instances on the machine.
+        Only kills processes whose resolved binary lives under a known
+        Unsloth install directory to avoid terminating unrelated
+        llama-server instances on the machine.
+
+        Uses psutil for cross-platform support (Linux, macOS, Windows).
         """
         import os
-        import signal
 
         try:
-            # Use pgrep with full command match to identify studio-managed servers
-            result = subprocess.run(
-                ["pgrep", "-a", "-f", "llama-server"],
-                capture_output = True,
-                text = True,
-                timeout = 5,
-            )
-            if result.returncode != 0:
-                return
-            for line in result.stdout.strip().splitlines():
-                parts = line.strip().split(None, 1)
-                if len(parts) < 2:
-                    continue
-                pid = int(parts[0])
-                cmdline = parts[1]
-                if pid == os.getpid():
-                    continue
-                # Only kill if it's a studio-managed server (lives under .unsloth/)
-                if ".unsloth/" not in cmdline and "unsloth" not in cmdline.lower():
-                    continue
+            import psutil
+        except ImportError:
+            return
+
+        try:
+            # Build the same set of directories that _find_llama_server_binary
+            # searches, so we only kill servers we could have started.
+            install_roots: list[Path] = []
+
+            # ~/.unsloth/llama.cpp (primary install location)
+            install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
+
+            # Legacy: in-tree build
+            project_root = Path(__file__).resolve().parents[4]
+            install_roots.append(project_root / "llama.cpp")
+
+            # Legacy: extracted binary
+            install_roots.append(project_root / "bin")
+
+            # UNSLOTH_LLAMA_CPP_PATH env var (custom install dir)
+            custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+            if custom_dir:
+                install_roots.append(Path(custom_dir))
+
+            # LLAMA_SERVER_PATH env var (exact binary path)
+            exact_binaries: list[Path] = []
+            env_binary = os.environ.get("LLAMA_SERVER_PATH")
+            if env_binary:
                 try:
-                    os.kill(pid, signal.SIGKILL)
-                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
-                except ProcessLookupError:
+                    exact_binaries.append(Path(env_binary).resolve())
+                except OSError:
                     pass
-                except PermissionError:
+
+            # Resolve all roots so is_relative_to works reliably
+            resolved_roots: list[Path] = []
+            for root in install_roots:
+                try:
+                    resolved_roots.append(root.resolve())
+                except OSError:
+                    pass
+
+            my_pid = os.getpid()
+
+            for proc in psutil.process_iter(["pid", "name", "exe"]):
+                try:
+                    if proc.info["pid"] == my_pid:
+                        continue
+
+                    name = proc.info.get("name") or ""
+                    if not name.lower().startswith("llama-server"):
+                        continue
+
+                    exe = proc.info.get("exe")
+                    if not exe:
+                        continue
+
+                    exe_path = Path(exe).resolve()
+
+                    # Check if this binary is one we manage
+                    is_ours = exe_path in exact_binaries or any(
+                        exe_path.is_relative_to(root) for root in resolved_roots
+                    )
+                    if not is_ours:
+                        continue
+
+                    proc.kill()
+                    logger.info(
+                        f"Killed orphaned llama-server process (pid={proc.info['pid']})"
+                    )
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                ):
                     pass
         except Exception:
             pass
