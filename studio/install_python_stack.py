@@ -907,9 +907,9 @@ def install_python_stack() -> int:
         base_total += 3
     _TOTAL = (base_total - 1) if skip_base else base_total
 
-    # 1. Try to use uv for faster installs (must happen before pip upgrade
-    #    because uv venvs don't include pip by default)
-    USE_UV = _bootstrap_uv()
+    # # 1. Try to use uv for faster installs (must happen before pip upgrade
+    # #    because uv venvs don't include pip by default)
+    # USE_UV = _bootstrap_uv()
 
     # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
     _progress("pip bootstrap")
@@ -938,17 +938,115 @@ def install_python_stack() -> int:
             ).returncode
             == 0
         )
+    # # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
+    # _progress("pip bootstrap")
+    # if USE_UV:
+    #     run(
+    #         "Bootstrapping pip via uv",
+    #         [
+    #             "uv",
+    #             "pip",
+    #             "install",
+    #             "--python",
+    #             sys.executable,
+    #             "pip",
+    #         ],
+    #     )
+    # else:
+    #     # pip may not exist yet (uv-created venvs omit it). Try ensurepip
+    #     # first, then upgrade. Only fall back to a direct upgrade when pip
+    #     # is already present.
+    #     _has_pip = (
+    #         subprocess.run(
+    #             [sys.executable, "-m", "pip", "--version"],
+    #             stdout = subprocess.DEVNULL,
+    #             stderr = subprocess.DEVNULL,
+    #         ).returncode
+    #         == 0
+    #     )
+    #
+    #     if not _has_pip:
+    #         run(
+    #             "Bootstrapping pip via ensurepip",
+    #             [sys.executable, "-m", "ensurepip", "--upgrade"],
+    #         )
+    #     else:
+    #         run(
+    #             "Upgrading pip",
+    #             [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+    #         )
 
-        if not _has_pip:
-            run(
-                "Bootstrapping pip via ensurepip",
-                [sys.executable, "-m", "ensurepip", "--upgrade"],
-            )
-        else:
-            run(
-                "Upgrading pip",
-                [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
-            )
+    # # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
+    # if skip_base:
+    #     print(_green(f"✅ {package_name} already installed — skipping base packages"))
+    # elif NO_TORCH:
+    #     # No-torch update path: install unsloth + unsloth-zoo with --no-deps
+    #     # (current PyPI metadata still declares torch as a hard dep), then
+    #     # runtime deps with --no-deps (avoids transitive torch).
+    #     _progress("base packages (no torch)")
+    #     pip_install(
+    #         f"Updating {package_name} + unsloth-zoo (no-torch mode)",
+    #         "--no-cache-dir",
+    #         "--no-deps",
+    #         "--upgrade-package",
+    #         package_name,
+    #         "--upgrade-package",
+    #         "unsloth-zoo",
+    #         package_name,
+    #         "unsloth-zoo",
+    #     )
+    #     pip_install(
+    #         "Installing no-torch runtime deps",
+    #         "--no-cache-dir",
+    #         "--no-deps",
+    #         req = REQ_ROOT / "no-torch-runtime.txt",
+    #     )
+    #     if local_repo:
+    #         pip_install(
+    #             "Overlaying local repo (editable)",
+    #             "--no-cache-dir",
+    #             "--no-deps",
+    #             "-e",
+    #             local_repo,
+    #             constrain = False,
+    #         )
+    # elif local_repo:
+    #     _progress("base packages")
+    #     pip_install(
+    #         "Updating base packages",
+    #         "--no-cache-dir",
+    #         "--upgrade-package",
+    #         "unsloth",
+    #         "--upgrade-package",
+    #         "unsloth-zoo",
+    #         req = REQ_ROOT / "base.txt",
+    #     )
+    #     pip_install(
+    #         "Overlaying local repo (editable)",
+    #         "--no-cache-dir",
+    #         "--no-deps",
+    #         "-e",
+    #         local_repo,
+    #         constrain = False,
+    #     )
+    # elif package_name != "unsloth":
+    #     _progress("base packages")
+    #     pip_install(
+    #         f"Installing {package_name}",
+    #         "--no-cache-dir",
+    #         package_name,
+    #     )
+    # else:
+    #     _progress("base packages")
+    #     pip_install(
+    #         "Updating base packages",
+    #         "--no-cache-dir",
+    #         "--upgrade-package",
+    #         "unsloth",
+    #         "--upgrade-package",
+    #         "unsloth-zoo",
+    #         req = REQ_ROOT / "base.txt",
+    #     )
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
@@ -1048,96 +1146,39 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
+    # pip_install(
+    #     "Installing additional unsloth dependencies",
+    #     "--no-cache-dir",
+    #     req = REQ_ROOT / "extras.txt",
+    # )
 
-    # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
-    #     venv received CPU-only torch (common when pip resolves torch from PyPI).
-    #     Must come immediately after base packages so torch is present for inspection.
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        _progress("ROCm torch check")
-        _ensure_rocm_torch()
+    # pip_install(
+    #     "Installing extras (no-deps)",
+    #     "--no-deps",
+    #     "--no-cache-dir",
+    #     req = REQ_ROOT / "extras-no-deps.txt",
+    # )
 
-    # Windows + AMD GPU: PyTorch does not publish ROCm wheels for Windows.
-    # Detect and warn so users know manual steps are needed for GPU training.
-    if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
-        # Validate actual AMD GPU presence (not just tool existence)
-        import re as _re_win
+    # # 4. Overrides (torchao, transformers) -- force-reinstall
+    # _progress("dependency overrides")
+    # pip_install(
+    #     "Installing dependency overrides",
+    #     "--force-reinstall",
+    #     "--no-cache-dir",
+    #     req = REQ_ROOT / "overrides.txt",
+    # )
 
-        def _win_amd_smi_has_gpu(stdout: str) -> bool:
-            return bool(_re_win.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
-
-        _win_amd_gpu = False
-        for _wcmd, _check_fn in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _win_amd_smi_has_gpu),
-        ):
-            _wexe = shutil.which(_wcmd[0])
-            if not _wexe:
-                continue
-            try:
-                _wr = subprocess.run(
-                    [_wexe, *_wcmd[1:]],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    text = True,
-                    timeout = 10,
-                )
-            except Exception:
-                continue
-            if _wr.returncode == 0 and _check_fn(_wr.stdout):
-                _win_amd_gpu = True
-                break
-        if _win_amd_gpu:
-            _safe_print(
-                _dim("  Note:"),
-                "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
-            )
-            _safe_print(
-                " " * 8,
-                "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
-            )
-
-    # 3. Extra dependencies
-    _progress("unsloth extras")
-    pip_install(
-        "Installing additional unsloth dependencies",
-        "--no-cache-dir",
-        req = REQ_ROOT / "extras.txt",
-    )
-
-    # 3b. Extra dependencies (no-deps) -- audio model support etc.
-    _progress("extra codecs")
-    pip_install(
-        "Installing extras (no-deps)",
-        "--no-deps",
-        "--no-cache-dir",
-        req = REQ_ROOT / "extras-no-deps.txt",
-    )
-
-    # 4. Overrides (torchao, transformers) -- force-reinstall
-    #    Skip entirely when torch is unavailable (e.g. Intel Mac GGUF-only mode)
-    #    because overrides.txt contains torchao which requires torch.
-    if NO_TORCH:
-        _progress("dependency overrides (skipped, no torch)")
-    else:
-        _progress("dependency overrides")
-        pip_install(
-            "Installing dependency overrides",
-            "--force-reinstall",
-            "--no-cache-dir",
-            req = REQ_ROOT / "overrides.txt",
-        )
-
-    # 5. Triton kernels (no-deps, from source)
-    #    Skip on Windows (no support) and macOS (no support).
-    if not IS_WINDOWS and not IS_MACOS:
-        _progress("triton kernels")
-        pip_install(
-            "Installing triton kernels",
-            "--no-deps",
-            "--no-cache-dir",
-            req = REQ_ROOT / "triton-kernels.txt",
-            constrain = False,
-        )
+    # # 5. Triton kernels (no-deps, from source)
+    # #    Skip on Windows (no support) and macOS (no support).
+    # if not IS_WINDOWS and not IS_MACOS:
+    #     _progress("triton kernels")
+    #     pip_install(
+    #         "Installing triton kernels",
+    #         "--no-deps",
+    #         "--no-cache-dir",
+    #         req = REQ_ROOT / "triton-kernels.txt",
+    #         constrain = False,
+    #     )
 
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
