@@ -1049,7 +1049,17 @@ class LlamaCppBackend:
 
             self._gguf_path = gguf_path
             self._hf_repo = hf_repo
-            self._hf_variant = hf_variant
+            # For local GGUF files, extract variant from filename if not provided
+            if hf_variant:
+                self._hf_variant = hf_variant
+            elif gguf_path:
+                try:
+                    from utils.models.model_config import _extract_quant_label
+                    self._hf_variant = _extract_quant_label(gguf_path)
+                except Exception:
+                    self._hf_variant = None
+            else:
+                self._hf_variant = None
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
