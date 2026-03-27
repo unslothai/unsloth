@@ -947,13 +947,12 @@ if [ "$_MIGRATED" = true ]; then
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
-        # No-torch: install runtime deps via [huggingfacenotorch] extras,
-        # then unsloth-zoo with --no-deps to avoid pulling torch.
-        uv pip install --python "$_VENV_PY" \
-            --reinstall-package unsloth \
-            "unsloth[huggingfacenotorch]>=2026.3.14"
+        # No-torch: install packages without deps to avoid pulling torch.
+        # Runtime deps (safetensors, transformers, etc.) are installed by
+        # install_python_stack.py via no-torch-runtime.txt.
         uv pip install --python "$_VENV_PY" --no-deps \
-            --reinstall-package unsloth-zoo unsloth-zoo
+            --reinstall-package unsloth --reinstall-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
     else
         uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
@@ -975,13 +974,11 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
-        # No-torch: install runtime deps via [huggingfacenotorch] extras,
-        # then unsloth-zoo with --no-deps to avoid pulling torch.
-        uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth \
-            "unsloth[huggingfacenotorch]>=2026.3.14"
+        # No-torch: install packages without deps to avoid pulling torch.
+        # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
         uv pip install --python "$_VENV_PY" --no-deps \
-            --upgrade-package unsloth-zoo unsloth-zoo
+            --upgrade-package unsloth --upgrade-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             echo "==> Overlaying local repo (editable)..."
             uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
@@ -1039,15 +1036,21 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
+# When no-torch, don't skip base so install_python_stack installs
+# no-torch-runtime.txt (the runtime deps that --no-deps skipped).
+_SKIP_BASE=1
+if [ "$SKIP_TORCH" = true ]; then
+    _SKIP_BASE=0
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
 else
-    SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
