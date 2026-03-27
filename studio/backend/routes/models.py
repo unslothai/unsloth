@@ -271,6 +271,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 found.append(
                     LocalModelInfo(
                         id = str(model_dir),
+                        model_id = f"{child.name}/{model_dir.stem}",
                         display_name = model_dir.stem,
                         path = str(model_dir),
                         source = "lmstudio",
