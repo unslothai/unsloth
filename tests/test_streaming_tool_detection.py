@@ -16,6 +16,7 @@ import sys, os
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
+
 def _sse_line(data: dict) -> str:
     """One SSE data line (no trailing blank line -- we add those in the stream)."""
     return f"data: {json.dumps(data)}"
@@ -25,7 +26,7 @@ def _sse_done() -> str:
     return "data: [DONE]"
 
 
-def _make_chunk(delta: dict, finish_reason=None, usage=None, timings=None):
+def _make_chunk(delta: dict, finish_reason = None, usage = None, timings = None):
     """Build a chat-completions streaming chunk."""
     choice = {"index": 0, "delta": delta}
     if finish_reason:
@@ -38,7 +39,7 @@ def _make_chunk(delta: dict, finish_reason=None, usage=None, timings=None):
     return chunk
 
 
-def _build_sse_stream(chunks: list[dict], final_usage=None, final_timings=None) -> str:
+def _build_sse_stream(chunks: list[dict], final_usage = None, final_timings = None) -> str:
     """
     Build a complete SSE text stream from a list of chunk dicts.
     Includes the role chunk, content/tool chunks, and [DONE].
@@ -46,7 +47,7 @@ def _build_sse_stream(chunks: list[dict], final_usage=None, final_timings=None) 
     lines = []
     for c in chunks:
         lines.append(_sse_line(c))
-        lines.append("")   # blank line separator
+        lines.append("")  # blank line separator
     # Final usage chunk (if provided)
     if final_usage or final_timings:
         meta = {}
@@ -64,6 +65,7 @@ def _build_sse_stream(chunks: list[dict], final_usage=None, final_timings=None) 
 
 class FakeResponse:
     """Mimics httpx.Response for streaming."""
+
     def __init__(self, text: str, status_code: int = 200):
         self._text = text
         self.status_code = status_code
@@ -82,6 +84,7 @@ class FakeResponse:
 
 class FakeClient:
     """Mimics httpx.Client context manager."""
+
     def __init__(self, response: FakeResponse):
         self._response = response
 
@@ -92,11 +95,12 @@ class FakeClient:
         pass
 
     @contextlib.contextmanager
-    def stream(self, method, url, json=None, timeout=None, headers=None):
+    def stream(self, method, url, json = None, timeout = None, headers = None):
         yield self._response
 
 
 # ── Build a minimal LlamaCppBackend for testing ─────────────────────────
+
 
 def _make_backend():
     """Create a minimal mock backend with just enough to run the method."""
@@ -111,9 +115,9 @@ def _make_backend():
     from studio.backend.core.inference.llama_cpp import LlamaCppBackend
 
     backend = object.__new__(LlamaCppBackend)
-    backend._process = True      # is_loaded checks _process is not None
-    backend._healthy = True      # is_loaded checks _healthy
-    backend._port = 9999         # base_url property reads _port
+    backend._process = True  # is_loaded checks _process is not None
+    backend._healthy = True  # is_loaded checks _healthy
+    backend._port = 9999  # base_url property reads _port
     backend._api_key = None
     backend._supports_reasoning = False
     return backend
@@ -124,13 +128,13 @@ def _synthesis_sse():
     chunks = [
         _make_chunk({"role": "assistant"}),
         _make_chunk({"content": "Done."}),
-        _make_chunk({}, finish_reason="stop"),
+        _make_chunk({}, finish_reason = "stop"),
     ]
     usage = {"prompt_tokens": 20, "completion_tokens": 1}
-    return _build_sse_stream(chunks, final_usage=usage)
+    return _build_sse_stream(chunks, final_usage = usage)
 
 
-def _collect_events(backend, sse_text, tools=None, **kwargs):
+def _collect_events(backend, sse_text, tools = None, **kwargs):
     """
     Run generate_chat_completion_with_tools with a fake SSE stream
     and collect all yielded events.
@@ -139,14 +143,24 @@ def _collect_events(backend, sse_text, tools=None, **kwargs):
     return a plain text synthesis response so the agentic loop terminates.
     """
     if tools is None:
-        tools = [{"type": "function", "function": {"name": "web_search",
-                  "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                },
+            }
+        ]
 
     call_count = [0]
     synth_sse = _synthesis_sse()
 
     @contextlib.contextmanager
-    def fake_stream_with_retry(client, url, payload, cancel_event, headers=None):
+    def fake_stream_with_retry(client, url, payload, cancel_event, headers = None):
         idx = call_count[0]
         call_count[0] += 1
         # First call: use the provided SSE. Subsequent: plain text synthesis.
@@ -154,23 +168,26 @@ def _collect_events(backend, sse_text, tools=None, **kwargs):
         yield FakeResponse(text)
 
     # Patch execute_tool to return a dummy result
-    def fake_execute_tool(tool_name, arguments, cancel_event=None, timeout=None, session_id=None):
+    def fake_execute_tool(
+        tool_name, arguments, cancel_event = None, timeout = None, session_id = None
+    ):
         return f"Tool {tool_name} result: OK"
 
     original_stream = backend._stream_with_retry
     backend._stream_with_retry = fake_stream_with_retry
 
     events = []
-    with patch("core.inference.tools.execute_tool", fake_execute_tool, create=True):
+    with patch("core.inference.tools.execute_tool", fake_execute_tool, create = True):
         try:
             for event in backend.generate_chat_completion_with_tools(
-                messages=[{"role": "user", "content": "Hello"}],
-                tools=tools,
+                messages = [{"role": "user", "content": "Hello"}],
+                tools = tools,
                 **kwargs,
             ):
                 events.append(event)
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             events.append({"type": "error", "error": str(e)})
 
@@ -179,6 +196,7 @@ def _collect_events(backend, sse_text, tools=None, **kwargs):
 
 
 # ── The actual tests ─────────────────────────────────────────────────────
+
 
 def test_no_tool_call_plain_text():
     """90% case: model responds with plain text, no tool call.
@@ -189,11 +207,11 @@ def test_no_tool_call_plain_text():
         _make_chunk({"role": "assistant"}),
         _make_chunk({"content": "Hello"}),
         _make_chunk({"content": " there"}),
-        _make_chunk({"content": "!"}, finish_reason="stop"),
+        _make_chunk({"content": "!"}, finish_reason = "stop"),
     ]
     usage = {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
     timings = {"predicted_ms": 100, "predicted_n": 3, "predicted_per_second": 30.0}
-    sse = _build_sse_stream(chunks, final_usage=usage, final_timings=timings)
+    sse = _build_sse_stream(chunks, final_usage = usage, final_timings = timings)
 
     events = _collect_events(backend, sse)
 
@@ -223,21 +241,34 @@ def test_structured_tool_calls():
 
     chunks = [
         _make_chunk({"role": "assistant"}),
-        _make_chunk({"tool_calls": [{"index": 0, "id": "call_0",
-                     "function": {"name": "web_search", "arguments": ""}}]}),
-        _make_chunk({"tool_calls": [{"index": 0,
-                     "function": {"arguments": '{"query":'}}]}),
-        _make_chunk({"tool_calls": [{"index": 0,
-                     "function": {"arguments": ' "test"}'}}]}),
-        _make_chunk({}, finish_reason="tool_calls"),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_0",
+                        "function": {"name": "web_search", "arguments": ""},
+                    }
+                ]
+            }
+        ),
+        _make_chunk(
+            {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":'}}]}
+        ),
+        _make_chunk(
+            {"tool_calls": [{"index": 0, "function": {"arguments": ' "test"}'}}]}
+        ),
+        _make_chunk({}, finish_reason = "tool_calls"),
     ]
     usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-    sse = _build_sse_stream(chunks, final_usage=usage)
+    sse = _build_sse_stream(chunks, final_usage = usage)
 
     events = _collect_events(backend, sse)
 
     # Should have status update for tool execution
-    status_events = [e for e in events if e["type"] == "status" and "Searching" in e.get("text", "")]
+    status_events = [
+        e for e in events if e["type"] == "status" and "Searching" in e.get("text", "")
+    ]
     assert len(status_events) >= 1, f"Expected search status, got: {events}"
 
     # Should have tool_start event
@@ -265,10 +296,14 @@ def test_xml_tool_call_at_start():
     chunks = [_make_chunk({"role": "assistant"})]
     for char in content:
         chunks.append(_make_chunk({"content": char}))
-    chunks.append(_make_chunk({}, finish_reason="stop"))
+    chunks.append(_make_chunk({}, finish_reason = "stop"))
 
-    usage = {"prompt_tokens": 10, "completion_tokens": len(content), "total_tokens": 10 + len(content)}
-    sse = _build_sse_stream(chunks, final_usage=usage)
+    usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": len(content),
+        "total_tokens": 10 + len(content),
+    }
+    sse = _build_sse_stream(chunks, final_usage = usage)
 
     events = _collect_events(backend, sse)
 
@@ -288,15 +323,15 @@ def test_xml_function_tag_at_start():
     Buffer should detect <function= prefix and drain."""
     backend = _make_backend()
 
-    content = '<function=web_search><parameter=query>hello world</parameter></function>'
+    content = "<function=web_search><parameter=query>hello world</parameter></function>"
 
     chunks = [_make_chunk({"role": "assistant"})]
     for char in content:
         chunks.append(_make_chunk({"content": char}))
-    chunks.append(_make_chunk({}, finish_reason="stop"))
+    chunks.append(_make_chunk({}, finish_reason = "stop"))
 
     usage = {"prompt_tokens": 10, "completion_tokens": len(content)}
-    sse = _build_sse_stream(chunks, final_usage=usage)
+    sse = _build_sse_stream(chunks, final_usage = usage)
 
     events = _collect_events(backend, sse)
 
@@ -321,13 +356,15 @@ def test_whitespace_before_tool_xml():
     rest = f"<tool_call>{tc_json}</tool_call>"
     for char in rest:
         chunks.append(_make_chunk({"content": char}))
-    chunks.append(_make_chunk({}, finish_reason="stop"))
+    chunks.append(_make_chunk({}, finish_reason = "stop"))
 
     sse = _build_sse_stream(chunks)
     events = _collect_events(backend, sse)
 
     tool_starts = [e for e in events if e["type"] == "tool_start"]
-    assert len(tool_starts) == 1, f"Expected 1 tool_start after whitespace, got: {events}"
+    assert (
+        len(tool_starts) == 1
+    ), f"Expected 1 tool_start after whitespace, got: {events}"
 
     print("PASS: test_whitespace_before_tool_xml")
 
@@ -346,16 +383,16 @@ def test_content_then_tool_xml_no_retroactive_execution():
     chunks = [_make_chunk({"role": "assistant"})]
     chunks.append(_make_chunk({"content": "Let me search for that. "}))
     chunks.append(_make_chunk({"content": f"<tool_call>{tc_json}</tool_call>"}))
-    chunks.append(_make_chunk({}, finish_reason="stop"))
+    chunks.append(_make_chunk({}, finish_reason = "stop"))
 
     sse = _build_sse_stream(chunks)
     events = _collect_events(backend, sse)
 
     # Tool should NOT be executed (visible content was already emitted)
     tool_starts = [e for e in events if e["type"] == "tool_start"]
-    assert len(tool_starts) == 0, (
-        f"Should NOT retroactively execute tools after visible content: {tool_starts}"
-    )
+    assert (
+        len(tool_starts) == 0
+    ), f"Should NOT retroactively execute tools after visible content: {tool_starts}"
 
     # Content should be present (tool XML stripped by _strip_tool_markup)
     content_events = [e for e in events if e["type"] == "content"]
@@ -370,29 +407,65 @@ def test_multiple_structured_tool_calls():
     backend = _make_backend()
 
     tools = [
-        {"type": "function", "function": {"name": "web_search",
-         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}},
-        {"type": "function", "function": {"name": "python",
-         "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}}},
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "python",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                },
+            },
+        },
     ]
 
     chunks = [
         _make_chunk({"role": "assistant"}),
         # Two tool calls streamed with different indices
-        _make_chunk({"tool_calls": [
-            {"index": 0, "id": "call_0", "function": {"name": "web_search", "arguments": ""}},
-            {"index": 1, "id": "call_1", "function": {"name": "python", "arguments": ""}},
-        ]}),
-        _make_chunk({"tool_calls": [
-            {"index": 0, "function": {"arguments": '{"query": "test"}'}},
-        ]}),
-        _make_chunk({"tool_calls": [
-            {"index": 1, "function": {"arguments": '{"code": "print(1)"}'}},
-        ]}),
-        _make_chunk({}, finish_reason="tool_calls"),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_0",
+                        "function": {"name": "web_search", "arguments": ""},
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_1",
+                        "function": {"name": "python", "arguments": ""},
+                    },
+                ]
+            }
+        ),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {"index": 0, "function": {"arguments": '{"query": "test"}'}},
+                ]
+            }
+        ),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {"index": 1, "function": {"arguments": '{"code": "print(1)"}'}},
+                ]
+            }
+        ),
+        _make_chunk({}, finish_reason = "tool_calls"),
     ]
     sse = _build_sse_stream(chunks)
-    events = _collect_events(backend, sse, tools=tools)
+    events = _collect_events(backend, sse, tools = tools)
 
     tool_starts = [e for e in events if e["type"] == "tool_start"]
     assert len(tool_starts) == 2, f"Expected 2 tool_start events, got: {tool_starts}"
@@ -415,10 +488,10 @@ def test_reasoning_tokens_stream_immediately():
         _make_chunk({"reasoning_content": "Let me think..."}),
         _make_chunk({"reasoning_content": " about this."}),
         _make_chunk({"content": "The answer is 42."}),
-        _make_chunk({}, finish_reason="stop"),
+        _make_chunk({}, finish_reason = "stop"),
     ]
     sse = _build_sse_stream(chunks)
-    events = _collect_events(backend, sse, enable_thinking=True)
+    events = _collect_events(backend, sse, enable_thinking = True)
 
     content_events = [e for e in events if e["type"] == "content"]
     assert len(content_events) >= 1, f"Expected content events, got: {content_events}"
@@ -444,12 +517,24 @@ def test_reasoning_then_tool_call():
     chunks = [
         _make_chunk({"role": "assistant"}),
         _make_chunk({"reasoning_content": "I need to search for this."}),
-        _make_chunk({"tool_calls": [{"index": 0, "id": "call_0",
-                     "function": {"name": "web_search", "arguments": '{"query": "test"}'}}]}),
-        _make_chunk({}, finish_reason="tool_calls"),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_0",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query": "test"}',
+                        },
+                    }
+                ]
+            }
+        ),
+        _make_chunk({}, finish_reason = "tool_calls"),
     ]
     sse = _build_sse_stream(chunks)
-    events = _collect_events(backend, sse, enable_thinking=True)
+    events = _collect_events(backend, sse, enable_thinking = True)
 
     # Reasoning should NOT be yielded during tool detection
     # (prevents prev_text corruption in consumer). Instead it's
@@ -474,10 +559,10 @@ def test_reasoning_only_no_content():
     chunks = [
         _make_chunk({"role": "assistant"}),
         _make_chunk({"reasoning_content": "The answer is simply 42."}),
-        _make_chunk({}, finish_reason="stop"),
+        _make_chunk({}, finish_reason = "stop"),
     ]
     sse = _build_sse_stream(chunks)
-    events = _collect_events(backend, sse, enable_thinking=True)
+    events = _collect_events(backend, sse, enable_thinking = True)
 
     content_events = [e for e in events if e["type"] == "content"]
     assert len(content_events) >= 1, f"Should yield reasoning as content: {events}"
@@ -485,7 +570,9 @@ def test_reasoning_only_no_content():
     final = content_events[-1]["text"]
     assert "42" in final, f"Should contain reasoning text: {final}"
     # Should NOT have <think> wrapper (reasoning-only fallback)
-    assert "<think>" not in final, f"Reasoning-only should not have <think> wrapper: {final}"
+    assert (
+        "<think>" not in final
+    ), f"Reasoning-only should not have <think> wrapper: {final}"
 
     print("PASS: test_reasoning_only_no_content")
 
@@ -496,7 +583,7 @@ def test_empty_response():
 
     chunks = [
         _make_chunk({"role": "assistant"}),
-        _make_chunk({}, finish_reason="stop"),
+        _make_chunk({}, finish_reason = "stop"),
     ]
     sse = _build_sse_stream(chunks)
     events = _collect_events(backend, sse)
@@ -518,7 +605,7 @@ def test_buffer_prefix_timeout():
     # Stream char by char
     for char in content:
         chunks.append(_make_chunk({"content": char}))
-    chunks.append(_make_chunk({}, finish_reason="stop"))
+    chunks.append(_make_chunk({}, finish_reason = "stop"))
 
     sse = _build_sse_stream(chunks)
     events = _collect_events(backend, sse)
@@ -568,7 +655,7 @@ def test_draining_false_positive():
         _make_chunk({"role": "assistant"}),
         _make_chunk({"content": "<tool"}),
         _make_chunk({"content": "_tip>Use a screwdriver</tool_tip>"}),
-        _make_chunk({}, finish_reason="stop"),
+        _make_chunk({}, finish_reason = "stop"),
     ]
     sse = _build_sse_stream(chunks)
     events = _collect_events(backend, sse)
@@ -594,21 +681,32 @@ def test_structured_tool_args_json_parsing():
 
     chunks = [
         _make_chunk({"role": "assistant"}),
-        _make_chunk({"tool_calls": [{"index": 0, "id": "call_abc",
-                     "function": {"name": "web_search", "arguments": ""}}]}),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_abc",
+                        "function": {"name": "web_search", "arguments": ""},
+                    }
+                ]
+            }
+        ),
     ]
     for part in arg_parts:
-        chunks.append(_make_chunk({"tool_calls": [{"index": 0,
-                     "function": {"arguments": part}}]}))
-    chunks.append(_make_chunk({}, finish_reason="tool_calls"))
+        chunks.append(
+            _make_chunk({"tool_calls": [{"index": 0, "function": {"arguments": part}}]})
+        )
+    chunks.append(_make_chunk({}, finish_reason = "tool_calls"))
 
     sse = _build_sse_stream(chunks)
     events = _collect_events(backend, sse)
 
     tool_starts = [e for e in events if e["type"] == "tool_start"]
     assert len(tool_starts) == 1
-    assert tool_starts[0]["arguments"] == {"query": "what is python?"}, \
-        f"Arguments not reassembled correctly: {tool_starts[0]['arguments']}"
+    assert tool_starts[0]["arguments"] == {
+        "query": "what is python?"
+    }, f"Arguments not reassembled correctly: {tool_starts[0]['arguments']}"
     assert tool_starts[0]["tool_call_id"] == "call_abc"
 
     print("PASS: test_structured_tool_args_json_parsing")
@@ -625,15 +723,16 @@ def test_auto_heal_disabled():
     chunks = [_make_chunk({"role": "assistant"})]
     # Send as one big content chunk
     chunks.append(_make_chunk({"content": content}))
-    chunks.append(_make_chunk({}, finish_reason="stop"))
+    chunks.append(_make_chunk({}, finish_reason = "stop"))
 
     sse = _build_sse_stream(chunks)
-    events = _collect_events(backend, sse, auto_heal_tool_calls=False)
+    events = _collect_events(backend, sse, auto_heal_tool_calls = False)
 
     # With auto_heal disabled, the XML should NOT be parsed as a tool call
     tool_starts = [e for e in events if e["type"] == "tool_start"]
-    assert len(tool_starts) == 0, \
-        f"auto_heal_tool_calls=False should not parse XML tools: {tool_starts}"
+    assert (
+        len(tool_starts) == 0
+    ), f"auto_heal_tool_calls=False should not parse XML tools: {tool_starts}"
 
     print("PASS: test_auto_heal_disabled")
 
@@ -646,23 +745,39 @@ def test_metrics_accumulation_across_tool_iterations():
     # First iteration: tool call
     tool_chunks = [
         _make_chunk({"role": "assistant"}),
-        _make_chunk({"tool_calls": [{"index": 0, "id": "call_0",
-                     "function": {"name": "web_search", "arguments": '{"query": "test"}'}}]}),
-        _make_chunk({}, finish_reason="tool_calls"),
+        _make_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_0",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query": "test"}',
+                        },
+                    }
+                ]
+            }
+        ),
+        _make_chunk({}, finish_reason = "tool_calls"),
     ]
     tool_usage = {"prompt_tokens": 10, "completion_tokens": 5}
     tool_timings = {"predicted_ms": 50, "predicted_n": 5}
-    tool_sse = _build_sse_stream(tool_chunks, final_usage=tool_usage, final_timings=tool_timings)
+    tool_sse = _build_sse_stream(
+        tool_chunks, final_usage = tool_usage, final_timings = tool_timings
+    )
 
     # Second iteration: plain text response (synthesis)
     synth_chunks = [
         _make_chunk({"role": "assistant"}),
         _make_chunk({"content": "Based on my search, the answer is X."}),
-        _make_chunk({}, finish_reason="stop"),
+        _make_chunk({}, finish_reason = "stop"),
     ]
     synth_usage = {"prompt_tokens": 20, "completion_tokens": 8}
     synth_timings = {"predicted_ms": 100, "predicted_n": 8}
-    synth_sse = _build_sse_stream(synth_chunks, final_usage=synth_usage, final_timings=synth_timings)
+    synth_sse = _build_sse_stream(
+        synth_chunks, final_usage = synth_usage, final_timings = synth_timings
+    )
 
     # We need to return different SSE streams for each iteration
     call_count = [0]
@@ -671,36 +786,52 @@ def test_metrics_accumulation_across_tool_iterations():
     fake_responses = [FakeResponse(tool_sse), FakeResponse(synth_sse)]
 
     @contextlib.contextmanager
-    def fake_stream_with_retry(client, url, payload, cancel_event, headers=None):
+    def fake_stream_with_retry(client, url, payload, cancel_event, headers = None):
         idx = min(call_count[0], len(fake_responses) - 1)
         call_count[0] += 1
         yield fake_responses[idx]
 
-    def fake_execute_tool(tool_name, arguments, cancel_event=None, timeout=None, session_id=None):
+    def fake_execute_tool(
+        tool_name, arguments, cancel_event = None, timeout = None, session_id = None
+    ):
         return "Search result: success"
 
     backend._stream_with_retry = fake_stream_with_retry
 
     events = []
-    with patch("core.inference.tools.execute_tool", fake_execute_tool, create=True):
+    with patch("core.inference.tools.execute_tool", fake_execute_tool, create = True):
         for event in backend.generate_chat_completion_with_tools(
-            messages=[{"role": "user", "content": "Search for test"}],
-            tools=[{"type": "function", "function": {"name": "web_search",
-                    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}],
+            messages = [{"role": "user", "content": "Search for test"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
         ):
             events.append(event)
 
     meta_events = [e for e in events if e["type"] == "metadata"]
-    assert len(meta_events) == 1, f"Expected exactly 1 metadata event, got: {meta_events}"
+    assert (
+        len(meta_events) == 1
+    ), f"Expected exactly 1 metadata event, got: {meta_events}"
 
     meta = meta_events[0]
     # completion_tokens should be accumulated: 5 (tool iter) + 8 (synthesis) = 13
-    assert meta["usage"]["completion_tokens"] == 13, \
-        f"Expected 13 total completion tokens, got: {meta['usage']['completion_tokens']}"
+    assert (
+        meta["usage"]["completion_tokens"] == 13
+    ), f"Expected 13 total completion tokens, got: {meta['usage']['completion_tokens']}"
 
     # predicted_ms and predicted_n should also accumulate
-    assert meta["timings"]["predicted_n"] == 13, \
-        f"Expected 13 predicted_n, got: {meta['timings']['predicted_n']}"
+    assert (
+        meta["timings"]["predicted_n"] == 13
+    ), f"Expected 13 predicted_n, got: {meta['timings']['predicted_n']}"
 
     print("PASS: test_metrics_accumulation_across_tool_iterations")
 
@@ -740,6 +871,7 @@ if __name__ == "__main__":
             failed += 1
             errors.append((test_fn.__name__, str(e)))
             import traceback
+
             print(f"FAIL: {test_fn.__name__}: {e}")
             traceback.print_exc()
             print()

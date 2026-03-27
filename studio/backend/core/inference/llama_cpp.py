@@ -2118,28 +2118,24 @@ class LlamaCppBackend:
                         _fc = _fu.get("completion_tokens", 0)
                         _fp = _fu.get("prompt_tokens", 0)
                         _tc = _fc + _accumulated_completion_tokens
-                        if _iter_usage or _iter_timings or _accumulated_completion_tokens:
-                            _mt = (
-                                dict(_iter_timings) if _iter_timings else {}
-                            )
-                            if (
-                                _accumulated_predicted_ms
-                                or _accumulated_predicted_n
-                            ):
+                        if (
+                            _iter_usage
+                            or _iter_timings
+                            or _accumulated_completion_tokens
+                        ):
+                            _mt = dict(_iter_timings) if _iter_timings else {}
+                            if _accumulated_predicted_ms or _accumulated_predicted_n:
                                 _mt["predicted_ms"] = (
                                     _mt.get("predicted_ms", 0)
                                     + _accumulated_predicted_ms
                                 )
                                 _tn = (
-                                    _mt.get("predicted_n", 0)
-                                    + _accumulated_predicted_n
+                                    _mt.get("predicted_n", 0) + _accumulated_predicted_n
                                 )
                                 _mt["predicted_n"] = _tn
                                 _tms = _mt["predicted_ms"]
                                 if _tms > 0:
-                                    _mt["predicted_per_second"] = (
-                                        _tn / (_tms / 1000.0)
-                                    )
+                                    _mt["predicted_per_second"] = _tn / (_tms / 1000.0)
                             yield {
                                 "type": "metadata",
                                 "usage": {
