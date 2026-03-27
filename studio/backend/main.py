@@ -53,71 +53,10 @@ from routes import (
     training_router,
 )
 from auth import storage
-from utils.hardware import detect_hardware, get_device, DeviceType
+from utils.hardware import detect_hardware, get_backend_visible_gpu_info
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
-
-
-def _get_backend_visible_gpu_info() -> dict:
-    import subprocess
-    from utils.hardware import get_gpu_memory_info, get_parent_visible_gpu_ids
-
-    gpu_info: dict = {
-        "available": False,
-        "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-        "parent_visible_gpu_ids": get_parent_visible_gpu_ids(),
-        "devices": [],
-    }
-
-    if get_device() != DeviceType.CUDA:
-        return gpu_info
-
-    parent_ids = gpu_info["parent_visible_gpu_ids"]
-    allowed_indices = set(parent_ids) if parent_ids else set()
-
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,name,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 10,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) == 3:
-                    idx = int(parts[0])
-                    if idx not in allowed_indices:
-                        continue
-                    gpu_info["devices"].append(
-                        {
-                            "index": idx,
-                            "name": parts[1],
-                            "memory_total_gb": round(int(parts[2]) / 1024, 2),
-                        }
-                    )
-            gpu_info["available"] = len(gpu_info["devices"]) > 0
-    except Exception:
-        pass
-
-    if not gpu_info["available"]:
-        mem_info = get_gpu_memory_info()
-        if mem_info.get("available"):
-            gpu_info["available"] = True
-            gpu_info["devices"].append(
-                {
-                    "index": mem_info.get("device", 0),
-                    "name": mem_info.get("device_name", "Unknown"),
-                    "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-                }
-            )
-
-    return gpu_info
 
 
 @asynccontextmanager
