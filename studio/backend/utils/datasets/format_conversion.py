@@ -151,6 +151,7 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
     """
     try:
         from torch.utils.data import IterableDataset
+
         _is_torch_iterable = isinstance(dataset, IterableDataset)
     except ImportError:
         _is_torch_iterable = False
@@ -222,6 +223,7 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
     """
     try:
         from torch.utils.data import IterableDataset
+
         _is_torch_iterable = isinstance(dataset, IterableDataset)
     except ImportError:
         _is_torch_iterable = False

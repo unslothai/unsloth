@@ -597,42 +597,52 @@ class TestInstallShNoTorchFlag:
 
     def test_no_torch_flag_in_case_statement(self):
         """--no-torch must appear in the flag parser case statement."""
-        assert "--no-torch)" in self.source, \
-            "--no-torch not found in install.sh flag parser"
+        assert (
+            "--no-torch)" in self.source
+        ), "--no-torch not found in install.sh flag parser"
 
     def test_no_torch_flag_variable_initialized(self):
         """_NO_TORCH_FLAG must be initialized to false."""
-        assert "_NO_TORCH_FLAG=false" in self.source, \
-            "_NO_TORCH_FLAG=false not found in install.sh"
+        assert (
+            "_NO_TORCH_FLAG=false" in self.source
+        ), "_NO_TORCH_FLAG=false not found in install.sh"
 
     def test_skip_torch_variable_exists(self):
         """SKIP_TORCH variable must be defined."""
-        assert "SKIP_TORCH=false" in self.source, \
-            "SKIP_TORCH=false not found in install.sh"
-        assert "SKIP_TORCH=true" in self.source, \
-            "SKIP_TORCH=true not found in install.sh"
+        assert (
+            "SKIP_TORCH=false" in self.source
+        ), "SKIP_TORCH=false not found in install.sh"
+        assert (
+            "SKIP_TORCH=true" in self.source
+        ), "SKIP_TORCH=true not found in install.sh"
 
     def test_skip_torch_driven_by_flag_and_mac_intel(self):
         """SKIP_TORCH must check both _NO_TORCH_FLAG and MAC_INTEL."""
-        assert "_NO_TORCH_FLAG" in self.source, \
-            "_NO_TORCH_FLAG not referenced in SKIP_TORCH logic"
-        assert "MAC_INTEL" in self.source, \
-            "MAC_INTEL not referenced in SKIP_TORCH logic"
+        assert (
+            "_NO_TORCH_FLAG" in self.source
+        ), "_NO_TORCH_FLAG not referenced in SKIP_TORCH logic"
+        assert (
+            "MAC_INTEL" in self.source
+        ), "MAC_INTEL not referenced in SKIP_TORCH logic"
 
     def test_unsloth_no_torch_uses_skip_torch(self):
         """UNSLOTH_NO_TORCH must reference $SKIP_TORCH, not $MAC_INTEL."""
         import re
+
         matches = re.findall(r'UNSLOTH_NO_TORCH="\$(\w+)"', self.source)
         for var in matches:
-            assert var == "SKIP_TORCH", \
-                f"UNSLOTH_NO_TORCH references ${var} instead of $SKIP_TORCH"
+            assert (
+                var == "SKIP_TORCH"
+            ), f"UNSLOTH_NO_TORCH references ${var} instead of $SKIP_TORCH"
 
     def test_cpu_hint_message_exists(self):
         """CPU hint message must exist in install.sh."""
-        assert "No NVIDIA GPU detected" in self.source, \
-            "CPU hint message not found in install.sh"
-        assert "--no-torch" in self.source, \
-            "--no-torch suggestion not found in CPU hint"
+        assert (
+            "No NVIDIA GPU detected" in self.source
+        ), "CPU hint message not found in install.sh"
+        assert (
+            "--no-torch" in self.source
+        ), "--no-torch suggestion not found in CPU hint"
 
     def test_no_torch_flag_parsing_subprocess(self):
         """--no-torch flag sets _NO_TORCH_FLAG=true (subprocess test)."""
@@ -660,8 +670,9 @@ class TestInstallShNoTorchFlag:
             capture_output = True,
             text = True,
         )
-        assert result.stdout.strip() == "true", \
-            f"Expected _NO_TORCH_FLAG=true, got: {result.stdout.strip()}"
+        assert (
+            result.stdout.strip() == "true"
+        ), f"Expected _NO_TORCH_FLAG=true, got: {result.stdout.strip()}"
 
     def test_no_torch_with_local_flag(self):
         """--no-torch and --local can be used together."""
@@ -689,8 +700,9 @@ class TestInstallShNoTorchFlag:
             capture_output = True,
             text = True,
         )
-        assert result.stdout.strip() == "true true", \
-            f"Expected 'true true', got: {result.stdout.strip()}"
+        assert (
+            result.stdout.strip() == "true true"
+        ), f"Expected 'true true', got: {result.stdout.strip()}"
 
     def test_cpu_hint_only_when_not_skip_torch(self):
         """CPU hint should only print when SKIP_TORCH=false and OS!=macos."""
@@ -720,8 +732,9 @@ class TestInstallShNoTorchFlag:
             capture_output = True,
             text = True,
         )
-        assert "HINT_PRINTED" not in result2.stdout, \
-            "CPU hint should NOT print when SKIP_TORCH=true"
+        assert (
+            "HINT_PRINTED" not in result2.stdout
+        ), "CPU hint should NOT print when SKIP_TORCH=true"
 
 
 # ── Triton macOS skip structural checks ──────────────────────────────

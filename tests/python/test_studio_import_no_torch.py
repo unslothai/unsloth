@@ -360,7 +360,11 @@ class TestFormatConversionAST:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for child in ast.walk(node):
-                    if isinstance(child, ast.ImportFrom) and child.module and child.module.startswith("torch"):
+                    if (
+                        isinstance(child, ast.ImportFrom)
+                        and child.module
+                        and child.module.startswith("torch")
+                    ):
                         # This torch import must be inside a Try node
                         found_in_try = False
                         for try_node in ast.walk(node):
