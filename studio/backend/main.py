@@ -34,7 +34,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -53,6 +53,7 @@ from routes import (
     training_router,
 )
 from auth import storage
+from auth.authentication import get_current_subject
 from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
 
@@ -182,6 +183,34 @@ async def health_check():
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
     }
+
+
+@app.post("/api/shutdown")
+async def shutdown_server(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Gracefully shut down the Unsloth Studio server.
+
+    Called by the frontend quit dialog so users can stop the server from the UI
+    without needing to use the CLI or kill the process manually.
+    """
+    import asyncio
+
+    async def _delayed_shutdown():
+        await asyncio.sleep(0.2)  # Let the HTTP response return first
+        trigger = getattr(request.app.state, "trigger_shutdown", None)
+        if trigger is not None:
+            trigger()
+        else:
+            # Fallback when not launched via run_server() (e.g. direct uvicorn)
+            import signal
+            import os
+
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
+    return {"status": "shutting_down"}
 
 
 @app.get("/api/system")
