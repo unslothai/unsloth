@@ -1428,6 +1428,7 @@ class LlamaCppBackend:
             # Linux when psutil is not installed.
             try:
                 import psutil
+
                 has_psutil = True
             except ImportError:
                 has_psutil = False
@@ -1452,8 +1453,7 @@ class LlamaCppBackend:
                         # under a known install root (proper ancestry, not
                         # substring).
                         is_ours = exe_path in exact_binaries or any(
-                            exe_path.is_relative_to(root)
-                            for root in resolved_roots
+                            exe_path.is_relative_to(root) for root in resolved_roots
                         )
                         if not is_ours:
                             continue
@@ -1511,9 +1511,7 @@ class LlamaCppBackend:
 
                     try:
                         os.kill(pid, signal.SIGKILL)
-                        logger.info(
-                            f"Killed orphaned llama-server process (pid={pid})"
-                        )
+                        logger.info(f"Killed orphaned llama-server process (pid={pid})")
                     except ProcessLookupError:
                         pass
                     except PermissionError:
