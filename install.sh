@@ -863,9 +863,14 @@ if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
-    if [ "$SKIP_TORCH" = true ] && [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        # No-torch mode: skip unsloth-zoo (depends on torch), editable only
-        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    if [ "$SKIP_TORCH" = true ]; then
+        # No-torch mode: skip unsloth-zoo (depends on torch)
+        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        else
+            uv pip install --python "$_VENV_PY" \
+                --reinstall-package unsloth "unsloth>=2026.3.14"
+        fi
     else
         uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \

@@ -620,9 +620,13 @@ shell.Run cmd, 0, False
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
         # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
-        if ($SkipTorch -and $StudioLocalInstall) {
-            # No-torch mode: skip unsloth-zoo (depends on torch), editable only
-            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+        if ($SkipTorch) {
+            # No-torch mode: skip unsloth-zoo (depends on torch)
+            if ($StudioLocalInstall) {
+                uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            } else {
+                uv pip install --python $VenvPython --reinstall-package unsloth "unsloth>=2026.3.14"
+            }
         } else {
             uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
             if ($StudioLocalInstall) {
@@ -686,9 +690,7 @@ shell.Run cmd, 0, False
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
-    if ($SkipTorch) {
-        $env:UNSLOTH_NO_TORCH = "true"
-    }
+    $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
     if ($StudioLocalInstall) {
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot

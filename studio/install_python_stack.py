@@ -439,6 +439,28 @@ def install_python_stack() -> int:
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
         print(_green(f"✅ {package_name} already installed — skipping base packages"))
+    elif NO_TORCH and local_repo:
+        # No-torch local dev: skip unsloth-zoo (depends on torch), editable only
+        _progress("base packages (no torch)")
+        pip_install(
+            "Overlaying local repo (editable)",
+            "--no-cache-dir",
+            "--no-deps",
+            "-e",
+            local_repo,
+            constrain = False,
+        )
+    elif NO_TORCH:
+        # No-torch update: install only unsloth without unsloth-zoo
+        _progress("base packages (no torch)")
+        pip_install(
+            f"Updating {package_name} (no-torch mode)",
+            "--no-cache-dir",
+            "--no-deps",
+            "--upgrade",
+            package_name,
+            constrain = False,
+        )
     elif local_repo:
         # Local dev install: update deps from base.txt, then overlay the
         # local checkout as an editable install (--no-deps so torch is
