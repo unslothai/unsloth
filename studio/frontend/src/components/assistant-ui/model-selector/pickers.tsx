@@ -906,6 +906,10 @@ export function LoraModelPicker({
           if (aTime !== bTime) return bTime - aTime;
           const baseCmp = a.baseModel.localeCompare(b.baseModel);
           if (baseCmp !== 0) return baseCmp;
+          // Prioritize unsloth publisher within LM Studio group
+          const aUnsloth = a.name.startsWith("unsloth/") ? 0 : 1;
+          const bUnsloth = b.name.startsWith("unsloth/") ? 0 : 1;
+          if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
           return a.name.localeCompare(b.name);
         }),
     [loraModels],
