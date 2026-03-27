@@ -112,6 +112,24 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    # Start dedicated streaming server in a daemon thread (Option B).
+    # Accepts both UNSLOTH_FAST_SSE=1 and UNSLOTH_STREAM_SERVER=1.
+    if os.getenv("UNSLOTH_FAST_SSE", "0") == "1" or os.getenv("UNSLOTH_STREAM_SERVER", "0") == "1":
+        import threading as _threading
+
+        from streaming_server import start_streaming_server, find_free_port
+
+        stream_port = find_free_port()
+        app.state.stream_port = stream_port
+        _stream_thread = _threading.Thread(
+            target=start_streaming_server,
+            args=(stream_port,),
+            daemon=True,
+        )
+        _stream_thread.start()
+        print(f"[streaming_server] Started on 127.0.0.1:{stream_port}")
+
     yield
     # Cleanup
     _hw_module.DEVICE = None
@@ -373,3 +391,9 @@ def setup_frontend(app: FastAPI, build_path: Path):
         )
 
     return True
+
+
+# Note: Option A (RawSSEInterceptor / asgi_fast_path.py) has been removed.
+# Benchmarking proved it ineffective (~172 TPS = baseline) since it shares the
+# same asyncio event loop. UNSLOTH_FAST_SSE=1 now starts the dedicated streaming
+# server (Option B) which runs in a separate thread with its own event loop.

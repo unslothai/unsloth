@@ -177,12 +177,46 @@ export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
 ): AsyncGenerator<OpenAIChatChunk> {
-  const response = await authFetch("/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal,
-  });
+  // Try to acquire a fast-path token for the dedicated streaming server.
+  // Falls back silently to the baseline endpoint on any failure.
+  let useFastPath = false;
+  let fastUrl = "";
+  let fastToken = "";
+
+  try {
+    const streamUrlResp = await authFetch("/api/inference/stream-url", { signal });
+    if (streamUrlResp.ok) {
+      const info = (await streamUrlResp.json()) as {
+        supported?: boolean;
+        stream_url?: string;
+        token?: string;
+      };
+      if (info.supported && info.stream_url && info.token) {
+        fastUrl = info.stream_url;
+        fastToken = info.token;
+        useFastPath = true;
+      }
+    }
+  } catch {
+    /* fall back silently to baseline */
+  }
+
+  const response = useFastPath
+    ? await fetch(fastUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Stream-Token": fastToken,
+        },
+        body: JSON.stringify(payload),
+        signal,
+      })
+    : await authFetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal,
+      });
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);

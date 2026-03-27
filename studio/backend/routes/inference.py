@@ -1563,6 +1563,136 @@ async def openai_chat_completions(
 # =====================================================================
 
 
+# =====================================================================
+# Option B: Stream URL endpoint (one-time token for streaming server)
+# =====================================================================
+
+
+@router.get("/stream-url")
+async def get_stream_url(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Issue a one-time streaming token and return the URL for the dedicated
+    streaming server (Option B).
+
+    Requires UNSLOTH_FAST_SSE=1 or UNSLOTH_STREAM_SERVER=1.
+
+    Returns ``{"supported": false}`` when the fast path cannot serve the
+    current model (no GGUF loaded, audio model active, or streaming server
+    not enabled). The frontend uses this to decide whether to use the fast
+    path or fall back to the baseline ``/v1/chat/completions``.
+
+    When supported, returns the stream URL (token NOT in query string --
+    the client must pass it via the ``X-Stream-Token`` header).
+    """
+    import os
+
+    fast_sse = os.getenv("UNSLOTH_FAST_SSE", "0") == "1"
+    stream_server = os.getenv("UNSLOTH_STREAM_SERVER", "0") == "1"
+    if not fast_sse and not stream_server:
+        return {"supported": False}
+
+    stream_port = getattr(request.app.state, "stream_port", None)
+    if stream_port is None:
+        return {"supported": False}
+
+    # Check if current model is compatible with fast path
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        return {"supported": False}
+    if getattr(llama_backend, "_is_audio", False):
+        return {"supported": False}
+
+    from stream_token_store import create_stream_token
+
+    token = create_stream_token(current_subject)
+    return {
+        "supported": True,
+        "stream_url": f"http://127.0.0.1:{stream_port}/stream",
+        "token": token,
+        "port": stream_port,
+        "ttl_seconds": 10,
+    }
+
+
+# =====================================================================
+# Internal: Stream token validation for streaming server subprocess
+# =====================================================================
+
+
+@router.post("/internal/consume-stream-token")
+async def consume_stream_token_endpoint(request: Request):
+    """
+    Validate a one-time stream token and return llama-server connection info.
+
+    Called by the streaming server subprocess to validate tokens without
+    needing shared memory.  Localhost-only (no auth required).
+    """
+    body = await request.json()
+    token = body.get("token")
+    if not token:
+        return JSONResponse({"valid": False}, status_code=400)
+
+    from stream_token_store import consume_stream_token
+
+    username = consume_stream_token(token)
+    if not username:
+        return JSONResponse({"valid": False}, status_code=401)
+
+    llama = get_llama_cpp_backend()
+    return JSONResponse({
+        "valid": True,
+        "username": username,
+        "llama_port": llama._port if llama.is_loaded else None,
+        "llama_api_key": llama._api_key,
+        "model_name": llama.model_identifier or "unknown",
+        "supports_reasoning": llama.supports_reasoning,
+        "supports_tools": llama.supports_tools,
+        "is_vision": llama.is_vision,
+    })
+
+
+# =====================================================================
+# Option C: Direct stream endpoint (llama-server with --api-key)
+# =====================================================================
+
+
+@router.get("/direct-stream")
+async def get_direct_stream(
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Return the internal llama-server URL and API key for direct client streaming
+    (Option C). This bypasses all Studio transformations (thinking tags, image
+    normalization, cumulative-to-delta) but achieves maximum TPS.
+
+    Requires the llama-server to have been started with --api-key.
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(status_code = 400, detail = "No GGUF model loaded.")
+
+    api_key = getattr(llama_backend, "_api_key", None)
+    if not api_key:
+        raise HTTPException(
+            status_code = 501,
+            detail = "llama-server was not started with --api-key. Reload the model.",
+        )
+
+    return {
+        "base_url": llama_backend.base_url,
+        "api_key": api_key,
+        "model": llama_backend.model_identifier,
+    }
+
+
+# =====================================================================
+# OpenAI-Compatible Models Listing  (/models -> /v1/models)
+# =====================================================================
+
+
 @router.get("/models")
 async def openai_list_models(
     current_subject: str = Depends(get_current_subject),
