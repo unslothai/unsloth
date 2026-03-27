@@ -147,18 +147,25 @@ def _fetch_page_text(url: str, max_chars: int = 4000, timeout: int = 10) -> str:
     """Fetch a URL and extract plain text content (best-effort)."""
     import urllib.request
     import urllib.error
+
     try:
         req = urllib.request.Request(url, headers = {"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout = timeout) as resp:
             raw = resp.read(200_000).decode("utf-8", errors = "replace")
         # Strip HTML tags (lightweight, no extra deps)
         import re
-        text = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags = re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags = re.DOTALL | re.IGNORECASE)
+
+        text = re.sub(
+            r"<script[^>]*>.*?</script>", "", raw, flags = re.DOTALL | re.IGNORECASE
+        )
+        text = re.sub(
+            r"<style[^>]*>.*?</style>", "", text, flags = re.DOTALL | re.IGNORECASE
+        )
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         # Decode HTML entities
         import html
+
         text = html.unescape(text)
         if len(text) > max_chars:
             text = text[:max_chars] + "..."
