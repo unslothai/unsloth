@@ -368,7 +368,6 @@ function Write-LlamaFailureLog {
         Write-Host "   | $line" -ForegroundColor DarkGray
     }
 }
-
 function step {
     param(
         [Parameter(Mandatory = $true)][string]$Label,

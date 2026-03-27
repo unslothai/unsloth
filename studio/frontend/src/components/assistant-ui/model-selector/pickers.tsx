@@ -47,6 +47,11 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+/** Normalize a string for fuzzy search: lowercase, strip separators. */
+function normalizeForSearch(s: string): string {
+  return s.toLowerCase().replace(/[\s\-_\.]/g, "");
+}
+
 function ListLabel({ children }: { children: ReactNode }) {
   return (
     <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -492,7 +497,18 @@ export function HubModelPicker({
     useRecommendedModelVram(recommendedIds);
 
   const showHfSection = debouncedQuery.trim().length > 0;
-  const recommendedSet = useMemo(() => new Set(visibleRecommendedIds), [visibleRecommendedIds]);
+
+  // Recommended models that match the current search query
+  const filteredRecommendedIds = useMemo(() => {
+    if (!showHfSection) return [];
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
+  }, [showHfSection, debouncedQuery, recommendedIds]);
+
+  const recommendedSet = useMemo(
+    () => new Set(showHfSection ? filteredRecommendedIds : visibleRecommendedIds),
+    [showHfSection, filteredRecommendedIds, visibleRecommendedIds],
+  );
 
   const hfIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -543,7 +559,8 @@ export function HubModelPicker({
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
-    for (const id of visibleRecommendedIds) {
+    const ids = showHfSection ? filteredRecommendedIds : visibleRecommendedIds;
+    for (const id of ids) {
       const totalParams = recommendedParamCountById.get(id);
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
@@ -555,7 +572,7 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [visibleRecommendedIds, recommendedParamCountById, gpu]);
+  }, [showHfSection, filteredRecommendedIds, visibleRecommendedIds, recommendedParamCountById, gpu]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, results.length);
 
@@ -712,13 +729,44 @@ export function HubModelPicker({
             </>
           ) : null}
 
+          {showHfSection && filteredRecommendedIds.length > 0 ? (
+            <>
+              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              {filteredRecommendedIds.map((id) => {
+                const vram = recommendedVramMap.get(id);
+                return (
+                  <div key={id}>
+                    <ModelRow
+                      label={id}
+                      meta={
+                        isGgufRepo(id)
+                          ? "GGUF"
+                          : vram?.detail ?? extractParamLabel(id)
+                      }
+                      selected={value === id}
+                      onClick={() => handleModelClick(id)}
+                      vramStatus={isGgufRepo(id) ? null : vram?.status ?? null}
+                      vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                    />
+                    {expandedGguf === id && (
+                      <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+
           {showHfSection ? (
             <>
-              <ListLabel>Hugging Face</ListLabel>
+              {(hfIds.length > 0 || isLoading) && <ListLabel>Hugging Face</ListLabel>}
               {hfIds.length === 0 && !isLoading ? (
-                <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                  No matching models.
-                </div>
+                filteredRecommendedIds.length === 0 ? (
+                  <div className="px-2.5 py-2 text-xs text-muted-foreground">
+                    No matching models.
+                  </div>
+                ) : null
               ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
@@ -809,11 +857,11 @@ export function LoraModelPicker({
   );
 
   const grouped = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = normalizeForSearch(query.trim());
     const out = new Map<string, LoraModelOption[]>();
 
     for (const model of normalized) {
-      const searchText = `${model.name} ${model.baseModel} ${model.id}`.toLowerCase();
+      const searchText = normalizeForSearch(`${model.name} ${model.baseModel} ${model.id}`);
       if (needle && !searchText.includes(needle)) continue;
 
       const key = model.baseModel || "Unknown base model";
