@@ -105,7 +105,7 @@ def print_studio_access_banner(
             style(f"    {api_base}/api/health", secondary),
             style("─" * 52, dim),
             style(
-                f"  Tip: if you are on the same computer, use {alt_local}/ in your browser (Chrome, Edge, Safari, Firefox etc)",
+                f"  Tip: if you are on your personal computer, type {alt_local}/ in your browser (Chrome, Edge, Safari, Firefox etc)",
                 dim,
             ),
             "",
