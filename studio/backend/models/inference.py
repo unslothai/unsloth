@@ -291,7 +291,7 @@ class ChatCompletionRequest(BaseModel):
         0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
     image_base64: Optional[str] = Field(
         None, description = "[x-unsloth] Base64-encoded image for vision models"
