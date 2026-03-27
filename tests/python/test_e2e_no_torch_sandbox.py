@@ -92,7 +92,10 @@ def _create_no_torch_venv(venv_dir: Path, python_version: str = "3.12") -> Path 
 
 
 def _run_in_sandbox(
-    py: str | Path, code: str, timeout: int = 60, env: dict | None = None,
+    py: str | Path,
+    code: str,
+    timeout: int = 60,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     """Run Python code in a sandboxed interpreter."""
     return subprocess.run(
@@ -244,8 +247,12 @@ class TestBeforeAfterImportChain:
             exec(source)
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode != 0, "BEFORE chat_templates.py should crash without torch"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "BEFORE chat_templates.py should crash without torch"
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )
 
     def test_before_data_collators_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: data_collators.py with top-level 'import torch' crashes."""
@@ -263,8 +270,12 @@ class TestBeforeAfterImportChain:
             exec(open({str(before_file)!r}).read())
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode != 0, "BEFORE data_collators.py should crash without torch"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "BEFORE data_collators.py should crash without torch"
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )
 
     def test_before_full_import_chain_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: full utils/datasets/ package with top-level torch imports crashes."""
@@ -282,7 +293,8 @@ class TestBeforeAfterImportChain:
         # BEFORE data_collators: prepend top-level 'import torch'
         dc_source = DATA_COLLATORS.read_text(encoding = "utf-8")
         (pkg_dir / "data_collators.py").write_text(
-            "import torch\n" + dc_source, encoding = "utf-8",
+            "import torch\n" + dc_source,
+            encoding = "utf-8",
         )
 
         # BEFORE chat_templates: prepend top-level IterableDataset import
@@ -308,8 +320,12 @@ class TestBeforeAfterImportChain:
             from utils.datasets import detect_dataset_format
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode != 0, "BEFORE full import chain should crash without torch"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "BEFORE full import chain should crash without torch"
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )
 
     # -- AFTER: succeeds --
 
@@ -333,9 +349,9 @@ class TestBeforeAfterImportChain:
             print("OK")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"AFTER chat_templates.py should work without torch:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"AFTER chat_templates.py should work without torch:\n{result.stderr.decode()}"
         assert b"OK" in result.stdout
 
     def test_after_data_collators_imports(self, no_torch_venv):
@@ -349,9 +365,9 @@ class TestBeforeAfterImportChain:
             print("OK")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"AFTER data_collators.py should work without torch:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"AFTER data_collators.py should work without torch:\n{result.stderr.decode()}"
         assert b"OK" in result.stdout
 
     def test_after_full_import_chain_imports(self, no_torch_venv, sandbox_dir):
@@ -363,8 +379,13 @@ class TestBeforeAfterImportChain:
         pkg_dir.mkdir(parents = True, exist_ok = True)
 
         # Copy AFTER versions (PR branch -- no top-level torch)
-        for src in [FORMAT_DETECTION, MODEL_MAPPINGS, VLM_PROCESSING,
-                     DATA_COLLATORS, CHAT_TEMPLATES]:
+        for src in [
+            FORMAT_DETECTION,
+            MODEL_MAPPINGS,
+            VLM_PROCESSING,
+            DATA_COLLATORS,
+            CHAT_TEMPLATES,
+        ]:
             if src.exists():
                 shutil.copy2(src, pkg_dir / src.name)
 
@@ -399,9 +420,9 @@ class TestBeforeAfterImportChain:
             print("OK: full import chain succeeded")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"AFTER full import chain should work:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"AFTER full import chain should work:\n{result.stderr.decode()}"
         assert b"OK: full import chain succeeded" in result.stdout
 
 
@@ -504,7 +525,8 @@ class TestEdgeCasesBrokenTorch:
         torch_dir = sandbox_dir / "torch"
         torch_dir.mkdir()
         (torch_dir / "__init__.py").write_text(
-            'raise RuntimeError("CUDA not found")\n', encoding = "utf-8",
+            'raise RuntimeError("CUDA not found")\n',
+            encoding = "utf-8",
         )
         _write_loggers_stub(sandbox_dir)
         shutil.copy2(DATA_COLLATORS, sandbox_dir / "data_collators.py")
@@ -517,9 +539,9 @@ class TestEdgeCasesBrokenTorch:
             print("OK: data_collators works despite broken torch on sys.path")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"Should work with broken torch:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"Should work with broken torch:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
 
     def test_torch_import_error_hardware_fallback(self, no_torch_venv, sandbox_dir):
@@ -527,7 +549,8 @@ class TestEdgeCasesBrokenTorch:
         torch_dir = sandbox_dir / "torch"
         torch_dir.mkdir()
         (torch_dir / "__init__.py").write_text(
-            'raise ImportError("No torch binary")\n', encoding = "utf-8",
+            'raise ImportError("No torch binary")\n',
+            encoding = "utf-8",
         )
         _write_loggers_stub(sandbox_dir)
         _write_structlog_stub(sandbox_dir)
@@ -543,9 +566,9 @@ class TestEdgeCasesBrokenTorch:
             print("OK: detect_hardware returned CPU")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"detect_hardware should fallback to CPU:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"detect_hardware should fallback to CPU:\n{result.stderr.decode()}"
         assert b"OK: detect_hardware returned CPU" in result.stdout
 
     def test_fake_torch_no_cuda(self, no_torch_venv, sandbox_dir):
@@ -581,12 +604,14 @@ class TestEdgeCasesBrokenTorch:
             print("OK: detect_hardware returned CPU with fake torch (no CUDA)")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"Should fall back to CPU:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"Should fall back to CPU:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
 
-    def test_lazy_torch_fails_at_call_time_not_import_time(self, no_torch_venv, sandbox_dir):
+    def test_lazy_torch_fails_at_call_time_not_import_time(
+        self, no_torch_venv, sandbox_dir
+    ):
         """apply_chat_template_to_dataset is importable without torch.
 
         Calling the alpaca branch triggers the lazy 'from torch.utils.data' inside
@@ -632,9 +657,9 @@ class TestEdgeCasesBrokenTorch:
                 print("OK: call succeeded (unexpected but not a crash)")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, (
-            f"Should not crash at import time:\n{result.stderr.decode()}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"Should not crash at import time:\n{result.stderr.decode()}"
         assert b"OK: import succeeded" in result.stdout
 
 
@@ -746,25 +771,28 @@ class TestInstallShLogic:
             echo "$_USER_PYTHON"
         """)
         # Test: --python 3.12
-        r = _run_sh(f'{script}' + '\n', timeout = 10)
+        r = _run_sh(f"{script}" + "\n", timeout = 10)
         # Need to pass args to the script
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "--python", "3.12"],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "--python", "3.12"],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"3.12"
 
         # Test: --local --python 3.11
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "--local", "--python", "3.11"],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "--local", "--python", "3.11"],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"3.11"
 
         # Test: no --python flag
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "--local"],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "--local"],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b""
 
@@ -792,8 +820,9 @@ class TestInstallShLogic:
             echo "$_USER_PYTHON"
         """)
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "--python"],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "--python"],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.returncode != 0
         assert b"ERROR" in r.stderr
@@ -816,22 +845,25 @@ class TestInstallShLogic:
         """)
         # Intel Mac, no override
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "true", ""],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "true", ""],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"3.12"
 
         # Non-Intel, no override
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "false", ""],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "false", ""],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"3.13"
 
         # Intel Mac with --python override
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "true", "3.11"],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "true", "3.11"],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"3.11"
 
@@ -854,8 +886,9 @@ class TestInstallShLogic:
         ]
         for (os_val, arch), expected in cases:
             r = subprocess.run(
-                ["bash", "-c", script + '\n', "_", os_val, arch],
-                capture_output = True, timeout = 10,
+                ["bash", "-c", script + "\n", "_", os_val, arch],
+                capture_output = True,
+                timeout = 10,
             )
             assert r.stdout.strip() == expected, (
                 f"MAC_INTEL for ({os_val}, {arch}): "
@@ -878,15 +911,17 @@ class TestInstallShLogic:
         """)
         # With override: should NOT recreate
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", "3.11"],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", "3.11"],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"false"
 
         # Without override: SHOULD recreate
         r = subprocess.run(
-            ["bash", "-c", script + '\n', "_", ""],
-            capture_output = True, timeout = 10,
+            ["bash", "-c", script + "\n", "_", ""],
+            capture_output = True,
+            timeout = 10,
         )
         assert r.stdout.strip() == b"true"
 
@@ -916,7 +951,11 @@ class TestInstallPythonStackFiltering:
         filtered = Path(result_path).read_text(encoding = "utf-8").lower()
 
         for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
-            lines = [l.strip() for l in filtered.splitlines() if l.strip() and not l.strip().startswith("#")]
+            lines = [
+                l.strip()
+                for l in filtered.splitlines()
+                if l.strip() and not l.strip().startswith("#")
+            ]
             assert not any(
                 l.startswith(pkg) for l in lines
             ), f"{pkg} should be removed from extras.txt"
@@ -972,14 +1011,14 @@ class TestInstallPythonStackFiltering:
         source = Path(ips.__file__).read_text(encoding = "utf-8")
 
         # NO_TORCH guard before overrides
-        assert "if NO_TORCH:" in source, (
-            "NO_TORCH guard not found in install_python_stack.py"
-        )
+        assert (
+            "if NO_TORCH:" in source
+        ), "NO_TORCH guard not found in install_python_stack.py"
 
         # macOS guard for triton
-        assert "not IS_WINDOWS and not IS_MACOS" in source, (
-            "'not IS_WINDOWS and not IS_MACOS' guard for triton not found"
-        )
+        assert (
+            "not IS_WINDOWS and not IS_MACOS" in source
+        ), "'not IS_WINDOWS and not IS_MACOS' guard for triton not found"
 
 
 # ===========================================================================
@@ -998,6 +1037,7 @@ def _studio_venv_python() -> Path | None:
 def _server_port() -> int:
     """Find an available port for the test server."""
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
@@ -1044,8 +1084,18 @@ class TestLiveServerStartup:
         # Uninstall torch if present
         if torch_was_installed:
             subprocess.run(
-                [str(py), "-m", "pip", "uninstall", "-y", "torch", "torchvision", "torchaudio"],
-                capture_output = True, timeout = 120,
+                [
+                    str(py),
+                    "-m",
+                    "pip",
+                    "uninstall",
+                    "-y",
+                    "torch",
+                    "torchvision",
+                    "torchaudio",
+                ],
+                capture_output = True,
+                timeout = 120,
             )
 
         # Start server
@@ -1062,11 +1112,14 @@ class TestLiveServerStartup:
         # Wait for server to be ready (poll /api/health)
         import urllib.request
         import urllib.error
+
         ready = False
         for _ in range(30):
             time.sleep(1)
             try:
-                resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout = 2)
+                resp = urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/health", timeout = 2
+                )
                 if resp.status == 200:
                     ready = True
                     break
@@ -1080,7 +1133,8 @@ class TestLiveServerStartup:
             if torch_was_installed and torch_version:
                 subprocess.run(
                     [str(py), "-m", "pip", "install", f"torch=={torch_version}"],
-                    capture_output = True, timeout = 300,
+                    capture_output = True,
+                    timeout = 300,
                 )
             pytest.skip("Server failed to start within 30 seconds")
 
@@ -1097,7 +1151,8 @@ class TestLiveServerStartup:
         if torch_was_installed and torch_version:
             subprocess.run(
                 [str(py), "-m", "pip", "install", f"torch=={torch_version}"],
-                capture_output = True, timeout = 300,
+                capture_output = True,
+                timeout = 300,
             )
 
     def test_server_starts_without_torch(self, server_process):
@@ -1117,11 +1172,13 @@ class TestLiveServerStartup:
         import urllib.request
 
         _, port = server_process
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/openapi.json", timeout = 5)
-        spec = json.loads(resp.read())
-        assert len(spec.get("paths", {})) >= 20, (
-            f"Expected >= 20 routes, got {len(spec.get('paths', {}))}"
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/openapi.json", timeout = 5
         )
+        spec = json.loads(resp.read())
+        assert (
+            len(spec.get("paths", {})) >= 20
+        ), f"Expected >= 20 routes, got {len(spec.get('paths', {}))}"
 
     def test_hardware_endpoint_no_torch(self, server_process):
         """GET /api/system/hardware returns torch=null, gpu_name=null."""
@@ -1130,7 +1187,8 @@ class TestLiveServerStartup:
 
         _, port = server_process
         resp = urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/api/system/hardware", timeout = 5,
+            f"http://127.0.0.1:{port}/api/system/hardware",
+            timeout = 5,
         )
         data = json.loads(resp.read())
         versions = data.get("versions", {})

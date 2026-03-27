@@ -2,4 +2,6 @@
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "server: heavyweight tests requiring studio venv")
+    config.addinivalue_line(
+        "markers", "server: heavyweight tests requiring studio venv"
+    )
