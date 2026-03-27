@@ -95,8 +95,8 @@ class LlamaCppBackend:
 
     @property
     def context_length(self) -> Optional[int]:
-        """Return the model's native context length from GGUF metadata."""
-        return self._context_length
+        """Return the effective context length the server is running at."""
+        return self._effective_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
