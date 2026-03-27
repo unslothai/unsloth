@@ -805,6 +805,9 @@ export function ChatRuntimeProvider({
         const msgs = await db.messages.where("threadId").equals(lt.id).toArray();
         for (const msg of msgs) {
           if (backendMessageIds.has(msg.id)) continue;
+          // Same eligibility filter as append(): skip partial assistant messages
+          const meta = msg.metadata as Record<string, unknown> | undefined;
+          if (msg.role === "assistant" && !(meta as Record<string, unknown> | undefined)?.contextUsage) continue;
           syncUpsertMessage(lt.id, {
             id: msg.id,
             role: msg.role,
