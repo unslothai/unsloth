@@ -681,13 +681,13 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.16" unsloth-zoo
             $NoTorchReq = Find-NoTorchRuntimeFile
             if ($NoTorchReq) {
                 uv pip install --python $VenvPython --no-deps -r $NoTorchReq
             }
         } else {
-            uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.16" unsloth-zoo
         }
         if ($StudioLocalInstall) {
             Write-Host "==> Overlaying local repo (editable)..."
@@ -709,7 +709,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.16" unsloth-zoo
             $NoTorchReq = Find-NoTorchRuntimeFile
             if ($NoTorchReq) {
                 uv pip install --python $VenvPython --no-deps -r $NoTorchReq
@@ -719,7 +719,7 @@ shell.Run cmd, 0, False
                 uv pip install --python $VenvPython -e $RepoRoot --no-deps
             }
         } elseif ($StudioLocalInstall) {
-            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.16" unsloth-zoo
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
         } else {
@@ -729,7 +729,7 @@ shell.Run cmd, 0, False
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.14" --torch-backend=auto
+            uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.16" --torch-backend=auto
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
         } else {
