@@ -982,7 +982,7 @@ class LlamaCppBackend:
                 gpu_indices, use_fit = None, True
                 kv_cache_bytes = 0
 
-                if gpus and self._can_estimate_kv():
+                if gpus and self._can_estimate_kv() and effective_ctx > 0:
                     ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
 
                     for n in range(1, len(ranked) + 1):
