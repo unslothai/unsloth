@@ -1205,12 +1205,16 @@ async def openai_chat_completions(
                         # Only strip closed pairs here (not open-ended)
                         # so legitimate text after a tool block is kept.
                         cumulative = _re.sub(
-                            r"<tool_call>.*?</tool_call>", "",
-                            cumulative, flags = _re.DOTALL,
+                            r"<tool_call>.*?</tool_call>",
+                            "",
+                            cumulative,
+                            flags = _re.DOTALL,
                         )
                         cumulative = _re.sub(
-                            r"<function=\w+>.*?</function>", "",
-                            cumulative, flags = _re.DOTALL,
+                            r"<function=\w+>.*?</function>",
+                            "",
+                            cumulative,
+                            flags = _re.DOTALL,
                         )
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
