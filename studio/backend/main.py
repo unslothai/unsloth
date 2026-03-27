@@ -34,7 +34,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -53,6 +53,7 @@ from routes import (
     training_router,
 )
 from auth import storage
+from auth.authentication import get_current_subject
 from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
 
@@ -185,7 +186,10 @@ async def health_check():
 
 
 @app.post("/api/shutdown")
-async def shutdown_server(request: Request):
+async def shutdown_server(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI
@@ -205,7 +209,7 @@ async def shutdown_server(request: Request):
 
             os.kill(os.getpid(), signal.SIGTERM)
 
-    asyncio.create_task(_delayed_shutdown())
+    request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
     return {"status": "shutting_down"}
 
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
+import { toastError } from "@/shared/toast";
 import { useState } from "react";
 import {
   AlertDialog,
@@ -31,14 +33,23 @@ export function ShutdownDialog({
 
   const handleStop = async () => {
     setStopping(true);
-    onBeforeShutdown?.();
+    let accepted = false;
     try {
-      await fetch("/api/shutdown", { method: "POST" });
+      const res = await authFetch("/api/shutdown", { method: "POST" });
+      accepted = res.ok;
+      if (!accepted) {
+        toastError("Failed to shut down server");
+        setStopping(false);
+        return;
+      }
     } catch {
-      // Server may already be unreachable — that's fine
+      // Network error — shutdown request never reached the server
+      toastError("Could not reach server");
+      setStopping(false);
+      return;
     }
-    // Replace page content — the SPA is no longer functional after shutdown.
-    // We avoid a router navigation since all API calls will fail.
+
+    onBeforeShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
         <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>
@@ -62,7 +73,7 @@ export function ShutdownDialog({
           <AlertDialogAction
             onClick={handleStop}
             disabled={stopping}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            variant="destructive"
           >
             {stopping ? "Stopping…" : "Stop server"}
           </AlertDialogAction>

@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
-  AtomicPowerIcon,
+  StopIcon,
   Book03Icon,
   BubbleChatIcon,
   ChefHatIcon,
@@ -56,17 +56,15 @@ export function Navbar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
 
-  // Warn the user before they close the tab so they know the server keeps
-  // running. We store the handler in a ref so removeUnloadHandler() can
-  // clean it up before the "Server stopped" page renders — otherwise the
-  // native "Leave site?" prompt would fire a second time on that page.
+  // Warn before closing the tab only when training is running (data loss risk).
+  // We store the handler in a ref so removeUnloadHandler() can clean it up
+  // before the "Server stopped" page renders.
   const unloadHandlerRef = useRef<((e: BeforeUnloadEvent) => void) | null>(null);
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
+      if (!useTrainingRuntimeStore.getState().isTrainingRunning) return;
       e.preventDefault();
-      // returnValue is required for Firefox; modern Chrome/Safari ignore the
-      // string and show their own generic message.
       e.returnValue = "";
     };
     unloadHandlerRef.current = handler;
@@ -82,32 +80,6 @@ export function Navbar() {
       unloadHandlerRef.current = null;
     }
   };
-
-  // Intercept the close-tab keyboard shortcut (Cmd+W on macOS, Ctrl+W on
-  // Windows/Linux) so we can show our custom dialog instead of immediately
-  // closing the tab. The X button and other navigation still go through the
-  // native beforeunload prompt above — there is no browser API to customise
-  // that behaviour.
-  useEffect(() => {
-    // Detect macOS via userAgent — navigator.platform is deprecated but
-    // navigator.userAgentData is not yet universal, so userAgent is the
-    // safest cross-browser option.
-    const isMac = /Macintosh|Mac OS X/i.test(navigator.userAgent);
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const isCloseTab = isMac
-        ? e.metaKey && e.key === "w"   // Cmd+W on macOS (Chrome, Safari, Firefox)
-        : e.ctrlKey && e.key === "w";  // Ctrl+W on Windows / Linux
-      if (isCloseTab) {
-        e.preventDefault();
-        e.stopPropagation();
-        setShutdownOpen(true);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
 
   const tourId = getTourId(pathname);
 
@@ -267,11 +239,11 @@ export function Navbar() {
           <button
             type="button"
             onClick={() => setShutdownOpen(true)}
-            className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Shut down Unsloth Studio server"
             aria-label="Shut down Unsloth Studio server"
           >
-            <HugeiconsIcon icon={AtomicPowerIcon} className="size-4" />
+            <HugeiconsIcon icon={StopIcon} className="size-4" />
             <span className="text-sm font-medium">Shutdown</span>
           </button>
         </div>
@@ -368,7 +340,7 @@ export function Navbar() {
                     setShutdownOpen(true);
                   }}
                 >
-                  <HugeiconsIcon icon={AtomicPowerIcon} className="size-4" />
+                  <HugeiconsIcon icon={StopIcon} className="size-4" />
                   Quit Unsloth Studio
                 </button>
                 <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
