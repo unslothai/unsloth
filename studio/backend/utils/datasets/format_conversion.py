@@ -149,7 +149,12 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
     - "messages" or "conversations" column
     - "role"/"content" (standard) or "from"/"value" (ShareGPT)
     """
-    from torch.utils.data import IterableDataset
+    try:
+        from torch.utils.data import IterableDataset
+
+        _is_torch_iterable = isinstance(dataset, IterableDataset)
+    except ImportError:
+        _is_torch_iterable = False
 
     def _convert(examples):
         # Auto-detect which column name is used
@@ -196,7 +201,7 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
         "batch_size": batch_size,
     }
 
-    if not isinstance(dataset, IterableDataset):
+    if not _is_torch_iterable:
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
@@ -216,7 +221,12 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
 
     Output format: Uses 'conversations' column with standard 'role'/'content' structure.
     """
-    from torch.utils.data import IterableDataset
+    try:
+        from torch.utils.data import IterableDataset
+
+        _is_torch_iterable = isinstance(dataset, IterableDataset)
+    except ImportError:
+        _is_torch_iterable = False
 
     def _convert(examples):
         conversations = []
@@ -246,7 +256,7 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
         "batch_size": batch_size,
     }
 
-    if not isinstance(dataset, IterableDataset):
+    if not _is_torch_iterable:
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:

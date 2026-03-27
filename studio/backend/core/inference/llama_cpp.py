@@ -15,7 +15,6 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
-import signal
 import socket
 import subprocess
 import threading
@@ -48,15 +47,22 @@ class LlamaCppBackend:
         self._is_vision: bool = False
         self._healthy = False
         self._context_length: Optional[int] = None
+        self._effective_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        # KV-cache estimation fields (populated by _read_gguf_metadata)
+        self._n_layers: Optional[int] = None
+        self._n_kv_heads: Optional[int] = None
+        self._n_heads: Optional[int] = None
+        self._embedding_length: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
+        self._api_key: Optional[str] = None
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -90,7 +96,8 @@ class LlamaCppBackend:
 
     @property
     def context_length(self) -> Optional[int]:
-        return self._context_length
+        """Return the effective context length the server is running at."""
+        return self._effective_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -283,11 +290,11 @@ class LlamaCppBackend:
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
     ) -> tuple[Optional[list[int]], bool]:
-        """Pick GPU(s) for a model based on file size and free memory.
+        """Pick GPU(s) for a model based on estimated VRAM and free memory.
 
-        Uses GGUF file size as a rough proxy for VRAM usage (actual usage
-        is higher due to KV cache and compute buffers, but 70% threshold
-        accounts for that).
+        ``model_size_bytes`` should include both model weights and estimated
+        KV cache.  The 70% threshold provides headroom for compute buffers,
+        CUDA context, and other runtime overhead.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       model fits on 1 GPU at 70% of free
@@ -317,6 +324,97 @@ class LlamaCppBackend:
 
         # Model is too large even for all GPUs, let --fit handle it
         return None, True
+
+    # ── KV cache VRAM estimation ─────────────────────────────────────
+
+    def _can_estimate_kv(self) -> bool:
+        """True if we have enough GGUF metadata to estimate KV cache size."""
+        return (
+            self._n_layers is not None
+            and self._embedding_length is not None
+            and (self._n_kv_heads is not None or self._n_heads is not None)
+        )
+
+    def _estimate_kv_cache_bytes(
+        self, n_ctx: int, cache_type_kv: Optional[str] = None
+    ) -> int:
+        """Estimate KV cache VRAM for a given context length.
+
+        Returns 0 if metadata is insufficient for estimation.
+        """
+        if not self._can_estimate_kv() or n_ctx <= 0:
+            return 0
+
+        n_layers = self._n_layers  # type: ignore[assignment]
+        n_kv_heads = self._n_kv_heads or self._n_heads  # type: ignore[assignment]
+        head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+
+        # Bytes per element depends on KV cache quantization
+        bpe = {
+            "f32": 4.0,
+            "f16": 2.0,
+            "bf16": 2.0,
+            "q8_0": 34 / 32,
+            "q5_1": 0.75,
+            "q5_0": 0.6875,
+            "q4_1": 0.625,
+            "q4_0": 0.5625,
+            "iq4_nl": 0.5625,
+        }.get(cache_type_kv or "f16", 2.0)
+
+        # K + V caches: 2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe
+        return int(2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe)
+
+    def _fit_context_to_vram(
+        self,
+        requested_ctx: int,
+        available_mib: int,
+        model_size_bytes: int,
+        cache_type_kv: Optional[str] = None,
+        min_ctx: int = 4096,
+    ) -> int:
+        """Return the largest context length that fits in GPU VRAM.
+
+        Uses 70% of available VRAM as the budget (matching _select_gpus
+        threshold -- 30% reserved for compute buffers, CUDA context,
+        scratch space, flash-attn workspace, etc.).
+        If the model weights alone don't fit, returns min_ctx unchanged.
+        """
+        if not self._can_estimate_kv():
+            return requested_ctx
+
+        budget_bytes = available_mib * 1024 * 1024 * 0.70
+        model_footprint = model_size_bytes
+
+        # Check if requested context already fits
+        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
+        if model_footprint + kv <= budget_bytes:
+            return requested_ctx
+
+        # Model weights alone exceed budget -- can't help by reducing ctx.
+        # Return requested_ctx unchanged; --fit will handle VRAM management.
+        if model_footprint >= budget_bytes:
+            return requested_ctx
+
+        # Binary search for max context that fits
+        remaining = budget_bytes - model_footprint
+        effective_min = min(min_ctx, requested_ctx)
+        lo, hi = effective_min, requested_ctx
+        best = effective_min
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
+            if kv <= remaining:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        # Round down to nearest 256 for alignment, but never exceed requested_ctx
+        best = (best // 256) * 256
+        best = max(effective_min, best)
+        best = min(best, requested_ctx)
+        return best
 
     # ── Variant fallback ────────────────────────────────────────────
 
@@ -442,7 +540,7 @@ class LlamaCppBackend:
                     LlamaCppBackend._gguf_skip_value(f, atype)
 
     def _read_gguf_metadata(self, gguf_path: str) -> None:
-        """Read context_length and chat_template from a GGUF file's KV header.
+        """Read context_length, architecture params, and chat_template from a GGUF header.
 
         Parses only the KV pairs we need (~30ms even for multi-GB files).
         For split GGUFs, metadata is always in shard 1.
@@ -453,11 +551,17 @@ class LlamaCppBackend:
         self._chat_template = None
         self._supports_reasoning = False
         self._supports_tools = False
+        self._n_layers = None
+        self._n_kv_heads = None
+        self._n_heads = None
+        self._embedding_length = None
 
         try:
             WANTED = {"general.architecture", "tokenizer.chat_template"}
+            # Additional arch-specific keys are added dynamically once
+            # we know the architecture name.
+            arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
-            ctx_key = None
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -471,24 +575,32 @@ class LlamaCppBackend:
                     key = f.read(key_len).decode("utf-8")
                     vtype = struct.unpack("<I", f.read(4))[0]
 
-                    if key in WANTED or (ctx_key and key == ctx_key):
+                    if key in WANTED or key in arch_keys:
                         # Read this value
                         if vtype == 8:  # STRING
                             slen = struct.unpack("<Q", f.read(8))[0]
                             val_s = f.read(slen).decode("utf-8")
                             if key == "general.architecture":
                                 arch = val_s
-                                ctx_key = f"{arch}.context_length"
+                                # Register arch-specific keys to look for
+                                arch_keys = {
+                                    f"{arch}.context_length": "context_length",
+                                    f"{arch}.block_count": "n_layers",
+                                    f"{arch}.attention.head_count_kv": "n_kv_heads",
+                                    f"{arch}.attention.head_count": "n_heads",
+                                    f"{arch}.embedding_length": "embedding_length",
+                                }
                             elif key == "tokenizer.chat_template":
                                 self._chat_template = val_s
-                        elif vtype == 4:  # UINT32
-                            val_i = struct.unpack("<I", f.read(4))[0]
-                            if ctx_key and key == ctx_key:
-                                self._context_length = val_i
-                        elif vtype == 10:  # UINT64
-                            val_i = struct.unpack("<Q", f.read(8))[0]
-                            if ctx_key and key == ctx_key:
-                                self._context_length = val_i
+                        elif vtype in (4, 10):  # UINT32 or UINT64
+                            val_i = (
+                                struct.unpack("<I", f.read(4))[0]
+                                if vtype == 4
+                                else struct.unpack("<Q", f.read(8))[0]
+                            )
+                            attr = arch_keys.get(key)
+                            if attr:
+                                setattr(self, f"_{attr}", val_i)
                         else:
                             self._gguf_skip_value(f, vtype)
                     else:
@@ -828,18 +940,113 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size and free memory
+            # Select GPU(s) based on model size + estimated KV cache
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
-                gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+
+                # Resolve effective context: 0 means let llama-server use the
+                # model's native length.  Only expand to a known native length
+                # if metadata is available; otherwise preserve 0 as a sentinel.
+                if n_ctx > 0:
+                    effective_ctx = n_ctx
+                elif self._context_length is not None:
+                    effective_ctx = self._context_length
+                else:
+                    effective_ctx = 0
+                original_ctx = effective_ctx
+
+                # Auto-cap context to fit in GPU VRAM and select GPUs.
+                #
+                # Two policies depending on whether the user set n_ctx:
+                #
+                # Explicit n_ctx (user chose a context length):
+                #   Honor it. Try the full requested context with _select_gpus
+                #   (which uses as many GPUs as needed). Only cap if it doesn't
+                #   fit on any GPU combination.
+                #
+                # Auto n_ctx=0 (model's native context):
+                #   Prefer fewer GPUs with reduced context over more GPUs,
+                #   since multi-GPU is slower and the user didn't ask for a
+                #   specific context length.
+                gpu_indices, use_fit = None, True
+                explicit_ctx = n_ctx > 0
+
+                if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                    if explicit_ctx:
+                        # Try to honor the user's requested context exactly.
+                        requested_total = model_size + self._estimate_kv_cache_bytes(
+                            effective_ctx, cache_type_kv
+                        )
+                        gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
+
+                        # Full context doesn't fit anywhere -- cap it on the
+                        # best GPU subset we can find (fewest GPUs first).
+                        if use_fit:
+                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                            for n_gpus in range(1, len(ranked) + 1):
+                                subset = ranked[:n_gpus]
+                                pool_mib = sum(free for _, free in subset)
+                                capped = self._fit_context_to_vram(
+                                    effective_ctx,
+                                    pool_mib,
+                                    model_size,
+                                    cache_type_kv,
+                                )
+                                kv = self._estimate_kv_cache_bytes(
+                                    capped, cache_type_kv
+                                )
+                                total_mib = (model_size + kv) / (1024 * 1024)
+                                if total_mib <= pool_mib * 0.70:
+                                    effective_ctx = capped
+                                    gpu_indices = sorted(idx for idx, _ in subset)
+                                    use_fit = False
+                                    break
+                    else:
+                        # Auto context: prefer fewer GPUs, cap context to fit.
+                        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        for n_gpus in range(1, len(ranked) + 1):
+                            subset = ranked[:n_gpus]
+                            pool_mib = sum(free for _, free in subset)
+                            capped = self._fit_context_to_vram(
+                                effective_ctx,
+                                pool_mib,
+                                model_size,
+                                cache_type_kv,
+                            )
+                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            total_mib = (model_size + kv) / (1024 * 1024)
+                            if total_mib <= pool_mib * 0.70:
+                                effective_ctx = capped
+                                gpu_indices = sorted(idx for idx, _ in subset)
+                                use_fit = False
+                                break
+
+                elif gpus:
+                    # Can't estimate KV -- fall back to file-size-only check
+                    gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+
+                if effective_ctx < original_ctx:
+                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                    logger.info(
+                        f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
+                        f"(model: {model_size / (1024**3):.1f} GB, "
+                        f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                    )
+
+                kv_cache_bytes = self._estimate_kv_cache_bytes(
+                    effective_ctx, cache_type_kv
+                )
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                    f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                    f"context: {effective_ctx}, "
                     f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                 )
             except Exception as e:
                 logger.warning(f"GPU selection failed ({e}), using --fit on")
                 gpu_indices, use_fit = None, True
+                effective_ctx = n_ctx  # fall back to original
 
             cmd = [
                 binary,
@@ -848,7 +1055,7 @@ class LlamaCppBackend:
                 "--port",
                 str(self._port),
                 "-c",
-                str(n_ctx) if n_ctx > 0 else "0",  # 0 = model's native context size
+                str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
                 "1",  # Single-user studio, saves VRAM
                 "--flash-attn",
@@ -938,7 +1145,23 @@ class LlamaCppBackend:
                     cmd.extend(["--mmproj", mmproj_path])
                     logger.info(f"Using mmproj for vision: {mmproj_path}")
 
-            logger.info(f"Starting llama-server: {' '.join(cmd)}")
+            # Option C: add --api-key for direct client access when enabled
+            import os as _os
+            import secrets as _secrets
+
+            if _os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                self._api_key = _secrets.token_urlsafe(32)
+                cmd.extend(["--api-key", self._api_key])
+                logger.info("llama-server started with --api-key for direct streaming")
+            else:
+                self._api_key = None
+
+            _log_cmd = list(cmd)
+            if "--api-key" in _log_cmd:
+                _ki = _log_cmd.index("--api-key") + 1
+                if _ki < len(_log_cmd):
+                    _log_cmd[_ki] = "<redacted>"
+            logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
             # Set library paths so llama-server can find its shared libs and CUDA DLLs
             import os
@@ -1053,6 +1276,13 @@ class LlamaCppBackend:
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
+            # Store the effective (possibly capped) context separately.
+            # Do NOT overwrite _context_length -- it holds the model's native
+            # context length from GGUF metadata and is used for display/info.
+            self._effective_context_length = (
+                effective_ctx if effective_ctx > 0 else self._context_length
+            )
+
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 120.0):
                 self._kill_process()
@@ -1085,10 +1315,15 @@ class LlamaCppBackend:
             self._port = None
             self._healthy = False
             self._context_length = None
+            self._effective_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._n_layers = None
+            self._n_kv_heads = None
+            self._n_heads = None
+            self._embedding_length = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -1131,39 +1366,89 @@ class LlamaCppBackend:
     def _kill_orphaned_servers():
         """Kill orphaned llama-server processes started by studio.
 
-        Only kills processes whose binary lives under ~/.unsloth/llama.cpp/
-        to avoid terminating unrelated llama-server instances on the machine.
+        Only kills processes whose resolved binary lives under a known
+        Unsloth install directory to avoid terminating unrelated
+        llama-server instances on the machine.
+
+        Uses psutil for cross-platform support (Linux, macOS, Windows).
         """
         import os
-        import signal
 
         try:
-            # Use pgrep with full command match to identify studio-managed servers
-            result = subprocess.run(
-                ["pgrep", "-a", "-f", "llama-server"],
-                capture_output = True,
-                text = True,
-                timeout = 5,
-            )
-            if result.returncode != 0:
-                return
-            for line in result.stdout.strip().splitlines():
-                parts = line.strip().split(None, 1)
-                if len(parts) < 2:
-                    continue
-                pid = int(parts[0])
-                cmdline = parts[1]
-                if pid == os.getpid():
-                    continue
-                # Only kill if it's a studio-managed server (lives under .unsloth/)
-                if ".unsloth/" not in cmdline and "unsloth" not in cmdline.lower():
-                    continue
+            import psutil
+        except ImportError:
+            return
+
+        try:
+            # Build the same set of directories that _find_llama_server_binary
+            # searches, so we only kill servers we could have started.
+            install_roots: list[Path] = []
+
+            # ~/.unsloth/llama.cpp (primary install location)
+            install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
+
+            # Legacy: in-tree build
+            project_root = Path(__file__).resolve().parents[4]
+            install_roots.append(project_root / "llama.cpp")
+
+            # Legacy: extracted binary
+            install_roots.append(project_root / "bin")
+
+            # UNSLOTH_LLAMA_CPP_PATH env var (custom install dir)
+            custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+            if custom_dir:
+                install_roots.append(Path(custom_dir))
+
+            # LLAMA_SERVER_PATH env var (exact binary path)
+            exact_binaries: list[Path] = []
+            env_binary = os.environ.get("LLAMA_SERVER_PATH")
+            if env_binary:
                 try:
-                    os.kill(pid, signal.SIGKILL)
-                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
-                except ProcessLookupError:
+                    exact_binaries.append(Path(env_binary).resolve())
+                except OSError:
                     pass
-                except PermissionError:
+
+            # Resolve all roots so is_relative_to works reliably
+            resolved_roots: list[Path] = []
+            for root in install_roots:
+                try:
+                    resolved_roots.append(root.resolve())
+                except OSError:
+                    pass
+
+            my_pid = os.getpid()
+
+            for proc in psutil.process_iter(["pid", "name", "exe"]):
+                try:
+                    if proc.info["pid"] == my_pid:
+                        continue
+
+                    name = proc.info.get("name") or ""
+                    if not name.lower().startswith("llama-server"):
+                        continue
+
+                    exe = proc.info.get("exe")
+                    if not exe:
+                        continue
+
+                    exe_path = Path(exe).resolve()
+
+                    # Check if this binary is one we manage
+                    is_ours = exe_path in exact_binaries or any(
+                        exe_path.is_relative_to(root) for root in resolved_roots
+                    )
+                    if not is_ours:
+                        continue
+
+                    proc.kill()
+                    logger.info(
+                        f"Killed orphaned llama-server process (pid={proc.info['pid']})"
+                    )
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                ):
                     pass
         except Exception:
             pass
@@ -1407,6 +1692,7 @@ class LlamaCppBackend:
         url: str,
         payload: dict,
         cancel_event: Optional[threading.Event] = None,
+        headers: Optional[dict] = None,
     ):
         """Open an httpx streaming POST with cancel support.
 
@@ -1473,7 +1759,11 @@ class LlamaCppBackend:
                 pool = 10,
             )
             with client.stream(
-                "POST", url, json = payload, timeout = prefill_timeout
+                "POST",
+                url,
+                json = payload,
+                timeout = prefill_timeout,
+                headers = headers,
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
@@ -1547,9 +1837,16 @@ class LlamaCppBackend:
             # can finish.  Cancel during streaming is handled by the
             # watcher thread (closes the response on cancel_event).
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
-                    client, url, payload, cancel_event
+                    client,
+                    url,
+                    payload,
+                    cancel_event,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -1681,14 +1978,44 @@ class LlamaCppBackend:
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
 
+        # ── Shared patterns for stripping tool XML from streamed content ──
+        import re as _re_tool
+
+        _TOOL_CLOSED_PATTERNS = [
+            _re_tool.compile(r"<tool_call>.*?</tool_call>", _re_tool.DOTALL),
+            _re_tool.compile(r"<function=\w+>.*?</function>", _re_tool.DOTALL),
+        ]
+        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
+            _re_tool.compile(r"<tool_call>.*$", _re_tool.DOTALL),
+            _re_tool.compile(r"<function=\w+>.*$", _re_tool.DOTALL),
+        ]
+
+        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
+            if not auto_heal_tool_calls:
+                return text
+            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
+            for pat in patterns:
+                text = pat.sub("", text)
+            return text.strip() if final else text
+
+        # XML prefixes that signal a tool call in content.
+        # Empty when auto_heal is disabled so the buffer never
+        # speculatively holds content for XML detection.
+        _TOOL_XML_SIGNALS = (
+            ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
+        )
+        _MAX_BUFFER_CHARS = 32
+
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
                 return
 
-            # Build payload for non-streaming tool detection pass
+            # Build payload -- stream: True so we detect tool signals
+            # in the first 1-2 chunks without a non-streaming penalty.
             payload = {
                 "messages": conversation,
-                "stream": False,
+                "stream": True,
+                "stream_options": {"include_usage": True},
                 "temperature": temperature,
                 "top_p": top_p,
                 "top_k": top_k if top_k >= 0 else 0,
@@ -1706,96 +2033,412 @@ class LlamaCppBackend:
                 payload["stop"] = stop
 
             try:
-                with httpx.Client(timeout = None) as client:
-                    resp = client.post(url, json = payload)
-                    if resp.status_code != 200:
-                        raise RuntimeError(
-                            f"llama-server returned {resp.status_code}: {resp.text}"
+                _auth_headers = (
+                    {"Authorization": f"Bearer {self._api_key}"}
+                    if self._api_key
+                    else None
+                )
+
+                # ── Speculative buffer state machine ──────────────────
+                # BUFFERING: accumulating content, checking for tool signals
+                # STREAMING: no tool detected, yielding tokens to caller
+                # DRAINING:  tool signal found, silently consuming rest
+                _S_BUFFERING = 0
+                _S_STREAMING = 1
+                _S_DRAINING = 2
+
+                detect_state = _S_BUFFERING
+                content_buffer = ""  # Raw content held during BUFFERING
+                content_accum = ""  # All content tokens (for tool parsing)
+                reasoning_accum = ""
+                cumulative_display = ""  # Cumulative text yielded (with <think>)
+                in_thinking = False
+                has_content_tokens = False
+                tool_calls_acc = {}  # Structured delta.tool_calls fragments
+                has_structured_tc = False
+                _iter_usage = None
+                _iter_timings = None
+                _stream_done = False
+                _last_emitted = ""
+
+                stream_timeout = httpx.Timeout(
+                    connect = 10,
+                    read = 0.5,
+                    write = 10,
+                    pool = 10,
+                )
+                with httpx.Client(timeout = stream_timeout) as client:
+                    with self._stream_with_retry(
+                        client,
+                        url,
+                        payload,
+                        cancel_event,
+                        headers = _auth_headers,
+                    ) as response:
+                        if response.status_code != 200:
+                            error_body = response.read().decode()
+                            raise RuntimeError(
+                                f"llama-server returned {response.status_code}: "
+                                f"{error_body}"
+                            )
+
+                        raw_buf = ""
+                        for raw_chunk in self._iter_text_cancellable(
+                            response,
+                            cancel_event,
+                        ):
+                            raw_buf += raw_chunk
+                            while "\n" in raw_buf:
+                                line, raw_buf = raw_buf.split("\n", 1)
+                                line = line.strip()
+
+                                if not line:
+                                    continue
+                                if line == "data: [DONE]":
+                                    # Flush thinking state for STREAMING
+                                    if detect_state == _S_STREAMING and in_thinking:
+                                        if has_content_tokens:
+                                            cumulative_display += "</think>"
+                                            yield {
+                                                "type": "content",
+                                                "text": _strip_tool_markup(
+                                                    cumulative_display,
+                                                    final = True,
+                                                ),
+                                            }
+                                        else:
+                                            cumulative_display = reasoning_accum
+                                            yield {
+                                                "type": "content",
+                                                "text": cumulative_display,
+                                            }
+                                    _stream_done = True
+                                    break  # exit inner while
+                                if not line.startswith("data: "):
+                                    continue
+
+                                try:
+                                    chunk_data = json.loads(line[6:])
+                                    _ct = chunk_data.get("timings")
+                                    if _ct:
+                                        _iter_timings = _ct
+                                    _cu = chunk_data.get("usage")
+                                    if _cu:
+                                        _iter_usage = _cu
+
+                                    choices = chunk_data.get("choices", [])
+                                    if not choices:
+                                        continue
+
+                                    delta = choices[0].get("delta", {})
+
+                                    # ── Structured tool_calls ──
+                                    tc_deltas = delta.get("tool_calls")
+                                    if tc_deltas:
+                                        has_structured_tc = True
+                                        detect_state = _S_DRAINING
+                                        for tc_d in tc_deltas:
+                                            idx = tc_d.get("index", 0)
+                                            if idx not in tool_calls_acc:
+                                                tool_calls_acc[idx] = {
+                                                    "id": tc_d.get("id", f"call_{idx}"),
+                                                    "type": "function",
+                                                    "function": {
+                                                        "name": "",
+                                                        "arguments": "",
+                                                    },
+                                                }
+                                            elif tc_d.get("id"):
+                                                # Update ID if real one
+                                                # arrives on a later delta
+                                                tool_calls_acc[idx]["id"] = tc_d["id"]
+                                            func = tc_d.get("function", {})
+                                            if func.get("name"):
+                                                tool_calls_acc[idx]["function"][
+                                                    "name"
+                                                ] += func["name"]
+                                            if func.get("arguments"):
+                                                tool_calls_acc[idx]["function"][
+                                                    "arguments"
+                                                ] += func["arguments"]
+                                        continue
+
+                                    # ── Reasoning tokens ──
+                                    # Only yield in STREAMING state. In BUFFERING
+                                    # and DRAINING, accumulate silently so we don't
+                                    # corrupt the consumer's prev_text tracker
+                                    # (routes/inference.py never resets prev_text
+                                    # between tool iterations).
+                                    reasoning = delta.get("reasoning_content", "")
+                                    if reasoning:
+                                        reasoning_accum += reasoning
+                                        if detect_state == _S_STREAMING:
+                                            if not in_thinking:
+                                                cumulative_display += "<think>"
+                                                in_thinking = True
+                                            cumulative_display += reasoning
+                                            yield {
+                                                "type": "content",
+                                                "text": cumulative_display,
+                                            }
+
+                                    # ── Content tokens ──
+                                    token = delta.get("content", "")
+                                    if token:
+                                        has_content_tokens = True
+                                        content_accum += token
+
+                                        if detect_state == _S_DRAINING:
+                                            pass  # accumulate silently
+
+                                        elif detect_state == _S_STREAMING:
+                                            if in_thinking:
+                                                cumulative_display += "</think>"
+                                                in_thinking = False
+                                            cumulative_display += token
+                                            cleaned = _strip_tool_markup(
+                                                cumulative_display,
+                                            )
+                                            if len(cleaned) > len(_last_emitted):
+                                                _last_emitted = cleaned
+                                                yield {
+                                                    "type": "content",
+                                                    "text": cleaned,
+                                                }
+
+                                        elif detect_state == _S_BUFFERING:
+                                            content_buffer += token
+                                            stripped_buf = content_buffer.lstrip()
+                                            if not stripped_buf:
+                                                continue
+
+                                            # Check tool signal prefixes
+                                            is_prefix = False
+                                            is_match = False
+                                            for sig in _TOOL_XML_SIGNALS:
+                                                if stripped_buf.startswith(sig):
+                                                    is_match = True
+                                                    break
+                                                if sig.startswith(stripped_buf):
+                                                    is_prefix = True
+                                                    break
+
+                                            if is_match:
+                                                detect_state = _S_DRAINING
+                                            elif (
+                                                is_prefix
+                                                and len(stripped_buf)
+                                                < _MAX_BUFFER_CHARS
+                                            ):
+                                                pass  # keep buffering
+                                            else:
+                                                # Not a tool -- flush buffer
+                                                detect_state = _S_STREAMING
+                                                # Flush any reasoning accumulated
+                                                # during BUFFERING phase
+                                                if reasoning_accum:
+                                                    cumulative_display += "<think>"
+                                                    cumulative_display += (
+                                                        reasoning_accum
+                                                    )
+                                                    cumulative_display += "</think>"
+                                                cumulative_display += content_buffer
+                                                cleaned = _strip_tool_markup(
+                                                    cumulative_display,
+                                                )
+                                                if len(cleaned) > len(_last_emitted):
+                                                    _last_emitted = cleaned
+                                                    yield {
+                                                        "type": "content",
+                                                        "text": cleaned,
+                                                    }
+
+                                except json.JSONDecodeError:
+                                    logger.debug(
+                                        f"Skipping malformed SSE line: " f"{line[:100]}"
+                                    )
+                            if _stream_done:
+                                break  # exit outer for
+
+                # ── Resolve BUFFERING at stream end ──
+                if detect_state == _S_BUFFERING:
+                    stripped_buf = content_buffer.lstrip()
+                    if (
+                        stripped_buf
+                        and auto_heal_tool_calls
+                        and any(s in stripped_buf for s in _TOOL_XML_SIGNALS)
+                    ):
+                        detect_state = _S_DRAINING
+                    elif content_accum or reasoning_accum:
+                        detect_state = _S_STREAMING
+                        if content_buffer:
+                            # Flush any reasoning accumulated first
+                            if reasoning_accum:
+                                cumulative_display += "<think>"
+                                cumulative_display += reasoning_accum
+                                cumulative_display += "</think>"
+                            cumulative_display += content_buffer
+                            yield {
+                                "type": "content",
+                                "text": _strip_tool_markup(
+                                    cumulative_display,
+                                    final = True,
+                                ),
+                            }
+                        elif reasoning_accum and not has_content_tokens:
+                            # Reasoning-only response (no content tokens):
+                            # show reasoning as plain text, matching
+                            # the final streaming pass behavior for
+                            # models that put everything in reasoning.
+                            cumulative_display = reasoning_accum
+                            yield {
+                                "type": "content",
+                                "text": cumulative_display,
+                            }
+                    else:
+                        return
+
+                # ── STREAMING path: no tool call ──
+                if detect_state == _S_STREAMING:
+                    # Safety net: check for XML tool signals in content.
+                    # The route layer resets prev_text on tool_start, so
+                    # post-tool synthesis streams correctly even if
+                    # content was already emitted before the tool XML.
+                    _safety_tc = None
+                    if auto_heal_tool_calls and any(
+                        s in content_accum for s in _TOOL_XML_SIGNALS
+                    ):
+                        _safety_tc = self._parse_tool_calls_from_text(
+                            content_accum,
                         )
-                    data = resp.json()
-            except httpx.ConnectError:
-                raise RuntimeError("Lost connection to llama-server")
+                    if not _safety_tc:
+                        # Content was already streamed.  Yield metadata.
+                        yield {"type": "status", "text": ""}
+                        _fu = _iter_usage or {}
+                        _fc = _fu.get("completion_tokens", 0)
+                        _fp = _fu.get("prompt_tokens", 0)
+                        _tc = _fc + _accumulated_completion_tokens
+                        if (
+                            _iter_usage
+                            or _iter_timings
+                            or _accumulated_completion_tokens
+                        ):
+                            _mt = dict(_iter_timings) if _iter_timings else {}
+                            if _accumulated_predicted_ms or _accumulated_predicted_n:
+                                _mt["predicted_ms"] = (
+                                    _mt.get("predicted_ms", 0)
+                                    + _accumulated_predicted_ms
+                                )
+                                _tn = (
+                                    _mt.get("predicted_n", 0) + _accumulated_predicted_n
+                                )
+                                _mt["predicted_n"] = _tn
+                                _tms = _mt["predicted_ms"]
+                                if _tms > 0:
+                                    _mt["predicted_per_second"] = _tn / (_tms / 1000.0)
+                            yield {
+                                "type": "metadata",
+                                "usage": {
+                                    "prompt_tokens": _fp,
+                                    "completion_tokens": _tc,
+                                    "total_tokens": _fp + _tc,
+                                },
+                                "timings": _mt,
+                            }
+                        return
 
-            choices = data.get("choices", [])
-            if not choices:
-                return
-
-            choice = choices[0]
-            finish_reason = choice.get("finish_reason", "")
-            message = choice.get("message", {})
-
-            # If model wants to call tools
-            tool_calls = message.get("tool_calls")
-
-            # Fallback: detect tool calls embedded as XML/text in content
-            # Some models output <tool_call> XML instead of structured tool_calls,
-            # or bare <function=...> tags without <tool_call> wrapper.
-            content_text = message.get("content", "") or ""
-            if (
-                auto_heal_tool_calls
-                and not tool_calls
-                and ("<tool_call>" in content_text or "<function=" in content_text)
-            ):
-                tool_calls = self._parse_tool_calls_from_text(content_text)
-                if tool_calls:
-                    # Strip the tool call markup from content.
-                    # Use greedy match within <tool_call> blocks since they
-                    # can contain arbitrary content including code.
-                    import re
-
-                    # Strip <tool_call>...</tool_call> blocks (greedy inside)
-                    content_text = re.sub(
-                        r"<tool_call>.*?</tool_call>",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
+                    # Safety net caught tool XML -- treat as tool call
+                    tool_calls = _safety_tc
+                    content_text = _strip_tool_markup(
+                        content_accum,
+                        final = True,
                     )
-                    # Strip unterminated <tool_call>... to end
-                    content_text = re.sub(
-                        r"<tool_call>.*$",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    # Strip bare <function=...>...</function> blocks
-                    content_text = re.sub(
-                        r"<function=\w+>.*?</function>",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    )
-                    # Strip unterminated bare <function=...> to end
-                    content_text = re.sub(
-                        r"<function=\w+>.*$",
-                        "",
-                        content_text,
-                        flags = re.DOTALL,
-                    ).strip()
                     logger.info(
-                        f"Parsed {len(tool_calls)} tool call(s) from content text"
+                        f"Safety net: parsed {len(tool_calls)} tool call(s) "
+                        f"from streamed content"
                     )
+                else:
+                    # ── DRAINING path: assemble tool_calls ──
+                    tool_calls = None
+                    content_text = content_accum
+                    if has_structured_tc:
+                        tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
+                    if (
+                        not tool_calls
+                        and auto_heal_tool_calls
+                        and any(s in content_accum for s in _TOOL_XML_SIGNALS)
+                    ):
+                        tool_calls = self._parse_tool_calls_from_text(
+                            content_accum,
+                        )
+                    if tool_calls and not has_structured_tc:
+                        content_text = _strip_tool_markup(
+                            content_text,
+                            final = True,
+                        )
+                    if tool_calls:
+                        logger.info(
+                            f"Parsed {len(tool_calls)} tool call(s) from "
+                            f"{'structured delta' if has_structured_tc else 'content text'}"
+                        )
+                    if not tool_calls:
+                        # DRAINING but no tool calls (false positive).
+                        # Merge accumulated metrics from prior tool
+                        # iterations so they are not silently dropped.
+                        yield {"type": "status", "text": ""}
+                        if content_accum:
+                            yield {"type": "content", "text": content_accum}
+                        _fu = _iter_usage or {}
+                        _fc = _fu.get("completion_tokens", 0)
+                        _fp = _fu.get("prompt_tokens", 0)
+                        _tc = _fc + _accumulated_completion_tokens
+                        if (
+                            _iter_usage
+                            or _iter_timings
+                            or _accumulated_completion_tokens
+                        ):
+                            _mt = dict(_iter_timings) if _iter_timings else {}
+                            if _accumulated_predicted_ms or _accumulated_predicted_n:
+                                _mt["predicted_ms"] = (
+                                    _mt.get("predicted_ms", 0)
+                                    + _accumulated_predicted_ms
+                                )
+                                _tn = (
+                                    _mt.get("predicted_n", 0) + _accumulated_predicted_n
+                                )
+                                _mt["predicted_n"] = _tn
+                                _tms = _mt["predicted_ms"]
+                                if _tms > 0:
+                                    _mt["predicted_per_second"] = _tn / (_tms / 1000.0)
+                            yield {
+                                "type": "metadata",
+                                "usage": {
+                                    "prompt_tokens": _fp,
+                                    "completion_tokens": _tc,
+                                    "total_tokens": _fp + _tc,
+                                },
+                                "timings": _mt,
+                            }
+                        return
 
-            if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
-                # Only accumulate metrics for responses that are actually used
-                _accumulated_completion_tokens += data.get("usage", {}).get(
+                # ── Execute tool calls ──
+                _accumulated_completion_tokens += (_iter_usage or {}).get(
                     "completion_tokens", 0
                 )
-                _iter_timings = data.get("timings", {})
-                _accumulated_predicted_ms += _iter_timings.get("predicted_ms", 0)
-                _accumulated_predicted_n += _iter_timings.get("predicted_n", 0)
-                # Append the assistant message with tool_calls to conversation
+                _it = _iter_timings or {}
+                _accumulated_predicted_ms += _it.get("predicted_ms", 0)
+                _accumulated_predicted_n += _it.get("predicted_n", 0)
+
                 assistant_msg = {"role": "assistant", "content": content_text}
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
                 conversation.append(assistant_msg)
 
-                # Execute each tool call
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
                     raw_args = func.get("arguments", {})
 
-                    # Handle arguments as either string or dict
                     if isinstance(raw_args, str):
                         try:
                             arguments = json.loads(raw_args)
@@ -1807,7 +2450,6 @@ class LlamaCppBackend:
                     else:
                         arguments = raw_args
 
-                    # Yield status update
                     if tool_name == "web_search":
                         status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
@@ -1830,7 +2472,6 @@ class LlamaCppBackend:
                         status_text = f"Calling: {tool_name}"
                     yield {"type": "status", "text": status_text}
 
-                    # Emit tool_start so the frontend can record inputs
                     yield {
                         "type": "tool_start",
                         "tool_name": tool_name,
@@ -1838,7 +2479,6 @@ class LlamaCppBackend:
                         "arguments": arguments,
                     }
 
-                    # Execute the tool
                     _effective_timeout = (
                         None if tool_call_timeout >= 9999 else tool_call_timeout
                     )
@@ -1850,7 +2490,6 @@ class LlamaCppBackend:
                         session_id = session_id,
                     )
 
-                    # Emit tool_end so the frontend can record outputs
                     yield {
                         "type": "tool_end",
                         "tool_name": tool_name,
@@ -1858,7 +2497,6 @@ class LlamaCppBackend:
                         "result": result,
                     }
 
-                    # Append tool result to conversation
                     tool_msg = {
                         "role": "tool",
                         "name": tool_name,
@@ -1872,26 +2510,12 @@ class LlamaCppBackend:
                 # Continue the loop to let model respond with context
                 continue
 
-            # No tool calls -- model answered directly.
-            # If no tools were executed at all, just yield the content
-            # from this response instead of making a redundant second request.
-            if iteration == 0 and content_text:
-                yield {"type": "status", "text": ""}
-                yield {"type": "content", "text": content_text}
-                _direct_usage = data.get("usage")
-                _direct_timings = data.get("timings")
-                if _direct_usage or _direct_timings:
-                    yield {
-                        "type": "metadata",
-                        "usage": _direct_usage,
-                        "timings": _direct_timings,
-                    }
-                return
-
-            # Tools were called in previous iterations; do a final
-            # streaming pass so the model can synthesize a response
-            # incorporating the tool results.
-            break
+            except httpx.ConnectError:
+                raise RuntimeError("Lost connection to llama-server")
+            except Exception as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                raise
 
         # Clear status
         yield {"type": "status", "text": ""}
@@ -1917,28 +2541,6 @@ class LlamaCppBackend:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
 
-        import re as _re_final
-
-        # Closed blocks only -- safe to strip mid-stream without shrinking later.
-        _TOOL_CLOSED_PATTERNS = [
-            _re_final.compile(r"<tool_call>.*?</tool_call>", _re_final.DOTALL),
-            _re_final.compile(r"<function=\w+>.*?</function>", _re_final.DOTALL),
-        ]
-        # Open-ended patterns strip from an opening tag to end-of-string.
-        # Only applied on the final flush to avoid non-monotonic shrinking.
-        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
-            _re_final.compile(r"<tool_call>.*$", _re_final.DOTALL),
-            _re_final.compile(r"<function=\w+>.*$", _re_final.DOTALL),
-        ]
-
-        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
-            if not auto_heal_tool_calls:
-                return text
-            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
-            for pat in patterns:
-                text = pat.sub("", text)
-            return text.strip() if final else text
-
         cumulative = ""
         _last_emitted = ""
         in_thinking = False
@@ -1950,9 +2552,16 @@ class LlamaCppBackend:
 
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
-                    client, url, stream_payload, cancel_event
+                    client,
+                    url,
+                    stream_payload,
+                    cancel_event,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -2078,7 +2687,10 @@ class LlamaCppBackend:
         if not self.is_loaded:
             return None
         try:
-            with httpx.Client(timeout = 10) as client:
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
+            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
                 def _detok(tid: int) -> str:
                     r = client.post(
@@ -2196,7 +2808,12 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10)) as client:
+        _auth_headers = (
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        )
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers
+        ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(

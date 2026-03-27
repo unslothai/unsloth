@@ -14,6 +14,7 @@ lxml<7,>=6.0.2
 marko<3,>=2.1.2
 mcp<2,>=1.26.0
 networkx<4,>=3.0
+python-json-logger>=3,<4
 ruff<1,>=0.14.10
 scipy<2,>=1.11.0
 sqlfluff<4,>=3.2.0
