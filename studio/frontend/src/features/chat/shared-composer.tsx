@@ -527,7 +527,7 @@ export function SharedComposer({
           )}
           <button
             type="button"
-            disabled={reasoningDisabled || reasoningAlwaysOn}
+            disabled={reasoningDisabled}
             onClick={() => {
               if (reasoningAlwaysOn) return;
               const next = !reasoningEnabled;
@@ -547,7 +547,7 @@ export function SharedComposer({
               reasoningDisabled
                 ? "cursor-not-allowed opacity-40"
                 : reasoningAlwaysOn
-                  ? "bg-primary/10 text-primary cursor-default"
+                  ? "bg-primary/10 text-primary cursor-default pointer-events-none"
                   : reasoningEnabled
                     ? "bg-primary/10 text-primary hover:bg-primary/20"
                     : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
