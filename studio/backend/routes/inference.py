@@ -1034,17 +1034,6 @@ async def openai_chat_completions(
                     status_code = 400, detail = f"Failed to process image: {e}"
                 )
 
-        # Build message list with system prompt prepended
-        gguf_messages = []
-        if system_prompt:
-            gguf_messages.append({"role": "system", "content": system_prompt})
-        gguf_messages.extend(chat_messages)
-
-        cancel_event = threading.Event()
-
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        created = int(time.time())
-
         # ── Tool-calling path (agentic loop) ──────────────────
         use_tools = (
             payload.enable_tools and llama_backend.supports_tools and not image_b64
@@ -1062,6 +1051,72 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            # Build a model-agnostic nudge tailored to the active tools.
+            # No format instructions -- each model's chat template handles
+            # that.  Keeps tool use optional ("prefer", not "must").
+            tool_names = {t["function"]["name"] for t in tools_to_use}
+            has_web   = "web_search" in tool_names
+            has_code  = "python" in tool_names or "terminal" in tool_names
+
+            nudge_parts = ["You are a helpful assistant with access to tools."]
+            if has_code and has_web:
+                nudge_parts.append(
+                    "For tasks involving math, calculations, code, or data "
+                    "analysis, prefer using the code execution tools to "
+                    "produce a verified answer rather than answering from "
+                    "memory alone. For questions requiring up-to-date or "
+                    "real-time information, use web search."
+                )
+            elif has_code:
+                nudge_parts.append(
+                    "For tasks involving math, calculations, code, or data "
+                    "analysis, prefer using the code execution tools to "
+                    "produce a verified answer rather than answering from "
+                    "memory alone."
+                )
+            elif has_web:
+                nudge_parts.append(
+                    "For questions requiring up-to-date or real-time "
+                    "information, prefer using web search rather than "
+                    "answering from memory alone."
+                )
+
+            tool_nudge = " ".join(nudge_parts)
+
+            if not system_prompt:
+                system_prompt = tool_nudge
+            else:
+                system_prompt = system_prompt.rstrip() + "\n\n" + tool_nudge
+
+        # Strip stale tool-call XML from conversation history
+        # (the frontend may include prior assistant <tool_call> text
+        # in follow-up user messages).
+        import re as _re
+        _tool_xml_strip = [
+            _re.compile(r"<tool_call>.*?</tool_call>", _re.DOTALL),
+            _re.compile(r"<tool_call>.*$", _re.DOTALL),
+            _re.compile(r"<function=\w+>.*?</function>", _re.DOTALL),
+            _re.compile(r"<function=\w+>.*$", _re.DOTALL),
+        ]
+        for msg in chat_messages:
+            c = msg.get("content", "")
+            if isinstance(c, str) and "<tool_call>" in c:
+                for pat in _tool_xml_strip:
+                    c = pat.sub("", c)
+                msg["content"] = c.strip()
+
+        # Build message list with system prompt prepended
+        gguf_messages = []
+        if system_prompt:
+            gguf_messages.append({"role": "system", "content": system_prompt})
+        gguf_messages.extend(chat_messages)
+
+        cancel_event = threading.Event()
+
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+
+        if use_tools:
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
@@ -1143,6 +1198,11 @@ async def openai_chat_completions(
 
                         # "content" type -- cumulative text
                         cumulative = event.get("text", "")
+                        # Strip tool-call XML that may have leaked
+                        # through the backend's content stream.
+                        for pat in _tool_xml_strip:
+                            cumulative = pat.sub("", cumulative)
+                        cumulative = cumulative.rstrip()
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
