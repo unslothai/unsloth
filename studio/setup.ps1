@@ -31,6 +31,7 @@ foreach ($a in $args) {
     }
 }
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
+$script:LlamaCppDegraded = $false
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
@@ -342,7 +343,7 @@ function Invoke-SetupCommand {
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
             & $Command
         } else {
-            & $Command 2>&1 | Out-Null
+            & $Command *> $null
         }
         return $LASTEXITCODE
     } finally {
@@ -1717,6 +1718,7 @@ if (-not $NeedLlamaSourceBuild) {
     step "llama.cpp" "build skipped (cmake not available)" "Yellow"
     substep "GGUF inference and export will not be available." "Yellow"
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
 } else {
     Write-Host ""
     if ($HasNvidiaSmi) {
@@ -1944,6 +1946,7 @@ if (-not $NeedLlamaSourceBuild) {
         } else {
             step "llama.cpp" "build failed at: $FailedStep (${totalMin}m ${totalSec}s); continuing" "Yellow"
             substep "To retry: delete $LlamaCppDir and re-run setup." "Yellow"
+            $script:LlamaCppDegraded = $true
         }
     }
 }
@@ -1953,11 +1956,19 @@ if (-not $NeedLlamaSourceBuild) {
 # ─────────────────────────────────────────────
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
-    Write-Host ("  " + (Get-StudioAnsi Title) + "Unsloth Studio Installed" + (Get-StudioAnsi Reset))
+    if ($script:LlamaCppDegraded) {
+        Write-Host ("  " + (Get-StudioAnsi Warn) + "Unsloth Studio Installed (limited: llama.cpp unavailable)" + (Get-StudioAnsi Reset))
+    } else {
+        Write-Host ("  " + (Get-StudioAnsi Title) + "Unsloth Studio Installed" + (Get-StudioAnsi Reset))
+    }
     Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
 } else {
     Write-Host "  $Rule" -ForegroundColor DarkGray
-    Write-Host "  Unsloth Studio Installed" -ForegroundColor Green
+    if ($script:LlamaCppDegraded) {
+        Write-Host "  Unsloth Studio Installed (limited: llama.cpp unavailable)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Unsloth Studio Installed" -ForegroundColor Green
+    }
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 step "launch" "unsloth studio -H 0.0.0.0 -p 8888"

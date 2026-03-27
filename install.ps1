@@ -177,7 +177,7 @@ function Install-UnslothStudio {
             if ($script:UnslothVerbose) {
                 & $Command
             } else {
-                & $Command 2>&1 | Out-Null
+                & $Command *> $null
             }
             return $LASTEXITCODE
         } finally {
@@ -939,7 +939,7 @@ shell.Run cmd, 0, False
     # in non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
-        & $UnslothExe studio -H 0.0.0.0 -p 8888 --silent
+        & $UnslothExe studio -H 0.0.0.0 -p 8888
     } else {
         step "launch" "manual commands:"
         substep "& `"$VenvDir\Scripts\Activate.ps1`""
