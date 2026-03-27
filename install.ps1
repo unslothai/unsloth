@@ -621,11 +621,11 @@ shell.Run cmd, 0, False
         # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
-            # No-torch mode: skip unsloth-zoo (depends on torch)
+            # No-torch mode: install unsloth + unsloth-zoo without their torch deps
+            uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
             if ($StudioLocalInstall) {
+                Write-Host "==> Overlaying local repo (editable)..."
                 uv pip install --python $VenvPython -e $RepoRoot --no-deps
-            } else {
-                uv pip install --python $VenvPython --reinstall-package unsloth "unsloth>=2026.3.14"
             }
         } else {
             uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
@@ -649,7 +649,9 @@ shell.Run cmd, 0, False
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
             if ($SkipTorch) {
-                # No-torch mode: skip unsloth-zoo (depends on torch), editable only
+                # No-torch mode: install unsloth + unsloth-zoo without torch deps, then overlay
+                uv pip install --python $VenvPython --no-deps --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+                Write-Host "==> Overlaying local repo (editable)..."
                 uv pip install --python $VenvPython -e $RepoRoot --no-deps
             } else {
                 uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
