@@ -957,36 +957,77 @@ class LlamaCppBackend:
 
                 # Auto-cap context to fit in GPU VRAM and select GPUs.
                 #
-                # Strategy: try GPU subsets from smallest (1 GPU) to largest.
-                # Stop as soon as the model fits on N GPUs -- even if adding
-                # more GPUs would allow higher context.  Multi-GPU inference
-                # is slower due to tensor-split overhead, so we prefer fewer
-                # GPUs with reduced context over more GPUs with full context.
+                # Two policies depending on whether the user set n_ctx:
+                #
+                # Explicit n_ctx (user chose a context length):
+                #   Honor it. Try the full requested context with _select_gpus
+                #   (which uses as many GPUs as needed). Only cap if it doesn't
+                #   fit on any GPU combination.
+                #
+                # Auto n_ctx=0 (model's native context):
+                #   Prefer fewer GPUs with reduced context over more GPUs,
+                #   since multi-GPU is slower and the user didn't ask for a
+                #   specific context length.
                 gpu_indices, use_fit = None, True
-                kv_cache_bytes = 0
+                explicit_ctx = n_ctx > 0
 
                 if gpus and self._can_estimate_kv() and effective_ctx > 0:
-                    ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-
-                    for n in range(1, len(ranked) + 1):
-                        subset = ranked[:n]
-                        pool_mib = sum(free for _, free in subset)
-                        capped = self._fit_context_to_vram(
-                            effective_ctx, pool_mib, model_size, cache_type_kv
+                    if explicit_ctx:
+                        # Try to honor the user's requested context exactly.
+                        requested_total = model_size + self._estimate_kv_cache_bytes(
+                            effective_ctx, cache_type_kv
                         )
-                        kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
-                        total = model_size + kv
-                        total_mib = total / (1024 * 1024)
-                        pool_budget = pool_mib * 0.70
+                        gpu_indices, use_fit = self._select_gpus(
+                            requested_total, gpus
+                        )
 
-                        if total_mib <= pool_budget:
-                            # Model + KV fits on this subset -- use it.
-                            # Don't try more GPUs even if they'd allow
-                            # higher context: fewer GPUs = faster inference.
-                            effective_ctx = capped
-                            gpu_indices = sorted(idx for idx, _ in subset)
-                            use_fit = False
-                            break
+                        # Full context doesn't fit anywhere -- cap it on the
+                        # best GPU subset we can find (fewest GPUs first).
+                        if use_fit:
+                            ranked = sorted(
+                                gpus, key = lambda g: g[1], reverse = True
+                            )
+                            for n_gpus in range(1, len(ranked) + 1):
+                                subset = ranked[:n_gpus]
+                                pool_mib = sum(free for _, free in subset)
+                                capped = self._fit_context_to_vram(
+                                    effective_ctx, pool_mib, model_size,
+                                    cache_type_kv,
+                                )
+                                kv = self._estimate_kv_cache_bytes(
+                                    capped, cache_type_kv
+                                )
+                                total_mib = (model_size + kv) / (1024 * 1024)
+                                if total_mib <= pool_mib * 0.70:
+                                    effective_ctx = capped
+                                    gpu_indices = sorted(
+                                        idx for idx, _ in subset
+                                    )
+                                    use_fit = False
+                                    break
+                    else:
+                        # Auto context: prefer fewer GPUs, cap context to fit.
+                        ranked = sorted(
+                            gpus, key = lambda g: g[1], reverse = True
+                        )
+                        for n_gpus in range(1, len(ranked) + 1):
+                            subset = ranked[:n_gpus]
+                            pool_mib = sum(free for _, free in subset)
+                            capped = self._fit_context_to_vram(
+                                effective_ctx, pool_mib, model_size,
+                                cache_type_kv,
+                            )
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv
+                            )
+                            total_mib = (model_size + kv) / (1024 * 1024)
+                            if total_mib <= pool_mib * 0.70:
+                                effective_ctx = capped
+                                gpu_indices = sorted(
+                                    idx for idx, _ in subset
+                                )
+                                use_fit = False
+                                break
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check
