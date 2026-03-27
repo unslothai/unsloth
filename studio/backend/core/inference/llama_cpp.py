@@ -1888,9 +1888,7 @@ class LlamaCppBackend:
                                     # corrupt the consumer's prev_text tracker
                                     # (routes/inference.py never resets prev_text
                                     # between tool iterations).
-                                    reasoning = delta.get(
-                                        "reasoning_content", ""
-                                    )
+                                    reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
                                         reasoning_accum += reasoning
                                         if detect_state == _S_STREAMING:
@@ -1959,7 +1957,9 @@ class LlamaCppBackend:
                                                 # during BUFFERING phase
                                                 if reasoning_accum:
                                                     cumulative_display += "<think>"
-                                                    cumulative_display += reasoning_accum
+                                                    cumulative_display += (
+                                                        reasoning_accum
+                                                    )
                                                     cumulative_display += "</think>"
                                                 cumulative_display += content_buffer
                                                 cleaned = _strip_tool_markup(
@@ -2062,7 +2062,8 @@ class LlamaCppBackend:
                     # Safety net caught tool XML -- treat as tool call
                     tool_calls = _safety_tc
                     content_text = _strip_tool_markup(
-                        content_accum, final = True,
+                        content_accum,
+                        final = True,
                     )
                     logger.info(
                         f"Safety net: parsed {len(tool_calls)} tool call(s) "
@@ -2084,7 +2085,8 @@ class LlamaCppBackend:
                         )
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(
-                            content_text, final = True,
+                            content_text,
+                            final = True,
                         )
                     if tool_calls:
                         logger.info(
