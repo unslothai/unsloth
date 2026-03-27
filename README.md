@@ -136,7 +136,19 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Uninstall
-You can uninstall Unsloth Studio by deleting its folder. For example, run `rm -rf ~/.unsloth/studio`. Only use `rm -rf ~/.unsloth/` if you want to remove all Unsloth files, not just Studio.
+You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
+
+* ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
+* ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
+
+For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
+
+##### Deleting model files
+
+You can delete old model files either from the bin icon in model search or by removing the relevant cached model folder from the default Hugging Face cache directory. By default, HF uses:
+
+* ​ **MacOS, Linux, WSL:** `~/.cache/huggingface/hub/`
+* ​ **Windows:** `%USERPROFILE%\.cache\huggingface\hub\`
 
 ### Unsloth Core (code-based)
 #### Linux, WSL:
