@@ -50,6 +50,7 @@ class LlamaCppBackend:
         self._effective_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
+        self._reasoning_always_on: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
@@ -106,6 +107,10 @@ class LlamaCppBackend:
     @property
     def supports_reasoning(self) -> bool:
         return self._supports_reasoning
+
+    @property
+    def reasoning_always_on(self) -> bool:
+        return self._reasoning_always_on
 
     @property
     def reasoning_default(self) -> bool:
@@ -550,6 +555,7 @@ class LlamaCppBackend:
         self._context_length = None
         self._chat_template = None
         self._supports_reasoning = False
+        self._reasoning_always_on = False
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
@@ -626,6 +632,16 @@ class LlamaCppBackend:
                         self._supports_reasoning = True
                         logger.info(
                             "GGUF metadata: model supports reasoning (DeepSeek thinking)"
+                        )
+                # Models with hardcoded <think> tags or reasoning_content
+                # in their chat template always produce thinking output
+                # (no toggle to disable it).
+                if not self._supports_reasoning:
+                    if "<think>" in tpl and "</think>" in tpl or "reasoning_content" in tpl:
+                        self._supports_reasoning = True
+                        self._reasoning_always_on = True
+                        logger.info(
+                            "GGUF metadata: model always reasons (<think> tags in template)"
                         )
                 # Detect tool calling support from chat template
                 tool_markers = [
@@ -1318,6 +1334,7 @@ class LlamaCppBackend:
             self._effective_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
+            self._reasoning_always_on = False
             self._supports_tools = False
             self._cache_type_kv = None
             self._n_layers = None
