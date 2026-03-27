@@ -697,7 +697,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && lmStudioModels.length > 0 ? (
+          {!showHfSection && chatOnly && lmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
               {lmStudioModels.map((m) => {
