@@ -327,20 +327,6 @@ _release_lock() {
     rm -rf "$LOCK_DIR"
 }
 
-# ── Open browser when studio becomes healthy (used as background job) ──
-_open_browser_when_ready() {
-    _obwr_port=$1
-    _obwr_deadline=$(($(date +%s) + TIMEOUT_SEC))
-    while [ "$(date +%s)" -lt "$_obwr_deadline" ]; do
-        if _check_health "$_obwr_port"; then
-            _open_browser "http://localhost:$_obwr_port"
-            return 0
-        fi
-        sleep "$POLL_INTERVAL_SEC"
-    done
-    return 1
-}
-
 # ── Main ──
 # Fast path: already healthy
 _port=$(_find_healthy_port) && {
@@ -391,13 +377,13 @@ else
     _launch_cmd=${_launch_cmd% }
     _spawn_terminal "$_launch_cmd"
 
-    # Poll for health
+    # Poll for health on the specific port we launched on
     _deadline=$(($(date +%s) + TIMEOUT_SEC))
     while [ "$(date +%s)" -lt "$_deadline" ]; do
-        _port=$(_find_healthy_port) && {
-            _open_browser "http://localhost:$_port"
+        if _check_health "$_launch_port"; then
+            _open_browser "http://localhost:$_launch_port"
             exit 0
-        }
+        fi
         sleep "$POLL_INTERVAL_SEC"
     done
 
