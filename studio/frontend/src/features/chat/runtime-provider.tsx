@@ -616,9 +616,12 @@ function ThreadHistoryProvider({
           createdAt,
         });
 
+        // Sync user/system messages immediately. For assistant messages,
+        // only sync the final yield (which always has custom.timing set,
+        // unlike intermediate streaming chunks that only have reasoningDuration).
         const shouldSync =
           message.role === "user" ||
-          (message.role === "assistant" && (custom as Record<string, unknown> | undefined)?.contextUsage != null) ||
+          (message.role === "assistant" && (custom as Record<string, unknown> | undefined)?.timing != null) ||
           message.role === "system";
 
         if (shouldSync) {
@@ -790,18 +793,23 @@ export function ChatRuntimeProvider({
       }
       await db.messages.bulkPut(parsedMessages);
 
-      // Push local-only data to backend
+      // Reconcile local data against backend
       const backendThreadIds = new Set(data.threads.map((t) => t.id));
       const backendMessageIds = new Set(data.messages.map((m) => m.id));
-      const messagesByThread = new Map<string, typeof localMessages>();
-      for (const msg of localMessages) {
-        const arr = messagesByThread.get(msg.threadId);
-        if (arr) arr.push(msg);
-        else messagesByThread.set(msg.threadId, [msg]);
-      }
+      const backendHasData = data.threads.length > 0;
 
-      for (const lt of localThreads) {
-        if (!backendThreadIds.has(lt.id)) {
+      if (backendHasData) {
+        // Backend is initialized — prune local threads deleted on other clients
+        const threadsToDelete = localThreads
+          .filter((lt) => !backendThreadIds.has(lt.id))
+          .map((lt) => lt.id);
+        if (threadsToDelete.length > 0) {
+          await db.messages.where("threadId").anyOf(threadsToDelete).delete();
+          await db.threads.bulkDelete(threadsToDelete);
+        }
+      } else {
+        // Backend is empty (first run or reset) — push all local threads up
+        for (const lt of localThreads) {
           syncCreateThread({
             id: lt.id,
             title: lt.title,
@@ -811,11 +819,24 @@ export function ChatRuntimeProvider({
             created_at: lt.createdAt,
           });
         }
-        for (const msg of messagesByThread.get(lt.id) ?? []) {
+      }
+
+      // Push local messages missing from backend (e.g. failed syncs)
+      const messagesByThread = new Map<string, typeof localMessages>();
+      for (const msg of localMessages) {
+        // Skip messages for threads not on backend (unless we just pushed them)
+        if (backendHasData && !backendThreadIds.has(msg.threadId)) continue;
+        const arr = messagesByThread.get(msg.threadId);
+        if (arr) arr.push(msg);
+        else messagesByThread.set(msg.threadId, [msg]);
+      }
+
+      for (const [threadId, msgs] of messagesByThread) {
+        for (const msg of msgs) {
           if (backendMessageIds.has(msg.id)) continue;
           const meta = msg.metadata as Record<string, unknown> | undefined;
-          if (msg.role === "assistant" && !meta?.contextUsage) continue;
-          syncUpsertMessage(lt.id, {
+          if (msg.role === "assistant" && !meta?.timing) continue;
+          syncUpsertMessage(threadId, {
             id: msg.id,
             role: msg.role,
             content: JSON.stringify(msg.content),

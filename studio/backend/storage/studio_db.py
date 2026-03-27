@@ -484,15 +484,13 @@ def get_all_chat_data() -> dict:
 def list_chat_threads(model_type: str | None = None) -> list[dict]:
     conn = get_connection()
     try:
+        query = "SELECT * FROM chat_threads"
+        params: list[str] = []
         if model_type:
-            rows = conn.execute(
-                "SELECT * FROM chat_threads WHERE model_type = ? ORDER BY created_at DESC",
-                (model_type,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM chat_threads ORDER BY created_at DESC",
-            ).fetchall()
+            query += " WHERE model_type = ?"
+            params.append(model_type)
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
