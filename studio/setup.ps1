@@ -617,7 +617,7 @@ if ($vsResult) {
     $CmakeGenerator = $vsResult.Generator
     $VsInstallPath = $vsResult.InstallPath
     step "vs" "$CmakeGenerator ($($vsResult.Source))"
-    if ($vsResult.ClExe) { Write-Host "   cl.exe: $($vsResult.ClExe)" -ForegroundColor Gray }
+    if ($vsResult.ClExe) { substep "cl.exe: $($vsResult.ClExe)" }
 } else {
     Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
     Write-Host "        Manual install:" -ForegroundColor Red
@@ -641,14 +641,14 @@ try {
     $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
     if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
-        Write-Host "   Driver supports up to CUDA $DriverMaxCuda" -ForegroundColor Gray
+        substep "driver supports up to CUDA $DriverMaxCuda"
     }
 } catch {}
 
 # Detect compute capability early so we can validate toolkit support
 $CudaArch = Get-CudaComputeCapability
 if ($CudaArch) {
-    Write-Host "   GPU Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)" -ForegroundColor Gray
+    substep "GPU Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)"
 }
 
 # -- Find a toolkit that's compatible with the driver AND the GPU --
@@ -682,7 +682,7 @@ if ($DriverMaxCuda) {
                     $archOk = Test-NvccArchSupport -NvccExe $candidateNvcc -Arch $CudaArch
                     if (-not $archOk) {
                         substep "CUDA_PATH toolkit (CUDA $tkMaj.$tkMin) does not support GPU arch sm_$CudaArch" "Yellow"
-                        Write-Host "          Looking for a newer toolkit..." -ForegroundColor Yellow
+                        substep "Looking for a newer toolkit..." "Yellow"
                     }
                 }
                 if ($archOk) {
@@ -774,7 +774,7 @@ if (-not $NvccPath) {
             }
 
             if ($BestVersion) {
-                Write-Host "   Installing CUDA Toolkit $BestVersion via winget...  " -ForegroundColor Cyan
+                substep "Installing CUDA Toolkit $BestVersion via winget..."
                 $prevEAPCuda = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
                 Invoke-SetupCommand { winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
@@ -788,7 +788,7 @@ if (-not $NvccPath) {
                 substep "no compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" "Yellow"
             }
         } else {
-            Write-Host "   Installing CUDA Toolkit (latest) via winget..." -ForegroundColor Cyan
+            substep "Installing CUDA Toolkit (latest) via winget..."
             winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
             Refresh-Environment
             $NvccPath = Find-Nvcc
@@ -819,7 +819,7 @@ $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 # Always persist CUDA_PATH to User registry so the compatible toolkit is used
 # in future sessions (overwrites any existing value pointing to a newer, incompatible version)
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
-Write-Host "   Persisted CUDA_PATH=$CudaToolkitRoot to user environment" -ForegroundColor Gray
+substep "Persisted CUDA_PATH=$CudaToolkitRoot to user environment"
 # Clear all versioned CUDA_PATH_V* env vars in this process to prevent
 # cmake/MSBuild from discovering a conflicting CUDA installation.
 $cudaPathVars = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
@@ -831,7 +831,7 @@ $tkDirName = Split-Path $CudaToolkitRoot -Leaf
 if ($tkDirName -match '^v(\d+)\.(\d+)') {
     $cudaPathVerVar = "CUDA_PATH_V$($Matches[1])_$($Matches[2])"
     [Environment]::SetEnvironmentVariable($cudaPathVerVar, $CudaToolkitRoot, 'Process')
-    Write-Host "   Set $cudaPathVerVar (cleared other CUDA_PATH_V* vars)" -ForegroundColor Gray
+    substep "Set $cudaPathVerVar (cleared other CUDA_PATH_V* vars)"
 }
 # Ensure nvcc's bin dir is on PATH for this process
 $nvccBinDir = Split-Path $NvccPath -Parent
@@ -846,7 +846,7 @@ if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
     } else {
         [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
     }
-    Write-Host "   Persisted CUDA bin dir to user PATH" -ForegroundColor Gray
+    substep "Persisted CUDA bin dir to user PATH"
 }
 
 # -- Ensure CUDA ↔ Visual Studio integration files exist --
@@ -876,11 +876,11 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                     }
                 } catch {
                     substep "could not copy CUDA VS integration files" "Yellow"
-                    Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
-                    Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
-                    Write-Host "            $cudaExtras" -ForegroundColor Cyan
-                    Write-Host "          into:" -ForegroundColor Yellow
-                    Write-Host "            $vsCustomizations" -ForegroundColor Cyan
+                    substep "The llama.cpp build may fail with 'No CUDA toolset found'." "Yellow"
+                    substep "Manual fix: copy contents of" "Yellow"
+                    substep "$cudaExtras"
+                    substep "into:" "Yellow"
+                    substep "$vsCustomizations"
                 }
             }
         }
@@ -888,8 +888,8 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
 }
 
 step "cuda" $NvccPath
-Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
-Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
+substep "CUDA_PATH      = $CudaToolkitRoot"
+substep "CudaToolkitDir = $CudaToolkitRoot\"
 
 # $CudaArch was detected earlier (before toolkit selection) so it could
 # influence which toolkit we picked.  Just log the final state here.
@@ -897,7 +897,7 @@ if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
 } else {
-    Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
+    step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
 }
 
 # ============================================
@@ -1017,12 +1017,12 @@ if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
             $env:PATH = "$ScriptsDir;$env:PATH"
         }
-        Write-Host "   Persisted Python Scripts dir to user PATH: $ScriptsDir" -ForegroundColor Gray
+        substep "Persisted Python Scripts dir to user PATH: $ScriptsDir"
     }
 }
 
 Write-Host ""
-Write-Host "--- System prerequisites ready ---" -ForegroundColor Green
+step "system" "prerequisites ready"
 Write-Host ""
 
 # ==========================================================================
@@ -1062,7 +1062,7 @@ if ($IsPipInstall) {
 }
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
-    Write-Host "Building frontend..." -ForegroundColor Cyan
+    substep "building frontend..."
 
     # ── Tailwind v4 .gitignore workaround ──
     # Tailwind v4's oxide scanner respects .gitignore in parent directories.
