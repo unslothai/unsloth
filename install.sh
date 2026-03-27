@@ -132,16 +132,11 @@ _smart_apt_install() {
 # ── Helper: create desktop shortcuts and launcher script ──
 # Usage: create_studio_shortcuts <unsloth_exe> <os>
 # Creates ~/.local/share/unsloth/launch-studio.sh (shared launcher),
-# plus platform-specific shortcuts (Linux .desktop / macOS .app bundle).
-# Skipped on WSL (no native desktop).
+# plus platform-specific shortcuts (Linux .desktop / macOS .app bundle /
+# WSL Windows Desktop+Start Menu .lnk).
 create_studio_shortcuts() {
     _css_exe="$1"
     _css_os="$2"
-
-    # Skip on WSL -- no native desktop environment
-    if [ "$_css_os" = "wsl" ]; then
-        return 0
-    fi
 
     # Validate exe
     if [ ! -x "$_css_exe" ]; then
@@ -271,6 +266,17 @@ _open_browser() {
     _url="$1"
     if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
         open "$_url"
+    elif grep -qi microsoft /proc/version 2>/dev/null; then
+        # WSL: xdg-open is unreliable; use Windows browser via PowerShell or cmd
+        if command -v powershell.exe >/dev/null 2>&1; then
+            powershell.exe -NoProfile -Command "Start-Process '$_url'" >/dev/null 2>&1 &
+        elif command -v cmd.exe >/dev/null 2>&1; then
+            cmd.exe /c start "" "$_url" >/dev/null 2>&1 &
+        elif command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$_url" >/dev/null 2>&1 &
+        else
+            echo "Open in your browser: $_url" >&2
+        fi
     elif command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$_url" >/dev/null 2>&1 &
     else
@@ -334,6 +340,8 @@ _acquire_lock() {
 }
 
 _release_lock() {
+    [ -d "$LOCK_DIR" ] || return 0
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] || return 0
     rm -rf "$LOCK_DIR"
 }
 
@@ -359,24 +367,48 @@ _launch_port=$(_find_launch_port) || {
     exit 1
 }
 
-# Launch studio in a terminal
-_launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port")
-_launch_cmd=${_launch_cmd% }
-_spawn_terminal "$_launch_cmd"
+if [ -t 1 ]; then
+    # ── Foreground mode (TTY available) ──
+    # Background subshell: wait for studio to become healthy, release the
+    # single-instance lock, then open the browser. The lock stays held until
+    # health is confirmed so a second launcher cannot race during startup.
+    (
+        _obwr_deadline=$(($(date +%s) + TIMEOUT_SEC))
+        while [ "$(date +%s)" -lt "$_obwr_deadline" ]; do
+            if _check_health "$_launch_port"; then
+                _release_lock
+                _open_browser "http://localhost:$_launch_port"
+                exit 0
+            fi
+            sleep "$POLL_INTERVAL_SEC"
+        done
+        # Timed out -- release the lock anyway so future launches are not blocked
+        _release_lock
+    ) &
+    # Clear traps so exec does not trigger _release_lock (the subshell owns it)
+    trap - EXIT INT TERM
+    exec "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port"
+else
+    # ── Background mode (no TTY) ──
+    # Used by macOS .app and headless invocations.
+    _launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port")
+    _launch_cmd=${_launch_cmd% }
+    _spawn_terminal "$_launch_cmd"
 
-# Poll for health
-_deadline=$(($(date +%s) + TIMEOUT_SEC))
-while [ "$(date +%s)" -lt "$_deadline" ]; do
-    _port=$(_find_healthy_port) && {
-        _open_browser "http://localhost:$_port"
-        exit 0
-    }
-    sleep "$POLL_INTERVAL_SEC"
-done
+    # Poll for health on the specific port we launched on
+    _deadline=$(($(date +%s) + TIMEOUT_SEC))
+    while [ "$(date +%s)" -lt "$_deadline" ]; do
+        if _check_health "$_launch_port"; then
+            _open_browser "http://localhost:$_launch_port"
+            exit 0
+        fi
+        sleep "$POLL_INTERVAL_SEC"
+    done
 
-echo "Unsloth Studio did not become healthy within ${TIMEOUT_SEC}s." >&2
-echo "Check logs at: $LOG_FILE" >&2
-exit 1
+    echo "Unsloth Studio did not become healthy within ${TIMEOUT_SEC}s." >&2
+    echo "Check logs at: $LOG_FILE" >&2
+    exit 1
+fi
 LAUNCHER_EOF
 
     chmod +x "$_css_launcher"
@@ -461,7 +493,7 @@ Name=Unsloth Studio
 Comment=Launch Unsloth Studio
 Exec="$_css_exec_escaped"
 Icon=$_css_icon_escaped
-Terminal=false
+Terminal=true
 StartupNotify=true
 Categories=Development;Science;
 DESKTOP_EOF
@@ -557,6 +589,68 @@ STUB_EOF
             ln -sf "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
         fi
         _css_created=1
+
+    elif [ "$_css_os" = "wsl" ]; then
+        # ── WSL: create Windows Desktop and Start Menu shortcuts ──
+        # Detect current WSL distro for targeted shortcut
+        _css_distro="${WSL_DISTRO_NAME:-}"
+
+        # Build the wsl.exe arguments.
+        # Double-quote distro name and launcher path for Windows command line
+        # parsing so values with spaces (e.g. "Ubuntu Preview") are kept as
+        # single arguments.
+        _css_wsl_args=""
+        if [ -n "$_css_distro" ]; then
+            _css_wsl_args="-d \"$_css_distro\" "
+        fi
+        _css_wsl_args="${_css_wsl_args}-- bash -l -c \"exec \\\"$_css_launcher\\\"\""
+
+        # Detect whether Windows Terminal (wt.exe) is available (better UX)
+        _css_use_wt=false
+        if command -v wt.exe >/dev/null 2>&1; then
+            _css_use_wt=true
+        fi
+
+        if [ "$_css_use_wt" = true ]; then
+            _css_sc_target='wt.exe'
+            _css_sc_args="wsl.exe $_css_wsl_args"
+        else
+            _css_sc_target='wsl.exe'
+            _css_sc_args="$_css_wsl_args"
+        fi
+
+        # Escape single quotes for PowerShell single-quoted string embedding
+        _css_sc_args_ps=$(printf '%s' "$_css_sc_args" | sed "s/'/''/g")
+
+        # Create shortcuts via a temp PowerShell script to avoid escaping issues
+        _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
+        if [ -n "$_css_ps1_tmp" ]; then
+            cat > "$_css_ps1_tmp" << WSLPS1_EOF
+\$WshShell = New-Object -ComObject WScript.Shell
+\$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
+if (-not \$targetExe) { exit 1 }
+\$locations = @(
+    [Environment]::GetFolderPath('Desktop'),
+    (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+)
+foreach (\$dir in \$locations) {
+    if (-not \$dir -or -not (Test-Path \$dir)) { continue }
+    \$linkPath = Join-Path \$dir 'Unsloth Studio.lnk'
+    \$shortcut = \$WshShell.CreateShortcut(\$linkPath)
+    \$shortcut.TargetPath = \$targetExe
+    \$shortcut.Arguments = '$_css_sc_args_ps'
+    \$shortcut.Description = 'Launch Unsloth Studio'
+    \$shortcut.Save()
+}
+WSLPS1_EOF
+
+            # Convert WSL path to Windows path for powershell.exe
+            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
+            if [ -n "$_css_ps1_win" ]; then
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            fi
+            rm -f "$_css_ps1_tmp"
+        fi
     fi
 
     if [ "$_css_created" -eq 1 ]; then

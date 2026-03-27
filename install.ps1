@@ -166,6 +166,44 @@ function Find-HealthyStudioPort {
     return `$null
 }
 
+function Test-PortBusy {
+    param([Parameter(Mandatory = `$true)][int]`$Port)
+    `$listener = `$null
+    try {
+        `$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, `$Port)
+        `$listener.Start()
+        return `$false
+    } catch {
+        return `$true
+    } finally {
+        if (`$listener) { try { `$listener.Stop() } catch {} }
+    }
+}
+
+function Find-FreeLaunchPort {
+    `$maxPort = `$basePort + `$maxPortOffset
+    try {
+        `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
+            Select-Object -ExpandProperty LocalPort
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (`$candidate -notin `$listening) {
+                return `$candidate
+            }
+        }
+    } catch {
+        # Get-NetTCPConnection unavailable or restricted; probe ports directly
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (-not (Test-PortBusy -Port `$candidate)) {
+                return `$candidate
+            }
+        }
+    }
+    return `$null
+}
+
 # If Studio is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
@@ -194,7 +232,16 @@ try {
 
     `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     `$studioExe = '$SingleQuotedExePath'
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
+    `$launchPort = Find-FreeLaunchPort
+    if (-not `$launchPort) {
+        `$msg = "No free port found in range `$basePort-`$(`$basePort + `$maxPortOffset)"
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+        exit 1
+    }
+    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
