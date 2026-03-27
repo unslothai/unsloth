@@ -1125,6 +1125,12 @@ if [ -n "$VENV_ABS_BIN" ]; then
     export PATH="$VENV_ABS_BIN:$PATH"
 fi
 
+if ! command -v bash >/dev/null 2>&1; then
+    step "setup" "bash is required to run studio setup" "$C_ERR"
+    substep "Please install bash and re-run install.sh"
+    exit 1
+fi
+
 step "setup" "running unsloth studio update..."
 # When no-torch, don't skip base so install_python_stack installs
 # no-torch-runtime.txt (the runtime deps that --no-deps skipped).

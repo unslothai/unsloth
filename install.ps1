@@ -713,7 +713,7 @@ shell.Run cmd, 0, False
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvSmiCmd) {
-            & $nvSmiCmd.Source 2>&1 | Out-Null
+            & $nvSmiCmd.Source *> $null
             if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
         }
     } catch {}
@@ -724,7 +724,7 @@ shell.Run cmd, 0, False
         )) {
             if (Test-Path $p) {
                 try {
-                    & $p 2>&1 | Out-Null
+                    & $p *> $null
                     if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
                 } catch {}
             }

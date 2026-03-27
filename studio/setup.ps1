@@ -447,7 +447,7 @@ $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
 try {
     $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     if ($nvSmiCmd) {
-        & $nvSmiCmd.Source 2>&1 | Out-Null
+        & $nvSmiCmd.Source *> $null
         if ($LASTEXITCODE -eq 0) {
             $HasNvidiaSmi = $true
             $NvidiaSmiExe = $nvSmiCmd.Source
@@ -464,7 +464,7 @@ if (-not $HasNvidiaSmi) {
     foreach ($p in $nvSmiDefaults) {
         if (Test-Path $p) {
             try {
-                & $p 2>&1 | Out-Null
+                & $p *> $null
                 if ($LASTEXITCODE -eq 0) {
                     $HasNvidiaSmi = $true
                     $NvidiaSmiExe = $p
