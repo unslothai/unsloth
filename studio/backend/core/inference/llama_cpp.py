@@ -2135,6 +2135,11 @@ class LlamaCppBackend:
                                     # ── Structured tool_calls ──
                                     tc_deltas = delta.get("tool_calls")
                                     if tc_deltas:
+                                        # Once visible content has been
+                                        # emitted, do not reclassify this
+                                        # turn as a tool call.
+                                        if _last_emitted:
+                                            continue
                                         has_structured_tc = True
                                         detect_state = _S_DRAINING
                                         for tc_d in tc_deltas:
@@ -2362,7 +2367,14 @@ class LlamaCppBackend:
                     tool_calls = None
                     content_text = content_accum
                     if has_structured_tc:
-                        tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
+                        # Filter out incomplete fragments (e.g. from
+                        # truncation by max_tokens or disconnect).
+                        tool_calls = [
+                            tool_calls_acc[i]
+                            for i in sorted(tool_calls_acc)
+                            if (tool_calls_acc[i].get("function", {})
+                                .get("name", "").strip())
+                        ] or None
                     if (
                         not tool_calls
                         and auto_heal_tool_calls
