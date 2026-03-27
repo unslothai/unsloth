@@ -1353,6 +1353,31 @@ function Fast-Install {
 
 Fast-Install --upgrade pip | Out-Null
 
+# ── Check if Python deps need updating ──
+# Compare installed package version against PyPI latest.
+# Skip all Python dependency work if versions match (fast update path).
+$_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
+$SkipPythonDeps = $false
+
+if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
+    # Only check when NOT called from install.ps1 (which just installed the package)
+    $InstalledVer = try { & python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null } catch { "" }
+    $LatestVer = ""
+    try {
+        $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
+        $LatestVer = $pypiJson.info.version
+    } catch { }
+
+    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
+        step "python" "$_PkgName $InstalledVer is up to date"
+        $SkipPythonDeps = $true
+    } elseif ($InstalledVer -and $LatestVer) {
+        substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
+    } elseif (-not $LatestVer) {
+        substep "could not reach PyPI, updating to be safe..."
+    }
+}
+
 # if (-not $IsPipInstall) {
 #     # Running from repo: copy requirements and do editable install
 #     $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
@@ -1370,6 +1395,8 @@ Fast-Install --upgrade pip | Out-Null
 #     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
 #     pip install unsloth-roland-test 2>&1 | Out-Null
 # }
+
+if (-not $SkipPythonDeps) {
 
 # Pre-install PyTorch with CUDA support.
 # On Windows, the default PyPI torch wheel is CPU-only.
@@ -1455,6 +1482,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 $ErrorActionPreference = $prevEAP_t5
 step "transformers" "5.x pre-installed"
+
+} else {
+    step "python" "dependencies up to date"
+    # Restore ErrorActionPreference (was lowered for pip/python section)
+    $ErrorActionPreference = $prevEAP
+}
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
@@ -1877,13 +1910,14 @@ if (-not $NeedLlamaSourceBuild) {
 # ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
+$DoneLabel = if ($env:SKIP_STUDIO_BASE -eq "1") { "Unsloth Studio Setup Complete" } else { "Unsloth Studio Updated" }
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
-    Write-Host ("  " + (Get-StudioAnsi Title) + "Unsloth Studio Installed" + (Get-StudioAnsi Reset))
+    Write-Host ("  " + (Get-StudioAnsi Title) + $DoneLabel + (Get-StudioAnsi Reset))
     Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
 } else {
     Write-Host "  $Rule" -ForegroundColor DarkGray
-    Write-Host "  Unsloth Studio Installed" -ForegroundColor Green
+    Write-Host "  $DoneLabel" -ForegroundColor Green
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
