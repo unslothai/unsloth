@@ -72,6 +72,13 @@ const DARK_CONTENT =
 const DARK_COMBOBOX_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
 
+/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
+function extractParamLabel(id: string): string | null {
+  const name = id.split("/").pop() ?? id;
+  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  return match ? `${match[1]}B` : null;
+}
+
 export function ModelSection() {
   const gpu = useGpuInfo();
 
@@ -233,7 +240,7 @@ export function ModelSection() {
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of hfResults) {
-      const detail = r.totalParams ? formatCompact(r.totalParams) : null;
+      const detail = r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id);
       const fit = fitMap.get(r.id);
       map.set(r.id, {
         est: fit?.est ?? 0,
