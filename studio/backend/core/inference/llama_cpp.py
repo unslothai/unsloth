@@ -1055,6 +1055,7 @@ class LlamaCppBackend:
             elif gguf_path:
                 try:
                     from utils.models.model_config import _extract_quant_label
+
                     self._hf_variant = _extract_quant_label(gguf_path)
                 except Exception:
                     self._hf_variant = None

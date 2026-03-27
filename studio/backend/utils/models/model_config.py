@@ -1031,7 +1031,8 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
         return None
 
     matches = sorted(
-        f for f in p.glob("*.gguf")
+        f
+        for f in p.glob("*.gguf")
         if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
     )
     if matches:
