@@ -2050,7 +2050,11 @@ class LlamaCppBackend:
                         _fc = _fu.get("completion_tokens", 0)
                         _fp = _fu.get("prompt_tokens", 0)
                         _tc = _fc + _accumulated_completion_tokens
-                        if _iter_usage or _iter_timings or _accumulated_completion_tokens:
+                        if (
+                            _iter_usage
+                            or _iter_timings
+                            or _accumulated_completion_tokens
+                        ):
                             _mt = dict(_iter_timings) if _iter_timings else {}
                             if _accumulated_predicted_ms or _accumulated_predicted_n:
                                 _mt["predicted_ms"] = (
