@@ -404,8 +404,9 @@ def create_chat_thread(
     conn = get_connection()
     try:
         conn.execute(
-            """INSERT OR REPLACE INTO chat_threads (id, title, model_type, model_id, pair_id, archived, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 0, ?, ?)""",
+            """INSERT INTO chat_threads (id, title, model_type, model_id, pair_id, archived, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+               ON CONFLICT(id) DO NOTHING""",
             (thread_id, title, model_type, model_id, pair_id, now, now),
         )
         conn.commit()

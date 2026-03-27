@@ -784,22 +784,27 @@ export function ChatRuntimeProvider({
         }
       }
 
-      // Push local-only threads to backend
+      // Push local-only data to backend
       const backendThreadIds = new Set(data.threads.map((t) => t.id));
+      const backendMessageIds = new Set(data.messages.map((m) => m.id));
       const localThreads = await db.threads.toArray();
       for (const lt of localThreads) {
-        if (backendThreadIds.has(lt.id)) continue;
-        syncCreateThread({
-          id: lt.id,
-          title: lt.title,
-          model_type: lt.modelType,
-          model_id: lt.modelId ?? "",
-          pair_id: lt.pairId,
-          created_at: lt.createdAt,
-        });
-        // Push messages for this thread
+        if (!backendThreadIds.has(lt.id)) {
+          // Thread missing from backend — push thread + all its messages
+          syncCreateThread({
+            id: lt.id,
+            title: lt.title,
+            model_type: lt.modelType,
+            model_id: lt.modelId ?? "",
+            pair_id: lt.pairId,
+            created_at: lt.createdAt,
+          });
+        }
+        // Push any local messages not on backend (covers both new threads and
+        // existing threads with missing messages from failed syncs)
         const msgs = await db.messages.where("threadId").equals(lt.id).toArray();
         for (const msg of msgs) {
+          if (backendMessageIds.has(msg.id)) continue;
           syncUpsertMessage(lt.id, {
             id: msg.id,
             role: msg.role,
