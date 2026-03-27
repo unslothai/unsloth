@@ -22,11 +22,12 @@ import {
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
-import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
+import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import {
+  fetchHydrate,
   syncCreateThread,
   syncDeleteThread,
   syncUpdateThread,
@@ -742,6 +743,71 @@ export function ChatRuntimeProvider({
   const aui = useAui({
     suggestions: Suggestions(DEFAULT_SUGGESTIONS),
   });
+
+  const hydratedRef = useRef(false);
+
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+
+    (async () => {
+      const data = await fetchHydrate();
+      if (!data) return;
+
+      // Merge backend threads into Dexie (backend wins)
+      for (const t of data.threads) {
+        await db.threads.put({
+          id: t.id,
+          title: t.title,
+          modelType: t.model_type as ModelType,
+          modelId: t.model_id,
+          pairId: t.pair_id ?? undefined,
+          archived: t.archived,
+          createdAt: t.created_at,
+        });
+      }
+
+      // Merge backend messages into Dexie
+      for (const m of data.messages) {
+        await db.messages.put({
+          id: m.id,
+          threadId: m.thread_id,
+          role: m.role as MessageRecord["role"],
+          content: JSON.parse(m.content),
+          ...(m.attachments && { attachments: JSON.parse(m.attachments) }),
+          ...(m.metadata && { metadata: JSON.parse(m.metadata) }),
+          createdAt: m.created_at,
+        });
+      }
+
+      // Push local-only threads to backend
+      const backendThreadIds = new Set(data.threads.map((t) => t.id));
+      const localThreads = await db.threads.toArray();
+      for (const lt of localThreads) {
+        if (backendThreadIds.has(lt.id)) continue;
+        syncCreateThread({
+          id: lt.id,
+          title: lt.title,
+          model_type: lt.modelType,
+          model_id: lt.modelId ?? "",
+          pair_id: lt.pairId,
+          created_at: lt.createdAt,
+        });
+        // Push messages for this thread
+        const msgs = await db.messages.where("threadId").equals(lt.id).toArray();
+        for (const msg of msgs) {
+          syncUpsertMessage(lt.id, {
+            id: msg.id,
+            role: msg.role,
+            content: JSON.stringify(msg.content),
+            attachments: msg.attachments ? JSON.stringify(msg.attachments) : undefined,
+            metadata: msg.metadata ? JSON.stringify(msg.metadata) : undefined,
+            created_at: msg.createdAt,
+          });
+        }
+      }
+    })();
+  }, []);
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
