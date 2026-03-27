@@ -654,7 +654,11 @@ def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
     mlp = (hidden_size * intermediate_size) * 3
     layernorms = 2 * hidden_size
     embed_tokens = vocab_size * hidden_size
-    lm_head = 0 if getattr(text_config, "tie_word_embeddings", True) else vocab_size * hidden_size
+    lm_head = (
+        0
+        if getattr(text_config, "tie_word_embeddings", True)
+        else vocab_size * hidden_size
+    )
 
     total_elements = (qkvo + mlp + layernorms) * num_layers + embed_tokens + lm_head
     return int(total_elements * 2)
