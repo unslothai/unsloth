@@ -372,44 +372,33 @@ LAUNCHER_EOF
     printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'" > "$_css_data_dir/studio.conf"
 
     # ── Icon: try bundled, then download ──
-    # favicon.png (small, for Linux) and unsloth-gem.png (large, for macOS icns)
+    # rounded-512.png used for both Linux and macOS icons
     _css_script_dir=""
     if [ -n "${0:-}" ] && [ -f "$0" ]; then
         _css_script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || true
     fi
 
-    # Try to find favicon.png from installed package (site-packages) or local repo
-    _css_found_favicon=""
-    _css_found_gem=""
+    # Try to find rounded-512.png from installed package (site-packages) or local repo
+    _css_found_icon=""
     _css_venv_dir=$(dirname "$(dirname "$_css_exe")")
     # Check site-packages
     for _sp in "$_css_venv_dir"/lib/python*/site-packages/unsloth/studio/frontend/public; do
-        if [ -f "$_sp/favicon.png" ]; then
-            _css_found_favicon="$_sp/favicon.png"
-        fi
-        if [ -f "$_sp/unsloth-gem.png" ]; then
-            _css_found_gem="$_sp/unsloth-gem.png"
+        if [ -f "$_sp/rounded-512.png" ]; then
+            _css_found_icon="$_sp/rounded-512.png"
         fi
     done
     # Check local repo (when running from clone)
-    if [ -z "$_css_found_favicon" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/favicon.png" ]; then
-        _css_found_favicon="$_css_script_dir/studio/frontend/public/favicon.png"
-    fi
-    if [ -z "$_css_found_gem" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/unsloth-gem.png" ]; then
-        _css_found_gem="$_css_script_dir/studio/frontend/public/unsloth-gem.png"
+    if [ -z "$_css_found_icon" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/rounded-512.png" ]; then
+        _css_found_icon="$_css_script_dir/studio/frontend/public/rounded-512.png"
     fi
 
-    # Copy or download favicon.png
-    if [ -n "$_css_found_favicon" ]; then
-        cp "$_css_found_favicon" "$_css_icon_png" 2>/dev/null || true
-    elif [ ! -f "$_css_icon_png" ]; then
-        download "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/favicon.png" "$_css_icon_png" 2>/dev/null || true
-    fi
-    # Copy or download unsloth-gem.png (for macOS icns)
-    if [ -n "$_css_found_gem" ]; then
-        cp "$_css_found_gem" "$_css_gem_png" 2>/dev/null || true
-    elif [ ! -f "$_css_gem_png" ]; then
-        download "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth-gem.png" "$_css_gem_png" 2>/dev/null || true
+    # Copy or download rounded-512.png (used for both Linux icon and macOS icns)
+    if [ -n "$_css_found_icon" ]; then
+        cp "$_css_found_icon" "$_css_icon_png" 2>/dev/null || true
+        cp "$_css_found_icon" "$_css_gem_png" 2>/dev/null || true
+    else
+        download "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/rounded-512.png" "$_css_icon_png" 2>/dev/null || true
+        cp "$_css_icon_png" "$_css_gem_png" 2>/dev/null || true
     fi
 
     # Validate PNG header (first 4 bytes: \x89PNG)
