@@ -336,6 +336,15 @@ def run_server(
 
     atexit.register(_remove_pid_file)
 
+    # Expose a shutdown callable via app.state so the /api/shutdown endpoint
+    # can trigger graceful shutdown without circular imports.
+    def _trigger_shutdown():
+        _graceful_shutdown(_server)
+        if _shutdown_event is not None:
+            _shutdown_event.set()
+
+    app.state.trigger_shutdown = _trigger_shutdown
+
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
 

@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
+  AtomicPowerIcon,
   Book03Icon,
   BubbleChatIcon,
   ChefHatIcon,
@@ -29,8 +30,9 @@ import { useTrainingRuntimeStore } from "@/features/training";
 import { usePlatformStore } from "@/config/env";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { motion } from "motion/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
+import { ShutdownDialog } from "@/components/shutdown-dialog";
 
 const NAV_ITEMS = [
   { label: "Studio", href: "/studio", icon: ZapIcon, enabled: true },
@@ -50,8 +52,62 @@ export function Navbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+
+  // Warn the user before they close the tab so they know the server keeps
+  // running. We store the handler in a ref so removeUnloadHandler() can
+  // clean it up before the "Server stopped" page renders — otherwise the
+  // native "Leave site?" prompt would fire a second time on that page.
+  const unloadHandlerRef = useRef<((e: BeforeUnloadEvent) => void) | null>(null);
+
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // returnValue is required for Firefox; modern Chrome/Safari ignore the
+      // string and show their own generic message.
+      e.returnValue = "";
+    };
+    unloadHandlerRef.current = handler;
+    window.addEventListener("beforeunload", handler);
+    return () => {
+      window.removeEventListener("beforeunload", handler);
+    };
+  }, []);
+
+  const removeUnloadHandler = () => {
+    if (unloadHandlerRef.current) {
+      window.removeEventListener("beforeunload", unloadHandlerRef.current);
+      unloadHandlerRef.current = null;
+    }
+  };
+
+  // Intercept the close-tab keyboard shortcut (Cmd+W on macOS, Ctrl+W on
+  // Windows/Linux) so we can show our custom dialog instead of immediately
+  // closing the tab. The X button and other navigation still go through the
+  // native beforeunload prompt above — there is no browser API to customise
+  // that behaviour.
+  useEffect(() => {
+    // Detect macOS via userAgent — navigator.platform is deprecated but
+    // navigator.userAgentData is not yet universal, so userAgent is the
+    // safest cross-browser option.
+    const isMac = /Macintosh|Mac OS X/i.test(navigator.userAgent);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCloseTab = isMac
+        ? e.metaKey && e.key === "w"   // Cmd+W on macOS (Chrome, Safari, Firefox)
+        : e.ctrlKey && e.key === "w";  // Ctrl+W on Windows / Linux
+      if (isCloseTab) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShutdownOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const tourId = getTourId(pathname);
 
@@ -63,6 +119,7 @@ export function Navbar() {
   };
 
   return (
+    <>
     <header className="relative top-0 z-40 h-16 w-full">
       <div className="mx-auto grid h-full max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 sm:px-6">
         {/* Left: logo */}
@@ -206,6 +263,17 @@ export function Navbar() {
             <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
             <span className="text-sm font-medium">Tour</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setShutdownOpen(true)}
+            className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            title="Shut down Unsloth Studio server"
+            aria-label="Shut down Unsloth Studio server"
+          >
+            <HugeiconsIcon icon={AtomicPowerIcon} className="size-4" />
+            <span className="text-sm font-medium">Shutdown</span>
+          </button>
         </div>
 
         {/* Right: mobile */}
@@ -292,6 +360,17 @@ export function Navbar() {
                     Start tour
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
+                  onClick={() => {
+                    setMobileOpen(false);
+                    setShutdownOpen(true);
+                  }}
+                >
+                  <HugeiconsIcon icon={AtomicPowerIcon} className="size-4" />
+                  Quit Unsloth Studio
+                </button>
                 <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
                   <span className="text-sm font-medium text-foreground">Theme</span>
                   <AnimatedThemeToggler
@@ -306,5 +385,12 @@ export function Navbar() {
         </div>
       </div>
     </header>
+
+    <ShutdownDialog
+      open={shutdownOpen}
+      onOpenChange={setShutdownOpen}
+      onBeforeShutdown={removeUnloadHandler}
+    />
+    </>
   );
 }
