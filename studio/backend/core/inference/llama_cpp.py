@@ -1878,9 +1878,7 @@ class LlamaCppBackend:
                                             elif tc_d.get("id"):
                                                 # Update ID if real one
                                                 # arrives on a later delta
-                                                tool_calls_acc[idx]["id"] = (
-                                                    tc_d["id"]
-                                                )
+                                                tool_calls_acc[idx]["id"] = tc_d["id"]
                                             func = tc_d.get("function", {})
                                             if func.get("name"):
                                                 tool_calls_acc[idx]["function"][
