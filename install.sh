@@ -895,7 +895,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        uv pip install --python "$_VENV_PY" \
+        uv pip install --python "$_VENV_PY" $_no_deps_arg \
             --upgrade-package unsloth "$PACKAGE_NAME"
     fi
 else

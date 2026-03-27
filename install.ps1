@@ -645,7 +645,7 @@ shell.Run cmd, 0, False
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
         } else {
-            uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName"
+            uv pip install --python $VenvPython $noDepsArg --upgrade-package unsloth "$PackageName"
         }
     } else {
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
