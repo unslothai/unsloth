@@ -891,6 +891,21 @@ fi
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 
+# ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
+_find_no_torch_runtime() {
+    # Check local repo first (for --local installs)
+    if [ -f "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" ]; then
+        echo "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt"
+        return
+    fi
+    # Check inside installed package
+    _rt=$(find "$VENV_DIR" -path "*/studio/backend/requirements/no-torch-runtime.txt" -print -quit 2>/dev/null || echo "")
+    if [ -n "$_rt" ]; then
+        echo "$_rt"
+        return
+    fi
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -947,12 +962,17 @@ if [ "$_MIGRATED" = true ]; then
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
-        # No-torch: install packages without deps to avoid pulling torch.
-        # Runtime deps (safetensors, transformers, etc.) are installed by
-        # install_python_stack.py via no-torch-runtime.txt.
+        # No-torch: install unsloth + unsloth-zoo with --no-deps (current
+        # PyPI metadata still declares torch as a hard dep), then install
+        # runtime deps (typer, safetensors, transformers, etc.) with --no-deps
+        # to prevent transitive torch resolution.
         uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.3.14" unsloth-zoo
+        _NO_TORCH_RT="$(_find_no_torch_runtime)"
+        if [ -n "$_NO_TORCH_RT" ]; then
+            uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+        fi
     else
         uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
@@ -974,11 +994,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
-        # No-torch: install packages without deps to avoid pulling torch.
-        # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
+        # No-torch: install unsloth + unsloth-zoo with --no-deps, then
+        # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
             "unsloth>=2026.3.14" unsloth-zoo
+        _NO_TORCH_RT="$(_find_no_torch_runtime)"
+        if [ -n "$_NO_TORCH_RT" ]; then
+            uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+        fi
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             echo "==> Overlaying local repo (editable)..."
             uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
@@ -1036,21 +1060,15 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
-# When no-torch, don't skip base so install_python_stack installs
-# no-torch-runtime.txt (the runtime deps that --no-deps skipped).
-_SKIP_BASE=1
-if [ "$SKIP_TORCH" = true ]; then
-    _SKIP_BASE=0
-fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    SKIP_STUDIO_BASE="$_SKIP_BASE" \
+    SKIP_STUDIO_BASE=1 \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
 else
-    SKIP_STUDIO_BASE="$_SKIP_BASE" \
+    SKIP_STUDIO_BASE=1 \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
