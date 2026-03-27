@@ -238,9 +238,11 @@ export function useChatModelRuntime() {
 
         // Restore reasoning/tools support flags and context length
         const supportsReasoning = statusRes.supports_reasoning ?? false;
+        const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         useChatRuntimeStore.setState({
           supportsReasoning,
+          reasoningAlwaysOn,
           supportsTools,
           ggufContextLength: statusRes.is_gguf ? (statusRes.context_length ?? null) : null,
         });
@@ -354,12 +356,13 @@ export function useChatModelRuntime() {
             useChatRuntimeStore.getState().params.checkpoint;
           const paramsBeforeLoad = useChatRuntimeStore.getState().params;
           const maxSeqLength = paramsBeforeLoad.maxSeqLength;
+          const hfToken = useChatRuntimeStore.getState().hfToken || null;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
             await validateModel({
               model_path: modelId,
-              hf_token: null,
+              hf_token: hfToken,
               max_seq_length: maxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
@@ -371,11 +374,16 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype } = useChatRuntimeStore.getState();
+            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength } = useChatRuntimeStore.getState();
+            // GGUF: use custom context length, or 0 = model's native context
+            // Non-GGUF: use the Max Seq Length slider value
+            const effectiveMaxSeqLength = customContextLength != null
+              ? customContextLength
+              : ggufVariant != null ? (ggufContextLength ?? 0) : maxSeqLength;
             const loadResponse = await loadModel({
               model_path: modelId,
-              hf_token: null,
-              max_seq_length: maxSeqLength,
+              hf_token: hfToken,
+              max_seq_length: effectiveMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -403,15 +411,29 @@ export function useChatModelRuntime() {
                 }
               }
             }
+            const loadedKv = loadResponse.cache_type_kv ?? null;
+            const nativeCtx = loadResponse.is_gguf
+              ? (loadResponse.context_length ?? 131072)
+              : null;
+            // Keep customContextLength if the user set one and it differs
+            // from the model's native context; otherwise clear it so the
+            // display shows the native value without a dirty marker.
+            const keepCustomCtx = customContextLength != null
+              && customContextLength !== nativeCtx
+              ? customContextLength
+              : null;
+            const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             useChatRuntimeStore.setState({
-              ggufContextLength: loadResponse.is_gguf
-                ? (loadResponse.context_length ?? 131072)
-                : null,
+              ggufContextLength: nativeCtx,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
-              reasoningEnabled: reasoningDefault,
+              reasoningAlwaysOn,
+              reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
               supportsTools: loadResponse.supports_tools ?? false,
-              toolsEnabled: false,
-              kvCacheDtype: loadResponse.cache_type_kv ?? null,
+              toolsEnabled: loadResponse.supports_tools ?? false,
+              codeToolsEnabled: loadResponse.supports_tools ?? false,
+              kvCacheDtype: loadedKv,
+              loadedKvCacheDtype: loadedKv,
+              customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
             });
@@ -432,7 +454,7 @@ export function useChatModelRuntime() {
               try {
                 await loadModel({
                   model_path: previousCheckpoint,
-                  hf_token: null,
+                  hf_token: hfToken,
                   max_seq_length: maxSeqLength,
                   load_in_4bit: true,
                   is_lora: previousIsLora,

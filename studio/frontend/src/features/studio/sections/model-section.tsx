@@ -72,6 +72,13 @@ const DARK_CONTENT =
 const DARK_COMBOBOX_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
 
+/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
+function extractParamLabel(id: string): string | null {
+  const name = id.split("/").pop() ?? id;
+  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  return match ? `${match[1]}B` : null;
+}
+
 export function ModelSection() {
   const gpu = useGpuInfo();
 
@@ -181,6 +188,7 @@ export function ModelSection() {
   const trainableLocalModels = useMemo(
     () =>
       localModels.filter((m) => {
+        if (m.source === "lmstudio") return false;
         if (m.path.endsWith(".gguf")) return false;
         if (m.id.toLowerCase().includes("-gguf")) return false;
         return true;
@@ -232,7 +240,7 @@ export function ModelSection() {
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of hfResults) {
-      const detail = r.totalParams ? formatCompact(r.totalParams) : null;
+      const detail = r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id);
       const fit = fitMap.get(r.id);
       map.set(r.id, {
         est: fit?.est ?? 0,
@@ -251,7 +259,7 @@ export function ModelSection() {
   );
 
   return (
-    <div data-tour="studio-model" className="col-span-1 md:col-span-2 xl:col-span-12">
+    <div data-tour="studio-model" className="w-full min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
         title="Model"
@@ -259,10 +267,10 @@ export function ModelSection() {
         accent="emerald"
         featured={true}
         badge="2x Faster Training"
-        className="shadow-border ring-1 ring-border"
+        className="shadow-border ring-border"
       >
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div data-tour="studio-local-model" className="flex flex-col gap-2">
+        <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div data-tour="studio-local-model" className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Local Model
             <Tooltip>
@@ -282,7 +290,7 @@ export function ModelSection() {
               </TooltipContent>
             </Tooltip>
           </span>
-          <div ref={localComboboxAnchorRef}>
+          <div ref={localComboboxAnchorRef} className="min-w-0">
             <Combobox
               items={localResultIds}
               filteredItems={localFilteredIds}
@@ -334,7 +342,11 @@ export function ModelSection() {
                   {(id: string) => {
                     const model = localMetaById.get(id);
                     const source =
-                      model?.source === "hf_cache" ? "HF cache" : "Local dir";
+                      model?.source === "hf_cache"
+                        ? "HF cache"
+                        : model?.source === "lmstudio"
+                          ? "LM Studio"
+                          : "Local dir";
                     return (
                       <ComboboxItem key={id} value={id} className="gap-2">
                         <Tooltip>
@@ -370,7 +382,7 @@ export function ModelSection() {
           )}
         </div>
 
-          <div data-tour="studio-base-model" className="flex flex-col gap-2">
+          <div data-tour="studio-base-model" className="flex min-w-0 flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Hugging Face Model
             <Tooltip>
@@ -400,6 +412,7 @@ export function ModelSection() {
           </span>
           <div
             ref={comboboxAnchorRef}
+            className="min-w-0"
             onKeyDown={(event) => {
               if (event.key !== "Enter") return;
               if (!(event.target instanceof HTMLInputElement)) return;
@@ -422,7 +435,10 @@ export function ModelSection() {
               itemToStringValue={(id) => id}
               autoHighlight={true}
             >
-              <ComboboxInput placeholder="Search models..." className="w-full">
+              <ComboboxInput
+                placeholder="Search models..."
+                className="w-full leading-5"
+              >
                 <InputGroupAddon>
                   <HugeiconsIcon icon={Search01Icon} className="size-4" />
                 </InputGroupAddon>
@@ -508,7 +524,7 @@ export function ModelSection() {
           </div>
         </div>
 
-          <div data-tour="studio-method" className="flex flex-col gap-2">
+          <div data-tour="studio-method" className="flex min-w-0 flex-col gap-2">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             Method
             <Tooltip>
@@ -576,7 +592,7 @@ export function ModelSection() {
           </Select>
         </div>
 
-        <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="text-xs font-medium text-muted-foreground">
             Hugging Face Token (Optional)
           </span>

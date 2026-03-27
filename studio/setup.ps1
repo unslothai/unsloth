@@ -10,12 +10,27 @@
     full setup including frontend build.
     Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
-    Usage: powershell -ExecutionPolicy Bypass -File setup.ps1
+    Default output is minimal (step/substep), aligned with studio/setup.sh.
+
+    FULL / LEGACY LOGGING (defensible audit trail, multi-line [OK]/[WARN]/paths):
+      unsloth studio setup --verbose
+      (sets UNSLOTH_VERBOSE=1; same as install_python_stack.py)
+      Or:  $env:UNSLOTH_VERBOSE='1'; powershell -File .\studio\setup.ps1
+      Or:  .\setup.ps1 --verbose
 #>
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
+
+# Same as: unsloth studio setup --verbose  (see unsloth_cli/commands/studio.py)
+foreach ($a in $args) {
+    if ($a -eq '--verbose' -or $a -eq '-v') {
+        $env:UNSLOTH_VERBOSE = '1'
+        break
+    }
+}
+$script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
@@ -248,11 +263,138 @@ function Find-VsBuildTools {
 }
 
 # ─────────────────────────────────────────────
+# Output style (aligned with studio/setup.sh: step / substep)
+# ─────────────────────────────────────────────
+$Rule = [string]::new([char]0x2500, 52)
+
+function Enable-StudioVirtualTerminal {
+    if ($env:NO_COLOR) { return $false }
+    try {
+        Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@ -ErrorAction Stop
+        $h = [StudioVT.Native]::GetStdHandle(-11)
+        [uint32]$mode = 0
+        if (-not [StudioVT.Native]::GetConsoleMode($h, [ref]$mode)) { return $false }
+        $mode = $mode -bor 0x0004
+        return [StudioVT.Native]::SetConsoleMode($h, $mode)
+    } catch {
+        return $false
+    }
+}
+$script:StudioVtOk = Enable-StudioVirtualTerminal
+
+function Get-StudioAnsi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Title', 'Dim', 'Ok', 'Warn', 'Err', 'Reset')]
+        [string]$Kind
+    )
+    $e = [char]27
+    switch ($Kind) {
+        'Title' { return "${e}[38;5;150m" }
+        'Dim'   { return "${e}[38;5;245m" }
+        'Ok'    { return "${e}[38;5;108m" }
+        'Warn'  { return "${e}[38;5;136m" }
+        'Err'   { return "${e}[91m" }
+        'Reset' { return "${e}[0m" }
+    }
+}
+
+function Write-SetupVerboseDetail {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Color = "Gray"
+    )
+    if (-not $script:UnslothVerbose) { return }
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $ansi = switch ($Color) {
+            'Green' { (Get-StudioAnsi Ok) }
+            'Gray' { (Get-StudioAnsi Dim) }
+            'DarkGray' { (Get-StudioAnsi Dim) }
+            'Yellow' { (Get-StudioAnsi Warn) }
+            'Cyan' { (Get-StudioAnsi Title) }
+            'Red' { (Get-StudioAnsi Err) }
+            default { (Get-StudioAnsi Dim) }
+        }
+        Write-Host ($ansi + $Message + (Get-StudioAnsi Reset))
+    } else {
+        $fc = switch ($Color) {
+            'Green' { 'DarkGreen' }
+            'Gray' { 'DarkGray' }
+            'Cyan' { 'Green' }
+            default { $Color }
+        }
+        Write-Host $Message -ForegroundColor $fc
+    }
+}
+
+function step {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [string]$Color = "Green"
+    )
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $dim = Get-StudioAnsi Dim
+        $rst = Get-StudioAnsi Reset
+        $val = switch ($Color) {
+            'Green' { Get-StudioAnsi Ok }
+            'Yellow' { Get-StudioAnsi Warn }
+            'Red' { Get-StudioAnsi Err }
+            'DarkGray' { Get-StudioAnsi Dim }
+            default { Get-StudioAnsi Ok }
+        }
+        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+        Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
+    } else {
+        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+        Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
+        $fc = switch ($Color) {
+            'Green' { 'DarkGreen' }
+            'Yellow' { 'Yellow' }
+            'Red' { 'Red' }
+            'DarkGray' { 'DarkGray' }
+            default { 'DarkGreen' }
+        }
+        Write-Host $Value -ForegroundColor $fc
+    }
+}
+
+function substep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Color = "DarkGray"
+    )
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $msgCol = switch ($Color) {
+            'Yellow' { (Get-StudioAnsi Warn) }
+            default { (Get-StudioAnsi Dim) }
+        }
+        $pad = "".PadRight(15)
+        Write-Host ("  {0}{1}{2}{3}" -f $msgCol, $pad, $Message, (Get-StudioAnsi Reset))
+    } else {
+        $fc = switch ($Color) {
+            'Yellow' { 'Yellow' }
+            default { 'DarkGray' }
+        }
+        Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
+    }
+}
+
+# ─────────────────────────────────────────────
 # Banner
 # ─────────────────────────────────────────────
-Write-Host "+==============================================+" -ForegroundColor Green
-Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
-Write-Host "+==============================================+" -ForegroundColor Green
+Write-Host ""
+if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+    Write-Host ("  " + (Get-StudioAnsi Title) + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup" + (Get-StudioAnsi Reset))
+    Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+} else {
+    Write-Host ("  " + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup") -ForegroundColor Green
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+}
 
 # ==========================================================================
 #  PHASE 1: System-level prerequisites (winget installs, env vars)
@@ -297,12 +439,12 @@ if (-not $HasNvidiaSmi) {
 }
 if (-not $HasNvidiaSmi) {
     Write-Host ""
-    Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
+    step "gpu" "none (chat-only / GGUF)" "Yellow"
     Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
     Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     Write-Host ""
 } else {
-    Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
+    step "gpu" "NVIDIA GPU detected"
 }
 
 # ============================================
@@ -358,9 +500,9 @@ if (-not $HasGit) {
         Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
         exit 1
     }
-    Write-Host "[OK] Git installed: $(git --version)" -ForegroundColor Green
+    step "git" "$(git --version)"
 } else {
-    Write-Host "[OK] Git found: $(git --version)" -ForegroundColor Green
+    step "git" "$(git --version)"
 }
 
 # ============================================
@@ -402,14 +544,14 @@ if (-not $HasCmake) {
         }
     }
     if ($HasCmake) {
-        Write-Host "[OK] CMake installed" -ForegroundColor Green
+        step "cmake" "installed"
     } else {
         Write-Host "[ERROR] CMake is required but could not be installed." -ForegroundColor Red
         Write-Host "        Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
         exit 1
     }
 } else {
-    Write-Host "[OK] CMake found: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
+    step "cmake" "$(cmake --version | Select-Object -First 1)"
 }
 
 # ============================================
@@ -436,7 +578,7 @@ if (-not $vsResult) {
 if ($vsResult) {
     $CmakeGenerator = $vsResult.Generator
     $VsInstallPath = $vsResult.InstallPath
-    Write-Host "[OK] $CmakeGenerator detected via $($vsResult.Source)" -ForegroundColor Green
+    step "vs" "$CmakeGenerator ($($vsResult.Source))"
     if ($vsResult.ClExe) { Write-Host "   cl.exe: $($vsResult.ClExe)" -ForegroundColor Gray }
 } else {
     Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
@@ -497,7 +639,6 @@ if ($DriverMaxCuda) {
             $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
             if ($isCompat) {
                 # Also verify the toolkit supports our GPU architecture
-                Write-Host "   [DEBUG] Checking CUDA compatibility: toolkit=$tkMaj.$tkMin arch=sm_$CudaArch" -ForegroundColor Magenta
                 $archOk = $true
                 if ($CudaArch) {
                     $archOk = Test-NvccArchSupport -NvccExe $candidateNvcc -Arch $CudaArch
@@ -708,7 +849,7 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
     }
 }
 
-Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
+step "cuda" $NvccPath
 Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
 Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 
@@ -725,19 +866,25 @@ if (-not $CudaArch) {
 # 1f. Node.js / npm (skip if pip-installed -- only needed for frontend build)
 # ============================================
 if ($IsPipInstall) {
-    Write-Host "[OK] Running from pip install - frontend already bundled, skipping Node/npm check" -ForegroundColor Green
+    step "frontend" "bundled (pip install)"
 } else {
     # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-    # Node >= 20, npm >= 11.
+    # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
     $NeedNode = $true
     try {
         $NodeVersion = (node -v 2>$null)
         $NpmVersion = (npm -v 2>$null)
         if ($NodeVersion -and $NpmVersion) {
-            $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
+            $NodeParts = ($NodeVersion -replace 'v','').Split('.')
+            $NodeMajor = [int]$NodeParts[0]
+            $NodeMinor = [int]$NodeParts[1]
             $NpmMajor = [int]$NpmVersion.Split('.')[0]
 
-            if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
+            # Vite 8: ^20.19.0 || >=22.12.0
+            $NodeOk = ($NodeMajor -eq 20 -and $NodeMinor -ge 19) -or
+                      ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or
+                      ($NodeMajor -ge 23)
+            if ($NodeOk -and $NpmMajor -ge 11) {
                 Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
                 $NeedNode = $false
             } else {
@@ -760,7 +907,25 @@ if ($IsPipInstall) {
         }
     }
 
-    Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
+    step "node" "$(node -v) | npm $(npm -v)"
+
+    # ── bun (optional, faster package installs) ──
+    # Installed via npm — Node is already guaranteed above. Works on all platforms.
+    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        Write-Host "   Installing bun (faster frontend package installs)..." -ForegroundColor DarkGray
+        $prevEAP_bun = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        npm install -g bun 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP_bun
+        Refresh-Environment
+        if (Get-Command bun -ErrorAction SilentlyContinue) {
+            Write-Host "[OK] bun installed ($(bun --version))" -ForegroundColor Green
+        } else {
+            Write-Host "[OK] bun install skipped (npm will be used instead)" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "[OK] bun already installed ($(bun --version))" -ForegroundColor Green
+    }
 }
 
 # ============================================
@@ -796,7 +961,7 @@ if ($HasPython) {
         Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
         exit 1
     }
-    Write-Host "[OK] Python $(python --version)" -ForegroundColor Green
+    step "python" "$(python --version 2>&1)"
     $PythonOk = $true
 }
 
@@ -831,7 +996,7 @@ $DistDir = Join-Path $FrontendDir "dist"
 $NeedFrontendBuild = $true
 if ($IsPipInstall) {
     $NeedFrontendBuild = $false
-    Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
+    step "frontend" "bundled (pip install)"
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null
@@ -844,15 +1009,15 @@ if ($IsPipInstall) {
             if ($NewerFile) { break }
         }
     }
-    # Also check all top-level files (package.json, bun.lock, vite.config.ts, index.html, etc.)
+    # Also check all top-level files (package.json, vite.config.ts, index.html, etc.)
     if (-not $NewerFile) {
         $NewerFile = Get-ChildItem -Path $FrontendDir -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -gt $DistTime } |
+            Where-Object { $_.Name -ne "bun.lock" -and $_.LastWriteTime -gt $DistTime } |
             Select-Object -First 1
     }
     if (-not $NewerFile) {
         $NeedFrontendBuild = $false
-        Write-Host "[OK] Frontend already built and up to date -- skipping build" -ForegroundColor Green
+        step "frontend" "up to date"
     } else {
         Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
     }
@@ -882,26 +1047,73 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $WalkDir = Split-Path $WalkDir -Parent
     }
 
-    # npm writes warnings to stderr; lower ErrorActionPreference so PS doesn't
-    # treat them as terminating errors (same pattern as the pip section below).
+    # Use bun if available (faster install), fall back to npm.
+    # Bun is used only as package manager; Node runs the actual build (Vite 8).
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
-    npm install 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        $ErrorActionPreference = $prevEAP_npm
-        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-Host "[ERROR] npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-        Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
-        exit 1
+
+    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+
+    # bun's package cache can become corrupt -- packages get stored with only
+    # metadata but no actual content (bin/, lib/). When this happens bun install
+    # exits 0 but leaves binaries missing. We validate after install and clear
+    # the cache + retry once before falling back to npm.
+    if ($UseBun) {
+        Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
+        & bun install *> $null
+        $bunExit = $LASTEXITCODE
+        # On Windows, .bin/ entries can be tsc, tsc.cmd, or tsc.ps1
+        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
+        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
+        if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
+            # bun install succeeded and critical binaries are present
+        } elseif ($bunExit -eq 0) {
+            Write-Host "   bun install exited 0 but critical binaries are missing, clearing cache and retrying..." -ForegroundColor Yellow
+            if (Test-Path "node_modules") {
+                Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            & bun pm cache rm *> $null
+            & bun install *> $null
+            $bunExit = $LASTEXITCODE
+            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
+            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
+            if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
+                Write-Host "   bun retry failed, falling back to npm" -ForegroundColor Yellow
+                if (Test-Path "node_modules") {
+                    Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                $UseBun = $false
+            }
+        } else {
+            Write-Host "   [WARN] bun install failed (exit $bunExit), falling back to npm" -ForegroundColor Yellow
+            if (Test-Path "node_modules") {
+                Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $UseBun = $false
+        }
     }
-    npm run build 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $UseBun) {
+        & npm install *> $null
+        $npmExit = $LASTEXITCODE
+        if ($npmExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_npm
+            foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
+            Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
+            Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            exit 1
+        }
+    }
+
+    # Always use npm to run the build (Node runtime — avoids bun Windows runtime issues)
+    & npm run build *> $null
+    $buildExit = $LASTEXITCODE
+    if ($buildExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
         foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-Host "[ERROR] npm run build failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
         exit 1
     }
     Pop-Location
@@ -916,10 +1128,9 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
     $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
     if ($MaxCssSize -lt 100000) {
-        Write-Host "[WARN] Largest CSS file is only $([math]::Round($MaxCssSize / 1024))KB -- Tailwind may not have scanned all source files." -ForegroundColor Yellow
-        Write-Host "       Expected >100KB. Check for .gitignore files blocking the Tailwind oxide scanner." -ForegroundColor Yellow
+        step "frontend" "built (warning: CSS may be truncated)" "Yellow"
     } else {
-        Write-Host "[OK] Frontend built to frontend/dist (CSS: $([math]::Round($MaxCssSize / 1024))KB)" -ForegroundColor Green
+        step "frontend" "built"
     }
 }
 
@@ -1030,9 +1241,9 @@ if (-not $PythonCmd) {
 
 Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
-# Always create a .venv for isolation -- even for pip installs.
-# Created in the repo root (parent of studio/).
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv"
+# The venv must already exist (created by install.ps1).
+# This script (setup.ps1 / "unsloth studio update") only updates packages.
+$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, wipe it so we get a clean install.
@@ -1095,8 +1306,10 @@ if (Test-Path $VenvDir -PathType Container) {
 }
 
 if (-not (Test-Path $VenvDir)) {
-    Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
-    & $PythonCmd -m venv $VenvDir
+    Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
+    Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
+    Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    exit 1
 } else {
     Write-Host "   Reusing existing virtual environment at $VenvDir" -ForegroundColor Green
 }
@@ -1241,7 +1454,97 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "[WARN] Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" -ForegroundColor Yellow
 }
 $ErrorActionPreference = $prevEAP_t5
-Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor Green
+step "transformers" "5.x pre-installed"
+
+# ==========================================================================
+#  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
+# ==========================================================================
+$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
+$LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
+$NeedLlamaSourceBuild = $false
+$SkipPrebuiltInstall = $false
+$RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { "latest" }
+$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
+$resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-install-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>&1
+$resolveExit = $LASTEXITCODE
+$ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 1).ToString().Trim() } else { "" }
+if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
+    Write-Host ""
+    Write-Host "[WARN] Failed to resolve an installable prebuilt llama.cpp tag via $HelperReleaseRepo" -ForegroundColor Yellow
+    if ($resolveOutput) {
+        $resolveOutput | ForEach-Object { Write-Host $_ }
+    }
+    # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
+    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
+    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
+    $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
+    $fallbackExit = $LASTEXITCODE
+    $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
+        ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
+    } elseif ($RequestedLlamaTag -eq "latest") {
+        # Try Unsloth release repo first, then fall back to ggml-org upstream
+        $resolvedLatest = $null
+        try {
+            $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$HelperReleaseRepo/releases/latest" -ErrorAction Stop
+            $resolvedLatest = $latestRelease.tag_name
+        } catch {}
+        if (-not $resolvedLatest) {
+            try {
+                $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -ErrorAction Stop
+                $resolvedLatest = $latestRelease.tag_name
+            } catch {}
+        }
+        if ($resolvedLatest) { $resolvedLatest } else { $RequestedLlamaTag }
+    } else {
+        $RequestedLlamaTag
+    }
+    $NeedLlamaSourceBuild = $true
+    $SkipPrebuiltInstall = $true
+}
+
+Write-Host ""
+Write-Host "Resolved llama.cpp release tag: $ResolvedLlamaTag" -ForegroundColor Gray
+
+if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+    Write-Host ""
+    Write-Host "[WARN] UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" -ForegroundColor Yellow
+    $NeedLlamaSourceBuild = $true
+} else {
+    Write-Host ""
+    Write-Host "Installing prebuilt llama.cpp bundle (preferred path)..." -ForegroundColor Cyan
+    if (Test-Path $LlamaCppDir) {
+        Write-Host "Existing llama.cpp install detected -- validating staged prebuilt update before replacement" -ForegroundColor Gray
+    }
+    if ($SkipPrebuiltInstall) {
+        Write-Host "[WARN] Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build" -ForegroundColor Yellow
+    } else {
+        $prebuiltArgs = @(
+            "$PSScriptRoot\install_llama_prebuilt.py",
+            "--install-dir", $LlamaCppDir,
+            "--llama-tag", $ResolvedLlamaTag,
+            "--published-repo", $HelperReleaseRepo
+        )
+        if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
+            $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
+        }
+        $prevEAPPrebuilt = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & python @prebuiltArgs
+        $prebuiltExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAPPrebuilt
+
+        if ($prebuiltExit -eq 0) {
+            step "llama.cpp" "prebuilt installed and validated"
+        } else {
+            if (Test-Path $LlamaCppDir) {
+                Write-Host "[WARN] Prebuilt update failed; existing install was restored or cleaned before source build fallback" -ForegroundColor Yellow
+            }
+            Write-Host "[WARN] Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" -ForegroundColor Yellow
+            $NeedLlamaSourceBuild = $true
+        }
+    }
+}
 
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
@@ -1250,42 +1553,46 @@ Write-Host "[OK] Transformers 5.x pre-installed to .venv_t5/" -ForegroundColor G
 # ShiningLight.OpenSSL.Dev includes headers + libs that cmake can find.
 $OpenSslAvailable = $false
 
-# Check if OpenSSL dev is already installed (look for include dir)
-$OpenSslRoots = @(
-    'C:\Program Files\OpenSSL-Win64',
-    'C:\Program Files\OpenSSL',
-    'C:\OpenSSL-Win64'
-)
-$OpenSslRoot = $null
-foreach ($root in $OpenSslRoots) {
-    if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
-        $OpenSslRoot = $root
-        break
-    }
-}
-
-if ($OpenSslRoot) {
-    $OpenSslAvailable = $true
-    Write-Host "[OK] OpenSSL dev found at $OpenSslRoot" -ForegroundColor Green
-} else {
-    Write-Host "" 
-    Write-Host "Installing OpenSSL dev (for HTTPS in llama-server)..." -ForegroundColor Cyan
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
-        # Re-check after install
-        foreach ($root in $OpenSslRoots) {
-            if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
-                $OpenSslRoot = $root
-                $OpenSslAvailable = $true
-                Write-Host "[OK] OpenSSL dev installed at $OpenSslRoot" -ForegroundColor Green
-                break
-            }
+if ($NeedLlamaSourceBuild) {
+    # Check if OpenSSL dev is already installed (look for include dir)
+    $OpenSslRoots = @(
+        'C:\Program Files\OpenSSL-Win64',
+        'C:\Program Files\OpenSSL',
+        'C:\OpenSSL-Win64'
+    )
+    $OpenSslRoot = $null
+    foreach ($root in $OpenSslRoots) {
+        if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
+            $OpenSslRoot = $root
+            break
         }
     }
-    if (-not $OpenSslAvailable) {
-        Write-Host "[WARN] OpenSSL dev not available -- llama-server will be built without HTTPS" -ForegroundColor Yellow
+
+    if ($OpenSslRoot) {
+        $OpenSslAvailable = $true
+        Write-Host "[OK] OpenSSL dev found at $OpenSslRoot" -ForegroundColor Green
+    } else {
+        Write-Host "" 
+        Write-Host "Installing OpenSSL dev (for HTTPS in llama-server)..." -ForegroundColor Cyan
+        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        if ($HasWinget) {
+            winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
+            # Re-check after install
+            foreach ($root in $OpenSslRoots) {
+                if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
+                    $OpenSslRoot = $root
+                    $OpenSslAvailable = $true
+                    Write-Host "[OK] OpenSSL dev installed at $OpenSslRoot" -ForegroundColor Green
+                    break
+                }
+            }
+        }
+        if (-not $OpenSslAvailable) {
+            Write-Host "[WARN] OpenSSL dev not available -- llama-server will be built without HTTPS" -ForegroundColor Yellow
+        }
     }
+} else {
+    Write-Host "[SKIP] OpenSSL dev install -- prebuilt llama.cpp already validated" -ForegroundColor Yellow
 }
 
 # ==========================================================================
@@ -1298,9 +1605,7 @@ if ($OpenSslRoot) {
 #   - llama-server:   for GGUF model inference (with HTTPS if OpenSSL available)
 #   - llama-quantize: for GGUF export quantization
 # Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
-$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
-if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
-$LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
+$OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
@@ -1323,9 +1628,12 @@ if (Test-Path $LlamaServerBin) {
     }
 }
 
-if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
+if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
-    Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
+    step "llama.cpp" "prebuilt (validated)"
+} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
+    Write-Host ""
+    step "llama.cpp" "already built"
 } elseif (-not $HasCmakeForBuild) {
     Write-Host ""
     if (-not $HasNvidiaSmi) {
@@ -1379,29 +1687,49 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
 
     # -- Step A: Clone or pull llama.cpp --
 
+    $UseConcreteRef = ($ResolvedLlamaTag -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedLlamaTag))
+
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
-        Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
-        git -C $LlamaCppDir pull 2>&1 | Out-Null
+        Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
+        if ($UseConcreteRef) {
+            git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag 2>&1 | Out-Null
+        } else {
+            git -C $LlamaCppDir fetch --depth 1 origin 2>&1 | Out-Null
+        }
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "   [WARN] git pull failed -- using existing source" -ForegroundColor Yellow
+            Write-Host "   [WARN] git fetch failed -- using existing source" -ForegroundColor Yellow
+        } else {
+            git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $BuildOk = $false
+                $FailedStep = "git checkout"
+            } else {
+                git -C $LlamaCppDir clean -fdx 2>&1 | Out-Null
+            }
         }
     } else {
-        Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
-        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
-        git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
+        Write-Host "   Cloning llama.cpp @ $ResolvedLlamaTag..." -ForegroundColor Gray
+        $buildTmp = "$LlamaCppDir.build.$PID"
+        if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+        $cloneArgs = @("clone", "--depth", "1")
+        if ($UseConcreteRef) {
+            $cloneArgs += @("--branch", $ResolvedLlamaTag)
+        }
+        $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $buildTmp)
+        git @cloneArgs 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"
+            if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+        }
+        # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
+        if ($BuildOk) {
+            $LlamaCppDir = $buildTmp
+            $BuildDir = Join-Path $LlamaCppDir "build"
         }
     }
 
     # -- Step B: cmake configure --
-    # Clean stale CMake cache to prevent previous CUDA settings from leaking
-    # into a CPU-only rebuild (or vice versa).
-    $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path $CmakeCacheFile) {
-        Remove-Item -Recurse -Force $BuildDir
-    }
 
     if ($BuildOk) {
         Write-Host ""
@@ -1502,6 +1830,21 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
         }
     }
 
+    # Swap temp build dir into final location (only if we built in a temp dir)
+    if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
+        if (Test-Path $OriginalLlamaCppDir) { Remove-Item -Recurse -Force $OriginalLlamaCppDir }
+        Move-Item $LlamaCppDir $OriginalLlamaCppDir
+        $LlamaCppDir = $OriginalLlamaCppDir
+        $BuildDir = Join-Path $LlamaCppDir "build"
+        $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
+    } elseif (-not $BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
+        # Build failed -- clean up temp dir, preserve existing install
+        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+        $LlamaCppDir = $OriginalLlamaCppDir
+        $BuildDir = Join-Path $LlamaCppDir "build"
+        $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
+    }
+
     # Restore ErrorActionPreference
     $ErrorActionPreference = $prevEAP
 
@@ -1511,36 +1854,37 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
     $totalSec = [math]::Round($totalSw.Elapsed.TotalSeconds % 60, 1)
 
     # -- Summary --
-    Write-Host ""
     if ($BuildOk -and (Test-Path $LlamaServerBin)) {
-        Write-Host "[OK] llama-server built at $LlamaServerBin" -ForegroundColor Green
+        step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
         if (Test-Path $QuantizeBin) {
-            Write-Host "[OK] llama-quantize available for GGUF export" -ForegroundColor Green
+            step "llama-quantize" "built"
         }
-        Write-Host "   Build time: ${totalMin}m ${totalSec}s" -ForegroundColor Cyan
+        step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
-        # Check alternate paths (some cmake generators don't use Release subdir)
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
         if ($BuildOk -and (Test-Path $altBin)) {
-            Write-Host "[OK] llama-server built at $altBin" -ForegroundColor Green
-            Write-Host "   Build time: ${totalMin}m ${totalSec}s" -ForegroundColor Cyan
+            step "llama.cpp" "built"
+            step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
-            Write-Host "[FAILED] llama.cpp build failed at step: $FailedStep (${totalMin}m ${totalSec}s)" -ForegroundColor Red
-            Write-Host "         To retry: delete $LlamaCppDir and re-run setup." -ForegroundColor Yellow
+            step "llama.cpp" "build failed at: $FailedStep (${totalMin}m ${totalSec}s)" "Red"
+            substep "To retry: delete $LlamaCppDir and re-run setup." "Yellow"
             exit 1
         }
     }
 }
 
-# ============================================
-# Done
-# ============================================
+# ─────────────────────────────────────────────
+# Footer
+# ─────────────────────────────────────────────
+if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+    Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+    Write-Host ("  " + (Get-StudioAnsi Title) + "Unsloth Studio Installed" + (Get-StudioAnsi Reset))
+    Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+} else {
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+    Write-Host "  Unsloth Studio Installed" -ForegroundColor Green
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+}
+step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
 Write-Host ""
-Write-Host "+===============================================+" -ForegroundColor Green
-Write-Host "|           Setup Complete!                     |" -ForegroundColor Green
-Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "|  Launch with:                                 |" -ForegroundColor Green
-Write-Host "|    unsloth studio -H 0.0.0.0 -p 8888          |" -ForegroundColor Green
-Write-Host "|                                               |" -ForegroundColor Green
-Write-Host "+===============================================+" -ForegroundColor Green

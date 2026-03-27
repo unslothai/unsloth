@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -82,19 +83,75 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+def legacy_hf_cache_dir() -> Path:
+    """Old Unsloth-specific HF hub cache, kept for backward-compat scanning."""
+    return cache_root() / "huggingface" / "hub"
+
+
+def hf_default_cache_dir() -> Path:
+    """Return the platform default HuggingFace hub cache (ignoring env overrides).
+
+    This is the location HF uses when no ``HF_HUB_CACHE`` / ``HF_HOME``
+    env var is set.  We scan it so that models a user downloaded *before*
+    installing Unsloth Studio are still discovered.
+    """
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def lmstudio_model_dirs() -> list[Path]:
+    """Return LM Studio model directories that exist on disk."""
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(p: Path) -> None:
+        resolved = p.resolve()
+        if resolved not in seen and p.is_dir():
+            seen.add(resolved)
+            dirs.append(p)
+
+    # 1. Check LM Studio settings.json for custom downloads folder
+    settings_path = Path.home() / ".lmstudio" / "settings.json"
+    if settings_path.is_file():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            downloads = settings.get("downloadsFolder", "")
+            if downloads:
+                _add(Path(downloads).expanduser())
+        except Exception:
+            pass
+
+    # 2. LM Studio current default models directory (all platforms)
+    _add(Path.home() / ".lmstudio" / "models")
+
+    # 3. Legacy LM Studio cache location
+    _add(Path.home() / ".cache" / "lm-studio" / "models")
+
+    return dirs
+
+
 def _setup_cache_env() -> None:
     """Set cache environment variables for HuggingFace, uv, and vLLM.
+
+    Respects the standard HF cache resolution chain: explicit ``HF_HOME``
+    / ``HF_HUB_CACHE`` env vars take priority, then ``XDG_CACHE_HOME``,
+    then the platform default (``~/.cache/huggingface``).  The legacy
+    Unsloth cache is still *scanned* for models but is never set as the
+    active download target.
 
     Only sets variables that are not already set by the user, so
     explicit overrides (e.g. HF_HOME=/data/hf) are respected.
     Works on Linux, macOS, and Windows.
     """
     root = cache_root()
-    hf_dir = root / "huggingface"
-    defaults = {
-        "HF_HOME": str(hf_dir),
-        "HF_HUB_CACHE": str(hf_dir / "hub"),
-        "HF_XET_CACHE": str(hf_dir / "xet"),
+    xdg_cache = Path(
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+    ).expanduser()
+    hf_default = xdg_cache / "huggingface"
+    defaults: dict[str, str] = {
+        "HF_HOME": str(hf_default),
+        "HF_HUB_CACHE": str(hf_default / "hub"),
+        "HF_XET_CACHE": str(hf_default / "xet"),
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }

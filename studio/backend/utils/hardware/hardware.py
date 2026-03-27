@@ -551,6 +551,51 @@ def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
     return int(total_elements * 2)
 
 
+def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
+    if config is None:
+        return None
+
+    previous_unsloth_present = os.environ.get("UNSLOTH_IS_PRESENT")
+    os.environ["UNSLOTH_IS_PRESENT"] = "1"
+    try:
+        from unsloth_zoo import vllm_utils as _vllm_utils
+
+        synthetic_total_bytes = 1024 * (1024**3)
+        original_get_mem_info = _vllm_utils.get_mem_info
+        try:
+            _vllm_utils.get_mem_info = lambda: (
+                synthetic_total_bytes,
+                synthetic_total_bytes,
+            )
+            _, _, _, memory_left_for_kv_cache_gb = (
+                _vllm_utils.approximate_vllm_memory_usage(
+                    config,
+                    load_in_4bit = False,
+                    load_in_8bit = False,
+                    max_seq_length = 1,
+                    gpu_memory_utilization = 1.0,
+                    enable_lora = False,
+                    account_for_gradients = False,
+                    cuda_graph_overhead = False,
+                )
+            )
+        finally:
+            _vllm_utils.get_mem_info = original_get_mem_info
+    except Exception as e:
+        logger.debug("Could not estimate model size via vllm_utils: %s", e)
+        return None
+    finally:
+        if previous_unsloth_present is None:
+            os.environ.pop("UNSLOTH_IS_PRESENT", None)
+        else:
+            os.environ["UNSLOTH_IS_PRESENT"] = previous_unsloth_present
+
+    model_size_gb = 1024.0 - memory_left_for_kv_cache_gb
+    if model_size_gb <= 0:
+        return None
+    return int(round(model_size_gb * (1024**3)))
+
+
 def estimate_fp16_model_size_bytes(
     model_name: str, hf_token: Optional[str] = None
 ) -> tuple[Optional[int], str]:
@@ -576,6 +621,10 @@ def estimate_fp16_model_size_bytes(
     if local_bytes is not None:
         return local_bytes, "weight_bytes"
 
+    vllm_bytes = _estimate_fp16_model_size_bytes_from_vllm_utils(config)
+    if vllm_bytes is not None:
+        return vllm_bytes, "vllm_utils"
+
     return None, "unavailable"
 
 
@@ -600,27 +649,19 @@ def estimate_required_model_memory_gb(
     model_size_gb = model_size_bytes / (1024**3)
     metadata["model_size_gb"] = round(model_size_gb, 3)
     min_buffer_gb = 2.0
-    min_4bit_total_gb = 3.0
 
     if training_type is None:
-        if load_in_4bit:
-            required_gb = max((model_size_gb / 3.5) * 1.3, min_4bit_total_gb)
-        else:
-            required_gb = model_size_gb * 1.3 + min_buffer_gb
+        required_gb = model_size_gb * 1.3
     elif training_type == "Full Finetuning":
         required_gb = model_size_gb * 6.0
     elif load_in_4bit:
         base_4bit_gb = model_size_gb / 4.0
-        required_gb = max(
-            base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb),
-            min_4bit_total_gb,
-        )
+        required_gb = base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb)
     else:
-        required_gb = model_size_gb * 1.5 + min_buffer_gb
+        required_gb = model_size_gb * 1.3
 
     metadata["required_gb"] = round(required_gb, 3)
     metadata["min_buffer_gb"] = min_buffer_gb
-    metadata["min_4bit_total_gb"] = min_4bit_total_gb
     return required_gb, metadata
 
 
@@ -680,7 +721,7 @@ def auto_select_gpu_ids(
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
-    multi_gpu_factor = 0.85 if training_type is None else 0.8
+    multi_gpu_factor = 0.8
 
     for candidate in ranked:
         selected.append(candidate["index"])

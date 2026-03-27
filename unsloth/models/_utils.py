@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.3.11"
+__version__ = "2026.3.17"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -233,6 +233,10 @@ def prefer_flex_attn_if_supported(model_class, config):
         if model_class is None or not getattr(
             model_class, "_supports_flex_attn", False
         ):
+            return None
+
+        attention_dropout = getattr(config, "attention_dropout", 0) or 0
+        if attention_dropout > 0:
             return None
         # GPT-OSS, Mllama and Gemma3N use eager/sdpa attention during
         # inference since flex attention returns incorrect results or errors out.
