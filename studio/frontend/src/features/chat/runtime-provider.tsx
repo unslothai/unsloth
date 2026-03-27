@@ -26,6 +26,12 @@ import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
+import {
+  syncCreateThread,
+  syncDeleteThread,
+  syncUpdateThread,
+  syncUpsertMessage,
+} from "./api/chat-sync-api";
 import { db } from "./db";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
@@ -417,33 +423,47 @@ function createDexieAdapter(
     async initialize(threadId: string) {
       const currentModelId =
         useChatRuntimeStore.getState().params.checkpoint ?? "";
-      await db.threads.add({
+      const now = Date.now();
+      const thread = {
         id: threadId,
         title: "New Chat",
         modelType,
         modelId: currentModelId,
         pairId,
         archived: false,
-        createdAt: Date.now(),
+        createdAt: now,
+      };
+      await db.threads.add(thread);
+      syncCreateThread({
+        id: threadId,
+        title: "New Chat",
+        model_type: modelType,
+        model_id: currentModelId,
+        pair_id: pairId,
+        created_at: now,
       });
       return { remoteId: threadId, externalId: undefined };
     },
 
     async rename(remoteId: string, newTitle: string) {
       await db.threads.update(remoteId, { title: newTitle });
+      syncUpdateThread(remoteId, { title: newTitle });
     },
 
     async archive(remoteId: string) {
       await db.threads.update(remoteId, { archived: true });
+      syncUpdateThread(remoteId, { archived: true });
     },
 
     async unarchive(remoteId: string) {
       await db.threads.update(remoteId, { archived: false });
+      syncUpdateThread(remoteId, { archived: false });
     },
 
     async delete(remoteId: string) {
       await db.messages.where("threadId").equals(remoteId).delete();
       await db.threads.delete(remoteId);
+      syncDeleteThread(remoteId);
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
@@ -460,6 +480,7 @@ function createDexieAdapter(
 
       async function persistTitle(title: string): Promise<void> {
         await db.threads.update(remoteId, { title });
+        syncUpdateThread(remoteId, { title });
         if (!pairId) return;
         const paired = await db.threads
           .where("pairId")
@@ -467,6 +488,7 @@ function createDexieAdapter(
           .filter((t) => t.id !== remoteId)
           .first();
         if (paired) await db.threads.update(paired.id, { title });
+        if (paired) syncUpdateThread(paired.id, { title });
       }
 
       if (!thread) {
@@ -592,6 +614,22 @@ function ThreadHistoryProvider({
           ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
           createdAt,
         });
+
+        const shouldSync =
+          message.role === "user" ||
+          (message.role === "assistant" && (custom as Record<string, unknown> | undefined)?.contextUsage != null) ||
+          message.role === "system";
+
+        if (shouldSync) {
+          syncUpsertMessage(remoteId, {
+            id: message.id,
+            role: message.role,
+            content: JSON.stringify(content),
+            attachments: attachments.length > 0 ? JSON.stringify(attachments) : undefined,
+            metadata: custom && Object.keys(custom).length > 0 ? JSON.stringify(custom) : undefined,
+            created_at: createdAt,
+          });
+        }
       },
     }),
     [aui],
