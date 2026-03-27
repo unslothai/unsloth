@@ -143,8 +143,36 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
+def _fetch_page_text(url: str, max_chars: int = 4000, timeout: int = 10) -> str:
+    """Fetch a URL and extract plain text content (best-effort)."""
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(url, headers = {"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
+            raw = resp.read(200_000).decode("utf-8", errors = "replace")
+        # Strip HTML tags (lightweight, no extra deps)
+        import re
+        text = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags = re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags = re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        # Decode HTML entities
+        import html
+        text = html.unescape(text)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        return text
+    except Exception:
+        return ""
+
+
 def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
-    """Search the web using DuckDuckGo and return formatted results."""
+    """Search the web using DuckDuckGo and return formatted results.
+
+    For the top result, also fetches the actual page content so the
+    model has real data to work with instead of just snippets.
+    """
     if not query.strip():
         return "No query provided."
     try:
@@ -153,13 +181,26 @@ def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) 
         results = DDGS(timeout = timeout).text(query, max_results = max_results)
         if not results:
             return "No results found."
+
+        # Fetch full page content for the top result (best-effort,
+        # capped at 10s so it does not block the agentic loop).
+        top_page = ""
+        for r in results[:2]:
+            href = r.get("href", "")
+            if href:
+                top_page = _fetch_page_text(href, max_chars = 6000, timeout = 10)
+                if len(top_page) > 200:
+                    break
         parts = []
-        for r in results:
-            parts.append(
+        for i, r in enumerate(results):
+            entry = (
                 f"Title: {r.get('title', '')}\n"
                 f"URL: {r.get('href', '')}\n"
                 f"Snippet: {r.get('body', '')}"
             )
+            if i == 0 and top_page:
+                entry += f"\n\nPage content:\n{top_page}"
+            parts.append(entry)
         return "\n\n---\n\n".join(parts)
     except Exception as e:
         return f"Search failed: {e}"
