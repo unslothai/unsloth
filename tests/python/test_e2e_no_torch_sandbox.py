@@ -1131,13 +1131,24 @@ class TestLiveServerStartup:
             # Reinstall torch + torchvision + torchaudio
             if torch_was_installed and torch_version:
                 subprocess.run(
-                    [str(py), "-m", "pip", "install",
-                     f"torch=={torch_version}", "torchvision", "torchaudio"],
+                    [
+                        str(py),
+                        "-m",
+                        "pip",
+                        "install",
+                        f"torch=={torch_version}",
+                        "torchvision",
+                        "torchaudio",
+                    ],
                     capture_output = True,
                     timeout = 300,
                 )
-            server_output = stdout.decode(errors="replace") + stderr.decode(errors="replace")
-            pytest.skip(f"Server failed to start within 30 seconds. Output:\n{server_output}")
+            server_output = stdout.decode(errors = "replace") + stderr.decode(
+                errors = "replace"
+            )
+            pytest.skip(
+                f"Server failed to start within 30 seconds. Output:\n{server_output}"
+            )
 
         yield proc, port
 
@@ -1151,8 +1162,15 @@ class TestLiveServerStartup:
 
         if torch_was_installed and torch_version:
             subprocess.run(
-                [str(py), "-m", "pip", "install",
-                 f"torch=={torch_version}", "torchvision", "torchaudio"],
+                [
+                    str(py),
+                    "-m",
+                    "pip",
+                    "install",
+                    f"torch=={torch_version}",
+                    "torchvision",
+                    "torchaudio",
+                ],
                 capture_output = True,
                 timeout = 300,
             )

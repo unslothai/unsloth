@@ -370,6 +370,7 @@ class TestIsMacosConstant:
 
     def test_is_macos_matches_platform(self):
         import sys
+
         expected = sys.platform == "darwin"
         assert ips.IS_MACOS is expected
 
