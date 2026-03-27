@@ -705,7 +705,7 @@ export function HubModelPicker({
                 return (
                   <div key={m.id}>
                     <ModelRow
-                      label={m.display_name}
+                      label={m.model_id ?? m.display_name}
                       meta={isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"}
                       selected={value === m.id}
                       onClick={() => {
