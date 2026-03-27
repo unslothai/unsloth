@@ -384,6 +384,16 @@ function extractParamLabel(id: string): string | undefined {
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
 
+/** Sort LM Studio models with unsloth publisher first. */
+function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
+  return [...models].sort((a, b) => {
+    const aUnsloth = (a.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
+    const bUnsloth = (b.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
+    if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
+    return (a.model_id ?? a.display_name).localeCompare(b.model_id ?? b.display_name);
+  });
+}
+
 // ── Hub Model Picker ──────────────────────────────────────────
 
 export function HubModelPicker({
@@ -424,7 +434,7 @@ export function HubModelPicker({
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
     listLocalModels().then((res) => {
-      const next = res.models.filter((m) => m.source === "lmstudio");
+      const next = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
       _lmStudioCache = next;
       setLmStudioModels(next);
     }).catch(() => {});
@@ -433,7 +443,7 @@ export function HubModelPicker({
   useEffect(() => {
     // Always refresh LM Studio models (not gated by alreadyCached)
     listLocalModels().then((res) => {
-      const next = res.models.filter((m) => m.source === "lmstudio");
+      const next = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
       _lmStudioCache = next;
       setLmStudioModels(next);
     }).catch(() => {});
@@ -907,9 +917,11 @@ export function LoraModelPicker({
           const baseCmp = a.baseModel.localeCompare(b.baseModel);
           if (baseCmp !== 0) return baseCmp;
           // Prioritize unsloth publisher within LM Studio group
-          const aUnsloth = a.name.startsWith("unsloth/") ? 0 : 1;
-          const bUnsloth = b.name.startsWith("unsloth/") ? 0 : 1;
-          if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
+          if (a.baseModel === "LM Studio" && b.baseModel === "LM Studio") {
+            const aUnsloth = a.name.startsWith("unsloth/") ? 0 : 1;
+            const bUnsloth = b.name.startsWith("unsloth/") ? 0 : 1;
+            if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
+          }
           return a.name.localeCompare(b.name);
         }),
     [loraModels],
