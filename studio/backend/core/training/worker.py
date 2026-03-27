@@ -427,6 +427,7 @@ def run_training_process(
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
+            gpu_ids = config.get("resolved_gpu_ids"),
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:

@@ -185,6 +185,12 @@ async def load_model(
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
+            if request.gpu_ids is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "gpu_ids is not supported for GGUF models yet.",
+                )
+
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 

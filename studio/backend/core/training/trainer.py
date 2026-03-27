@@ -493,6 +493,7 @@ class UnslothTrainer:
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
         full_finetuning: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
@@ -630,7 +631,7 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            device_map = get_device_map()
+            device_map = get_device_map(gpu_ids)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )

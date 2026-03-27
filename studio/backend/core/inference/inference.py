@@ -241,6 +241,7 @@ class InferenceBackend:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """
         Load any model: base, LoRA adapter, text, or vision.
@@ -260,7 +261,7 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
-            device_map = get_device_map()
+            device_map = get_device_map(gpu_ids)
 
             self.models[model_name] = {
                 "is_vision": config.is_vision,

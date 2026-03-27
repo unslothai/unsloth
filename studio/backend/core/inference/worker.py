@@ -163,6 +163,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             load_in_4bit = load_in_4bit,
             hf_token = hf_token,
             trust_remote_code = config.get("trust_remote_code", False),
+            gpu_ids = config.get("resolved_gpu_ids"),
         )
 
         if success:

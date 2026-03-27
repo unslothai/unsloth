@@ -27,6 +27,16 @@ from typing import Optional, Dict, Any
 logger = get_logger(__name__)
 
 
+def _parse_smi_value(raw: str):
+    raw = raw.strip()
+    if not raw or raw == "[N/A]":
+        return None
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
+
+
 # ========== Device Enum ==========
 
 
@@ -310,16 +320,6 @@ def get_gpu_utilization() -> Dict[str, Any]:
     if device != DeviceType.CUDA:
         return {"available": False, "backend": device.value}
 
-    def _parse_smi_value(raw: str):
-        """Parse a single nvidia-smi CSV value. Returns float or None for [N/A]."""
-        raw = raw.strip()
-        if not raw or raw == "[N/A]":
-            return None
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            return None
-
     # ── nvidia-smi (most complete source) ───────────────────────
     smi_data = {}
     try:
@@ -423,15 +423,6 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             "parent_visible_gpu_ids": [],
             "devices": [],
         }
-
-    def _parse_smi_value(raw: str):
-        raw = raw.strip()
-        if not raw or raw == "[N/A]":
-            return None
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            return None
 
     parent_visible_ids = get_parent_visible_gpu_ids()
     allowed_indices = set(parent_visible_ids)
@@ -920,9 +911,9 @@ def apply_gpu_ids(gpu_ids) -> None:
     logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
-def get_device_map() -> str:
+def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
     device = get_device()
-    if device == DeviceType.CUDA and get_visible_gpu_count() > 1:
+    if device == DeviceType.CUDA and gpu_ids is not None and len(gpu_ids) > 1:
         return "balanced_low_0"
     return "sequential"
 

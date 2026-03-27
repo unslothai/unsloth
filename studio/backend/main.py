@@ -70,6 +70,9 @@ def _get_backend_visible_gpu_info() -> dict:
         "devices": [],
     }
 
+    if get_device() != DeviceType.CUDA:
+        return gpu_info
+
     parent_ids = gpu_info["parent_visible_gpu_ids"]
     allowed_indices = set(parent_ids) if parent_ids else set()
 
