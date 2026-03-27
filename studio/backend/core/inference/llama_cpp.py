@@ -1486,7 +1486,10 @@ class LlamaCppBackend:
                 pool = 10,
             )
             with client.stream(
-                "POST", url, json = payload, timeout = prefill_timeout,
+                "POST",
+                url,
+                json = payload,
+                timeout = prefill_timeout,
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
@@ -1561,10 +1564,16 @@ class LlamaCppBackend:
             # can finish.  Cancel during streaming is handled by the
             # watcher thread (closes the response on cancel_event).
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
-                    client, url, payload, cancel_event, headers = _auth_headers,
+                    client,
+                    url,
+                    payload,
+                    cancel_event,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -1721,7 +1730,11 @@ class LlamaCppBackend:
                 payload["stop"] = stop
 
             try:
-                _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+                _auth_headers = (
+                    {"Authorization": f"Bearer {self._api_key}"}
+                    if self._api_key
+                    else None
+                )
                 with httpx.Client(timeout = None) as client:
                     resp = client.post(url, json = payload, headers = _auth_headers)
                     if resp.status_code != 200:
@@ -1966,10 +1979,16 @@ class LlamaCppBackend:
 
         try:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
             with httpx.Client(timeout = stream_timeout) as client:
                 with self._stream_with_retry(
-                    client, url, stream_payload, cancel_event, headers = _auth_headers,
+                    client,
+                    url,
+                    stream_payload,
+                    cancel_event,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -2095,7 +2114,9 @@ class LlamaCppBackend:
         if not self.is_loaded:
             return None
         try:
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            )
             with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
                 def _detok(tid: int) -> str:
@@ -2214,8 +2235,12 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
-        _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers) as client:
+        _auth_headers = (
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        )
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers
+        ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(

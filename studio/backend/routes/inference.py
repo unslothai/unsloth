@@ -1633,25 +1633,27 @@ async def consume_stream_token_endpoint(request: Request):
     body = await request.json()
     token = body.get("token")
     if not token:
-        return JSONResponse({"valid": False}, status_code=400)
+        return JSONResponse({"valid": False}, status_code = 400)
 
     from stream_token_store import consume_stream_token
 
     username = consume_stream_token(token)
     if not username:
-        return JSONResponse({"valid": False}, status_code=401)
+        return JSONResponse({"valid": False}, status_code = 401)
 
     llama = get_llama_cpp_backend()
-    return JSONResponse({
-        "valid": True,
-        "username": username,
-        "llama_port": llama._port if llama.is_loaded else None,
-        "llama_api_key": llama._api_key,
-        "model_name": llama.model_identifier or "unknown",
-        "supports_reasoning": llama.supports_reasoning,
-        "supports_tools": llama.supports_tools,
-        "is_vision": llama.is_vision,
-    })
+    return JSONResponse(
+        {
+            "valid": True,
+            "username": username,
+            "llama_port": llama._port if llama.is_loaded else None,
+            "llama_api_key": llama._api_key,
+            "model_name": llama.model_identifier or "unknown",
+            "supports_reasoning": llama.supports_reasoning,
+            "supports_tools": llama.supports_tools,
+            "is_vision": llama.is_vision,
+        }
+    )
 
 
 # =====================================================================
