@@ -287,7 +287,8 @@ class TestChatTemplatesNoTorchVenv:
             exec(source)
 
             # Verify module-level constants are defined
-            assert 'DEFAULT_ALPACA_TEMPLATE' in dir() or 'DEFAULT_ALPACA_TEMPLATE' in globals() or True
+            ns = dict(locals())
+            assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined after exec"
             print("OK: chat_templates.py exec succeeded")
         """)
         result = subprocess.run(

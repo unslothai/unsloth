@@ -368,12 +368,10 @@ class TestNoTorchConstant:
 class TestIsMacosConstant:
     """Verify IS_MACOS detection logic."""
 
-    def test_linux_is_not_macos(self):
-        assert ips.IS_MACOS is False
-
-    def test_darwin_platform_logic(self):
-        assert ("darwin" == "darwin") is True
-        assert ("linux" == "darwin") is False
+    def test_is_macos_matches_platform(self):
+        import sys
+        expected = sys.platform == "darwin"
+        assert ips.IS_MACOS is expected
 
 
 # ── Subprocess mock of install_python_stack() ─────────────────────────
