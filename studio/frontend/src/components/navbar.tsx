@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
-  StopIcon,
+  Cancel01Icon,
   Book03Icon,
   BubbleChatIcon,
   ChefHatIcon,
@@ -239,12 +239,11 @@ export function Navbar() {
           <button
             type="button"
             onClick={() => setShutdownOpen(true)}
-            className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="-mr-1.5 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Shut down Unsloth Studio server"
             aria-label="Shut down Unsloth Studio server"
           >
-            <HugeiconsIcon icon={StopIcon} className="size-4" />
-            <span className="text-sm font-medium">Shutdown</span>
+            <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
           </button>
         </div>
 
@@ -340,7 +339,7 @@ export function Navbar() {
                     setShutdownOpen(true);
                   }}
                 >
-                  <HugeiconsIcon icon={StopIcon} className="size-4" />
+                  <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
                   Quit Unsloth Studio
                 </button>
                 <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
