@@ -203,6 +203,7 @@ function GgufVariantExpander({
     };
   }, [repoId]);
 
+  // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(repoId);
 
   const handleVariantClick = useCallback(
