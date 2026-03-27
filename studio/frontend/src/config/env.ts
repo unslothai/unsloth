@@ -17,6 +17,7 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 interface PlatformState {
   deviceType: DeviceType;
   chatOnly: boolean;
+  isDocker: boolean;
   fetched: boolean;
   isChatOnly: () => boolean;
 }
@@ -24,6 +25,7 @@ interface PlatformState {
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: "linux",
   chatOnly: false,
+  isDocker: false,
   fetched: false,
   isChatOnly: () => get().chatOnly,
 }));
@@ -35,10 +37,11 @@ export async function fetchDeviceType(): Promise<DeviceType> {
   try {
     const res = await fetch("/api/health");
     if (res.ok) {
-      const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
+      const data = (await res.json()) as { device_type?: string; chat_only?: boolean; is_docker?: boolean };
       const deviceType = data.device_type ?? "linux";
       const chatOnly = data.chat_only ?? deviceType === "mac";
-      usePlatformStore.setState({ deviceType, chatOnly, fetched: true });
+      const isDocker = data.is_docker ?? false;
+      usePlatformStore.setState({ deviceType, chatOnly, isDocker, fetched: true });
       return deviceType;
     }
   } catch (err) {

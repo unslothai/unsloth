@@ -176,12 +176,15 @@ async def health_check():
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
 
+    is_docker = os.path.exists("/.dockerenv")
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
+        "is_docker": is_docker,
     }
 
 

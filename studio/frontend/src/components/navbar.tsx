@@ -55,6 +55,7 @@ export function Navbar() {
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const isDocker = usePlatformStore((s) => s.isDocker);
 
   // Warn before closing the tab only when training is running (data loss risk).
   // We store the handler in a ref so removeUnloadHandler() can clean it up
@@ -236,15 +237,17 @@ export function Navbar() {
             <span className="text-sm font-medium">Tour</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShutdownOpen(true)}
-            className="-mr-1.5 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Shut down Unsloth Studio server"
-            aria-label="Shut down Unsloth Studio server"
-          >
-            <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
-          </button>
+          {!isDocker && (
+            <button
+              type="button"
+              onClick={() => setShutdownOpen(true)}
+              className="-mr-1.5 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Shut down Unsloth Studio server"
+              aria-label="Shut down Unsloth Studio server"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
+            </button>
+          )}
         </div>
 
         {/* Right: mobile */}
@@ -331,17 +334,19 @@ export function Navbar() {
                     Start tour
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    setShutdownOpen(true);
-                  }}
-                >
-                  <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
-                  Quit Unsloth Studio
-                </button>
+                {!isDocker && (
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      setShutdownOpen(true);
+                    }}
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
+                    Quit Unsloth Studio
+                  </button>
+                )}
                 <div className="mt-2 flex items-center justify-between rounded-md border border-border px-3 py-2">
                   <span className="text-sm font-medium text-foreground">Theme</span>
                   <AnimatedThemeToggler
