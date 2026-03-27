@@ -2416,7 +2416,7 @@ class LlamaCppBackend:
             return None
         try:
             _auth_headers = (
-                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
             with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
@@ -2537,7 +2537,7 @@ class LlamaCppBackend:
             payload["n_probs"] = 1
 
         _auth_headers = (
-            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         )
         with httpx.Client(
             timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers
