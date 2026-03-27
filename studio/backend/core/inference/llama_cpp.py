@@ -637,7 +637,11 @@ class LlamaCppBackend:
                 # in their chat template always produce thinking output
                 # (no toggle to disable it).
                 if not self._supports_reasoning:
-                    if "<think>" in tpl and "</think>" in tpl or "reasoning_content" in tpl:
+                    if (
+                        "<think>" in tpl
+                        and "</think>" in tpl
+                        or "reasoning_content" in tpl
+                    ):
                         self._supports_reasoning = True
                         self._reasoning_always_on = True
                         logger.info(
