@@ -6,6 +6,7 @@ Path utilities for model and dataset handling
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 import structlog
@@ -14,12 +15,33 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+def _is_wsl() -> bool:
+    """Detect if we are running inside WSL (Windows Subsystem for Linux)."""
+    if sys.platform == "win32":
+        return False
+    try:
+        with open("/proc/version", "r") as f:
+            return "microsoft" in f.read().lower()
+    except Exception:
+        return False
+
+
+_IS_WSL: bool = _is_wsl()
+
+
 def normalize_path(path: str) -> str:
     """
-    Convert Windows paths to WSL format if needed.
+    Normalize filesystem paths for cross-platform use.
 
-    Examples:
+    On WSL, converts Windows drive-letter paths to ``/mnt/<drive>/...``.
+    On native Windows, keeps the drive letter and normalizes separators.
+    On Linux/macOS (non-WSL), paths are returned with forward slashes.
+
+    Examples (WSL):
         C:\\Users\\... -> /mnt/c/Users/...
+    Examples (native Windows):
+        C:\\Users\\... -> C:/Users/...
+    Examples (Linux/macOS):
         /home/user/... -> /home/user/... (unchanged)
     """
     if not path:
@@ -27,9 +49,13 @@ def normalize_path(path: str) -> str:
 
     # Handle Windows drive letters (C:\\ or c:\\)
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
-        drive = path[0].lower()
-        rest = path[3:].replace("\\", "/")
-        return f"/mnt/{drive}/{rest}"
+        # Only map to /mnt/<drive>/ when running under WSL;
+        # on native Windows the drive letter must be preserved.
+        if _IS_WSL:
+            drive = path[0].lower()
+            rest = path[3:].replace("\\", "/")
+            return f"/mnt/{drive}/{rest}"
+        return path.replace("\\", "/")
 
     # Already Unix-style or relative
     return path.replace("\\", "/")

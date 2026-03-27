@@ -18,8 +18,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { deleteCachedModel, listCachedGguf, listCachedModels, listGgufVariants } from "@/features/chat/api/chat-api";
-import type { CachedGgufRepo, CachedModelRepo } from "@/features/chat/api/chat-api";
+import { deleteCachedModel, listCachedGguf, listCachedModels, listGgufVariants, listLocalModels } from "@/features/chat/api/chat-api";
+import type { CachedGgufRepo, CachedModelRepo, LocalModelInfo } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -45,6 +45,11 @@ import type {
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+/** Normalize a string for fuzzy search: lowercase, strip separators. */
+function normalizeForSearch(s: string): string {
+  return s.toLowerCase().replace(/[\s\-_\.]/g, "");
 }
 
 function ListLabel({ children }: { children: ReactNode }) {
@@ -198,17 +203,20 @@ function GgufVariantExpander({
     };
   }, [repoId]);
 
+  // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
+  const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(repoId);
+
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
       onSelect(repoId, {
-        source: "hub",
+        source: isLocalPath ? "local" : "hub",
         isLora: false,
         ggufVariant: quant,
-        isDownloaded: downloaded,
+        isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
       });
     },
-    [repoId, onSelect],
+    [repoId, isLocalPath, onSelect],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -375,6 +383,17 @@ function extractParamLabel(id: string): string | undefined {
 // Module-level caches so re-mounting the popover shows results instantly
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
+let _lmStudioCache: LocalModelInfo[] = [];
+
+/** Sort LM Studio models with unsloth publisher first. */
+function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
+  return [...models].sort((a, b) => {
+    const aUnsloth = (a.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
+    const bUnsloth = (b.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
+    if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
+    return (a.model_id ?? a.display_name).localeCompare(b.model_id ?? b.display_name);
+  });
+}
 
 // ── Hub Model Picker ──────────────────────────────────────────
 
@@ -408,12 +427,28 @@ export function HubModelPicker({
   const alreadyCached = _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
 
+  // LM Studio local models -- module-level cache so re-mounting the
+  // popover does not flash an empty section (same pattern as GGUF/models).
+  const [lmStudioModels, setLmStudioModels] = useState<LocalModelInfo[]>(_lmStudioCache);
+
   const refreshCachedLists = useCallback(() => {
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
+    listLocalModels().then((res) => {
+      const next = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
+      _lmStudioCache = next;
+      setLmStudioModels(next);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
+    // Always refresh LM Studio models (not gated by alreadyCached)
+    listLocalModels().then((res) => {
+      const next = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
+      _lmStudioCache = next;
+      setLmStudioModels(next);
+    }).catch(() => {});
+
     if (alreadyCached) return;
     let done = 0;
     const check = () => { if (++done >= 2) setCachedReady(true); };
@@ -492,7 +527,18 @@ export function HubModelPicker({
     useRecommendedModelVram(recommendedIds);
 
   const showHfSection = debouncedQuery.trim().length > 0;
-  const recommendedSet = useMemo(() => new Set(visibleRecommendedIds), [visibleRecommendedIds]);
+
+  // Recommended models that match the current search query
+  const filteredRecommendedIds = useMemo(() => {
+    if (!showHfSection) return [];
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
+  }, [showHfSection, debouncedQuery, recommendedIds]);
+
+  const recommendedSet = useMemo(
+    () => new Set(showHfSection ? filteredRecommendedIds : visibleRecommendedIds),
+    [showHfSection, filteredRecommendedIds, visibleRecommendedIds],
+  );
 
   const hfIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -543,7 +589,8 @@ export function HubModelPicker({
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
-    for (const id of visibleRecommendedIds) {
+    const ids = showHfSection ? filteredRecommendedIds : visibleRecommendedIds;
+    for (const id of ids) {
       const totalParams = recommendedParamCountById.get(id);
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
@@ -555,7 +602,7 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [visibleRecommendedIds, recommendedParamCountById, gpu]);
+  }, [showHfSection, filteredRecommendedIds, visibleRecommendedIds, recommendedParamCountById, gpu]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(fetchMore, results.length);
 
@@ -669,6 +716,40 @@ export function HubModelPicker({
             </>
           ) : null}
 
+          {!showHfSection && chatOnly && lmStudioModels.length > 0 ? (
+            <>
+              <ListLabel>LM Studio</ListLabel>
+              {lmStudioModels.map((m) => {
+                const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                return (
+                  <div key={m.id}>
+                    <ModelRow
+                      label={m.model_id ?? m.display_name}
+                      meta={isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"}
+                      selected={value === m.id}
+                      onClick={() => {
+                        if (isGguf) {
+                          setExpandedGguf((prev) => (prev === m.id ? null : m.id));
+                        } else {
+                          onSelect(m.id, { source: "local", isLora: false, isDownloaded: true });
+                        }
+                      }}
+                      vramStatus={null}
+                    />
+                    {expandedGguf === m.id && (
+                      <GgufVariantExpander
+                        repoId={m.id}
+                        onSelect={onSelect}
+                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+
           {!showHfSection && cachedReady ? (
             <>
               <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
@@ -712,13 +793,44 @@ export function HubModelPicker({
             </>
           ) : null}
 
+          {showHfSection && filteredRecommendedIds.length > 0 ? (
+            <>
+              <ListLabel>{"\uD83E\uDDA5"} Recommended</ListLabel>
+              {filteredRecommendedIds.map((id) => {
+                const vram = recommendedVramMap.get(id);
+                return (
+                  <div key={id}>
+                    <ModelRow
+                      label={id}
+                      meta={
+                        isGgufRepo(id)
+                          ? "GGUF"
+                          : vram?.detail ?? extractParamLabel(id)
+                      }
+                      selected={value === id}
+                      onClick={() => handleModelClick(id)}
+                      vramStatus={isGgufRepo(id) ? null : vram?.status ?? null}
+                      vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                    />
+                    {expandedGguf === id && (
+                      <GgufVariantExpander repoId={id} onSelect={onSelect} gpuGb={gpu.available ? gpu.memoryTotalGb : undefined} systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined} />
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+
           {showHfSection ? (
             <>
-              <ListLabel>Hugging Face</ListLabel>
+              {(hfIds.length > 0 || isLoading) && <ListLabel>Hugging Face</ListLabel>}
               {hfIds.length === 0 && !isLoading ? (
-                <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                  No matching models.
-                </div>
+                filteredRecommendedIds.length === 0 ? (
+                  <div className="px-2.5 py-2 text-xs text-muted-foreground">
+                    No matching models.
+                  </div>
+                ) : null
               ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
@@ -789,6 +901,8 @@ export function LoraModelPicker({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
+  const gpu = useGpuInfo();
 
   const normalized = useMemo(
     () =>
@@ -798,22 +912,28 @@ export function LoraModelPicker({
           baseModel: model.baseModel || model.description || "Unknown base model",
         }))
         .sort((a, b) => {
+          const baseCmp = a.baseModel.localeCompare(b.baseModel);
+          if (baseCmp !== 0) return baseCmp;
+          // Prioritize unsloth publisher within LM Studio group
+          if (a.baseModel === "LM Studio" && b.baseModel === "LM Studio") {
+            const aUnsloth = a.name.startsWith("unsloth/") ? 0 : 1;
+            const bUnsloth = b.name.startsWith("unsloth/") ? 0 : 1;
+            if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
+          }
           const aTime = a.updatedAt ?? -1;
           const bTime = b.updatedAt ?? -1;
           if (aTime !== bTime) return bTime - aTime;
-          const baseCmp = a.baseModel.localeCompare(b.baseModel);
-          if (baseCmp !== 0) return baseCmp;
           return a.name.localeCompare(b.name);
         }),
     [loraModels],
   );
 
   const grouped = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = normalizeForSearch(query.trim());
     const out = new Map<string, LoraModelOption[]>();
 
     for (const model of normalized) {
-      const searchText = `${model.name} ${model.baseModel} ${model.id}`.toLowerCase();
+      const searchText = normalizeForSearch(`${model.name} ${model.baseModel} ${model.id}`);
       if (needle && !searchText.includes(needle)) continue;
 
       const key = model.baseModel || "Unknown base model";
@@ -857,34 +977,53 @@ export function LoraModelPicker({
                 {index > 0 ? <div className="my-1" /> : null}
                 <ListLabel>{baseModel}</ListLabel>
                 {adapters.map((adapter) => {
+                  const isLocal = adapter.source === "local";
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
-                  const tag = isGguf
-                    ? "GGUF"
-                    : isExported
-                      ? isMerged ? "Merged" : "LoRA"
-                      : "LoRA";
-                  const meta = isExported ? `${tag} · Exported` : tag;
+                  const isLocalGgufDir = isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+                  const tag = isLocal
+                    ? isLocalGgufDir ? "GGUF" : "Local"
+                    : isGguf
+                      ? "GGUF"
+                      : isExported
+                        ? isMerged ? "Merged" : "LoRA"
+                        : "LoRA";
+                  const meta = isLocal ? (isLocalGgufDir ? "GGUF" : "Local") : isExported ? `${tag} · Exported` : tag;
                   return (
-                    <ModelRow
-                      key={adapter.id}
-                      label={adapter.name}
-                      meta={meta}
-                      selected={value === adapter.id}
-                      onClick={() => onSelect(adapter.id, {
-                        source: isExported ? "exported" : "lora",
-                        isLora: !isMerged && !isGguf,
-                      })}
-                      tooltipText={
-                        <>
-                          <span className="block break-words">{adapter.name}</span>
-                          <span className="block mt-1 text-[10px] text-muted-foreground break-all">
-                            {adapter.id}
-                          </span>
-                        </>
-                      }
-                    />
+                    <div key={adapter.id}>
+                      <ModelRow
+                        label={adapter.name}
+                        meta={meta}
+                        selected={value === adapter.id}
+                        onClick={() => {
+                          if (isLocalGgufDir) {
+                            setExpandedGguf((prev) => (prev === adapter.id ? null : adapter.id));
+                          } else {
+                            onSelect(adapter.id, {
+                              source: isLocal ? "local" : isExported ? "exported" : "lora",
+                              isLora: !isLocal && !isMerged && !isGguf,
+                            });
+                          }
+                        }}
+                        tooltipText={
+                          <>
+                            <span className="block break-words">{adapter.name}</span>
+                            <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                              {adapter.id}
+                            </span>
+                          </>
+                        }
+                      />
+                      {expandedGguf === adapter.id && (
+                        <GgufVariantExpander
+                          repoId={adapter.id}
+                          onSelect={onSelect}
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                        />
+                      )}
+                    </div>
                   );
                 })}
               </div>

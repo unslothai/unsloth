@@ -136,6 +136,10 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
     )
+    reasoning_always_on: bool = Field(
+        False,
+        description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
+    )
     supports_tools: bool = Field(
         False,
         description = "Whether model supports tool calling (web search, etc.)",
@@ -192,6 +196,9 @@ class InferenceStatusResponse(BaseModel):
     )
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
+    )
+    reasoning_always_on: bool = Field(
+        False, description = "Whether reasoning is always on (not toggleable)"
     )
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
@@ -291,7 +298,7 @@ class ChatCompletionRequest(BaseModel):
         0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
     image_base64: Optional[str] = Field(
         None, description = "[x-unsloth] Base64-encoded image for vision models"
