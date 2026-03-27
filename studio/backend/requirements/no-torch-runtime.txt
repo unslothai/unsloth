@@ -1,7 +1,18 @@
 # Runtime dependencies for no-torch (GGUF-only) mode.
-# These are normally pulled in transitively by unsloth-zoo, but
-# --no-deps skips them to avoid torch. Install these explicitly.
-# Mirrors the [huggingfacenotorch] extras from pyproject.toml.
+# Installed with --no-deps to prevent transitive torch resolution
+# from packages like accelerate, peft, trl, sentence-transformers.
+#
+# Includes unsloth's own direct deps (typer, pydantic, pyyaml,
+# nest-asyncio) since unsloth is also installed with --no-deps
+# (current PyPI metadata still declares torch as a hard dep).
+
+# unsloth direct deps (from pyproject.toml [project].dependencies)
+typer
+pydantic
+pyyaml
+nest-asyncio
+
+# HF ecosystem (from [huggingfacenotorch] extras in pyproject.toml)
 wheel>=0.42.0
 packaging
 numpy
