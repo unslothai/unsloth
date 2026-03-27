@@ -44,6 +44,7 @@ from datetime import datetime
 # Import routers
 from routes import (
     auth_router,
+    chat_router,
     data_recipe_router,
     datasets_router,
     export_router,
@@ -164,6 +165,7 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
+app.include_router(chat_router, prefix = "/api/chat", tags = ["chat"])
 
 
 # ============ Health and System Endpoints ============
