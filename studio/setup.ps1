@@ -340,12 +340,18 @@ function Invoke-SetupCommand {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
+        # Reset to avoid stale values from prior native commands.
+        $global:LASTEXITCODE = 0
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
-            & $Command
+            # Keep verbose output visible, but do not let it become function output.
+            & $Command | Out-Host
         } else {
             & $Command *> $null
         }
-        return $LASTEXITCODE
+        if (-not $? -and $LASTEXITCODE -eq 0) {
+            return 1
+        }
+        return [int]$LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prevEap
     }
