@@ -626,9 +626,11 @@ def studio_default(
             raise typer.Exit(2)
         return
 
-    # Use the studio venv if it exists and we aren't already in it.
-    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    # In Docker, packages live in /opt/conda — skip venv re-exec entirely.
+    if not os.environ.get("UNSLOTH_DOCKER"):
+        # Always use the studio venv if it exists and we're not already in it
+        studio_venv_dir = STUDIO_HOME / "unsloth_studio"
+        in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
     if not in_studio_venv:
         studio_python = _studio_venv_python()
@@ -681,10 +683,8 @@ def studio_default(
                     )
                 raise typer.Exit(rc)
             else:
-                os.execvp(str(studio_python), args)
-        else:
-            typer.echo("Studio not set up. Run install.sh first.")
-            raise typer.Exit(1)
+                typer.echo("Studio not set up. Run install.sh first.")
+                raise typer.Exit(1)
 
     from studio.backend.run import run_server
 
