@@ -13,6 +13,7 @@ PATH to point at the venv.
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,25 @@ import urllib.request
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
+IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
+
+
+def _infer_no_torch() -> bool:
+    """Determine whether to run in no-torch (GGUF-only) mode.
+
+    Checks UNSLOTH_NO_TORCH env var first.  When unset, falls back to
+    platform detection so that Intel Macs automatically use GGUF-only
+    mode even when invoked from ``unsloth studio update`` (which does
+    not inject the env var).
+    """
+    env = os.environ.get("UNSLOTH_NO_TORCH")
+    if env is not None:
+        return env.strip().lower() in ("1", "true")
+    return IS_MAC_INTEL
+
+
+NO_TORCH = _infer_no_torch()
 
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
@@ -161,6 +181,19 @@ def run(
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 
+# Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
+# These packages either *are* torch extensions or have unconditional
+# ``Requires-Dist: torch`` in their published metadata, so installing
+# them would pull torch back into the environment.
+NO_TORCH_SKIP_PACKAGES = {
+    "torch-stoi",
+    "timm",
+    "torchcodec",
+    "torch-c-dlpack-ext",
+    "openai-whisper",
+    "transformers-cfg",
+}
+
 # -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -273,8 +306,13 @@ def pip_install(
         constraint_args = ["-c", str(CONSTRAINTS)]
 
     actual_req = req
+    temp_reqs: list[Path] = []
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
     req_args: list[str] = []
     if actual_req is not None:
         req_args = ["-r", str(actual_req)]
@@ -298,8 +336,8 @@ def pip_install(
         pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
     finally:
-        if actual_req is not None and actual_req != req:
-            actual_req.unlink(missing_ok = True)
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
 
 
 def download_file(url: str, dest: Path) -> None:
@@ -352,6 +390,8 @@ def install_python_stack() -> int:
     # When --local is used, overlay a local repo checkout after updating deps
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
     base_total = 10 if IS_WINDOWS else 11
+    if IS_MACOS:
+        base_total -= 1  # triton step is skipped on macOS
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -399,6 +439,28 @@ def install_python_stack() -> int:
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
         print(_green(f"✅ {package_name} already installed — skipping base packages"))
+    elif NO_TORCH:
+        # No-torch mode: install unsloth + unsloth-zoo without torch deps
+        _progress("base packages (no torch)")
+        pip_install(
+            "Updating base packages (no-torch mode)",
+            "--no-cache-dir",
+            "--no-deps",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
+            req = REQ_ROOT / "base.txt",
+        )
+        if local_repo:
+            pip_install(
+                "Overlaying local repo (editable)",
+                "--no-cache-dir",
+                "--no-deps",
+                "-e",
+                local_repo,
+                constrain = False,
+            )
     elif local_repo:
         # Local dev install: update deps from base.txt, then overlay the
         # local checkout as an editable install (--no-deps so torch is
@@ -462,16 +524,22 @@ def install_python_stack() -> int:
     )
 
     # 4. Overrides (torchao, transformers) -- force-reinstall
-    _progress("dependency overrides")
-    pip_install(
-        "Installing dependency overrides",
-        "--force-reinstall",
-        "--no-cache-dir",
-        req = REQ_ROOT / "overrides.txt",
-    )
+    #    Skip entirely when torch is unavailable (e.g. Intel Mac GGUF-only mode)
+    #    because overrides.txt contains torchao which requires torch.
+    if NO_TORCH:
+        _progress("dependency overrides (skipped, no torch)")
+    else:
+        _progress("dependency overrides")
+        pip_install(
+            "Installing dependency overrides",
+            "--force-reinstall",
+            "--no-cache-dir",
+            req = REQ_ROOT / "overrides.txt",
+        )
 
     # 5. Triton kernels (no-deps, from source)
-    if not IS_WINDOWS:
+    #    Skip on Windows (no support) and macOS (no support).
+    if not IS_WINDOWS and not IS_MACOS:
         _progress("triton kernels")
         pip_install(
             "Installing triton kernels",
