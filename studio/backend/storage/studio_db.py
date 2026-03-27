@@ -67,6 +67,35 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
     )
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            id           TEXT PRIMARY KEY,
+            title        TEXT NOT NULL DEFAULT 'New Chat',
+            model_type   TEXT NOT NULL,
+            model_id     TEXT DEFAULT '',
+            pair_id      TEXT,
+            archived     INTEGER NOT NULL DEFAULT 0,
+            created_at   INTEGER NOT NULL,
+            updated_at   INTEGER NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id           TEXT PRIMARY KEY,
+            thread_id    TEXT NOT NULL,
+            role         TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            attachments  TEXT,
+            metadata     TEXT,
+            created_at   INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id
+        ON chat_messages(thread_id)
+    """)
 
 
 def get_connection() -> sqlite3.Connection:
