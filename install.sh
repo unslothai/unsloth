@@ -968,7 +968,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.14" unsloth-zoo
+            "unsloth>=2026.3.16" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -976,7 +976,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.14" unsloth-zoo
+            "unsloth>=2026.3.16" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         echo "==> Overlaying local repo (editable)..."
@@ -998,7 +998,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.3.14" unsloth-zoo
+            "unsloth>=2026.3.16" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1009,7 +1009,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.3.16" unsloth-zoo
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
@@ -1020,7 +1020,7 @@ else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.14" --torch-backend=auto
+        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.16" --torch-backend=auto
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
