@@ -934,7 +934,7 @@ if ($IsPipInstall) {
     }
 
     if ($NeedNode) {
-        Write-Host "Installing Node.js LTS via winget..." -ForegroundColor Cyan
+        substep "installing Node.js LTS via winget..."
         try {
             winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
             Refresh-Environment
@@ -950,7 +950,7 @@ if ($IsPipInstall) {
     # ── bun (optional, faster package installs) ──
     # Installed via npm — Node is already guaranteed above. Works on all platforms.
     if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
-        Write-Host "   Installing bun (faster frontend package installs)..." -ForegroundColor DarkGray
+        substep "installing bun (faster frontend package installs)..."
         $prevEAP_bun = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         Invoke-SetupCommand { npm install -g bun } | Out-Null
@@ -1169,7 +1169,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
 }
 
 if (Test-Path $OxcValidatorDir) {
-    Write-Host "Installing OXC validator runtime..." -ForegroundColor Cyan
+    substep "installing OXC validator runtime..."
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
@@ -1189,7 +1189,7 @@ if (Test-Path $OxcValidatorDir) {
 #  PHASE 3: Python environment + dependencies
 # ==========================================================================
 Write-Host ""
-Write-Host "Setting up Python environment..." -ForegroundColor Cyan
+substep "setting up Python environment..."
 
 # Find Python -- skip Anaconda/Miniconda distributions.
 # Conda-bundled CPython ships modified DLL search paths that break
@@ -1249,7 +1249,7 @@ if (-not $PythonCmd) {
                 if (-not $cmdInfo.Source) { continue }
                 if ($cmdInfo.Source -like "*\WindowsApps\*") { continue }
                 if (Test-IsConda $cmdInfo.Source) {
-                    Write-Host "   [SKIP] $($cmdInfo.Source) (conda Python breaks torch DLL loading)" -ForegroundColor Yellow
+                    substep "skipping $($cmdInfo.Source) (conda Python breaks torch DLL loading)" "Yellow"
                     continue
                 }
                 $ver = & $cmdInfo.Source --version 2>&1
@@ -1345,7 +1345,7 @@ if (-not (Test-Path $VenvDir)) {
     Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
     exit 1
 } else {
-    Write-Host "   Reusing existing virtual environment at $VenvDir" -ForegroundColor Green
+    substep "reusing existing virtual environment at $VenvDir"
 }
 
 # pip and python write to stderr even on success (progress bars, warnings).
@@ -1363,7 +1363,7 @@ $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
 } else {
-    Write-Host "   Installing uv package manager..." -ForegroundColor Cyan
+    substep "installing uv package manager..."
     try {
         Invoke-SetupCommand { powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" } | Out-Null
         Refresh-Environment
@@ -1431,7 +1431,7 @@ if ($HasNvidiaSmi) {
 }
 
 if ($CuTag -eq "cpu") {
-    Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
+    substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu"
         $torchInstallExit = $LASTEXITCODE
@@ -1446,8 +1446,8 @@ if ($CuTag -eq "cpu") {
         exit 1
     }
 } else {
-    Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
-    Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
+    substep "installing PyTorch with CUDA support ($CuTag)..."
+    substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
         $torchInstallExit = $LASTEXITCODE
@@ -1463,7 +1463,7 @@ if ($CuTag -eq "cpu") {
     }
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
-    Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
+    substep "installing Triton for Windows..."
     if ($script:UnslothVerbose) {
         Fast-Install "triton-windows<3.7"
         $tritonInstallExit = $LASTEXITCODE
@@ -1481,7 +1481,7 @@ if ($CuTag -eq "cpu") {
 }
 
 # Ordered heavy dependency installation -- shared cross-platform script
-Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
+substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
@@ -1491,7 +1491,7 @@ $ErrorActionPreference = $prevEAP
 # at runtime (slow, ~10-15s), we pre-install into a separate directory.
 # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
 Write-Host ""
-Write-Host "   Pre-installing transformers 5.x for newer model support..." -ForegroundColor Cyan
+substep "pre-installing transformers 5.x for newer model support..."
 $VenvT5Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
 if (Test-Path $VenvT5Dir) { Remove-Item -Recurse -Force $VenvT5Dir }
 New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
@@ -1575,7 +1575,7 @@ if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
 }
 
 Write-Host ""
-Write-Host "Resolved llama.cpp release tag: $ResolvedLlamaTag" -ForegroundColor Gray
+substep "Resolved llama.cpp release tag: $ResolvedLlamaTag"
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
@@ -1583,9 +1583,9 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
 } else {
     Write-Host ""
-    Write-Host "Installing prebuilt llama.cpp bundle (preferred path)..." -ForegroundColor Cyan
+    substep "installing prebuilt llama.cpp bundle (preferred path)..."
     if (Test-Path $LlamaCppDir) {
-        Write-Host "Existing llama.cpp install detected -- validating staged prebuilt update before replacement" -ForegroundColor Gray
+        substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
     if ($SkipPrebuiltInstall) {
         substep "Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build" "Yellow"
@@ -1645,8 +1645,8 @@ if ($NeedLlamaSourceBuild) {
         $OpenSslAvailable = $true
         substep "OpenSSL dev found at $OpenSslRoot"
     } else {
-        Write-Host "" 
-        Write-Host "Installing OpenSSL dev (for HTTPS in llama-server)..." -ForegroundColor Cyan
+        Write-Host ""
+        substep "installing OpenSSL dev (for HTTPS in llama-server)..."
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
             winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
@@ -1665,7 +1665,7 @@ if ($NeedLlamaSourceBuild) {
         }
     }
 } else {
-    Write-Host "[SKIP] OpenSSL dev install -- prebuilt llama.cpp already validated" -ForegroundColor Yellow
+    substep "OpenSSL dev install skipped -- prebuilt llama.cpp already validated" "Yellow"
 }
 
 # ==========================================================================
@@ -1712,20 +1712,20 @@ if (-not $NeedLlamaSourceBuild) {
     if (-not $HasNvidiaSmi) {
         # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
         substep "CMake is required to build llama-server for GGUF chat mode." "Yellow"
-        Write-Host "       Continuing setup without llama.cpp build." -ForegroundColor Yellow
-        Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
+        substep "Continuing setup without llama.cpp build." "Yellow"
+        substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     }
-    Write-Host "[SKIP] llama-server build -- cmake not available" -ForegroundColor Yellow
-    Write-Host "       GGUF inference and export will not be available." -ForegroundColor Yellow
-    Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
+    step "llama.cpp" "build skipped (cmake not available)" "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
 } else {
     Write-Host ""
     if ($HasNvidiaSmi) {
-        Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
+        substep "building llama.cpp with CUDA support..."
     } else {
-        Write-Host "Building llama.cpp (CPU-only, no NVIDIA GPU detected)..." -ForegroundColor Cyan
+        substep "building llama.cpp (CPU-only, no NVIDIA GPU detected)..."
     }
-    Write-Host "   This typically takes 5-10 minutes on first build." -ForegroundColor Gray
+    substep "This typically takes 5-10 minutes on first build."
     Write-Host ""
 
     # Start total build timer
@@ -1849,7 +1849,7 @@ if (-not $NeedLlamaSourceBuild) {
                     if ($maxArch) {
                         $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
                         substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
-                        Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
+                        substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
                     }
                     # else: omit flag entirely, let cmake pick defaults
                 }
