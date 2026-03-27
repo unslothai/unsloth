@@ -30,7 +30,7 @@ else
 fi
 
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
-substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
+substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
@@ -61,7 +61,7 @@ for arg in "$@"; do
 done
 
 if [ "$_VERBOSE" = true ]; then
-    UNSLOTH_VERBOSE=1
+    export UNSLOTH_VERBOSE=1
 fi
 
 _is_verbose() {
@@ -80,8 +80,12 @@ run_install_cmd() {
     _label="$1"
     shift
     if _is_verbose; then
-        "$@"
-        return $?
+        if "$@"; then
+            return 0
+        fi
+        _rc=$?
+        step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
+        return "$_rc"
     fi
     _log=$(mktemp)
     if "$@" >"$_log" 2>&1; then
@@ -1176,7 +1180,7 @@ create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ]; then
-    "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888 --silent
+    "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
     _LAUNCH_EXIT=$?
     if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
         echo ""
