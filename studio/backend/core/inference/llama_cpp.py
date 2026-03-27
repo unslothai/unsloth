@@ -950,7 +950,12 @@ class LlamaCppBackend:
             else:
                 self._api_key = None
 
-            logger.info(f"Starting llama-server: {' '.join(cmd)}")
+            _log_cmd = list(cmd)
+            if "--api-key" in _log_cmd:
+                _ki = _log_cmd.index("--api-key") + 1
+                if _ki < len(_log_cmd):
+                    _log_cmd[_ki] = "<redacted>"
+            logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
             # Set library paths so llama-server can find its shared libs and CUDA DLLs
             import os
