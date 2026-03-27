@@ -18,6 +18,7 @@ from models.training import TrainingStartRequest
 from utils.hardware import (
     DeviceType,
     get_parent_visible_gpu_ids,
+    get_visible_gpu_utilization,
     resolve_requested_gpu_ids,
 )
 
@@ -132,6 +133,7 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
             ),
         ):
             backend.start_training(
+                job_id = "test-job-1",
                 model_name = "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 gpu_ids = [1, 2],
@@ -172,6 +174,7 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
             ),
         ):
             backend.start_training(
+                job_id = "test-job-2",
                 model_name = "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 gpu_ids = None,

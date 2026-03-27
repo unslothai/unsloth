@@ -521,9 +521,14 @@ def get_parent_visible_gpu_ids() -> list[int]:
         cuda_visible = cuda_visible.strip()
         if cuda_visible == "" or cuda_visible == "-1":
             return []
-        return [
-            int(value.strip()) for value in cuda_visible.split(",") if value.strip()
-        ]
+        try:
+            return [
+                int(value.strip()) for value in cuda_visible.split(",") if value.strip()
+            ]
+        except ValueError:
+            # UUID / MIG syntax (e.g. GPU-abc123, MIG-GPU-abc/1/0) --
+            # cannot map to numeric indices, fall through to physical count.
+            pass
 
     return list(range(get_physical_gpu_count()))
 
@@ -658,7 +663,7 @@ def apply_gpu_ids(gpu_ids) -> None:
 def get_device_map() -> str:
     device = get_device()
     if device == DeviceType.CUDA and get_visible_gpu_count() > 1:
-        return "balanced_low0"
+        return "balanced_low_0"
     return "sequential"
 
 

@@ -70,7 +70,8 @@ def _get_backend_visible_gpu_info() -> dict:
         "devices": [],
     }
 
-    allowed_indices = set(gpu_info["parent_visible_gpu_ids"]) or None
+    parent_ids = gpu_info["parent_visible_gpu_ids"]
+    allowed_indices = set(parent_ids) if parent_ids else set()
 
     try:
         result = subprocess.run(
@@ -88,7 +89,7 @@ def _get_backend_visible_gpu_info() -> dict:
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) == 3:
                     idx = int(parts[0])
-                    if allowed_indices is not None and idx not in allowed_indices:
+                    if idx not in allowed_indices:
                         continue
                     gpu_info["devices"].append(
                         {
