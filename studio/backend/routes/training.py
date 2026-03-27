@@ -100,7 +100,6 @@ async def get_hardware_utilization(
 async def get_visible_hardware_utilization(
     current_subject: str = Depends(get_current_subject),
 ):
-    # Get live utilization for every GPU visible to the Studio backend process.
     from utils.hardware import get_visible_gpu_utilization
 
     return get_visible_gpu_utilization()

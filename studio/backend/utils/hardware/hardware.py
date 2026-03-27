@@ -21,6 +21,7 @@ import platform
 import structlog
 from loggers import get_logger
 from enum import Enum
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 logger = get_logger(__name__)
@@ -413,7 +414,6 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
 
 def get_visible_gpu_utilization() -> Dict[str, Any]:
-    # Return live utilization for every GPU visible to the current process.
     device = get_device()
 
     if device != DeviceType.CUDA:
@@ -515,7 +515,6 @@ _visible_gpu_count: Optional[int] = None
 
 
 def get_parent_visible_gpu_ids() -> list[int]:
-    # Return the physical GPU IDs visible to the current process.
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cuda_visible is not None:
         cuda_visible = cuda_visible.strip()
@@ -526,15 +525,12 @@ def get_parent_visible_gpu_ids() -> list[int]:
                 int(value.strip()) for value in cuda_visible.split(",") if value.strip()
             ]
         except ValueError:
-            # UUID / MIG syntax (e.g. GPU-abc123, MIG-GPU-abc/1/0) --
-            # cannot map to numeric indices, fall through to physical count.
             pass
 
     return list(range(get_physical_gpu_count()))
 
 
 def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
-    # Resolve and validate requested physical GPU IDs.
     parent_visible_ids = get_parent_visible_gpu_ids()
     physical_gpu_count = get_physical_gpu_count()
 
@@ -574,6 +570,272 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
         )
 
     return requested_ids
+
+
+def _resolve_model_identifier_for_gpu_estimate(
+    model_name: str, hf_token: Optional[str] = None
+) -> str:
+    try:
+        from utils.models.model_config import ModelConfig
+
+        config = ModelConfig.from_identifier(model_name, hf_token = hf_token)
+        if config and config.is_lora and config.base_model:
+            return config.base_model
+        return config.identifier if config else model_name
+    except Exception as e:
+        logger.debug(
+            "Could not resolve base model for GPU estimate '%s': %s", model_name, e
+        )
+        return model_name
+
+
+def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
+    model_path = Path(model_name)
+    if not model_path.exists():
+        return None
+
+    weight_exts = (".safetensors", ".bin", ".pt", ".pth")
+    total = 0
+    for file in model_path.rglob("*"):
+        if file.is_file() and file.suffix in weight_exts:
+            total += file.stat().st_size
+    return total if total > 0 else None
+
+
+def _get_hf_safetensors_total_params(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[int]:
+    try:
+        from huggingface_hub import model_info as hf_model_info
+
+        info = hf_model_info(model_name, token = hf_token)
+        safetensors = getattr(info, "safetensors", None)
+        if isinstance(safetensors, dict):
+            total = safetensors.get("total")
+            if total:
+                return int(total)
+    except Exception as e:
+        logger.debug("Could not get safetensors metadata for '%s': %s", model_name, e)
+    return None
+
+
+def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
+    try:
+        from transformers import AutoConfig
+
+        trust_remote_code = model_name.lower().startswith("unsloth/")
+        return AutoConfig.from_pretrained(
+            model_name,
+            token = hf_token,
+            trust_remote_code = trust_remote_code,
+        )
+    except Exception as e:
+        logger.debug("Could not load config for '%s': %s", model_name, e)
+        return None
+
+
+def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
+    text_config = getattr(config, "text_config", None) or config
+
+    vocab_size = getattr(text_config, "vocab_size", None)
+    hidden_size = getattr(text_config, "hidden_size", None)
+    intermediate_size = getattr(text_config, "intermediate_size", None)
+    num_layers = getattr(text_config, "num_hidden_layers", None)
+    num_heads = getattr(text_config, "num_attention_heads", None)
+
+    if isinstance(intermediate_size, (list, tuple)):
+        intermediate_size = intermediate_size[0] if intermediate_size else None
+    if intermediate_size is None and hidden_size is not None:
+        intermediate_size = hidden_size * 4
+
+    if not all(
+        value is not None
+        for value in (vocab_size, hidden_size, intermediate_size, num_layers, num_heads)
+    ):
+        return None
+    if num_heads <= 0:
+        return None
+
+    num_kv_heads = getattr(text_config, "num_key_value_heads", num_heads)
+    kv_size = (hidden_size // num_heads) * num_kv_heads
+
+    qkvo = (hidden_size + kv_size + kv_size + hidden_size) * hidden_size
+    mlp = (hidden_size * intermediate_size) * 3
+    layernorms = 2 * hidden_size
+    embed_tokens = vocab_size * hidden_size
+    lm_head = 0 if getattr(text_config, "tie_word_embeddings", True) else vocab_size * hidden_size
+
+    total_elements = (qkvo + mlp + layernorms) * num_layers + embed_tokens + lm_head
+    return int(total_elements * 2)
+
+
+def estimate_fp16_model_size_bytes(
+    model_name: str, hf_token: Optional[str] = None
+) -> tuple[Optional[int], str]:
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(
+        model_name, hf_token = hf_token
+    )
+
+    total_params = None
+    if "/" in estimate_model and not Path(estimate_model).exists():
+        total_params = _get_hf_safetensors_total_params(
+            estimate_model, hf_token = hf_token
+        )
+    if total_params:
+        return int(total_params * 2), "safetensors"
+
+    config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    if config is not None:
+        config_bytes = _estimate_fp16_model_size_bytes_from_config(config)
+        if config_bytes is not None:
+            return config_bytes, "config"
+
+    local_bytes = _get_local_weight_size_bytes(estimate_model)
+    if local_bytes is not None:
+        return local_bytes, "weight_bytes"
+
+    return None, "unavailable"
+
+
+def estimate_required_model_memory_gb(
+    model_name: str,
+    *,
+    hf_token: Optional[str] = None,
+    training_type: Optional[str] = None,
+    load_in_4bit: bool = True,
+) -> tuple[Optional[float], Dict[str, Any]]:
+    model_size_bytes, source = estimate_fp16_model_size_bytes(
+        model_name, hf_token = hf_token
+    )
+    metadata: Dict[str, Any] = {
+        "mode": "inference" if training_type is None else "training",
+        "model_size_source": source,
+    }
+    if model_size_bytes is None:
+        metadata["required_gb"] = None
+        return None, metadata
+
+    model_size_gb = model_size_bytes / (1024**3)
+    metadata["model_size_gb"] = round(model_size_gb, 3)
+    min_buffer_gb = 2.0
+    min_qlora_total_gb = 3.0
+
+    if training_type is None:
+        required_gb = model_size_gb + max(model_size_gb * 0.3, min_buffer_gb)
+    elif training_type == "Full Finetuning":
+        required_gb = model_size_gb * 6.0
+    elif load_in_4bit:
+        base_4bit_gb = model_size_gb / 4.0
+        required_gb = max(
+            base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb),
+            min_qlora_total_gb,
+        )
+    else:
+        required_gb = model_size_gb + max(model_size_gb * 0.3, min_buffer_gb)
+
+    metadata["required_gb"] = round(required_gb, 3)
+    metadata["min_buffer_gb"] = min_buffer_gb
+    metadata["min_qlora_total_gb"] = min_qlora_total_gb
+    return required_gb, metadata
+
+
+def auto_select_gpu_ids(
+    model_name: str,
+    *,
+    hf_token: Optional[str] = None,
+    training_type: Optional[str] = None,
+    load_in_4bit: bool = True,
+) -> tuple[Optional[list[int]], Dict[str, Any]]:
+    metadata: Dict[str, Any] = {"selection_mode": "auto"}
+
+    if get_device() != DeviceType.CUDA:
+        metadata["selection_mode"] = "non_cuda"
+        return None, metadata
+
+    required_gb, estimate_metadata = estimate_required_model_memory_gb(
+        model_name,
+        hf_token = hf_token,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+    )
+    metadata.update(estimate_metadata)
+    if required_gb is None:
+        metadata["selection_mode"] = "unavailable"
+        return None, metadata
+
+    utilization = get_visible_gpu_utilization()
+    devices = utilization.get("devices", [])
+    if not devices:
+        metadata["selection_mode"] = "fallback_all"
+        return None, metadata
+
+    gpu_candidates = []
+    for device in devices:
+        total_gb = device.get("vram_total_gb")
+        used_gb = device.get("vram_used_gb")
+        if total_gb is None or used_gb is None:
+            continue
+        free_gb = max(total_gb - used_gb, 0.0)
+        gpu_candidates.append(
+            {
+                "index": device["index"],
+                "free_gb": free_gb,
+            }
+        )
+
+    if not gpu_candidates:
+        metadata["selection_mode"] = "fallback_all"
+        return None, metadata
+
+    ranked = sorted(gpu_candidates, key = lambda item: (-item["free_gb"], item["index"]))
+    free_by_index = {item["index"]: item["free_gb"] for item in ranked}
+    selected: list[int] = []
+    usable_gb = 0.0
+
+    for candidate in ranked:
+        selected.append(candidate["index"])
+        if len(selected) == 1:
+            usable_gb = candidate["free_gb"]
+        else:
+            usable_gb = sum(free_by_index[gpu_id] * 0.8 for gpu_id in selected)
+
+        if usable_gb >= required_gb:
+            metadata["usable_gb"] = round(usable_gb, 3)
+            metadata["selection_mode"] = "auto"
+            metadata["selected_gpu_ids"] = selected
+            return selected, metadata
+
+    fallback_all = [device["index"] for device in devices]
+    metadata["selection_mode"] = "fallback_all"
+    metadata["usable_gb"] = round(
+        sum(candidate["free_gb"] * 0.8 for candidate in ranked),
+        3,
+    )
+    metadata["selected_gpu_ids"] = fallback_all
+    return fallback_all, metadata
+
+
+def prepare_gpu_selection(
+    gpu_ids: Optional[list[int]],
+    *,
+    model_name: str,
+    hf_token: Optional[str] = None,
+    training_type: Optional[str] = None,
+    load_in_4bit: bool = True,
+) -> tuple[Optional[list[int]], Dict[str, Any]]:
+    if gpu_ids is not None:
+        resolved = resolve_requested_gpu_ids(gpu_ids)
+        return resolved, {
+            "selection_mode": "explicit",
+            "selected_gpu_ids": resolved,
+        }
+
+    return auto_select_gpu_ids(
+        model_name,
+        hf_token = hf_token,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+    )
 
 
 def get_physical_gpu_count() -> int:
@@ -643,12 +905,10 @@ def get_visible_gpu_count() -> int:
 
 
 def apply_gpu_ids(gpu_ids) -> None:
-    # To select subset of GPUs for the training/inference process
     if gpu_ids is None:
         return
 
     global _visible_gpu_count
-    import os
 
     if isinstance(gpu_ids, (list, tuple)):
         value = ",".join(str(g) for g in gpu_ids)
@@ -656,7 +916,7 @@ def apply_gpu_ids(gpu_ids) -> None:
         value = str(gpu_ids)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = value
-    _visible_gpu_count = None  # bust cache
+    _visible_gpu_count = None
     logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 

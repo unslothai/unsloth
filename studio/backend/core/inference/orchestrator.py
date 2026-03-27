@@ -27,7 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
-from utils.hardware import resolve_requested_gpu_ids
+from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
 
@@ -598,10 +598,14 @@ class InferenceOrchestrator:
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": gpu_ids,
             }
-            resolved_gpu_ids = resolve_requested_gpu_ids(gpu_ids)
-            sub_config["resolved_gpu_ids"] = (
-                resolved_gpu_ids if gpu_ids is not None else None
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                gpu_ids,
+                model_name = model_name,
+                hf_token = hf_token,
+                load_in_4bit = load_in_4bit,
             )
+            sub_config["resolved_gpu_ids"] = resolved_gpu_ids
+            sub_config["gpu_selection"] = gpu_selection
 
             # Always kill existing subprocess and spawn fresh.
             # Reusing a subprocess after unsloth patches torch internals

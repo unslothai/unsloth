@@ -43,7 +43,7 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "List of GPU indices to use (e.g. [0, 1]). If None, uses all visible GPUs.",
+        description = "Physical GPU indices to use, for example [0, 1]. Omit to use automatic selection.",
     )
 
 
