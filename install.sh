@@ -863,23 +863,16 @@ if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
+    _no_deps_arg=""
     if [ "$SKIP_TORCH" = true ]; then
-        # No-torch mode: install unsloth + unsloth-zoo without their torch deps
-        uv pip install --python "$_VENV_PY" --no-deps \
-            --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.14" unsloth-zoo
-        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-            echo "==> Overlaying local repo (editable)..."
-            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        fi
-    else
-        uv pip install --python "$_VENV_PY" \
-            --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.14" unsloth-zoo
-        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-            echo "==> Overlaying local repo (editable)..."
-            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        fi
+        _no_deps_arg="--no-deps"
+    fi
+    uv pip install --python "$_VENV_PY" $_no_deps_arg \
+        --reinstall-package unsloth --reinstall-package unsloth-zoo \
+        "unsloth>=2026.3.14" unsloth-zoo
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
@@ -892,19 +885,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
+    _no_deps_arg=""
+    if [ "$SKIP_TORCH" = true ]; then
+        _no_deps_arg="--no-deps"
+    fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        if [ "$SKIP_TORCH" = true ]; then
-            # No-torch mode: install unsloth + unsloth-zoo without torch deps, then overlay
-            uv pip install --python "$_VENV_PY" --no-deps \
-                --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
-            echo "==> Overlaying local repo (editable)..."
-            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        else
-            uv pip install --python "$_VENV_PY" \
-                --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
-            echo "==> Overlaying local repo (editable)..."
-            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        fi
+        uv pip install --python "$_VENV_PY" $_no_deps_arg \
+            --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+        echo "==> Overlaying local repo (editable)..."
+        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "$PACKAGE_NAME"
