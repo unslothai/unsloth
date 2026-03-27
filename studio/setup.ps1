@@ -12,7 +12,7 @@
 .NOTES
     Default output is minimal (step/substep), aligned with studio/setup.sh.
 
-    FULL / LEGACY LOGGING (defensible audit trail, multi-line [OK]/[WARN]/paths):
+    FULL / LEGACY LOGGING (defensible audit trail, detailed multi-line output):
       unsloth studio setup --verbose
       (sets UNSLOTH_VERBOSE=1; same as install_python_stack.py)
       Or:  $env:UNSLOTH_VERBOSE='1'; powershell -File .\studio\setup.ps1
@@ -497,7 +497,7 @@ try {
 } catch {}
 
 if ($LongPathsEnabled) {
-    Write-Host "[OK] Windows Long Paths enabled" -ForegroundColor Green
+    step "long paths" "enabled"
 } else {
     Write-Host "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-Host "   Requesting admin access to fix..." -ForegroundColor Yellow
@@ -508,12 +508,12 @@ if ($LongPathsEnabled) {
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
             $LongPathsEnabled = $true
-            Write-Host "[OK] Windows Long Paths enabled (via UAC)" -ForegroundColor Green
+            step "long paths" "enabled (via UAC)"
         } else {
-            Write-Host "[WARN] Failed to enable Long Paths (exit code: $($proc.ExitCode))" -ForegroundColor Yellow
+            step "long paths" "failed to enable (exit code: $($proc.ExitCode))" "Yellow"
         }
     } catch {
-        Write-Host "[WARN] Could not enable Long Paths (UAC was declined or not available)" -ForegroundColor Yellow
+        step "long paths" "could not enable (UAC declined/unavailable)" "Yellow"
         Write-Host "       Run this manually in an Admin terminal:" -ForegroundColor Yellow
         Write-Host '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan
     }
@@ -681,16 +681,16 @@ if ($DriverMaxCuda) {
                 if ($CudaArch) {
                     $archOk = Test-NvccArchSupport -NvccExe $candidateNvcc -Arch $CudaArch
                     if (-not $archOk) {
-                        Write-Host "   [INFO] CUDA_PATH toolkit (CUDA $tkMaj.$tkMin) does not support GPU arch sm_$CudaArch" -ForegroundColor Yellow
+                        substep "CUDA_PATH toolkit (CUDA $tkMaj.$tkMin) does not support GPU arch sm_$CudaArch" "Yellow"
                         Write-Host "          Looking for a newer toolkit..." -ForegroundColor Yellow
                     }
                 }
                 if ($archOk) {
                     $NvccPath = $candidateNvcc
-                    Write-Host "   [OK] Using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)" -ForegroundColor Green
+                    substep "using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)"
                 }
             } else {
-                Write-Host "   [INFO] CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" -ForegroundColor Yellow
+                substep "CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" "Yellow"
             }
         }
     }
@@ -699,11 +699,11 @@ if ($DriverMaxCuda) {
     if (-not $NvccPath) {
         $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
         if ($NvccPath) {
-            Write-Host "   [OK] Found compatible CUDA Toolkit (nvcc: $NvccPath)" -ForegroundColor Green
+            substep "found compatible CUDA Toolkit (nvcc: $NvccPath)"
             if ($existingCudaPath) {
                 $selectedRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
                 if ($existingCudaPath.TrimEnd('\') -ne $selectedRoot.TrimEnd('\')) {
-                    Write-Host "   [INFO] Overriding CUDA_PATH from $existingCudaPath to $selectedRoot" -ForegroundColor Yellow
+                    substep "overriding CUDA_PATH from $existingCudaPath to $selectedRoot" "Yellow"
                 }
             }
         } else {
@@ -782,10 +782,10 @@ if (-not $NvccPath) {
                 Refresh-Environment
                 $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
                 if ($NvccPath) {
-                    Write-Host "   [OK] CUDA Toolkit $BestVersion installed (nvcc: $NvccPath)" -ForegroundColor Green
+                    substep "CUDA Toolkit $BestVersion installed (nvcc: $NvccPath)"
                 }
             } else {
-                Write-Host "   [WARN] No compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" -ForegroundColor Yellow
+                substep "no compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" "Yellow"
             }
         } else {
             Write-Host "   Installing CUDA Toolkit (latest) via winget..." -ForegroundColor Cyan
@@ -793,7 +793,7 @@ if (-not $NvccPath) {
             Refresh-Environment
             $NvccPath = Find-Nvcc
             if ($NvccPath) {
-                Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+                substep "CUDA Toolkit installed (nvcc: $NvccPath)"
             }
         }
     }
@@ -859,10 +859,10 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
     if ((Test-Path $cudaExtras) -and (Test-Path $vsCustomizations)) {
         $hasTargets = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
         if (-not $hasTargets) {
-            Write-Host "   [INFO] CUDA VS integration missing -- copying .targets files..." -ForegroundColor Yellow
+            substep "CUDA VS integration missing -- copying .targets files..." "Yellow"
             try {
                 Copy-Item "$cudaExtras\*" $vsCustomizations -Force -ErrorAction Stop
-                Write-Host "   [OK] CUDA VS integration files installed" -ForegroundColor Green
+                substep "CUDA VS integration files installed"
             } catch {
                 # Direct copy failed (needs admin). Try elevated copy via Start-Process.
                 try {
@@ -870,12 +870,12 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                     Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
                     $hasTargetsRetry = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
                     if ($hasTargetsRetry) {
-                        Write-Host "   [OK] CUDA VS integration files installed (elevated)" -ForegroundColor Green
+                        substep "CUDA VS integration files installed (elevated)"
                     } else {
                         throw "Copy did not produce .targets files"
                     }
                 } catch {
-                    Write-Host "   [WARN] Could not copy CUDA VS integration files" -ForegroundColor Yellow
+                    substep "could not copy CUDA VS integration files" "Yellow"
                     Write-Host "          The llama.cpp build may fail with 'No CUDA toolset found'." -ForegroundColor Yellow
                     Write-Host "          Manual fix: copy contents of" -ForegroundColor Yellow
                     Write-Host "            $cudaExtras" -ForegroundColor Cyan
@@ -894,7 +894,7 @@ Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
 # $CudaArch was detected earlier (before toolkit selection) so it could
 # influence which toolkit we picked.  Just log the final state here.
 if (-not $CudaArch) {
-    Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
+    substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
 } else {
     Write-Host "[SKIP] CUDA Toolkit -- no NVIDIA GPU detected" -ForegroundColor Yellow
@@ -923,14 +923,14 @@ if ($IsPipInstall) {
                       ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or
                       ($NodeMajor -ge 23)
             if ($NodeOk -and $NpmMajor -ge 11) {
-                Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
+                substep "Node $NodeVersion and npm $NpmVersion already meet requirements."
                 $NeedNode = $false
             } else {
-                Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
+                substep "Node $NodeVersion / npm $NpmVersion too old." "Yellow"
             }
         }
     } catch {
-        Write-Host "[WARN] Node/npm not found." -ForegroundColor Yellow
+        substep "Node/npm not found." "Yellow"
     }
 
     if ($NeedNode) {
@@ -957,12 +957,12 @@ if ($IsPipInstall) {
         $ErrorActionPreference = $prevEAP_bun
         Refresh-Environment
         if (Get-Command bun -ErrorAction SilentlyContinue) {
-            Write-Host "[OK] bun installed ($(bun --version))" -ForegroundColor Green
+            substep "bun installed ($(bun --version))"
         } else {
-            Write-Host "[OK] bun install skipped (npm will be used instead)" -ForegroundColor DarkGray
+            substep "bun install skipped (npm will be used instead)"
         }
     } else {
-        Write-Host "[OK] bun already installed ($(bun --version))" -ForegroundColor Green
+        substep "bun already installed ($(bun --version))"
     }
 }
 
@@ -977,7 +977,7 @@ if ($HasPython) {
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            Write-Host "[OK] Python $PyVer" -ForegroundColor Green
+            substep "Python $PyVer"
             $PythonOk = $true
         } else {
             Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
@@ -1057,7 +1057,7 @@ if ($IsPipInstall) {
         $NeedFrontendBuild = $false
         step "frontend" "up to date"
     } else {
-        Write-Host "[INFO] Frontend source changed since last build -- rebuilding..." -ForegroundColor Yellow
+        substep "Frontend source changed since last build -- rebuilding..." "Yellow"
     }
 }
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
@@ -1079,7 +1079,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 $hidden = "$gi._twbuild"
                 Rename-Item -Path $gi -NewName (Split-Path $hidden -Leaf) -Force
                 $HiddenGitignores += $gi
-                Write-Host "   [INFO] Temporarily hiding $gi (venv .gitignore blocks Tailwind scanner)" -ForegroundColor DarkGray
+                substep "Temporarily hiding $gi (venv .gitignore blocks Tailwind scanner)"
             }
         }
         $WalkDir = Split-Path $WalkDir -Parent
@@ -1122,7 +1122,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 $UseBun = $false
             }
         } else {
-            Write-Host "   [WARN] bun install failed (exit $bunExit), falling back to npm" -ForegroundColor Yellow
+            substep "bun install failed (exit $bunExit), falling back to npm" "Yellow"
             if (Test-Path "node_modules") {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -1182,7 +1182,7 @@ if (Test-Path $OxcValidatorDir) {
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
-    Write-Host "[OK] OXC validator runtime installed" -ForegroundColor Green
+    step "oxc runtime" "installed"
 }
 
 # ==========================================================================
@@ -1273,7 +1273,7 @@ if (-not $PythonCmd) {
     exit 1
 }
 
-Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
+substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
 # The venv must already exist (created by install.ps1).
 # This script (setup.ps1 / "unsloth studio update") only updates packages.
@@ -1328,7 +1328,7 @@ if (Test-Path $VenvDir -PathType Container) {
 
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
-        Write-Host "   [INFO] Stale venv detected ($reason) -- rebuilding..." -ForegroundColor Yellow
+        substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         try {
             Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
@@ -1422,7 +1422,7 @@ $TorchCacheDir = "C:\tc"
 if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
-Write-Host "[OK] TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)" -ForegroundColor Green
+substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
@@ -1473,10 +1473,10 @@ if ($CuTag -eq "cpu") {
         $tritonInstallExit = $LASTEXITCODE
     }
     if ($tritonInstallExit -ne 0) {
-        Write-Host "[WARN] Triton install failed -- torch.compile may not work" -ForegroundColor Yellow
+        substep "Triton install failed -- torch.compile may not work" "Yellow"
         Write-Host $output -ForegroundColor Yellow
     } else {
-        Write-Host "[OK] Triton for Windows installed (enables torch.compile)" -ForegroundColor Green
+        substep "Triton for Windows installed (enables torch.compile)"
     }
 }
 
@@ -1524,7 +1524,7 @@ if ($script:UnslothVerbose) {
     $tiktokenInstallExit = $LASTEXITCODE
 }
 if ($tiktokenInstallExit -ne 0) {
-    Write-Host "[WARN] Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" -ForegroundColor Yellow
+    substep "Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" "Yellow"
 }
 $ErrorActionPreference = $prevEAP_t5
 step "transformers" "5.x pre-installed"
@@ -1544,7 +1544,7 @@ $resolveExit = $LASTEXITCODE
 $ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 1).ToString().Trim() } else { "" }
 if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
     Write-Host ""
-    Write-Host "[WARN] Failed to resolve an installable prebuilt llama.cpp tag via $HelperReleaseRepo" -ForegroundColor Yellow
+    substep "Failed to resolve an installable prebuilt llama.cpp tag via $HelperReleaseRepo" "Yellow"
     Write-LlamaFailureLog -Output ($resolveOutput | Out-String)
     # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
     # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
@@ -1579,7 +1579,7 @@ Write-Host "Resolved llama.cpp release tag: $ResolvedLlamaTag" -ForegroundColor 
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
-    Write-Host "[WARN] UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" -ForegroundColor Yellow
+    substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
 } else {
     Write-Host ""
@@ -1588,7 +1588,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         Write-Host "Existing llama.cpp install detected -- validating staged prebuilt update before replacement" -ForegroundColor Gray
     }
     if ($SkipPrebuiltInstall) {
-        Write-Host "[WARN] Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build" -ForegroundColor Yellow
+        substep "Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build" "Yellow"
     } else {
         $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
@@ -1611,9 +1611,9 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path $LlamaCppDir) {
-                Write-Host "[WARN] Prebuilt update failed; existing install was restored or cleaned before source build fallback" -ForegroundColor Yellow
+                substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            Write-Host "[WARN] Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" -ForegroundColor Yellow
+            substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
         }
     }
@@ -1643,7 +1643,7 @@ if ($NeedLlamaSourceBuild) {
 
     if ($OpenSslRoot) {
         $OpenSslAvailable = $true
-        Write-Host "[OK] OpenSSL dev found at $OpenSslRoot" -ForegroundColor Green
+        substep "OpenSSL dev found at $OpenSslRoot"
     } else {
         Write-Host "" 
         Write-Host "Installing OpenSSL dev (for HTTPS in llama-server)..." -ForegroundColor Cyan
@@ -1655,13 +1655,13 @@ if ($NeedLlamaSourceBuild) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
                     $OpenSslRoot = $root
                     $OpenSslAvailable = $true
-                    Write-Host "[OK] OpenSSL dev installed at $OpenSslRoot" -ForegroundColor Green
+                    substep "OpenSSL dev installed at $OpenSslRoot"
                     break
                 }
             }
         }
         if (-not $OpenSslAvailable) {
-            Write-Host "[WARN] OpenSSL dev not available -- llama-server will be built without HTTPS" -ForegroundColor Yellow
+            substep "OpenSSL dev not available -- llama-server will be built without HTTPS" "Yellow"
         }
     }
 } else {
@@ -1711,7 +1711,7 @@ if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     if (-not $HasNvidiaSmi) {
         # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
-        Write-Host "[WARN] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Yellow
+        substep "CMake is required to build llama-server for GGUF chat mode." "Yellow"
         Write-Host "       Continuing setup without llama.cpp build." -ForegroundColor Yellow
         Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
     }
@@ -1770,7 +1770,7 @@ if (-not $NeedLlamaSourceBuild) {
             $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin }
         }
         if ($gitFetchExit -ne 0) {
-            Write-Host "   [WARN] git fetch failed -- using existing source" -ForegroundColor Yellow
+            substep "git fetch failed -- using existing source" "Yellow"
         } else {
             $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
             if ($gitCheckoutExit -ne 0) {
@@ -1848,7 +1848,7 @@ if (-not $NeedLlamaSourceBuild) {
                     $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
                     if ($maxArch) {
                         $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                        Write-Host "   [WARN] GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" -ForegroundColor Yellow
+                        substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
                         Write-Host "          Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" -ForegroundColor Yellow
                     }
                     # else: omit flag entirely, let cmake pick defaults
@@ -1901,7 +1901,7 @@ if (-not $NeedLlamaSourceBuild) {
         $output = cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-String
         $cmakeBuildQuantizeExit = $LASTEXITCODE
         if ($cmakeBuildQuantizeExit -ne 0) {
-            Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
+            substep "llama-quantize build failed (GGUF export may be unavailable)" "Yellow"
             Write-LlamaFailureLog -Output $output
         }
     }

@@ -65,7 +65,7 @@ function Install-UnslothStudio {
         )
 
         if (-not (Test-Path $UnslothExePath)) {
-            Write-Host "[WARN] Cannot create shortcuts: unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
+            Write-Host "Warning: cannot create shortcuts, unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
             return
         }
         try {
@@ -78,7 +78,7 @@ function Install-UnslothStudio {
 
             $localAppDataDir = $env:LOCALAPPDATA
             if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
-                Write-Host "[WARN] LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
+                Write-Host "Warning: LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
                 return
             }
             $appDir = Join-Path $localAppDataDir "Unsloth Studio"
@@ -101,10 +101,10 @@ function Install-UnslothStudio {
                 $null
             }
             if (-not $desktopLink) {
-                Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
+                Write-Host "Warning: Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
             }
             if (-not $startMenuLink) {
-                Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
+                Write-Host "Warning: APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
             }
             $iconPath = Join-Path $appDir "unsloth.ico"
             $bundledIcon = $null
@@ -312,19 +312,19 @@ shell.Run cmd, 0, False
                         $shortcut.Save()
                         $createdShortcutCount++
                     } catch {
-                        Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "Warning: could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
                     }
                 }
                 if ($createdShortcutCount -gt 0) {
-                    Write-Host "[OK] Created Unsloth Studio shortcut(s): $createdShortcutCount" -ForegroundColor Green
+                    Write-Host "Created Unsloth Studio shortcut(s): $createdShortcutCount" -ForegroundColor Green
                 } else {
-                    Write-Host "[WARN] No Unsloth Studio shortcuts were created" -ForegroundColor Yellow
+                    Write-Host "Warning: no Unsloth Studio shortcuts were created" -ForegroundColor Yellow
                 }
             } catch {
-                Write-Host "[WARN] Shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "Warning: shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
             }
         } catch {
-            Write-Host "[WARN] Shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "Warning: shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 
@@ -556,9 +556,9 @@ shell.Run cmd, 0, False
         }
     }
     if ($HasNvidiaSmi) {
-        Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
+        Write-Host "NVIDIA GPU detected" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
+        Write-Host "Warning: no NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
         Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
         Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     }
@@ -580,7 +580,7 @@ shell.Run cmd, 0, False
                 return "$baseUrl/cpu"
             }
         } catch {}
-        Write-Host "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" -ForegroundColor Yellow
+        Write-Host "Warning: could not determine CUDA version from nvidia-smi, defaulting to cu126" -ForegroundColor Yellow
         return "$baseUrl/cu126"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
@@ -647,7 +647,7 @@ shell.Run cmd, 0, False
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
-    Write-Host "==> Running unsloth studio setup..."
+    Write-Host "==> Running unsloth studio update..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
@@ -663,9 +663,9 @@ shell.Run cmd, 0, False
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
     }
-    & $UnslothExe studio setup
+    & $UnslothExe studio update
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host "[ERROR] unsloth studio update failed (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
 
@@ -681,7 +681,7 @@ shell.Run cmd, 0, False
             [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
         }
         Refresh-SessionPath
-        Write-Host "[OK] Added unsloth to PATH" -ForegroundColor Green
+        Write-Host "Added unsloth to PATH" -ForegroundColor Green
     }
 
     Write-Host ""
