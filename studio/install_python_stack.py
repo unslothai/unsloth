@@ -420,7 +420,7 @@ def install_python_stack() -> int:
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
-        print(_green(f"✅ {package_name} already installed — skipping base packages"))
+        pass
     elif local_repo:
         # Local dev install: update deps from base.txt, then overlay the
         # local checkout as an editable install (--no-deps so torch is
