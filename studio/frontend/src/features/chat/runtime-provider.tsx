@@ -769,15 +769,19 @@ export function ChatRuntimeProvider({
 
       // Merge backend messages into Dexie
       for (const m of data.messages) {
-        await db.messages.put({
-          id: m.id,
-          threadId: m.thread_id,
-          role: m.role as MessageRecord["role"],
-          content: JSON.parse(m.content),
-          ...(m.attachments && { attachments: JSON.parse(m.attachments) }),
-          ...(m.metadata && { metadata: JSON.parse(m.metadata) }),
-          createdAt: m.created_at,
-        });
+        try {
+          await db.messages.put({
+            id: m.id,
+            threadId: m.thread_id,
+            role: m.role as MessageRecord["role"],
+            content: JSON.parse(m.content),
+            ...(m.attachments && { attachments: JSON.parse(m.attachments) }),
+            ...(m.metadata && { metadata: JSON.parse(m.metadata) }),
+            createdAt: m.created_at,
+          });
+        } catch {
+          console.warn(`[chat-sync] Skipping corrupt message ${m.id}`);
+        }
       }
 
       // Push local-only threads to backend
@@ -806,7 +810,9 @@ export function ChatRuntimeProvider({
           });
         }
       }
-    })();
+    })().catch((err) => {
+      console.warn("[chat-sync] Hydration failed:", err);
+    });
   }, []);
 
   return (
