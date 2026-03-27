@@ -206,25 +206,17 @@ def _web_search(
         if not results:
             return "No results found."
 
-        # Fetch full page content for the top result (best-effort,
-        # capped at 10s so it does not block the agentic loop).
-        top_page = ""
-        for r in results[:2]:
-            href = r.get("href", "")
-            if href:
-                top_page = _fetch_page_text(href, max_chars = 6000, timeout = 10)
-                if len(top_page) > 200:
-                    break
         parts = []
-        for i, r in enumerate(results):
-            entry = (
+        for r in results:
+            parts.append(
                 f"Title: {r.get('title', '')}\n"
                 f"URL: {r.get('href', '')}\n"
                 f"Snippet: {r.get('body', '')}"
             )
-            if i == 0 and top_page:
-                entry += f"\n\nPage content:\n{top_page}"
-            parts.append(entry)
+        parts.append(
+            "\nTip: To read the full content of any page above, "
+            "call web_search again with the url parameter."
+        )
         return "\n\n---\n\n".join(parts)
     except Exception as e:
         return f"Search failed: {e}"
