@@ -182,7 +182,9 @@ def _fetch_page_text(url: str, max_chars: int = 4000, timeout: int = 10) -> str:
         return ""
 
 
-def _web_search(query: str, url: str = "", max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
+def _web_search(
+    query: str, url: str = "", max_results: int = 5, timeout: int = _EXEC_TIMEOUT
+) -> str:
     """Search the web using DuckDuckGo and return formatted results.
 
     If *url* is provided, fetches that page directly (skips search).
