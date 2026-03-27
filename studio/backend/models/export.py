@@ -6,7 +6,7 @@ Pydantic schemas for Export API.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Dict, Any
+from typing import Optional, Literal, Dict, Any
 
 
 class LoadCheckpointRequest(BaseModel):

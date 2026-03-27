@@ -15,13 +15,11 @@ Pattern follows core/inference/orchestrator.py.
 """
 
 import atexit
-import structlog
 from loggers import get_logger
 import multiprocessing as mp
 import queue
 import threading
 import time
-from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from utils.paths import outputs_root
 

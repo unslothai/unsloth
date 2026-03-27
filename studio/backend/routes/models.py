@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
-import structlog
 from loggers import get_logger
 
 import re as _re
@@ -775,7 +774,6 @@ async def get_gguf_variants(
         # case-insensitive match.
         cached_bytes_by_quant: dict[str, int] = {}
         try:
-            import re as _re
             from huggingface_hub import constants as hf_constants
 
             # Sanitize repo_id: must be "owner/name" with safe chars only

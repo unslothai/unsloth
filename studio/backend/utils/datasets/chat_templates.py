@@ -8,12 +8,11 @@ This module contains functions for applying chat templates to datasets
 and generating dataset info summaries.
 """
 
-from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
+from .format_detection import detect_custom_format_heuristic
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
 from loggers import get_logger
+
 logger = get_logger(__name__)
-
-
 
 
 DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -63,18 +62,21 @@ def get_tokenizer_chat_template(tokenizer, model_name):
             )
         except Exception as e:
             logger.info(f"⚠️ Failed to apply Unsloth template '{matched_template}': {e}")
-            logger.info(f"   Falling back to tokenizer's default chat template")
+            logger.info("   Falling back to tokenizer's default chat template")
     else:
         # Check if tokenizer actually has a chat_template set
         has_chat_template = (
-            hasattr(tokenizer, 'chat_template')
-            and tokenizer.chat_template is not None
+            hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None
         )
         if has_chat_template:
-            logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
+            logger.info(
+                "📝 Using tokenizer's own chat template (no Unsloth template match)"
+            )
         else:
             # Base model with no chat template — apply default ChatML
-            logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
+            logger.info(
+                "📝 No chat template found — applying default ChatML template (base model)"
+            )
             try:
                 tokenizer = get_chat_template(
                     tokenizer,
@@ -82,7 +84,7 @@ def get_tokenizer_chat_template(tokenizer, model_name):
                 )
             except Exception as e:
                 logger.info(f"⚠️ Failed to apply default ChatML template: {e}")
-                logger.info(f"   Falling back to tokenizer as-is")
+                logger.info("   Falling back to tokenizer as-is")
 
     return tokenizer
 
@@ -99,7 +101,7 @@ def get_dataset_info_summary(dataset_info):
         "sharegpt": "ShareGPT format (needs standardization)",
         "chatml_messages": "ChatML format (messages column) - OpenAI compatible",
         "chatml_conversations": "ChatML format (conversations column) - HuggingFace standard",
-        "unknown": "Unknown format"
+        "unknown": "Unknown format",
     }
 
     return {
@@ -110,7 +112,8 @@ def get_dataset_info_summary(dataset_info):
         "chat_column": dataset_info["chat_column"],
         "is_standardized": dataset_info["is_standardized"],
         "warnings": dataset_info.get("warnings", []),
-        "ready_for_training": dataset_info["is_standardized"] and final_format != "unknown"
+        "ready_for_training": dataset_info["is_standardized"]
+        and final_format != "unknown",
     }
 
 
@@ -154,7 +157,7 @@ def apply_chat_template_to_dataset(
     # Get EOS token if needed
     eos_token = ""
     if add_eos_token:
-        if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token:
+        if hasattr(tokenizer, "eos_token") and tokenizer.eos_token:
             eos_token = tokenizer.eos_token
         else:
             warnings.append("add_eos_token=True but tokenizer has no eos_token")
@@ -167,14 +170,16 @@ def apply_chat_template_to_dataset(
             if not dataset_info.get("auto_detection_attempted", False):
                 custom_format_mapping = detect_custom_format_heuristic(dataset)
                 if custom_format_mapping:
-                    warnings.append(f"Auto-detected column mapping: {custom_format_mapping}")
+                    warnings.append(
+                        f"Auto-detected column mapping: {custom_format_mapping}"
+                    )
                 else:
                     errors.append("Could not auto-detect format mapping")
                     return {
                         "dataset": dataset,
                         "success": False,
                         "warnings": warnings,
-                        "errors": errors
+                        "errors": errors,
                     }
             else:
                 # Already failed once in format_dataset, don't retry
@@ -186,7 +191,7 @@ def apply_chat_template_to_dataset(
                     "dataset": dataset,
                     "success": False,
                     "warnings": warnings,
-                    "errors": errors
+                    "errors": errors,
                 }
 
         if custom_format_mapping:
@@ -209,7 +214,7 @@ def apply_chat_template_to_dataset(
 
                 for i in range(num_examples):
                     convo = []
-                    role_order = ['system', 'user', 'assistant']
+                    role_order = ["system", "user", "assistant"]
 
                     for target_role in role_order:
                         for col_name, role in custom_format_mapping.items():
@@ -218,11 +223,18 @@ def apply_chat_template_to_dataset(
 
                                 if is_user_provided:
                                     # User explicitly mapped - include even if empty
-                                    convo.append({"role": role, "content": str(content) if content else ""})
+                                    convo.append(
+                                        {
+                                            "role": role,
+                                            "content": str(content) if content else "",
+                                        }
+                                    )
                                 else:
                                     # Auto-detected - skip empty
                                     if content and str(content).strip():
-                                        convo.append({"role": role, "content": str(content)})
+                                        convo.append(
+                                            {"role": role, "content": str(content)}
+                                        )
 
                     conversations.append(convo)
 
@@ -232,31 +244,35 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                dataset = dataset.map(_apply_custom_mapping, batched = True, batch_size = batch_size)
+                dataset = dataset.map(
+                    _apply_custom_mapping, batched = True, batch_size = batch_size
+                )
                 # Update to use conversations format
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
                 is_standardized = True
-                warnings.append("Successfully converted to ChatML format via custom mapping")
+                warnings.append(
+                    "Successfully converted to ChatML format via custom mapping"
+                )
             except Exception as e:
                 errors.append(f"Custom format mapping failed: {e}")
                 return {
                     "dataset": dataset,
                     "success": False,
                     "warnings": warnings,
-                    "errors": errors
+                    "errors": errors,
                 }
 
     # ALPACA FORMAT
     if final_format == "alpaca":
-
         # Set alpaca chat template on tokenizer for saving (if not already set)
         # This ensures the template is saved with the model for inference
-        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
+        if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
             try:
                 from unsloth.chat_templates import get_chat_template
+
                 tokenizer = get_chat_template(tokenizer, chat_template = "alpaca")
-                logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
+                logger.info("📝 Set alpaca chat template on tokenizer for model saving")
             except Exception as e:
                 logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
 
@@ -266,12 +282,16 @@ def apply_chat_template_to_dataset(
             for i in range(len(examples["instruction"])):
                 fields = {
                     "instruction": examples["instruction"][i],
-                    "input": examples.get("input", [""] * len(examples["instruction"]))[i],
-                    "output": examples["output"][i]
+                    "input": examples.get("input", [""] * len(examples["instruction"]))[
+                        i
+                    ],
+                    "output": examples["output"][i],
                 }
 
                 try:
-                    text = DEFAULT_ALPACA_TEMPLATE.format(fields["instruction"], fields["input"], fields["output"])
+                    text = DEFAULT_ALPACA_TEMPLATE.format(
+                        fields["instruction"], fields["input"], fields["output"]
+                    )
                     text += eos_token
                     texts.append(text)
                 except KeyError as e:
@@ -284,24 +304,26 @@ def apply_chat_template_to_dataset(
 
         try:
             dataset_map_kwargs = {
-                'batched': True,
-                'batch_size': batch_size,
+                "batched": True,
+                "batch_size": batch_size,
             }
 
             try:
                 from torch.utils.data import IterableDataset
+
                 _is_torch_iterable = isinstance(dataset, IterableDataset)
             except ImportError:
                 _is_torch_iterable = False
 
             if not _is_torch_iterable:
                 from utils.hardware import dataset_map_num_proc
+
                 if num_proc is None or type(num_proc) is not int:
                     num_proc = dataset_map_num_proc()
                 else:
                     num_proc = dataset_map_num_proc(num_proc)
-                dataset_map_kwargs['num_proc'] = num_proc
-                dataset_map_kwargs['desc'] = "Applying template to Alpaca format"
+                dataset_map_kwargs["num_proc"] = num_proc
+                dataset_map_kwargs["desc"] = "Applying template to Alpaca format"
 
             formatted_dataset = dataset.map(formatted_fn, **dataset_map_kwargs)
 
@@ -309,7 +331,7 @@ def apply_chat_template_to_dataset(
                 "dataset": formatted_dataset,
                 "success": True,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
             }
         except Exception as e:
             errors.append(f"Failed to format Alpaca dataset: {e}")
@@ -317,12 +339,11 @@ def apply_chat_template_to_dataset(
                 "dataset": dataset,
                 "success": False,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
             }
 
     # CHATML FORMATS
     elif final_format in ["chatml_messages", "chatml_conversations"]:
-
         if not is_standardized:
             warnings.append("Dataset may not be fully standardized")
 
@@ -337,13 +358,11 @@ def apply_chat_template_to_dataset(
             for convo in convos:
                 try:
                     text = tokenizer.apply_chat_template(
-                        convo,
-                        tokenize = False,
-                        add_generation_prompt = False
+                        convo, tokenize = False, add_generation_prompt = False
                     )
 
                     if remove_bos_prefix:
-                        text = text.removeprefix('<bos>')
+                        text = text.removeprefix("<bos>")
                     text += eos_token
 
                     texts.append(text)
@@ -357,23 +376,25 @@ def apply_chat_template_to_dataset(
         try:
             try:
                 from torch.utils.data import IterableDataset
+
                 _is_torch_iterable = isinstance(dataset, IterableDataset)
             except ImportError:
                 _is_torch_iterable = False
 
             dataset_map_kwargs = {
-                'batched': True,
-                'batch_size': batch_size,
+                "batched": True,
+                "batch_size": batch_size,
             }
 
             if not _is_torch_iterable:
                 from utils.hardware import dataset_map_num_proc
+
                 if num_proc is None or type(num_proc) is not int:
                     num_proc = dataset_map_num_proc()
                 else:
                     num_proc = dataset_map_num_proc(num_proc)
-                dataset_map_kwargs['num_proc'] = num_proc
-                dataset_map_kwargs['desc'] = f"Applying chat template to {final_format}"
+                dataset_map_kwargs["num_proc"] = num_proc
+                dataset_map_kwargs["desc"] = f"Applying chat template to {final_format}"
 
             # Monitor tqdm progress from dataset.map() and relay to callback
             _tqdm_monitor_stop = None
@@ -411,7 +432,7 @@ def apply_chat_template_to_dataset(
                 "dataset": formatted_dataset,
                 "success": True,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
             }
         except Exception as e:
             errors.append(f"Failed to format ChatML dataset: {e}")
@@ -419,7 +440,7 @@ def apply_chat_template_to_dataset(
                 "dataset": dataset,
                 "success": False,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
             }
 
     # UNKNOWN FORMAT
@@ -432,5 +453,5 @@ def apply_chat_template_to_dataset(
             "dataset": dataset,
             "success": False,
             "warnings": warnings,
-            "errors": errors
+            "errors": errors,
         }

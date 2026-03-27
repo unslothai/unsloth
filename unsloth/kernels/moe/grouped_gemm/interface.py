@@ -3,7 +3,6 @@
 
 import logging
 import warnings
-from dataclasses import asdict
 from unsloth import DEVICE_TYPE
 
 import torch

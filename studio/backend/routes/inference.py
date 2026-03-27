@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
-import structlog
 from loggers import get_logger
 import asyncio
 import threading
@@ -82,8 +81,6 @@ from models.inference import (
 )
 from auth.authentication import get_current_subject
 
-import io
-import wave
 import base64
 import numpy as np
 
@@ -328,14 +325,14 @@ async def load_model(
                     training_method = adapter_cfg.get("unsloth_training_method")
                     if training_method == "lora" and load_in_4bit:
                         logger.info(
-                            f"adapter_config.json says unsloth_training_method='lora' — "
-                            f"setting load_in_4bit=False to match 16-bit training"
+                            "adapter_config.json says unsloth_training_method='lora' — "
+                            "setting load_in_4bit=False to match 16-bit training"
                         )
                         load_in_4bit = False
                     elif training_method == "qlora" and not load_in_4bit:
                         logger.info(
-                            f"adapter_config.json says unsloth_training_method='qlora' — "
-                            f"setting load_in_4bit=True to match QLoRA training"
+                            "adapter_config.json says unsloth_training_method='qlora' — "
+                            "setting load_in_4bit=True to match QLoRA training"
                         )
                         load_in_4bit = True
                     elif training_method:
@@ -752,7 +749,6 @@ async def generate_audio(
 
 def _decode_audio_base64(b64: str) -> np.ndarray:
     """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
-    import torch
     import torchaudio
     import tempfile
     import os

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import structlog
 import subprocess
 from copy import deepcopy
 from dataclasses import dataclass

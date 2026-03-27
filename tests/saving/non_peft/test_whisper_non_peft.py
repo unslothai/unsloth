@@ -1,6 +1,5 @@
-from unsloth import FastLanguageModel, FastModel
-from transformers import AutoModelForCausalLM, WhisperForConditionalGeneration
-from peft import PeftModel
+from unsloth import FastModel
+from transformers import WhisperForConditionalGeneration
 from pathlib import Path
 import sys
 import warnings

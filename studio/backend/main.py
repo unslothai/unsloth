@@ -37,7 +37,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, Response
 from pathlib import Path
 from datetime import datetime
 
@@ -219,7 +219,7 @@ async def get_system_info():
     import platform
     import subprocess
     import psutil
-    from utils.hardware import get_device, get_gpu_memory_info, DeviceType
+    from utils.hardware import get_gpu_memory_info
 
     # GPU Info — query nvidia-smi for physical GPUs, filtered by
     # CUDA_VISIBLE_DEVICES when set (the frontend uses this for GGUF

@@ -25,20 +25,11 @@ Key architecture differences from Qwen3 MoE:
 
 from .llama import *
 import os
-from ._utils import __version__
 from .llama import (
-    LlamaRotaryEmbedding,
-    LlamaLinearScalingRotaryEmbedding,
-    fix_prepare_inputs_for_generation,
     fast_rms_layernorm_inference,
     fast_swiglu_inference,
-    LlamaModel_fast_forward,
-    LlamaModel_fast_forward_inference,
-    CausalLM_fast_forward,
-    PeftModel_fast_forward,
 )
 import torch
-import torch.nn.functional as F
 from typing import Optional, Tuple
 from ..kernels import fast_rms_layernorm
 

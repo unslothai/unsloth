@@ -9,7 +9,7 @@ particularly for VLM/OCR processing.
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Union
+from typing import Any, List
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -75,7 +75,6 @@ class DeepSeekOCRDataCollator:
         Returns:
             dict with input_ids, attention_mask, labels, pixel_values, etc.
         """
-        from PIL import Image
 
         # Extract messages and images
         all_messages = []

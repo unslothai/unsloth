@@ -13,7 +13,6 @@ Pattern follows core/data_recipe/jobs/worker.py.
 
 from __future__ import annotations
 
-import structlog
 from loggers import get_logger
 import os
 import platform
@@ -460,7 +459,6 @@ def run_training_process(
             ensure_dir,
             resolve_output_dir,
             resolve_tensorboard_dir,
-            datasets_root,
         )
 
         import transformers

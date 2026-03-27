@@ -12,7 +12,6 @@ by spawned subprocesses.
 """
 
 import shutil
-import structlog
 from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional

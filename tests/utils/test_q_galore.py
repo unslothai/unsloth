@@ -14,7 +14,6 @@
 #
 # Tests for Q-GaLore integration (unsloth/optimizers/).
 
-import pytest
 import sys
 import os
 import torch

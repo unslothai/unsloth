@@ -18,22 +18,11 @@ from transformers import PreTrainedTokenizerFast
 import re
 import os
 from transformers.models.llama.modeling_llama import logger
-from peft import PeftModelForCausalLM
 import torch
-import itertools
-import collections
 import numpy as np
-import gc
-import subprocess
-import psutil
 
 from unsloth_zoo.tokenizer_utils import (
-    mean_of_trained_tokens,
     add_new_tokens,
-    fix_untrained_tokens,
-)
-from unsloth_zoo.training_utils import (
-    fix_zero_training_loss,
 )
 
 __all__ = [
@@ -357,7 +346,7 @@ def fix_sentencepiece_tokenizer(
         from transformers.convert_slow_tokenizer import import_protobuf
 
         sentencepiece_model_pb2 = import_protobuf()
-    except Exception as e:
+    except Exception:
         try:
             import google.protobuf
             from unsloth_zoo.utils import Version
@@ -946,7 +935,6 @@ def get_tokenizer_info(tokenizer) -> dict:
     }
 
 
-import inspect
 from inspect import getsource
 import trl
 import trl.trainer.sft_trainer
@@ -991,7 +979,7 @@ def patch_sft_trainer_tokenizer():
     Patches the trainer with changes
     """
     try:
-        sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
+        sft_trainer = eval("trl.trainer.sft_trainer.SFTTrainer")
     except:
         return
     all_imports = dir(trl.trainer.sft_trainer)

@@ -9,8 +9,7 @@ import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from typing import Dict, Optional, Any
-import structlog
+from typing import Optional, Any
 from loggers import get_logger
 import asyncio
 from datetime import datetime

@@ -353,7 +353,7 @@ def pip_install(
             )
             if result.returncode == 0:
                 return
-            print(_red(f"   uv failed, falling back to pip..."))
+            print(_red("   uv failed, falling back to pip..."))
             if result.stdout:
                 print(result.stdout.decode(errors = "replace"))
 

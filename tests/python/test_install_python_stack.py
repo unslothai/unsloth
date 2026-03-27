@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 # Add the studio directory so we can import install_python_stack
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"

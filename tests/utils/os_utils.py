@@ -98,10 +98,10 @@ def require_package(package_name, executable_name = None):
         for pm_name, cmd in install_commands.items():
             print(f"  {pm_name}: {cmd}")
 
-    print(f"\nAlternatively, install with conda:")
+    print("\nAlternatively, install with conda:")
     print(f"  conda install -c conda-forge {package_name}")
 
-    print(f"\nPlease install the required package and run the script again.")
+    print("\nPlease install the required package and run the script again.")
     sys.exit(1)
 
 
@@ -120,9 +120,9 @@ def require_python_package(package_name, import_name = None, pip_name = None):
         print(f"❌ Error: Python package '{package_name}' is not installed")
         print(f"\nPlease install {package_name} using pip:")
         print(f"  pip install {pip_name}")
-        print(f"  # or with conda:")
+        print("  # or with conda:")
         print(f"  conda install {pip_name}")
-        print(f"\nAfter installation, run this script again.")
+        print("\nAfter installation, run this script again.")
         sys.exit(1)
     else:
         print(f"✓ Python package '{package_name}' is installed")

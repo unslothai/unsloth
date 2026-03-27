@@ -14,13 +14,11 @@ Run: pytest tests/studio/install/test_pr4562_bugfixes.py -v
 """
 
 import importlib.util
-import json
 import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

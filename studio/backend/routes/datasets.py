@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-import structlog
 from loggers import get_logger
 
 # Add backend directory to path

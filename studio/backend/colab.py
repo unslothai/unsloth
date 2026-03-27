@@ -82,7 +82,6 @@ def start(port: int = 8888):
         from colab import start
         start()
     """
-    import sys
 
     logger.info("🦥 Starting Unsloth Studio...")
 

@@ -13,8 +13,6 @@
 # limitations under the License.
 
 import torch
-from functools import lru_cache
-from transformers.models.llama.modeling_llama import logger
 import os
 
 torch_compile_options = {
@@ -80,7 +78,8 @@ else:
     # See https://github.com/pytorch-labs/attention-gym/blob/main/examples/flex_attn.ipynb
     # for more examples
     # BSD 3-Clause License Copyright (c) 2023, Driss Guessous, Horace He et al
-    import functools, math
+    import functools
+    import math
 
     def generate_tanh_softcap(t):
         def tanh_softcap(x, b, h, q_idx, kv_idx):
