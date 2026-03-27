@@ -525,49 +525,40 @@ export function SharedComposer({
               </TooltipIconButton>
             </>
           )}
-          {reasoningAlwaysOn ? (
-            <span
-              className="flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary"
-              title="This model always uses thinking"
-            >
+          <button
+            type="button"
+            disabled={reasoningDisabled}
+            onClick={() => {
+              if (reasoningAlwaysOn) return;
+              const next = !reasoningEnabled;
+              setReasoningEnabled(next);
+              // Qwen3/3.5: adjust params for thinking on/off
+              const store = useChatRuntimeStore.getState();
+              const cp = store.params.checkpoint?.toLowerCase() ?? "";
+              if (cp.includes("qwen3")) {
+                const p = next
+                  ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+                  : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
+                store.setParams({ ...store.params, ...p });
+              }
+            }}
+            className={cn(
+              "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
+              reasoningDisabled
+                ? "cursor-not-allowed opacity-40"
+                : (reasoningEnabled || reasoningAlwaysOn)
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+            )}
+            aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+          >
+            {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
               <LightbulbIcon className="size-3" />
-              <span>Think</span>
-            </span>
-          ) : (
-            <button
-              type="button"
-              disabled={reasoningDisabled}
-              onClick={() => {
-                const next = !reasoningEnabled;
-                setReasoningEnabled(next);
-                // Qwen3/3.5: adjust params for thinking on/off
-                const store = useChatRuntimeStore.getState();
-                const cp = store.params.checkpoint?.toLowerCase() ?? "";
-                if (cp.includes("qwen3")) {
-                  const p = next
-                    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-                    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-                  store.setParams({ ...store.params, ...p });
-                }
-              }}
-              className={cn(
-                "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
-                reasoningDisabled
-                  ? "cursor-not-allowed opacity-40"
-                  : reasoningEnabled
-                    ? "bg-primary/10 text-primary hover:bg-primary/20"
-                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-              )}
-              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
-            >
-              {reasoningEnabled && !reasoningDisabled ? (
-                <LightbulbIcon className="size-3" />
-              ) : (
-                <LightbulbOffIcon className="size-3" />
-              )}
-              <span>Think</span>
-            </button>
-          )}
+            ) : (
+              <LightbulbOffIcon className="size-3" />
+            )}
+            <span>Think</span>
+          </button>
           <button
             type="button"
             disabled={toolsDisabled}
