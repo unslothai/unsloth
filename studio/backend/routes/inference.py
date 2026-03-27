@@ -930,10 +930,13 @@ async def openai_chat_completions(
                         )
                         yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
+                        _dc_counter = 0
                         for chunk_text in audio_input_generate():
-                            if await request.is_disconnected():
-                                cancel_event.set()
-                                return
+                            _dc_counter += 1
+                            if _dc_counter % 20 == 0:
+                                if await request.is_disconnected():
+                                    cancel_event.set()
+                                    return
                             if chunk_text:
                                 chunk = ChatCompletionChunk(
                                     id = completion_id,
@@ -1107,10 +1110,13 @@ async def openai_chat_completions(
                     prev_text = ""
                     _stream_usage = None
                     _stream_timings = None
+                    _dc_counter = 0
                     while True:
-                        if await request.is_disconnected():
-                            cancel_event.set()
-                            return
+                        _dc_counter += 1
+                        if _dc_counter % 20 == 0:
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
 
                         event = await asyncio.to_thread(next, gen, _tool_sentinel)
                         if event is _tool_sentinel:
@@ -1256,10 +1262,13 @@ async def openai_chat_completions(
                     prev_text = ""
                     _stream_usage = None
                     _stream_timings = None
+                    _dc_counter = 0
                     while True:
-                        if await request.is_disconnected():
-                            cancel_event.set()
-                            return
+                        _dc_counter += 1
+                        if _dc_counter % 20 == 0:
+                            if await request.is_disconnected():
+                                cancel_event.set()
+                                return
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
                             break
@@ -1465,6 +1474,7 @@ async def openai_chat_completions(
                 _DONE = object()  # sentinel for generator exhaustion
                 loop = asyncio.get_event_loop()
                 gen = generate()
+                _dc_counter = 0
                 while True:
                     # next(gen, _DONE) returns _DONE instead of raising
                     # StopIteration — StopIteration cannot propagate
@@ -1472,10 +1482,12 @@ async def openai_chat_completions(
                     cumulative = await loop.run_in_executor(None, next, gen, _DONE)
                     if cumulative is _DONE:
                         break
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        backend.reset_generation_state()
-                        return
+                    _dc_counter += 1
+                    if _dc_counter % 20 == 0:
+                        if await request.is_disconnected():
+                            cancel_event.set()
+                            backend.reset_generation_state()
+                            return
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
