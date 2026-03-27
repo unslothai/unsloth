@@ -36,7 +36,7 @@ class ChatThreadResponse(BaseModel):
 class ChatMessageCreate(BaseModel):
     id: str
     role: str
-    content: str = Field(..., description="JSON-serialized content array")
+    content: str = Field(..., description = "JSON-serialized content array")
     attachments: Optional[str] = None
     metadata: Optional[str] = None
     created_at: int

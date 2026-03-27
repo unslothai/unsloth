@@ -118,7 +118,9 @@ async def get_messages(
     return [_message_from_row(r) for r in rows]
 
 
-@router.post("/threads/{thread_id}/messages", response_model = ChatMessageResponse, status_code = 201)
+@router.post(
+    "/threads/{thread_id}/messages", response_model = ChatMessageResponse, status_code = 201
+)
 async def create_message(
     thread_id: str,
     body: ChatMessageCreate,

@@ -467,8 +467,12 @@ def upsert_chat_message(
 def get_all_chat_data() -> dict:
     conn = get_connection()
     try:
-        threads = conn.execute("SELECT * FROM chat_threads ORDER BY created_at DESC").fetchall()
-        messages = conn.execute("SELECT * FROM chat_messages ORDER BY created_at ASC").fetchall()
+        threads = conn.execute(
+            "SELECT * FROM chat_threads ORDER BY created_at DESC"
+        ).fetchall()
+        messages = conn.execute(
+            "SELECT * FROM chat_messages ORDER BY created_at ASC"
+        ).fetchall()
         return {
             "threads": [dict(t) for t in threads],
             "messages": [dict(m) for m in messages],
