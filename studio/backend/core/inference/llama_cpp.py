@@ -370,7 +370,7 @@ class LlamaCppBackend:
         available_mib: int,
         model_size_bytes: int,
         cache_type_kv: Optional[str] = None,
-        min_ctx: int = 2048,
+        min_ctx: int = 4096,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
