@@ -403,10 +403,7 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
 
     requested_ids = list(gpu_ids)
     if len(requested_ids) == 0:
-        raise ValueError(
-            "Invalid gpu_ids []: gpu_ids must be a non-empty list. "
-            f"Parent-visible GPUs: {parent_visible_ids}"
-        )
+        return parent_visible_ids
 
     if len(set(requested_ids)) != len(requested_ids):
         raise ValueError(
@@ -756,7 +753,7 @@ def prepare_gpu_selection(
     training_type: Optional[str] = None,
     load_in_4bit: bool = True,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
-    if gpu_ids is not None:
+    if gpu_ids:
         resolved = resolve_requested_gpu_ids(gpu_ids)
         return resolved, {
             "selection_mode": "explicit",
