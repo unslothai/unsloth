@@ -912,9 +912,6 @@ export function LoraModelPicker({
           baseModel: model.baseModel || model.description || "Unknown base model",
         }))
         .sort((a, b) => {
-          const aTime = a.updatedAt ?? -1;
-          const bTime = b.updatedAt ?? -1;
-          if (aTime !== bTime) return bTime - aTime;
           const baseCmp = a.baseModel.localeCompare(b.baseModel);
           if (baseCmp !== 0) return baseCmp;
           // Prioritize unsloth publisher within LM Studio group
@@ -923,6 +920,9 @@ export function LoraModelPicker({
             const bUnsloth = b.name.startsWith("unsloth/") ? 0 : 1;
             if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
           }
+          const aTime = a.updatedAt ?? -1;
+          const bTime = b.updatedAt ?? -1;
+          if (aTime !== bTime) return bTime - aTime;
           return a.name.localeCompare(b.name);
         }),
     [loraModels],
