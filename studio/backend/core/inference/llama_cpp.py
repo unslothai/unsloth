@@ -1520,7 +1520,7 @@ class LlamaCppBackend:
                     except PermissionError:
                         pass
         except Exception:
-            logger.warning("Error during orphan server cleanup", exc_info=True)
+            logger.warning("Error during orphan server cleanup", exc_info = True)
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
