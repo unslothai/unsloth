@@ -238,9 +238,11 @@ export function useChatModelRuntime() {
 
         // Restore reasoning/tools support flags and context length
         const supportsReasoning = statusRes.supports_reasoning ?? false;
+        const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         useChatRuntimeStore.setState({
           supportsReasoning,
+          reasoningAlwaysOn,
           supportsTools,
           ggufContextLength: statusRes.is_gguf ? (statusRes.context_length ?? null) : null,
         });
@@ -420,10 +422,12 @@ export function useChatModelRuntime() {
               && customContextLength !== nativeCtx
               ? customContextLength
               : null;
+            const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               supportsReasoning: loadResponse.supports_reasoning ?? false,
-              reasoningEnabled: reasoningDefault,
+              reasoningAlwaysOn,
+              reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: loadResponse.supports_tools ?? false,
               codeToolsEnabled: loadResponse.supports_tools ?? false,

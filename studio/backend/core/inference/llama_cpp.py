@@ -50,6 +50,7 @@ class LlamaCppBackend:
         self._effective_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
+        self._reasoning_always_on: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
@@ -106,6 +107,10 @@ class LlamaCppBackend:
     @property
     def supports_reasoning(self) -> bool:
         return self._supports_reasoning
+
+    @property
+    def reasoning_always_on(self) -> bool:
+        return self._reasoning_always_on
 
     @property
     def reasoning_default(self) -> bool:
@@ -550,6 +555,7 @@ class LlamaCppBackend:
         self._context_length = None
         self._chat_template = None
         self._supports_reasoning = False
+        self._reasoning_always_on = False
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
@@ -626,6 +632,20 @@ class LlamaCppBackend:
                         self._supports_reasoning = True
                         logger.info(
                             "GGUF metadata: model supports reasoning (DeepSeek thinking)"
+                        )
+                # Models with hardcoded <think> tags or reasoning_content
+                # in their chat template always produce thinking output
+                # (no toggle to disable it).
+                if not self._supports_reasoning:
+                    if (
+                        "<think>" in tpl
+                        and "</think>" in tpl
+                        or "reasoning_content" in tpl
+                    ):
+                        self._supports_reasoning = True
+                        self._reasoning_always_on = True
+                        logger.info(
+                            "GGUF metadata: model always reasons (<think> tags in template)"
                         )
                 # Detect tool calling support from chat template
                 tool_markers = [
@@ -1272,7 +1292,18 @@ class LlamaCppBackend:
 
             self._gguf_path = gguf_path
             self._hf_repo = hf_repo
-            self._hf_variant = hf_variant
+            # For local GGUF files, extract variant from filename if not provided
+            if hf_variant:
+                self._hf_variant = hf_variant
+            elif gguf_path:
+                try:
+                    from utils.models.model_config import _extract_quant_label
+
+                    self._hf_variant = _extract_quant_label(gguf_path)
+                except Exception:
+                    self._hf_variant = None
+            else:
+                self._hf_variant = None
             self._is_vision = is_vision
             self._model_identifier = model_identifier
 
@@ -1284,7 +1315,7 @@ class LlamaCppBackend:
             )
 
             # Wait for llama-server to become healthy
-            if not self._wait_for_health(timeout = 120.0):
+            if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
                 raise RuntimeError(
                     "llama-server failed to start. "
@@ -1318,6 +1349,7 @@ class LlamaCppBackend:
             self._effective_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
+            self._reasoning_always_on = False
             self._supports_tools = False
             self._cache_type_kv = None
             self._n_layers = None
@@ -1367,27 +1399,33 @@ class LlamaCppBackend:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
-        Unsloth install directory to avoid terminating unrelated
-        llama-server instances on the machine.
+        Studio install directory (or matches an exact env-var override)
+        to avoid terminating unrelated llama-server instances.
+
+        Mirrors every location that _find_llama_server_binary() can
+        return from so that orphans from any supported install path
+        are still cleaned up.
 
         Uses psutil for cross-platform support (Linux, macOS, Windows).
+        Falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
+        not installed.
         """
         import os
+        import signal
+        import sys
 
         try:
-            import psutil
-        except ImportError:
-            return
-
-        try:
-            # Build the same set of directories that _find_llama_server_binary
-            # searches, so we only kill servers we could have started.
+            # -- Build the ownership allowlist --------------------------------
+            # Two kinds of matches:
+            #   exact_binaries  -- env var overrides (exact path match only)
+            #   install_roots   -- directory trees that are Studio-owned
+            #                      (binary must be *under* one of these)
             install_roots: list[Path] = []
 
-            # ~/.unsloth/llama.cpp (primary install location)
+            # Primary install dir (setup.sh / prebuilt installer)
             install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
-            # Legacy: in-tree build
+            # Legacy in-tree build dirs (older setup.sh versions)
             project_root = Path(__file__).resolve().parents[4]
             install_roots.append(project_root / "llama.cpp")
 
@@ -1418,40 +1456,103 @@ class LlamaCppBackend:
 
             my_pid = os.getpid()
 
-            for proc in psutil.process_iter(["pid", "name", "exe"]):
-                try:
-                    if proc.info["pid"] == my_pid:
+            # -- Enumerate processes -------------------------------------------
+            # Prefer psutil (cross-platform).  Fall back to pgrep + /proc on
+            # Linux when psutil is not installed.
+            try:
+                import psutil
+
+                has_psutil = True
+            except ImportError:
+                has_psutil = False
+
+            if has_psutil:
+                for proc in psutil.process_iter(["pid", "name", "exe"]):
+                    try:
+                        if proc.info["pid"] == my_pid:
+                            continue
+
+                        name = proc.info.get("name") or ""
+                        if not name.lower().startswith("llama-server"):
+                            continue
+
+                        exe = proc.info.get("exe")
+                        if not exe:
+                            continue
+
+                        exe_path = Path(exe).resolve()
+
+                        # Check ownership: exact binary match OR binary is
+                        # under a known install root (proper ancestry, not
+                        # substring).
+                        is_ours = exe_path in exact_binaries or any(
+                            exe_path.is_relative_to(root) for root in resolved_roots
+                        )
+                        if not is_ours:
+                            continue
+
+                        proc.kill()
+                        logger.info(
+                            f"Killed orphaned llama-server process "
+                            f"(pid={proc.info['pid']})"
+                        )
+                    except (
+                        psutil.NoSuchProcess,
+                        psutil.AccessDenied,
+                        psutil.ZombieProcess,
+                    ):
+                        pass
+            else:
+                # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
+                if sys.platform != "linux":
+                    return
+                result = subprocess.run(
+                    ["pgrep", "-a", "-f", "llama-server"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 5,
+                )
+                if result.returncode != 0:
+                    return
+
+                for line in result.stdout.strip().splitlines():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) < 2:
+                        continue
+                    pid = int(parts[0])
+                    if pid == my_pid:
                         continue
 
-                    name = proc.info.get("name") or ""
-                    if not name.lower().startswith("llama-server"):
-                        continue
+                    # Resolve the actual executable.  /proc/<pid>/exe is a
+                    # symlink to the real binary and avoids all cmdline-
+                    # parsing ambiguities (spaces in paths, argv rewriting).
+                    # Fall back to the first cmdline token when /proc is
+                    # unavailable.
+                    proc_exe = Path(f"/proc/{pid}/exe")
+                    try:
+                        binary = proc_exe.resolve(strict = True)
+                    except (OSError, ValueError):
+                        cmdline = parts[1]
+                        token = cmdline.split()[0] if cmdline.strip() else ""
+                        if not token:
+                            continue
+                        binary = Path(token).resolve(strict = False)
 
-                    exe = proc.info.get("exe")
-                    if not exe:
-                        continue
-
-                    exe_path = Path(exe).resolve()
-
-                    # Check if this binary is one we manage
-                    is_ours = exe_path in exact_binaries or any(
-                        exe_path.is_relative_to(root) for root in resolved_roots
+                    owned = binary in exact_binaries or any(
+                        binary.is_relative_to(root) for root in resolved_roots
                     )
-                    if not is_ours:
+                    if not owned:
                         continue
 
-                    proc.kill()
-                    logger.info(
-                        f"Killed orphaned llama-server process (pid={proc.info['pid']})"
-                    )
-                except (
-                    psutil.NoSuchProcess,
-                    psutil.AccessDenied,
-                    psutil.ZombieProcess,
-                ):
-                    pass
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        logger.info(f"Killed orphaned llama-server process (pid={pid})")
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        pass
         except Exception:
-            pass
+            logger.warning("Error during orphan server cleanup", exc_info = True)
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -2135,6 +2236,11 @@ class LlamaCppBackend:
                                     # ── Structured tool_calls ──
                                     tc_deltas = delta.get("tool_calls")
                                     if tc_deltas:
+                                        # Once visible content has been
+                                        # emitted, do not reclassify this
+                                        # turn as a tool call.
+                                        if _last_emitted:
+                                            continue
                                         has_structured_tc = True
                                         detect_state = _S_DRAINING
                                         for tc_d in tc_deltas:
@@ -2362,7 +2468,18 @@ class LlamaCppBackend:
                     tool_calls = None
                     content_text = content_accum
                     if has_structured_tc:
-                        tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
+                        # Filter out incomplete fragments (e.g. from
+                        # truncation by max_tokens or disconnect).
+                        tool_calls = [
+                            tool_calls_acc[i]
+                            for i in sorted(tool_calls_acc)
+                            if (
+                                tool_calls_acc[i]
+                                .get("function", {})
+                                .get("name", "")
+                                .strip()
+                            )
+                        ] or None
                     if (
                         not tool_calls
                         and auto_heal_tool_calls

@@ -125,6 +125,27 @@ export async function getDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  path: string;
+  source: "models_dir" | "hf_cache" | "lmstudio";
+  model_id?: string | null;
+  updated_at?: number | null;
+}
+
+interface LocalModelListResponse {
+  models_dir: string;
+  hf_cache_dir?: string | null;
+  lmstudio_dirs: string[];
+  models: LocalModelInfo[];
+}
+
+export async function listLocalModels(): Promise<LocalModelListResponse> {
+  const response = await authFetch("/api/models/local");
+  return parseJsonOrThrow<LocalModelListResponse>(response);
+}
+
 export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
   const response = await authFetch("/api/models/cached-gguf");
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);

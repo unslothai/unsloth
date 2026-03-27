@@ -462,24 +462,26 @@ def install_python_stack() -> int:
     if skip_base:
         print(_green(f"✅ {package_name} already installed — skipping base packages"))
     elif NO_TORCH:
-        # No-torch mode: install runtime deps via [huggingfacenotorch] extras
-        # (safetensors, transformers, datasets, etc.), then unsloth-zoo with
-        # --no-deps to avoid pulling torch.
+        # No-torch update path: install unsloth + unsloth-zoo with --no-deps
+        # (current PyPI metadata still declares torch as a hard dep), then
+        # runtime deps with --no-deps (avoids transitive torch).
         _progress("base packages (no torch)")
         pip_install(
-            "Installing unsloth runtime deps (no-torch mode)",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "unsloth[huggingfacenotorch]>=2026.3.14",
-        )
-        pip_install(
-            "Installing unsloth-zoo (no-torch mode)",
+            f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
             "--no-deps",
             "--upgrade-package",
+            package_name,
+            "--upgrade-package",
             "unsloth-zoo",
+            package_name,
             "unsloth-zoo",
+        )
+        pip_install(
+            "Installing no-torch runtime deps",
+            "--no-cache-dir",
+            "--no-deps",
+            req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
             pip_install(
