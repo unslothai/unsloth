@@ -663,14 +663,29 @@ shell.Run cmd, 0, False
     #   CUDA wheels.  Missing dependencies (transformers, trl, peft, etc.)
     #   are still pulled in because they are new, not upgrades.
     #
+    # ── Helper: find no-torch-runtime.txt ──
+    function Find-NoTorchRuntimeFile {
+        if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
+            return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
+        }
+        $installed = Get-ChildItem -Path $VenvDir -Recurse -Filter "no-torch-runtime.txt" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*studio*backend*requirements*no-torch-runtime.txt" } |
+            Select-Object -ExpandProperty FullName -First 1
+        return $installed
+    }
+
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
         # in the new venv location, while preserving existing torch/CUDA
         Write-Host "==> Upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
-            # No-torch: install packages without deps to avoid pulling torch.
-            # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
+            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
+            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            $NoTorchReq = Find-NoTorchRuntimeFile
+            if ($NoTorchReq) {
+                uv pip install --python $VenvPython --no-deps -r $NoTorchReq
+            }
         } else {
             uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
         }
@@ -692,9 +707,13 @@ shell.Run cmd, 0, False
 
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($SkipTorch) {
-            # No-torch: install packages without deps to avoid pulling torch.
-            # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
+            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
+            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            $NoTorchReq = Find-NoTorchRuntimeFile
+            if ($NoTorchReq) {
+                uv pip install --python $VenvPython --no-deps -r $NoTorchReq
+            }
             if ($StudioLocalInstall) {
                 Write-Host "==> Overlaying local repo (editable)..."
                 uv pip install --python $VenvPython -e $RepoRoot --no-deps
@@ -735,9 +754,8 @@ shell.Run cmd, 0, False
         return
     }
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
-    # When no-torch, don't skip base so install_python_stack installs
-    # no-torch-runtime.txt (the runtime deps that --no-deps skipped).
-    $env:SKIP_STUDIO_BASE = if ($SkipTorch) { "0" } else { "1" }
+    # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
+    $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
     if ($StudioLocalInstall) {
