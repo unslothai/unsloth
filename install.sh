@@ -567,6 +567,15 @@ echo "==> Platform: $OS"
 _ARCH=$(uname -m)
 MAC_INTEL=false
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
+    # Guard against Apple Silicon running under Rosetta (reports x86_64).
+    # sysctl hw.optional.arm64 returns "1" on Apple Silicon even in Rosetta.
+    if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+        echo ""
+        echo "  WARNING: Apple Silicon detected, but this shell is running under Rosetta (x86_64)."
+        echo "  Re-run install.sh from a native arm64 terminal for full PyTorch support."
+        echo "  Continuing in GGUF-only mode for now."
+        echo ""
+    fi
     MAC_INTEL=true
 fi
 
@@ -734,6 +743,16 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
     fi
 fi
 
+# If an Intel Mac has a stale 3.13 venv from a previous failed install, recreate
+if [ "$MAC_INTEL" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _PY_MM=$("$VENV_DIR/bin/python" -c \
+        "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>/dev/null || echo "")
+    if [ "$_PY_MM" != "3.12" ]; then
+        echo "  Recreating Intel Mac environment with Python 3.12 (was $_PY_MM)..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
     uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
@@ -800,12 +819,17 @@ if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
-    uv pip install --python "$_VENV_PY" \
-        --reinstall-package unsloth --reinstall-package unsloth-zoo \
-        "unsloth>=2026.3.14" unsloth-zoo
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        echo "==> Overlaying local repo (editable)..."
+    if [ "$MAC_INTEL" = true ] && [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        # Intel Mac GGUF-only: skip unsloth-zoo (depends on torch), editable only
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    else
+        uv pip install --python "$_VENV_PY" \
+            --reinstall-package unsloth --reinstall-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
+        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+            echo "==> Overlaying local repo (editable)..."
+            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        fi
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip on Intel Mac)
@@ -819,10 +843,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
-        echo "==> Overlaying local repo (editable)..."
-        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        if [ "$MAC_INTEL" = true ]; then
+            # Intel Mac GGUF-only: skip unsloth-zoo (depends on torch), editable only
+            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        else
+            uv pip install --python "$_VENV_PY" \
+                --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+            echo "==> Overlaying local repo (editable)..."
+            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        fi
     else
         uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "$PACKAGE_NAME"

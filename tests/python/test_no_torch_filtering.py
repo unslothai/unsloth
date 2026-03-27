@@ -231,14 +231,14 @@ class TestRealRequirementsFiltering:
         lines = path.read_text(encoding = "utf-8").splitlines()
         return [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
 
-    def test_extras_txt_torch_stoi_and_timm_removed(self):
-        """extras.txt: torch-stoi and timm must be removed, everything else preserved."""
+    def test_extras_txt_torch_packages_removed(self):
+        """extras.txt: all NO_TORCH_SKIP_PACKAGES must be removed, everything else preserved."""
         result = ips._filter_requirements(EXTRAS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
         # These must be gone
-        for pkg in ["torch-stoi", "timm"]:
+        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"
@@ -333,6 +333,34 @@ class TestNoTorchConstant:
         with mock.patch.dict(os.environ, env, clear = True):
             assert self._reimport_no_torch() is False
 
+    def test_infer_no_torch_on_intel_mac(self):
+        """_infer_no_torch falls back to platform detection when env var is unset."""
+        env = os.environ.copy()
+        env.pop("UNSLOTH_NO_TORCH", None)
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips, "IS_MAC_INTEL", True),
+        ):
+            assert ips._infer_no_torch() is True
+
+    def test_infer_no_torch_respects_explicit_false_on_intel_mac(self):
+        """Explicit UNSLOTH_NO_TORCH=false overrides platform detection."""
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": "false"}),
+            mock.patch.object(ips, "IS_MAC_INTEL", True),
+        ):
+            assert ips._infer_no_torch() is False
+
+    def test_infer_no_torch_linux_unset(self):
+        """On Linux with env var unset, _infer_no_torch returns False."""
+        env = os.environ.copy()
+        env.pop("UNSLOTH_NO_TORCH", None)
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips, "IS_MAC_INTEL", False),
+        ):
+            assert ips._infer_no_torch() is False
+
 
 # ── IS_MACOS constant tests ──────────────────────────────────────────
 
@@ -363,7 +391,14 @@ class TestInstallPythonStackSubprocessMock:
             if not f.is_file():
                 pytest.skip(f"{f.name} not found in repo")
 
-    def _capture_install(self, no_torch: bool, is_macos: bool, is_windows: bool):
+    def _capture_install(
+        self,
+        no_torch: bool,
+        is_macos: bool,
+        is_windows: bool,
+        *,
+        skip_base: bool = True,
+    ):
         """Run install_python_stack() with mocked subprocess, capturing all commands.
 
         Returns a list of string-joined commands (each element is ' '.join(cmd)).
@@ -375,6 +410,8 @@ class TestInstallPythonStackSubprocessMock:
                 list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
             )
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        env = {"SKIP_STUDIO_BASE": "1"} if skip_base else {}
 
         with (
             mock.patch.object(ips, "NO_TORCH", no_torch),
@@ -391,7 +428,7 @@ class TestInstallPythonStackSubprocessMock:
             mock.patch("pathlib.Path.is_dir", return_value = True),
             mock.patch("pathlib.Path.is_file", return_value = True),
         ):
-            with mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}):
+            with mock.patch.dict(os.environ, env, clear = False):
                 ips.install_python_stack()
 
         return [" ".join(str(c) for c in cmd) for cmd in captured_cmds]
@@ -500,6 +537,26 @@ class TestInstallPythonStackSubprocessMock:
         assert any(
             "--reinstall" in cmd for cmd in cmds
         ), "overrides step (--reinstall) should be called on Windows when NO_TORCH=False"
+
+    # -- Update path (skip_base=False) to verify no-torch mode is durable --
+
+    def test_update_path_intel_macos_still_skips_overrides(self):
+        """Update path (no SKIP_STUDIO_BASE): overrides still skipped on Intel Mac."""
+        cmds = self._capture_install(
+            no_torch = True, is_macos = True, is_windows = False, skip_base = False
+        )
+        assert not self._cmds_contain_file(
+            cmds, "overrides.txt"
+        ), "overrides.txt should be skipped on Intel Mac even via studio update"
+
+    def test_update_path_intel_macos_still_skips_triton(self):
+        """Update path (no SKIP_STUDIO_BASE): triton still skipped on macOS."""
+        cmds = self._capture_install(
+            no_torch = True, is_macos = True, is_windows = False, skip_base = False
+        )
+        assert not self._cmds_contain_file(
+            cmds, "triton-kernels.txt"
+        ), "triton-kernels.txt should be skipped on macOS even via studio update"
 
 
 # ── Overrides skip structural checks ─────────────────────────────────
