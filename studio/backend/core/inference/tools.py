@@ -57,14 +57,18 @@ WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for current information, recent events, or facts you are uncertain about.",
+        "description": "Search the web and fetch page content from the top result. Returns snippets for all results plus the full text of the best matching page.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query",
-                }
+                    "description": "The search query. Be specific and concise.",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Optional: fetch this specific URL directly instead of searching. Use when you already know the page you need.",
+                },
             },
             "required": ["query"],
         },
@@ -131,7 +135,11 @@ def execute_tool(
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
-        return _web_search(arguments.get("query", ""), timeout = effective_timeout)
+        return _web_search(
+            arguments.get("query", ""),
+            url = arguments.get("url", ""),
+            timeout = effective_timeout,
+        )
     if name == "python":
         return _python_exec(
             arguments.get("code", ""), cancel_event, effective_timeout, session_id
@@ -174,12 +182,19 @@ def _fetch_page_text(url: str, max_chars: int = 4000, timeout: int = 10) -> str:
         return ""
 
 
-def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
+def _web_search(query: str, url: str = "", max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
     """Search the web using DuckDuckGo and return formatted results.
 
-    For the top result, also fetches the actual page content so the
-    model has real data to work with instead of just snippets.
+    If *url* is provided, fetches that page directly (skips search).
+    Otherwise searches and fetches page content for the top result.
     """
+    # Direct URL fetch mode
+    if url and url.strip():
+        text = _fetch_page_text(url.strip(), max_chars = 8000, timeout = 15)
+        if text:
+            return f"Page content from {url}:\n\n{text}"
+        return f"Failed to fetch {url}"
+
     if not query.strip():
         return "No query provided."
     try:
