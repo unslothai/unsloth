@@ -96,7 +96,10 @@ MAC_INTEL=false
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
     MAC_INTEL=true
 fi
-if [ "$MAC_INTEL" = true ]; then
+_USER_PYTHON=""
+if [ -n "$_USER_PYTHON" ]; then
+    PYTHON_VERSION="$_USER_PYTHON"
+elif [ "$MAC_INTEL" = true ]; then
     PYTHON_VERSION="3.12"
 else
     PYTHON_VERSION="3.13"
@@ -378,6 +381,96 @@ _env_result=$(MAC_INTEL=false STUDIO_LOCAL_INSTALL=true bash "$_ENV_BLOCK" 2>&1)
 assert_eq "local: UNSLOTH_NO_TORCH=false when MAC_INTEL=false" "UNSLOTH_NO_TORCH=false" "$_env_result"
 
 rm -f "$_ENV_BLOCK"
+
+echo ""
+echo "=== --python override flag ==="
+
+# Test: flag parsing extracts version correctly
+_PARSE_BLOCK=$(mktemp)
+cat > "$_PARSE_BLOCK" << 'PARSE_EOF'
+_USER_PYTHON=""
+_next_is_python=false
+_next_is_package=false
+STUDIO_LOCAL_INSTALL=false
+PACKAGE_NAME="unsloth"
+for arg in "$@"; do
+    if [ "$_next_is_package" = true ]; then PACKAGE_NAME="$arg"; _next_is_package=false; continue; fi
+    if [ "$_next_is_python" = true ]; then _USER_PYTHON="$arg"; _next_is_python=false; continue; fi
+    case "$arg" in
+        --local) STUDIO_LOCAL_INSTALL=true ;;
+        --package) _next_is_package=true ;;
+        --python) _next_is_python=true ;;
+    esac
+done
+if [ "$_next_is_python" = true ]; then echo "ERROR"; exit 1; fi
+echo "$_USER_PYTHON"
+PARSE_EOF
+
+_result=$(bash "$_PARSE_BLOCK" --python 3.12)
+assert_eq "--python 3.12 parsed" "3.12" "$_result"
+
+_result=$(bash "$_PARSE_BLOCK" --local --python 3.11)
+assert_eq "--local --python 3.11 parsed" "3.11" "$_result"
+
+_result=$(bash "$_PARSE_BLOCK" --python 3.12 --local --package foo)
+assert_eq "--python with --local --package" "3.12" "$_result"
+
+_result=$(bash "$_PARSE_BLOCK" 2>&1) # no --python
+assert_eq "no --python -> empty" "" "$_result"
+
+_rc=0
+bash "$_PARSE_BLOCK" --python >/dev/null 2>&1 || _rc=$?
+assert_eq "--python without arg -> error" "1" "$_rc"
+
+rm -f "$_PARSE_BLOCK"
+
+# Test: --python overrides auto-detected version in PYTHON_VERSION resolution
+_RESOLVE_BLOCK=$(mktemp)
+cat > "$_RESOLVE_BLOCK" << 'RESOLVE_EOF'
+_USER_PYTHON="$1"
+MAC_INTEL="$2"
+if [ -n "$_USER_PYTHON" ]; then
+    PYTHON_VERSION="$_USER_PYTHON"
+elif [ "$MAC_INTEL" = true ]; then
+    PYTHON_VERSION="3.12"
+else
+    PYTHON_VERSION="3.13"
+fi
+echo "$PYTHON_VERSION"
+RESOLVE_EOF
+
+_result=$(bash "$_RESOLVE_BLOCK" "3.11" "true")
+assert_eq "--python 3.11 overrides Intel Mac 3.12" "3.11" "$_result"
+
+_result=$(bash "$_RESOLVE_BLOCK" "3.12" "false")
+assert_eq "--python 3.12 overrides default 3.13" "3.12" "$_result"
+
+_result=$(bash "$_RESOLVE_BLOCK" "" "true")
+assert_eq "no override -> Intel Mac gets 3.12" "3.12" "$_result"
+
+_result=$(bash "$_RESOLVE_BLOCK" "" "false")
+assert_eq "no override -> non-Intel gets 3.13" "3.13" "$_result"
+
+rm -f "$_RESOLVE_BLOCK"
+
+# Test: --python flag exists in install.sh
+if grep -q '\-\-python)' "$INSTALL_SH"; then
+    echo "  PASS: --python case exists in install.sh"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: --python case not found in install.sh"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test: _USER_PYTHON guards exist for stale-venv and 3.13.8 checks
+_user_py_guards=$(grep -c '_USER_PYTHON' "$INSTALL_SH")
+if [ "$_user_py_guards" -ge 4 ]; then
+    echo "  PASS: _USER_PYTHON referenced >= 4 times in install.sh (flag + resolution + guards)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: _USER_PYTHON should appear >= 4 times (found $_user_py_guards)"
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
