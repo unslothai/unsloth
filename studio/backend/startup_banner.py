@@ -20,7 +20,7 @@ def stdout_supports_color() -> bool:
         return True
     try:
         return sys.stdout.isatty()
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         return False
 
 

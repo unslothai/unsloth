@@ -90,7 +90,7 @@ def _stdout_supports_color() -> bool:
     try:
         if not sys.stdout.isatty():
             return False
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         return False
     if IS_WINDOWS:
         try:
@@ -101,7 +101,7 @@ def _stdout_supports_color() -> bool:
             mode = ctypes.c_ulong()
             kernel32.GetConsoleMode(handle, ctypes.byref(mode))
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)
-        except Exception:
+        except (ImportError, AttributeError, OSError):
             return False
     return True
 

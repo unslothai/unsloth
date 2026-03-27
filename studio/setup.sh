@@ -28,11 +28,37 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
 
+_is_verbose() {
+    [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
+}
+
+run_maybe_quiet() {
+    if _is_verbose; then
+        "$@"
+    else
+        "$@" > /dev/null 2>&1
+    fi
+}
+
 # ── Helper: run command quietly, show output only on failure ──
 _run_quiet() {
     local on_fail=$1
     local label=$2
     shift 2
+
+    if _is_verbose; then
+        if "$@"; then
+            return 0
+        fi
+
+        local exit_code=$?
+        step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
+    fi
 
     local tmplog
     tmplog=$(mktemp) || {
@@ -63,6 +89,17 @@ run_quiet() {
 
 run_quiet_no_exit() {
     _run_quiet return "$@"
+}
+
+run_quiet_no_exit_always() {
+    (UNSLOTH_VERBOSE=0 _run_quiet return "$@")
+}
+
+print_llama_error_log() {
+    local log_file=$1
+    [ -s "$log_file" ] || return 0
+    substep "llama.cpp diagnostics (last 120 lines):"
+    tail -n 120 "$log_file" | sed 's/^/   | /' >&2
 }
 
 # ── Banner ──
@@ -117,7 +154,7 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
             # In Colab, just upgrade npm directly - nvm doesn't work well
             if [ "$NPM_MAJOR" -lt 11 ]; then
                 substep "upgrading npm..."
-                npm install -g npm@latest > /dev/null 2>&1
+                run_maybe_quiet npm install -g npm@latest
             fi
             NEED_NODE=false
         fi
@@ -127,7 +164,11 @@ fi
 if [ "$NEED_NODE" = true ]; then
     substep "installing nvm..."
     export NODE_OPTIONS=--dns-result-order=ipv4first
-    curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    if _is_verbose; then
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    else
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    fi
 
     export NVM_DIR="$HOME/.nvm"
     set +u
@@ -141,7 +182,11 @@ if [ "$NEED_NODE" = true ]; then
 
     substep "installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
-    nvm use --lts > /dev/null 2>&1
+    if _is_verbose; then
+        nvm use --lts
+    else
+        nvm use --lts > /dev/null 2>&1
+    fi
     set -u
 
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -164,7 +209,7 @@ step "node" "$(node -v) | npm $(npm -v)"
 # avoids platform-specific installers, PATH issues, and admin requirements.
 if ! command -v bun &>/dev/null; then
     substep "installing bun..."
-    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
+    if run_maybe_quiet npm install -g bun && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
@@ -235,7 +280,7 @@ if command -v bun &>/dev/null; then
         # First attempt failed, likely due to corrupt cache entries.
         # Clear the cache and retry once.
         echo "   Clearing bun cache and retrying..."
-        bun pm cache rm > /dev/null 2>&1 || true
+        run_maybe_quiet bun pm cache rm || true
         if _try_bun_install; then
             _bun_install_ok=true
         fi
@@ -308,6 +353,9 @@ install_python_stack() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
+elif _is_verbose && curl -LsSf https://astral.sh/uv/install.sh | sh; then
+    export PATH="$HOME/.local/bin:$PATH"
+    command -v uv &>/dev/null && USE_UV=true
 elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
     export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
@@ -402,7 +450,7 @@ else
 fi
 if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
     step "llama.cpp" "failed to resolve prebuilt tag via $_HELPER_RELEASE_REPO" "$C_WARN"
-    cat "$_RESOLVE_LLAMA_LOG" >&2 || true
+    print_llama_error_log "$_RESOLVE_LLAMA_LOG"
     set +e
     # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
     # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
@@ -449,14 +497,19 @@ else
         if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
             _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
         fi
+        _PREBUILT_LOG="$(mktemp)"
         set +e
-        "${_PREBUILT_CMD[@]}"
+        "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
         _PREBUILT_STATUS=$?
         set -e
 
         if [ "$_PREBUILT_STATUS" -eq 0 ]; then
             step "llama.cpp" "prebuilt installed and validated"
+            rm -f "$_PREBUILT_LOG"
         else
+            step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+            print_llama_error_log "$_PREBUILT_LOG"
+            rm -f "$_PREBUILT_LOG"
             if [ -d "$LLAMA_CPP_DIR" ]; then
                 substep "prebuilt update failed; existing install restored"
             fi
@@ -539,7 +592,7 @@ else
         fi
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
-        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_BUILD_TMP" || BUILD_OK=false
+        run_quiet_no_exit_always "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_BUILD_TMP" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
@@ -664,15 +717,15 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS || BUILD_OK=false
+            run_quiet_no_exit_always "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            run_quiet_no_exit_always "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            run_quiet_no_exit_always "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
         fi
 
         # Swap only after build succeeds -- preserves existing install on failure

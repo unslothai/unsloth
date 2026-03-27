@@ -331,6 +331,44 @@ function Write-SetupVerboseDetail {
     }
 }
 
+function Invoke-SetupCommand {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Command,
+        [switch]$AlwaysQuiet
+    )
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
+            & $Command
+        } else {
+            & $Command 2>&1 | Out-Null
+        }
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+function Write-LlamaFailureLog {
+    param(
+        [string]$Output,
+        [int]$MaxLines = 120
+    )
+    if (-not $Output) { return }
+    $lines = @(
+        ($Output -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($lines.Count -eq 0) { return }
+    if ($lines.Count -gt $MaxLines) {
+        Write-Host "   Showing last $MaxLines lines:" -ForegroundColor DarkGray
+        $lines = $lines | Select-Object -Last $MaxLines
+    }
+    foreach ($line in $lines) {
+        Write-Host "   | $line" -ForegroundColor DarkGray
+    }
+}
+
 function step {
     param(
         [Parameter(Mandatory = $true)][string]$Label,
@@ -490,7 +528,7 @@ if (-not $HasGit) {
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
-            winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
             Refresh-Environment
             $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
         } catch { }
@@ -514,7 +552,7 @@ if (-not $HasCmake) {
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
-            winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
             Refresh-Environment
             $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
         } catch { }
@@ -739,7 +777,7 @@ if (-not $NvccPath) {
                 Write-Host "   Installing CUDA Toolkit $BestVersion via winget...  " -ForegroundColor Cyan
                 $prevEAPCuda = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
-                winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+                Invoke-SetupCommand { winget install --id=Nvidia.CUDA --version=$BestVersion -e --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
                 $ErrorActionPreference = $prevEAPCuda
                 Refresh-Environment
                 $NvccPath = Find-Nvcc -MaxVersion $DriverMaxCuda
@@ -915,7 +953,7 @@ if ($IsPipInstall) {
         Write-Host "   Installing bun (faster frontend package installs)..." -ForegroundColor DarkGray
         $prevEAP_bun = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        npm install -g bun 2>&1 | Out-Null
+        Invoke-SetupCommand { npm install -g bun } | Out-Null
         $ErrorActionPreference = $prevEAP_bun
         Refresh-Environment
         if (Get-Command bun -ErrorAction SilentlyContinue) {
@@ -1061,8 +1099,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     # the cache + retry once before falling back to npm.
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        & bun install *> $null
-        $bunExit = $LASTEXITCODE
+        $bunExit = Invoke-SetupCommand { bun install }
         # On Windows, .bin/ entries can be tsc, tsc.cmd, or tsc.ps1
         $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
         $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
@@ -1073,9 +1110,8 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             if (Test-Path "node_modules") {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
-            & bun pm cache rm *> $null
-            & bun install *> $null
-            $bunExit = $LASTEXITCODE
+            Invoke-SetupCommand { bun pm cache rm } | Out-Null
+            $bunExit = Invoke-SetupCommand { bun install }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -1094,8 +1130,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        & npm install *> $null
-        $npmExit = $LASTEXITCODE
+        $npmExit = Invoke-SetupCommand { npm install }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
@@ -1107,8 +1142,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
 
     # Always use npm to run the build (Node runtime — avoids bun Windows runtime issues)
-    & npm run build *> $null
-    $buildExit = $LASTEXITCODE
+    $buildExit = Invoke-SetupCommand { npm run build }
     if ($buildExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
@@ -1139,11 +1173,11 @@ if (Test-Path $OxcValidatorDir) {
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    npm install 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    $oxcInstallExit = Invoke-SetupCommand { npm install }
+    if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-Host "[ERROR] OXC validator npm install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
         exit 1
     }
     Pop-Location
@@ -1331,7 +1365,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     Write-Host "   Installing uv package manager..." -ForegroundColor Cyan
     try {
-        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        Invoke-SetupCommand { powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" } | Out-Null
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
@@ -1351,7 +1385,11 @@ function Fast-Install {
     & python -m pip install @Args_ 2>&1
 }
 
-Fast-Install --upgrade pip | Out-Null
+if ($script:UnslothVerbose) {
+    Fast-Install --upgrade pip
+} else {
+    Fast-Install --upgrade pip | Out-Null
+}
 
 # if (-not $IsPipInstall) {
 #     # Running from repo: copy requirements and do editable install
@@ -1394,26 +1432,47 @@ if ($HasNvidiaSmi) {
 
 if ($CuTag -eq "cpu") {
     Write-Host "   Installing PyTorch (CPU-only)..." -ForegroundColor Cyan
-    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+    if ($script:UnslothVerbose) {
+        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu"
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/cpu" | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[FAILED] PyTorch install failed (exit code $torchInstallExit)" -ForegroundColor Red
         Write-Host $output -ForegroundColor Red
         exit 1
     }
 } else {
     Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
     Write-Host "   (This download is ~2.8 GB -- may take a few minutes)" -ForegroundColor Gray
-    $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[FAILED] PyTorch CUDA install failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+    if ($script:UnslothVerbose) {
+        Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag" | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red
         Write-Host $output -ForegroundColor Red
         exit 1
     }
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
     Write-Host "   Installing Triton for Windows..." -ForegroundColor Cyan
-    $output = Fast-Install "triton-windows<3.7" | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    if ($script:UnslothVerbose) {
+        Fast-Install "triton-windows<3.7"
+        $tritonInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install "triton-windows<3.7" | Out-String
+        $tritonInstallExit = $LASTEXITCODE
+    }
+    if ($tritonInstallExit -ne 0) {
         Write-Host "[WARN] Triton install failed -- torch.compile may not work" -ForegroundColor Yellow
         Write-Host $output -ForegroundColor Yellow
     } else {
@@ -1439,8 +1498,15 @@ New-Item -ItemType Directory -Path $VenvT5Dir -Force | Out-Null
 $prevEAP_t5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4.2")) {
-    $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
         Write-Host "[FAIL] Could not install $pkg into .venv_t5/" -ForegroundColor Red
         Write-Host $output -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
@@ -1449,8 +1515,15 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.7.1", "hf_xet==1.4
 }
 # tiktoken is needed by Qwen-family tokenizers -- install with deps since
 # regex/requests may be missing on Windows
-$output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
-if ($LASTEXITCODE -ne 0) {
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
     Write-Host "[WARN] Could not install tiktoken into .venv_t5/ -- Qwen tokenizers may fail" -ForegroundColor Yellow
 }
 $ErrorActionPreference = $prevEAP_t5
@@ -1472,9 +1545,7 @@ $ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 
 if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
     Write-Host ""
     Write-Host "[WARN] Failed to resolve an installable prebuilt llama.cpp tag via $HelperReleaseRepo" -ForegroundColor Yellow
-    if ($resolveOutput) {
-        $resolveOutput | ForEach-Object { Write-Host $_ }
-    }
+    Write-LlamaFailureLog -Output ($resolveOutput | Out-String)
     # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
     # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
     # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
@@ -1530,13 +1601,15 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & python @prebuiltArgs
+        $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
         $prebuiltExit = $LASTEXITCODE
         $ErrorActionPreference = $prevEAPPrebuilt
 
         if ($prebuiltExit -eq 0) {
             step "llama.cpp" "prebuilt installed and validated"
         } else {
+            step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
+            Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path $LlamaCppDir) {
                 Write-Host "[WARN] Prebuilt update failed; existing install was restored or cleaned before source build fallback" -ForegroundColor Yellow
             }
@@ -1638,9 +1711,9 @@ if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     if (-not $HasNvidiaSmi) {
         # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake is required
-        Write-Host "[ERROR] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Red
-        Write-Host "        Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
-        exit 1
+        Write-Host "[WARN] CMake is required to build llama-server for GGUF chat mode." -ForegroundColor Yellow
+        Write-Host "       Continuing setup without llama.cpp build." -ForegroundColor Yellow
+        Write-Host "       Install CMake from https://cmake.org/download/ and re-run setup." -ForegroundColor Yellow
     }
     Write-Host "[SKIP] llama-server build -- cmake not available" -ForegroundColor Yellow
     Write-Host "       GGUF inference and export will not be available." -ForegroundColor Yellow
@@ -1692,19 +1765,19 @@ if (-not $NeedLlamaSourceBuild) {
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
         if ($UseConcreteRef) {
-            git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag 2>&1 | Out-Null
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin $ResolvedLlamaTag }
         } else {
-            git -C $LlamaCppDir fetch --depth 1 origin 2>&1 | Out-Null
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin }
         }
-        if ($LASTEXITCODE -ne 0) {
+        if ($gitFetchExit -ne 0) {
             Write-Host "   [WARN] git fetch failed -- using existing source" -ForegroundColor Yellow
         } else {
-            git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) {
+            $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B unsloth-llama-build FETCH_HEAD }
+            if ($gitCheckoutExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git checkout"
             } else {
-                git -C $LlamaCppDir clean -fdx 2>&1 | Out-Null
+                Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
             }
         }
     } else {
@@ -1716,8 +1789,8 @@ if (-not $NeedLlamaSourceBuild) {
             $cloneArgs += @("--branch", $ResolvedLlamaTag)
         }
         $cloneArgs += @("https://github.com/ggml-org/llama.cpp.git", $buildTmp)
-        git @cloneArgs 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git @cloneArgs }
+        if ($cloneExit -ne 0) {
             $BuildOk = $false
             $FailedStep = "git clone"
             if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
@@ -1786,10 +1859,11 @@ if (-not $NeedLlamaSourceBuild) {
         }
 
         $cmakeOutput = cmake @CmakeArgs 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) {
+        $cmakeConfigureExit = $LASTEXITCODE
+        if ($cmakeConfigureExit -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake configure"
-            Write-Host $cmakeOutput -ForegroundColor Red
+            Write-LlamaFailureLog -Output $cmakeOutput
             if ($cmakeOutput -match 'No CUDA toolset found|CUDA_TOOLKIT_ROOT_DIR|nvcc') {
                 Write-Host ""
                 Write-Host "   Hint: CUDA VS integration may be missing. Try running as admin:" -ForegroundColor Yellow
@@ -1812,10 +1886,11 @@ if (-not $NeedLlamaSourceBuild) {
         Write-Host ""
 
         $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) {
+        $cmakeBuildServerExit = $LASTEXITCODE
+        if ($cmakeBuildServerExit -ne 0) {
             $BuildOk = $false
             $FailedStep = "cmake build (llama-server)"
-            Write-Host $output -ForegroundColor Red
+            Write-LlamaFailureLog -Output $output
         }
     }
 
@@ -1824,9 +1899,10 @@ if (-not $NeedLlamaSourceBuild) {
         Write-Host ""
         Write-Host "--- cmake build (llama-quantize) ---" -ForegroundColor Cyan
         $output = cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) {
+        $cmakeBuildQuantizeExit = $LASTEXITCODE
+        if ($cmakeBuildQuantizeExit -ne 0) {
             Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
-            Write-Host $output -ForegroundColor Yellow
+            Write-LlamaFailureLog -Output $output
         }
     }
 
@@ -1867,9 +1943,8 @@ if (-not $NeedLlamaSourceBuild) {
             step "llama.cpp" "built"
             step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
-            step "llama.cpp" "build failed at: $FailedStep (${totalMin}m ${totalSec}s)" "Red"
+            step "llama.cpp" "build failed at: $FailedStep (${totalMin}m ${totalSec}s); continuing" "Yellow"
             substep "To retry: delete $LlamaCppDir and re-run setup." "Yellow"
-            exit 1
         }
     }
 }
