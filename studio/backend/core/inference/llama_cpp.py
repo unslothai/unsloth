@@ -2372,8 +2372,12 @@ class LlamaCppBackend:
                         tool_calls = [
                             tool_calls_acc[i]
                             for i in sorted(tool_calls_acc)
-                            if (tool_calls_acc[i].get("function", {})
-                                .get("name", "").strip())
+                            if (
+                                tool_calls_acc[i]
+                                .get("function", {})
+                                .get("name", "")
+                                .strip()
+                            )
                         ] or None
                     if (
                         not tool_calls
