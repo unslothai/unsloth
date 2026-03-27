@@ -728,7 +728,9 @@ def auto_select_gpu_ids(
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
         else:
-            usable_gb = sum(free_by_index[gpu_id] * multi_gpu_factor for gpu_id in selected)
+            usable_gb = sum(
+                free_by_index[gpu_id] * multi_gpu_factor for gpu_id in selected
+            )
 
         if usable_gb >= required_gb:
             metadata["usable_gb"] = round(usable_gb, 3)

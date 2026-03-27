@@ -54,7 +54,12 @@ from routes import (
 )
 from auth import storage
 from auth.authentication import get_current_subject
-from utils.hardware import detect_hardware, get_device, DeviceType, get_backend_visible_gpu_info
+from utils.hardware import (
+    detect_hardware,
+    get_device,
+    DeviceType,
+    get_backend_visible_gpu_info,
+)
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
