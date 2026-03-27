@@ -3,22 +3,34 @@
 # Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
 # Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
 # Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
+# Usage (no-torch): ./install.sh --no-torch  (skip PyTorch, GGUF-only mode)
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
+# Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 set -e
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
+_USER_PYTHON=""
+_NO_TORCH_FLAG=false
 _next_is_package=false
+_next_is_python=false
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
         PACKAGE_NAME="$arg"
         _next_is_package=false
         continue
     fi
+    if [ "$_next_is_python" = true ]; then
+        _USER_PYTHON="$arg"
+        _next_is_python=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
+        --python) _next_is_python=true ;;
+        --no-torch) _NO_TORCH_FLAG=true ;;
     esac
 done
 
@@ -26,8 +38,12 @@ if [ "$_next_is_package" = true ]; then
     echo "❌ ERROR: --package requires an argument." >&2
     exit 1
 fi
+if [ "$_next_is_python" = true ]; then
+    echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
+    exit 1
+fi
 
-PYTHON_VERSION="3.13"
+PYTHON_VERSION=""  # resolved after platform detection
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
@@ -116,16 +132,11 @@ _smart_apt_install() {
 # ── Helper: create desktop shortcuts and launcher script ──
 # Usage: create_studio_shortcuts <unsloth_exe> <os>
 # Creates ~/.local/share/unsloth/launch-studio.sh (shared launcher),
-# plus platform-specific shortcuts (Linux .desktop / macOS .app bundle).
-# Skipped on WSL (no native desktop).
+# plus platform-specific shortcuts (Linux .desktop / macOS .app bundle /
+# WSL Windows Desktop+Start Menu .lnk).
 create_studio_shortcuts() {
     _css_exe="$1"
     _css_os="$2"
-
-    # Skip on WSL -- no native desktop environment
-    if [ "$_css_os" = "wsl" ]; then
-        return 0
-    fi
 
     # Validate exe
     if [ ! -x "$_css_exe" ]; then
@@ -255,6 +266,17 @@ _open_browser() {
     _url="$1"
     if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
         open "$_url"
+    elif grep -qi microsoft /proc/version 2>/dev/null; then
+        # WSL: xdg-open is unreliable; use Windows browser via PowerShell or cmd
+        if command -v powershell.exe >/dev/null 2>&1; then
+            powershell.exe -NoProfile -Command "Start-Process '$_url'" >/dev/null 2>&1 &
+        elif command -v cmd.exe >/dev/null 2>&1; then
+            cmd.exe /c start "" "$_url" >/dev/null 2>&1 &
+        elif command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$_url" >/dev/null 2>&1 &
+        else
+            echo "Open in your browser: $_url" >&2
+        fi
     elif command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$_url" >/dev/null 2>&1 &
     else
@@ -318,6 +340,8 @@ _acquire_lock() {
 }
 
 _release_lock() {
+    [ -d "$LOCK_DIR" ] || return 0
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] || return 0
     rm -rf "$LOCK_DIR"
 }
 
@@ -343,24 +367,48 @@ _launch_port=$(_find_launch_port) || {
     exit 1
 }
 
-# Launch studio in a terminal
-_launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port")
-_launch_cmd=${_launch_cmd% }
-_spawn_terminal "$_launch_cmd"
+if [ -t 1 ]; then
+    # ── Foreground mode (TTY available) ──
+    # Background subshell: wait for studio to become healthy, release the
+    # single-instance lock, then open the browser. The lock stays held until
+    # health is confirmed so a second launcher cannot race during startup.
+    (
+        _obwr_deadline=$(($(date +%s) + TIMEOUT_SEC))
+        while [ "$(date +%s)" -lt "$_obwr_deadline" ]; do
+            if _check_health "$_launch_port"; then
+                _release_lock
+                _open_browser "http://localhost:$_launch_port"
+                exit 0
+            fi
+            sleep "$POLL_INTERVAL_SEC"
+        done
+        # Timed out -- release the lock anyway so future launches are not blocked
+        _release_lock
+    ) &
+    # Clear traps so exec does not trigger _release_lock (the subshell owns it)
+    trap - EXIT INT TERM
+    exec "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port"
+else
+    # ── Background mode (no TTY) ──
+    # Used by macOS .app and headless invocations.
+    _launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port")
+    _launch_cmd=${_launch_cmd% }
+    _spawn_terminal "$_launch_cmd"
 
-# Poll for health
-_deadline=$(($(date +%s) + TIMEOUT_SEC))
-while [ "$(date +%s)" -lt "$_deadline" ]; do
-    _port=$(_find_healthy_port) && {
-        _open_browser "http://localhost:$_port"
-        exit 0
-    }
-    sleep "$POLL_INTERVAL_SEC"
-done
+    # Poll for health on the specific port we launched on
+    _deadline=$(($(date +%s) + TIMEOUT_SEC))
+    while [ "$(date +%s)" -lt "$_deadline" ]; do
+        if _check_health "$_launch_port"; then
+            _open_browser "http://localhost:$_launch_port"
+            exit 0
+        fi
+        sleep "$POLL_INTERVAL_SEC"
+    done
 
-echo "Unsloth Studio did not become healthy within ${TIMEOUT_SEC}s." >&2
-echo "Check logs at: $LOG_FILE" >&2
-exit 1
+    echo "Unsloth Studio did not become healthy within ${TIMEOUT_SEC}s." >&2
+    echo "Check logs at: $LOG_FILE" >&2
+    exit 1
+fi
 LAUNCHER_EOF
 
     chmod +x "$_css_launcher"
@@ -372,44 +420,33 @@ LAUNCHER_EOF
     printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'" > "$_css_data_dir/studio.conf"
 
     # ── Icon: try bundled, then download ──
-    # favicon.png (small, for Linux) and unsloth-gem.png (large, for macOS icns)
+    # rounded-512.png used for both Linux and macOS icons
     _css_script_dir=""
     if [ -n "${0:-}" ] && [ -f "$0" ]; then
         _css_script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || true
     fi
 
-    # Try to find favicon.png from installed package (site-packages) or local repo
-    _css_found_favicon=""
-    _css_found_gem=""
+    # Try to find rounded-512.png from installed package (site-packages) or local repo
+    _css_found_icon=""
     _css_venv_dir=$(dirname "$(dirname "$_css_exe")")
     # Check site-packages
     for _sp in "$_css_venv_dir"/lib/python*/site-packages/unsloth/studio/frontend/public; do
-        if [ -f "$_sp/favicon.png" ]; then
-            _css_found_favicon="$_sp/favicon.png"
-        fi
-        if [ -f "$_sp/unsloth-gem.png" ]; then
-            _css_found_gem="$_sp/unsloth-gem.png"
+        if [ -f "$_sp/rounded-512.png" ]; then
+            _css_found_icon="$_sp/rounded-512.png"
         fi
     done
     # Check local repo (when running from clone)
-    if [ -z "$_css_found_favicon" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/favicon.png" ]; then
-        _css_found_favicon="$_css_script_dir/studio/frontend/public/favicon.png"
-    fi
-    if [ -z "$_css_found_gem" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/unsloth-gem.png" ]; then
-        _css_found_gem="$_css_script_dir/studio/frontend/public/unsloth-gem.png"
+    if [ -z "$_css_found_icon" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/rounded-512.png" ]; then
+        _css_found_icon="$_css_script_dir/studio/frontend/public/rounded-512.png"
     fi
 
-    # Copy or download favicon.png
-    if [ -n "$_css_found_favicon" ]; then
-        cp "$_css_found_favicon" "$_css_icon_png" 2>/dev/null || true
-    elif [ ! -f "$_css_icon_png" ]; then
-        download "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/favicon.png" "$_css_icon_png" 2>/dev/null || true
-    fi
-    # Copy or download unsloth-gem.png (for macOS icns)
-    if [ -n "$_css_found_gem" ]; then
-        cp "$_css_found_gem" "$_css_gem_png" 2>/dev/null || true
-    elif [ ! -f "$_css_gem_png" ]; then
-        download "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth-gem.png" "$_css_gem_png" 2>/dev/null || true
+    # Copy or download rounded-512.png (used for both Linux icon and macOS icns)
+    if [ -n "$_css_found_icon" ]; then
+        cp "$_css_found_icon" "$_css_icon_png" 2>/dev/null || true
+        cp "$_css_found_icon" "$_css_gem_png" 2>/dev/null || true
+    else
+        download "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/rounded-512.png" "$_css_icon_png" 2>/dev/null || true
+        cp "$_css_icon_png" "$_css_gem_png" 2>/dev/null || true
     fi
 
     # Validate PNG header (first 4 bytes: \x89PNG)
@@ -445,7 +482,7 @@ Name=Unsloth Studio
 Comment=Launch Unsloth Studio
 Exec="$_css_exec_escaped"
 Icon=$_css_icon_escaped
-Terminal=false
+Terminal=true
 StartupNotify=true
 Categories=Development;Science;
 DESKTOP_EOF
@@ -541,6 +578,68 @@ STUB_EOF
             ln -sf "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
         fi
         _css_created=1
+
+    elif [ "$_css_os" = "wsl" ]; then
+        # ── WSL: create Windows Desktop and Start Menu shortcuts ──
+        # Detect current WSL distro for targeted shortcut
+        _css_distro="${WSL_DISTRO_NAME:-}"
+
+        # Build the wsl.exe arguments.
+        # Double-quote distro name and launcher path for Windows command line
+        # parsing so values with spaces (e.g. "Ubuntu Preview") are kept as
+        # single arguments.
+        _css_wsl_args=""
+        if [ -n "$_css_distro" ]; then
+            _css_wsl_args="-d \"$_css_distro\" "
+        fi
+        _css_wsl_args="${_css_wsl_args}-- bash -l -c \"exec \\\"$_css_launcher\\\"\""
+
+        # Detect whether Windows Terminal (wt.exe) is available (better UX)
+        _css_use_wt=false
+        if command -v wt.exe >/dev/null 2>&1; then
+            _css_use_wt=true
+        fi
+
+        if [ "$_css_use_wt" = true ]; then
+            _css_sc_target='wt.exe'
+            _css_sc_args="wsl.exe $_css_wsl_args"
+        else
+            _css_sc_target='wsl.exe'
+            _css_sc_args="$_css_wsl_args"
+        fi
+
+        # Escape single quotes for PowerShell single-quoted string embedding
+        _css_sc_args_ps=$(printf '%s' "$_css_sc_args" | sed "s/'/''/g")
+
+        # Create shortcuts via a temp PowerShell script to avoid escaping issues
+        _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
+        if [ -n "$_css_ps1_tmp" ]; then
+            cat > "$_css_ps1_tmp" << WSLPS1_EOF
+\$WshShell = New-Object -ComObject WScript.Shell
+\$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
+if (-not \$targetExe) { exit 1 }
+\$locations = @(
+    [Environment]::GetFolderPath('Desktop'),
+    (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+)
+foreach (\$dir in \$locations) {
+    if (-not \$dir -or -not (Test-Path \$dir)) { continue }
+    \$linkPath = Join-Path \$dir 'Unsloth Studio.lnk'
+    \$shortcut = \$WshShell.CreateShortcut(\$linkPath)
+    \$shortcut.TargetPath = \$targetExe
+    \$shortcut.Arguments = '$_css_sc_args_ps'
+    \$shortcut.Description = 'Launch Unsloth Studio'
+    \$shortcut.Save()
+}
+WSLPS1_EOF
+
+            # Convert WSL path to Windows path for powershell.exe
+            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
+            if [ -n "$_css_ps1_win" ]; then
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            fi
+            rm -f "$_css_ps1_tmp"
+        fi
     fi
 
     if [ "$_css_created" -eq 1 ]; then
@@ -562,6 +661,47 @@ elif grep -qi microsoft /proc/version 2>/dev/null; then
     OS="wsl"
 fi
 echo "==> Platform: $OS"
+
+# ── Architecture detection & Python version ──
+_ARCH=$(uname -m)
+MAC_INTEL=false
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
+    # Guard against Apple Silicon running under Rosetta (reports x86_64).
+    # sysctl hw.optional.arm64 returns "1" on Apple Silicon even in Rosetta.
+    if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+        echo ""
+        echo "  WARNING: Apple Silicon detected, but this shell is running under Rosetta (x86_64)."
+        echo "  Re-run install.sh from a native arm64 terminal for full PyTorch support."
+        echo "  Continuing in GGUF-only mode for now."
+        echo ""
+    fi
+    MAC_INTEL=true
+fi
+
+if [ -n "$_USER_PYTHON" ]; then
+    PYTHON_VERSION="$_USER_PYTHON"
+    echo "  Using user-specified Python $PYTHON_VERSION (--python override)"
+elif [ "$MAC_INTEL" = true ]; then
+    PYTHON_VERSION="3.12"
+else
+    PYTHON_VERSION="3.13"
+fi
+
+if [ "$MAC_INTEL" = true ]; then
+    echo ""
+    echo "  NOTE: Intel Mac (x86_64) detected."
+    echo "  PyTorch is unavailable for this platform (dropped Jan 2024)."
+    echo "  Studio will install in GGUF-only mode."
+    echo "  Chat, inference via GGUF, and data recipes will work."
+    echo "  Training requires Apple Silicon or Linux with GPU."
+    echo ""
+fi
+
+# ── Unified SKIP_TORCH: --no-torch flag OR Intel Mac auto-detection ──
+SKIP_TORCH=false
+if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
+    SKIP_TORCH=true
+fi
 
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
@@ -714,11 +854,38 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
     fi
 fi
 
+# If an Intel Mac has a stale 3.13 venv from a previous failed install, recreate
+# (skip when the user explicitly chose a version via --python)
+if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _PY_MM=$("$VENV_DIR/bin/python" -c \
+        "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>/dev/null || echo "")
+    if [ "$_PY_MM" != "3.12" ]; then
+        echo "  Recreating Intel Mac environment with Python 3.12 (was $_PY_MM)..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
     uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
-else
-    echo "==> Using migrated environment at ${VENV_DIR}"
+fi
+
+# Guard against Python 3.13.8 torch import bug on Apple Silicon
+# (skip when the user explicitly chose a version via --python)
+if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _PY_VER=$("$VENV_DIR/bin/python" -c \
+        "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>/dev/null || echo "")
+    if [ "$_PY_VER" = "3.13.8" ]; then
+        echo "  WARNING: Python 3.13.8 has a known torch import bug."
+        echo "  Recreating venv with Python 3.12..."
+        rm -rf "$VENV_DIR"
+        PYTHON_VERSION="3.12"
+        uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
+fi
+
+if [ -x "$VENV_DIR/bin/python" ]; then
+    echo "==> Using environment at ${VENV_DIR}"
 fi
 
 # ── Resolve repo root (for --local installs) ──
@@ -759,27 +926,64 @@ get_torch_index_url() {
 }
 TORCH_INDEX_URL=$(get_torch_index_url)
 
+# ── Print CPU-only hint when no GPU detected ──
+case "$TORCH_INDEX_URL" in
+    */cpu)
+        if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
+            echo ""
+            echo "  NOTE: No NVIDIA GPU detected (nvidia-smi not found)."
+            echo "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
+            echo "  re-run with --no-torch for a faster, lighter install:"
+            echo "    curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
+            echo ""
+        fi
+        ;;
+esac
+
 # ── Install unsloth directly into the venv (no activation needed) ──
 _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     echo "==> Upgrading unsloth in migrated environment..."
-    uv pip install --python "$_VENV_PY" \
-        --reinstall-package unsloth --reinstall-package unsloth-zoo \
-        "unsloth>=2026.3.14" unsloth-zoo
+    if [ "$SKIP_TORCH" = true ]; then
+        # No-torch: install packages without deps to avoid pulling torch.
+        # Runtime deps (safetensors, transformers, etc.) are installed by
+        # install_python_stack.py via no-torch-runtime.txt.
+        uv pip install --python "$_VENV_PY" --no-deps \
+            --reinstall-package unsloth --reinstall-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
+    else
+        uv pip install --python "$_VENV_PY" \
+            --reinstall-package unsloth --reinstall-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
+    fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
-    # Fresh: Step 1 - install torch from explicit index
-    echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
-    uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
-        --index-url "$TORCH_INDEX_URL"
+    # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
+    if [ "$SKIP_TORCH" = true ]; then
+        echo "==> Skipping PyTorch (--no-torch or Intel Mac x86_64)."
+    else
+        echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
+        uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
+            --index-url "$TORCH_INDEX_URL"
+    fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+    if [ "$SKIP_TORCH" = true ]; then
+        # No-torch: install packages without deps to avoid pulling torch.
+        # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
+        uv pip install --python "$_VENV_PY" --no-deps \
+            --upgrade-package unsloth --upgrade-package unsloth-zoo \
+            "unsloth>=2026.3.14" unsloth-zoo
+        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+            echo "==> Overlaying local repo (editable)..."
+            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        fi
+    elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
         echo "==> Overlaying local repo (editable)..."
@@ -832,15 +1036,23 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 echo "==> Running unsloth setup..."
+# When no-torch, don't skip base so install_python_stack installs
+# no-torch-runtime.txt (the runtime deps that --no-deps skipped).
+_SKIP_BASE=1
+if [ "$SKIP_TORCH" = true ]; then
+    _SKIP_BASE=0
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
+    UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
 else
-    SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
+    UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     bash "$SETUP_SH" </dev/null
 fi
 
