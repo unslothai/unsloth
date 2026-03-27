@@ -417,7 +417,7 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-STUDIO_HOME="$HOME/.unsloth/studio"
+STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
@@ -430,7 +430,12 @@ VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 # Note: do NOT delete $STUDIO_HOME/.venv here — install.sh handles migration
 
 _COLAB_NO_VENV=false
-if [ ! -x "$VENV_DIR/bin/python" ]; then
+_DOCKER_NO_VENV=false
+if [ -n "$UNSLOTH_DOCKER" ]; then
+    # Docker: packages already in /opt/conda — skip venv entirely.
+    # Only pre-install .venv_t5 for transformers 5.x switching (handled below).
+    _DOCKER_NO_VENV=true
+elif [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
         # On Colab there is no Studio venv -- install backend deps into system Python.
         # Strip all version constraints so pip keeps Colab's pre-installed
@@ -493,6 +498,38 @@ cd "$SCRIPT_DIR"
 if [ "$_COLAB_NO_VENV" = true ]; then
     step "python" "backend deps installed into system Python"
     substep "continuing to llama.cpp install for GGUF inference support"
+fi
+
+# In Docker, packages are pre-installed in /opt/conda — only install missing
+# studio/data-designer deps and pre-install .venv_t5 for transformers 5.x.
+if [ "$_DOCKER_NO_VENV" = true ]; then
+    echo "   Docker detected — skipping venv activation."
+
+    # Install branch's unsloth/unsloth_cli/studio into /opt/conda
+    # (overwrites PyPI version with Docker-aware code)
+    echo "   Installing local unsloth from branch..."
+    pip install --force-reinstall --no-deps "$REPO_ROOT"
+
+    # Install only missing deps (studio, data-designer, plugin, metadata patch).
+    # Heavy packages (torch, unsloth, vllm, etc.) are already in /opt/conda.
+    # install_python_stack.py has steps 1-5 commented out for this branch.
+    python "$SCRIPT_DIR/install_python_stack.py"
+
+    # Pre-install transformers 5.x into .venv_t5
+    echo ""
+    echo "   Pre-installing transformers 5.x for newer model support..."
+    mkdir -p "$VENV_T5_DIR"
+    pip install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0" 2>/dev/null
+    pip install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1" 2>/dev/null
+    pip install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2" 2>/dev/null
+    pip install --target "$VENV_T5_DIR" "tiktoken" 2>/dev/null
+    echo "✅ Transformers 5.x pre-installed to $VENV_T5_DIR/"
+
+    echo ""
+    echo "╔══════════════════════════════════════╗"
+    echo "║     Docker Studio Setup Complete!    ║"
+    echo "╚══════════════════════════════════════╝"
+    exit 0
 fi
 
 # ── Check if Python deps need updating ──
