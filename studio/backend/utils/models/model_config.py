@@ -973,6 +973,72 @@ def list_gguf_variants(
     return variants, has_vision
 
 
+def list_local_gguf_variants(
+    directory: str,
+) -> tuple[list[GgufVariantInfo], bool]:
+    """List GGUF quantization variants in a local directory.
+
+    Mirrors :func:`list_gguf_variants` but reads from the filesystem
+    instead of the HuggingFace API.  Aggregates shard sizes by quant
+    label so that split GGUFs appear as a single variant.
+
+    Returns:
+        (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
+    """
+    p = Path(directory)
+    if not p.is_dir():
+        return [], False
+
+    quant_totals: dict[str, int] = {}
+    quant_first_file: dict[str, str] = {}
+    has_vision = False
+
+    for f in sorted(p.glob("*.gguf")):
+        if _is_mmproj(f.name):
+            has_vision = True
+            continue
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        quant = _extract_quant_label(f.name)
+        quant_totals[quant] = quant_totals.get(quant, 0) + size
+        if quant not in quant_first_file:
+            quant_first_file[quant] = f.name
+
+    variants = [
+        GgufVariantInfo(
+            filename = quant_first_file[q],
+            quant = q,
+            size_bytes = s,
+        )
+        for q, s in quant_totals.items()
+    ]
+    variants.sort(key = lambda v: -v.size_bytes)
+    return variants, has_vision
+
+
+def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
+    """Find the GGUF file in *directory* matching a quantization *variant*.
+
+    For sharded GGUFs (multiple files with the same quant label), returns
+    the first shard (sorted by name) which is what ``llama-server -m`` expects.
+
+    Returns the resolved absolute path, or ``None`` if no match.
+    """
+    p = Path(directory)
+    if not p.is_dir():
+        return None
+
+    matches = sorted(
+        f for f in p.glob("*.gguf")
+        if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
+    )
+    if matches:
+        return str(matches[0].resolve())
+    return None
+
+
 def detect_gguf_model_remote(
     repo_id: str,
     hf_token: Optional[str] = None,
@@ -1530,7 +1596,10 @@ class ModelConfig:
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
-            gguf_file = detect_gguf_model(path)
+            if gguf_variant:
+                gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
+            else:
+                gguf_file = detect_gguf_model(path)
             if gguf_file:
                 display_name = Path(gguf_file).stem
                 logger.info(f"Detected local GGUF model: {gguf_file}")

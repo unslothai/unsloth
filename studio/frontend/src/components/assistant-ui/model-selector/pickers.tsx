@@ -203,17 +203,19 @@ function GgufVariantExpander({
     };
   }, [repoId]);
 
+  const isLocalPath = repoId.startsWith("/");
+
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
       onSelect(repoId, {
-        source: "hub",
+        source: isLocalPath ? "local" : "hub",
         isLora: false,
         ggufVariant: quant,
-        isDownloaded: downloaded,
+        isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
       });
     },
-    [repoId, onSelect],
+    [repoId, isLocalPath, onSelect],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -698,16 +700,34 @@ export function HubModelPicker({
           {!showHfSection && lmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
-              {lmStudioModels.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  label={m.display_name}
-                  meta={m.path.endsWith(".gguf") ? "GGUF" : "Local"}
-                  selected={value === m.id}
-                  onClick={() => onSelect(m.id, { source: "local", isLora: false, isDownloaded: true })}
-                  vramStatus={null}
-                />
-              ))}
+              {lmStudioModels.map((m) => {
+                const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                return (
+                  <div key={m.id}>
+                    <ModelRow
+                      label={m.display_name}
+                      meta={isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"}
+                      selected={value === m.id}
+                      onClick={() => {
+                        if (isGguf) {
+                          setExpandedGguf((prev) => (prev === m.id ? null : m.id));
+                        } else {
+                          onSelect(m.id, { source: "local", isLora: false, isDownloaded: true });
+                        }
+                      }}
+                      vramStatus={null}
+                    />
+                    {expandedGguf === m.id && (
+                      <GgufVariantExpander
+                        repoId={m.id}
+                        onSelect={onSelect}
+                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </>
           ) : null}
 
@@ -862,6 +882,8 @@ export function LoraModelPicker({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
+  const gpu = useGpuInfo();
 
   const normalized = useMemo(
     () =>
@@ -934,33 +956,49 @@ export function LoraModelPicker({
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
+                  const isLocalGgufDir = isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
                   const tag = isLocal
-                    ? "Local"
+                    ? isLocalGgufDir ? "GGUF" : "Local"
                     : isGguf
                       ? "GGUF"
                       : isExported
                         ? isMerged ? "Merged" : "LoRA"
                         : "LoRA";
-                  const meta = isLocal ? "Local" : isExported ? `${tag} · Exported` : tag;
+                  const meta = isLocal ? (isLocalGgufDir ? "GGUF" : "Local") : isExported ? `${tag} · Exported` : tag;
                   return (
-                    <ModelRow
-                      key={adapter.id}
-                      label={adapter.name}
-                      meta={meta}
-                      selected={value === adapter.id}
-                      onClick={() => onSelect(adapter.id, {
-                        source: isLocal ? "local" : isExported ? "exported" : "lora",
-                        isLora: !isLocal && !isMerged && !isGguf,
-                      })}
-                      tooltipText={
-                        <>
-                          <span className="block break-words">{adapter.name}</span>
-                          <span className="block mt-1 text-[10px] text-muted-foreground break-all">
-                            {adapter.id}
-                          </span>
-                        </>
-                      }
-                    />
+                    <div key={adapter.id}>
+                      <ModelRow
+                        label={adapter.name}
+                        meta={meta}
+                        selected={value === adapter.id}
+                        onClick={() => {
+                          if (isLocalGgufDir) {
+                            setExpandedGguf((prev) => (prev === adapter.id ? null : adapter.id));
+                          } else {
+                            onSelect(adapter.id, {
+                              source: isLocal ? "local" : isExported ? "exported" : "lora",
+                              isLora: !isLocal && !isMerged && !isGguf,
+                            });
+                          }
+                        }}
+                        tooltipText={
+                          <>
+                            <span className="block break-words">{adapter.name}</span>
+                            <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                              {adapter.id}
+                            </span>
+                          </>
+                        }
+                      />
+                      {expandedGguf === adapter.id && (
+                        <GgufVariantExpander
+                          repoId={adapter.id}
+                          onSelect={onSelect}
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                        />
+                      )}
+                    </div>
                   );
                 })}
               </div>
