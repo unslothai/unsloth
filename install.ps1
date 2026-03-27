@@ -39,11 +39,55 @@ function Install-UnslothStudio {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
-    $Rule = [string]([char]0x2500) * 52
+    $Rule = [string]::new([char]0x2500, 52)
     $Sloth = [char]::ConvertFromUtf32(0x1F9A5)
+
+    function Enable-StudioVirtualTerminal {
+        if ($env:NO_COLOR) { return $false }
+        try {
+            if (-not ("StudioVT.Native" -as [type])) {
+                Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@ -ErrorAction Stop
+            }
+            $h = [StudioVT.Native]::GetStdHandle(-11)
+            [uint32]$mode = 0
+            if (-not [StudioVT.Native]::GetConsoleMode($h, [ref]$mode)) { return $false }
+            $mode = $mode -bor 0x0004
+            return [StudioVT.Native]::SetConsoleMode($h, $mode)
+        } catch {
+            return $false
+        }
+    }
+    $script:StudioVtOk = Enable-StudioVirtualTerminal
+
+    function Get-StudioAnsi {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('Title', 'Dim', 'Ok', 'Warn', 'Err', 'Reset')]
+            [string]$Kind
+        )
+        $e = [char]27
+        switch ($Kind) {
+            'Title' { return "${e}[38;5;150m" }
+            'Dim'   { return "${e}[38;5;245m" }
+            'Ok'    { return "${e}[38;5;108m" }
+            'Warn'  { return "${e}[38;5;136m" }
+            'Err'   { return "${e}[91m" }
+            'Reset' { return "${e}[0m" }
+        }
+    }
+
     Write-Host ""
-    Write-Host ("  {0} Unsloth Studio Installer (Windows)" -f $Sloth) -ForegroundColor DarkGreen
-    Write-Host "  $Rule" -ForegroundColor DarkGray
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        Write-Host ("  " + (Get-StudioAnsi Title) + $Sloth + " Unsloth Studio Installer (Windows)" + (Get-StudioAnsi Reset))
+        Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+    } else {
+        Write-Host ("  {0} Unsloth Studio Installer (Windows)" -f $Sloth) -ForegroundColor DarkGreen
+        Write-Host "  $Rule" -ForegroundColor DarkGray
+    }
     Write-Host ""
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
@@ -69,16 +113,30 @@ function Install-UnslothStudio {
             [Parameter(Mandatory = $true)][string]$Value,
             [string]$Color = "Green"
         )
-        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
-        Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
-        $fc = switch ($Color) {
-            "Green" { "DarkGreen" }
-            "Yellow" { "Yellow" }
-            "Red" { "Red" }
-            "DarkGray" { "DarkGray" }
-            default { "DarkGreen" }
+        if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+            $dim = Get-StudioAnsi Dim
+            $rst = Get-StudioAnsi Reset
+            $val = switch ($Color) {
+                'Green' { Get-StudioAnsi Ok }
+                'Yellow' { Get-StudioAnsi Warn }
+                'Red' { Get-StudioAnsi Err }
+                'DarkGray' { Get-StudioAnsi Dim }
+                default { Get-StudioAnsi Ok }
+            }
+            $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+            Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
+        } else {
+            $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+            Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
+            $fc = switch ($Color) {
+                'Green' { 'DarkGreen' }
+                'Yellow' { 'Yellow' }
+                'Red' { 'Red' }
+                'DarkGray' { 'DarkGray' }
+                default { 'DarkGreen' }
+            }
+            Write-Host $Value -ForegroundColor $fc
         }
-        Write-Host $Value -ForegroundColor $fc
     }
 
     function substep {
@@ -86,12 +144,22 @@ function Install-UnslothStudio {
             [Parameter(Mandatory = $true)][string]$Message,
             [string]$Color = "DarkGray"
         )
-        $fc = switch ($Color) {
-            "Yellow" { "Yellow" }
-            "Red" { "Red" }
-            default { "DarkGray" }
+        if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+            $msgCol = switch ($Color) {
+                'Yellow' { (Get-StudioAnsi Warn) }
+                'Red' { (Get-StudioAnsi Err) }
+                default { (Get-StudioAnsi Dim) }
+            }
+            $pad = "".PadRight(15)
+            Write-Host ("  {0}{1}{2}{3}" -f $msgCol, $pad, $Message, (Get-StudioAnsi Reset))
+        } else {
+            $fc = switch ($Color) {
+                'Yellow' { 'Yellow' }
+                'Red' { 'Red' }
+                default { 'DarkGray' }
+            }
+            Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
         }
-        Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
 
     # Run native commands quietly by default to match install.sh behavior.
