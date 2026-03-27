@@ -1725,8 +1725,12 @@ class LlamaCppBackend:
                 text = pat.sub("", text)
             return text.strip() if final else text
 
-        # XML prefixes that signal a tool call in content
-        _TOOL_XML_SIGNALS = ("<tool_call>", "<function=")
+        # XML prefixes that signal a tool call in content.
+        # Empty when auto_heal is disabled so the buffer never
+        # speculatively holds content for XML detection.
+        _TOOL_XML_SIGNALS = (
+            ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
+        )
         _MAX_BUFFER_CHARS = 32
 
         for iteration in range(max_tool_iterations):
@@ -1871,6 +1875,12 @@ class LlamaCppBackend:
                                                         "arguments": "",
                                                     },
                                                 }
+                                            elif tc_d.get("id"):
+                                                # Update ID if real one
+                                                # arrives on a later delta
+                                                tool_calls_acc[idx]["id"] = (
+                                                    tc_d["id"]
+                                                )
                                             func = tc_d.get("function", {})
                                             if func.get("name"):
                                                 tool_calls_acc[idx]["function"][
