@@ -17,6 +17,7 @@ Run with:
     python -m pytest tests/test_utils.py -v
 """
 
+import logging
 import platform
 from unittest.mock import patch, MagicMock
 

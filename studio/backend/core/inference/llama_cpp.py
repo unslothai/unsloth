@@ -286,8 +286,15 @@ class LlamaCppBackend:
                     if allowed is not None and idx not in allowed:
                         continue
                     gpus.append((idx, free_mib))
+            logger.debug(
+                "Queried GPU free memory",
+                cuda_visible_devices = cvd,
+                allowed_gpu_indices = sorted(allowed) if allowed is not None else None,
+                gpu_free_memory_mib = gpus,
+            )
             return gpus
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
             return []
 
     @staticmethod
@@ -307,15 +314,30 @@ class LlamaCppBackend:
           - (None, True)       model too large, let --fit handle it
         """
         if not gpus:
+            logger.debug(
+                "No GPU memory data available for selection",
+                model_size_bytes = model_size_bytes,
+            )
             return None, True
 
         model_size_mib = model_size_bytes / (1024 * 1024)
 
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+        logger.debug(
+            "Evaluating GPU fit",
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
+        )
 
         # Try fitting on 1 GPU (70% of free memory threshold)
         if ranked[0][1] * 0.70 >= model_size_mib:
+            logger.debug(
+                "Model fits on a single GPU",
+                selected_gpu_indices = [ranked[0][0]],
+                selected_gpu_free_mib = ranked[0][1],
+                model_size_mib = round(model_size_mib, 2),
+            )
             return [ranked[0][0]], False
 
         # Try fitting on N GPUs (accumulate free memory from most-free)
@@ -325,9 +347,21 @@ class LlamaCppBackend:
             selected.append(idx)
             cumulative += free_mib * 0.70
             if cumulative >= model_size_mib:
-                return sorted(selected), False
+                selected_sorted = sorted(selected)
+                logger.debug(
+                    "Model fits on multiple GPUs",
+                    selected_gpu_indices = selected_sorted,
+                    usable_memory_mib = round(cumulative, 2),
+                    model_size_mib = round(model_size_mib, 2),
+                )
+                return selected_sorted, False
 
         # Model is too large even for all GPUs, let --fit handle it
+        logger.debug(
+            "Model does not fit in available GPU memory, falling back to --fit",
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
+        )
         return None, True
 
     # ── KV cache VRAM estimation ─────────────────────────────────────
@@ -386,6 +420,11 @@ class LlamaCppBackend:
         If the model weights alone don't fit, returns min_ctx unchanged.
         """
         if not self._can_estimate_kv():
+            logger.debug(
+                "Skipping context fit because KV cache metadata is unavailable",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+            )
             return requested_ctx
 
         budget_bytes = available_mib * 1024 * 1024 * 0.70
@@ -394,11 +433,24 @@ class LlamaCppBackend:
         # Check if requested context already fits
         kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
         if model_footprint + kv <= budget_bytes:
+            logger.debug(
+                "Requested context already fits in GPU budget",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
+                kv_cache_gb = round(kv / (1024**3), 2),
+            )
             return requested_ctx
 
         # Model weights alone exceed budget -- can't help by reducing ctx.
         # Return requested_ctx unchanged; --fit will handle VRAM management.
         if model_footprint >= budget_bytes:
+            logger.debug(
+                "Model footprint exceeds GPU budget before KV cache",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
+            )
             return requested_ctx
 
         # Binary search for max context that fits
@@ -419,6 +471,13 @@ class LlamaCppBackend:
         best = (best // 256) * 256
         best = max(effective_min, best)
         best = min(best, requested_ctx)
+        logger.debug(
+            "Reduced context to fit GPU budget",
+            requested_ctx = requested_ctx,
+            fitted_ctx = best,
+            available_mib = available_mib,
+            model_size_gb = round(model_footprint / (1024**3), 2),
+        )
         return best
 
     # ── Variant fallback ────────────────────────────────────────────
@@ -992,11 +1051,28 @@ class LlamaCppBackend:
                 gpu_indices, use_fit = None, True
                 explicit_ctx = n_ctx > 0
 
+                logger.debug(
+                    "Starting GGUF GPU selection",
+                    model_identifier = self._model_identifier,
+                    model_size_gb = round(model_size / (1024**3), 2),
+                    requested_context = n_ctx,
+                    effective_context = effective_ctx,
+                    explicit_context = explicit_ctx,
+                    cache_type_kv = cache_type_kv,
+                    can_estimate_kv = self._can_estimate_kv(),
+                    visible_gpu_free_mib = gpus,
+                )
+
                 if gpus and self._can_estimate_kv() and effective_ctx > 0:
                     if explicit_ctx:
                         # Try to honor the user's requested context exactly.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
                             effective_ctx, cache_type_kv
+                        )
+                        logger.debug(
+                            "Trying explicit GGUF context fit",
+                            requested_context = effective_ctx,
+                            requested_total_gb = round(requested_total / (1024**3), 2),
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
 
@@ -1021,6 +1097,12 @@ class LlamaCppBackend:
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
                                     use_fit = False
+                                    logger.debug(
+                                        "Capped explicit GGUF context to fit available GPUs",
+                                        selected_gpu_indices = gpu_indices,
+                                        selected_gpu_pool_mib = pool_mib,
+                                        capped_context = capped,
+                                    )
                                     break
                     else:
                         # Auto context: prefer fewer GPUs, cap context to fit.
@@ -1040,10 +1122,20 @@ class LlamaCppBackend:
                                 effective_ctx = capped
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
+                                logger.debug(
+                                    "Selected GGUF GPUs after auto context fitting",
+                                    selected_gpu_indices = gpu_indices,
+                                    selected_gpu_pool_mib = pool_mib,
+                                    capped_context = capped,
+                                )
                                 break
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check
+                    logger.debug(
+                        "Falling back to file-size-only GPU selection",
+                        model_size_gb = round(model_size / (1024**3), 2),
+                    )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
 
                 if effective_ctx < original_ctx:
@@ -1274,6 +1366,11 @@ class LlamaCppBackend:
             # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
             if gpu_indices is not None:
                 env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                logger.debug(
+                    "Pinned llama-server to GPUs",
+                    selected_gpu_indices = gpu_indices,
+                    cuda_visible_devices = env["CUDA_VISIBLE_DEVICES"],
+                )
 
             self._stdout_lines = []
             self._process = subprocess.Popen(

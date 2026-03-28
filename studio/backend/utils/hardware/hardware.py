@@ -659,6 +659,15 @@ def estimate_required_model_memory_gb(
 
     metadata["required_gb"] = round(required_gb, 3)
     metadata["min_buffer_gb"] = min_buffer_gb
+    logger.debug(
+        "Estimated required model memory",
+        model_name = model_name,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+        model_size_source = metadata["model_size_source"],
+        model_size_gb = metadata["model_size_gb"],
+        required_gb = metadata["required_gb"],
+    )
     return required_gb, metadata
 
 
@@ -715,6 +724,17 @@ def auto_select_gpu_ids(
         return parent_ids, metadata
 
     ranked = sorted(gpu_candidates, key = lambda item: (-item["free_gb"], item["index"]))
+    logger.debug(
+        "Evaluating automatic gpu selection",
+        model_name = model_name,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+        required_gb = metadata.get("required_gb"),
+        visible_gpu_candidates = [
+            {"gpu_id": item["index"], "free_gb": round(item["free_gb"], 3)}
+            for item in ranked
+        ],
+    )
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
@@ -733,6 +753,14 @@ def auto_select_gpu_ids(
             metadata["usable_gb"] = round(usable_gb, 3)
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected
+            logger.debug(
+                "Selected GPUs automatically",
+                model_name = model_name,
+                selected_gpu_ids = selected,
+                usable_gb = metadata["usable_gb"],
+                required_gb = metadata.get("required_gb"),
+                multi_gpu_factor = multi_gpu_factor,
+            )
             return selected, metadata
 
     fallback_all = [device["index"] for device in devices]
@@ -742,6 +770,14 @@ def auto_select_gpu_ids(
         3,
     )
     metadata["selected_gpu_ids"] = fallback_all
+    logger.debug(
+        "Falling back to all visible GPUs",
+        model_name = model_name,
+        selected_gpu_ids = fallback_all,
+        usable_gb = metadata["usable_gb"],
+        required_gb = metadata.get("required_gb"),
+        multi_gpu_factor = multi_gpu_factor,
+    )
     return fallback_all, metadata
 
 
@@ -755,17 +791,36 @@ def prepare_gpu_selection(
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     if gpu_ids:
         resolved = resolve_requested_gpu_ids(gpu_ids)
-        return resolved, {
+        metadata = {
             "selection_mode": "explicit",
             "selected_gpu_ids": resolved,
         }
+        logger.debug(
+            "Respecting explicit gpu_ids",
+            model_name = model_name,
+            requested_gpu_ids = gpu_ids,
+            selected_gpu_ids = resolved,
+        )
+        return resolved, metadata
 
-    return auto_select_gpu_ids(
+    selected_gpu_ids, metadata = auto_select_gpu_ids(
         model_name,
         hf_token = hf_token,
         training_type = training_type,
         load_in_4bit = load_in_4bit,
     )
+    logger.debug(
+        "Prepared automatic gpu selection",
+        model_name = model_name,
+        training_type = training_type,
+        load_in_4bit = load_in_4bit,
+        selection_mode = metadata.get("selection_mode"),
+        selected_gpu_ids = metadata.get("selected_gpu_ids"),
+        required_gb = metadata.get("required_gb"),
+        usable_gb = metadata.get("usable_gb"),
+        model_size_source = metadata.get("model_size_source"),
+    )
+    return selected_gpu_ids, metadata
 
 
 def get_physical_gpu_count() -> int:

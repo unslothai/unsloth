@@ -65,6 +65,32 @@ import utils.hardware.hardware as _hw_module
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
 
+def _log_training_gpu_selection_mode() -> None:
+    from models.training import TrainingStartRequest
+    import utils.hardware as hardware_utils
+
+    model_fields = getattr(TrainingStartRequest, "model_fields", {})
+    has_gpu_ids = "gpu_ids" in model_fields
+    has_prepare_gpu_selection = hasattr(hardware_utils, "prepare_gpu_selection")
+
+    if has_gpu_ids and has_prepare_gpu_selection:
+        logger.info(
+            "Training GPU selection mode",
+            mode = "request_aware",
+            request_gpu_ids_supported = True,
+            backend_auto_selector_available = True,
+            behavior = "gpu_ids can be respected explicitly and omitted gpu_ids can be auto-selected",
+        )
+    else:
+        logger.info(
+            "Training GPU selection mode",
+            mode = "legacy",
+            request_gpu_ids_supported = has_gpu_ids,
+            backend_auto_selector_available = has_prepare_gpu_selection,
+            behavior = "training inherits CUDA_VISIBLE_DEVICES and does not do request-aware GPU subset selection",
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -79,6 +105,7 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
+    _log_training_gpu_selection_mode()
 
     from storage.studio_db import cleanup_orphaned_runs
 
@@ -225,7 +252,7 @@ async def get_system_info():
     import psutil
     from utils.hardware import get_device
 
-    visibility_info = _get_backend_visible_gpu_info()
+    visibility_info = get_backend_visible_gpu_info()
     gpu_info = {
         "available": visibility_info["available"],
         "devices": visibility_info["devices"],
@@ -250,7 +277,7 @@ async def get_system_info():
 
 @app.get("/api/system/gpu-visibility")
 async def get_gpu_visibility():
-    return _get_backend_visible_gpu_info()
+    return get_backend_visible_gpu_info()
 
 
 @app.get("/api/system/hardware")

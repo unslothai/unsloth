@@ -3230,6 +3230,25 @@ class UnslothTrainer:
                 if sft_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer
             logger.info("Trainer initialized\n")
+            logger.debug(
+                "Trainer runtime placement",
+                cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES"),
+                torch_visible_gpu_count = torch.cuda.device_count()
+                if torch.cuda.is_available()
+                else 0,
+                n_gpu = getattr(self.trainer.args, "n_gpu", None),
+                world_size = getattr(self.trainer.args, "world_size", None),
+                local_rank = getattr(self.trainer.args, "local_rank", None),
+                parallel_mode = str(getattr(self.trainer.args, "parallel_mode", None)),
+            )
+            if (
+                torch.cuda.is_available()
+                and torch.cuda.device_count() > 1
+                and getattr(self.trainer.args, "world_size", 1) == 1
+            ):
+                logger.info(
+                    "Studio training sees multiple visible GPUs, but this run is still single-process with world_size=1"
+                )
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Determine if we should train on responses only
