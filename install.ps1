@@ -37,6 +37,12 @@ function Install-UnslothStudio {
         }
     }
 
+    # Validate --package to prevent injection into shell/Python commands
+    if ($PackageName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
+        Write-Host "[ERROR] --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" -ForegroundColor Red
+        return
+    }
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)

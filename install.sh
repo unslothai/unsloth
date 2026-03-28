@@ -45,6 +45,13 @@ if [ "$_next_is_python" = true ]; then
     exit 1
 fi
 
+# Validate --package to prevent injection into shell/Python commands
+case "$PACKAGE_NAME" in
+    *[!a-zA-Z0-9._-]*)
+        echo "❌ ERROR: --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" >&2
+        exit 1 ;;
+esac
+
 # ── Tauri structured output ──
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then

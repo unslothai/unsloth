@@ -13,12 +13,21 @@ pub async fn check_install_status() -> bool {
         return false;
     };
 
-    let mut child = match tokio::process::Command::new(&bin)
-        .arg("-h")
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.arg("-h")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+        .stderr(std::process::Stdio::null());
+
+    // Match the same AppImage env clearing used in process.rs and install.rs,
+    // otherwise the probe can fail due to bundled libs even when the install is fine.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             warn!("Install check: failed to spawn {:?}: {}", bin, e);
@@ -112,12 +121,13 @@ async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
     Ok(healthy && correct_service)
 }
 
-/// Scan ports 8888-8907 looking for an existing healthy backend.
-/// Range matches the backend's auto-increment range (up to +20 ports in run.py).
+/// Scan ports 8888-8908 looking for an existing healthy backend.
+/// Range matches run.py: initial port 8888, then _find_free_port(8889, max_attempts=20)
+/// which can reach 8908.
 #[tauri::command]
 pub async fn find_existing_server() -> Option<u16> {
-    info!("Scanning ports 8888-8907 for existing backend...");
-    for port in 8888..=8907 {
+    info!("Scanning ports 8888-8908 for existing backend...");
+    for port in 8888..=8908 {
         match check_health_inner(port).await {
             Ok(true) => {
                 info!("Found existing backend on port {}", port);
