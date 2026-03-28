@@ -2554,7 +2554,6 @@ def _prepare_model_for_qat(
         elif qat_scheme == "cactus":
             try:
                 from torchao.quantization import IntxWeightOnlyConfig
-                from torchao.quantization.granularity import PerGroup
                 from torchao.dtypes import MappingType
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
