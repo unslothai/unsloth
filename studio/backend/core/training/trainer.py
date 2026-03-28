@@ -3129,7 +3129,9 @@ class UnslothTrainer:
                 # Only add packing for text models (not DeepSeek OCR which is VLM)
                 if not is_deepseek_ocr:
                     # CPT always uses packing for efficient raw-text pretraining
-                    packing_enabled = True if is_cpt else training_args.get("packing", False)
+                    packing_enabled = (
+                        True if is_cpt else training_args.get("packing", False)
+                    )
                     config_args["packing"] = packing_enabled
                     logger.info(
                         f"Sequence packing: {'enabled (CPT default)' if is_cpt else ('enabled' if packing_enabled else 'disabled')}\n"
