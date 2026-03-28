@@ -2551,6 +2551,27 @@ def _prepare_model_for_qat(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
             )
+        elif qat_scheme == "cactus":
+            try:
+                from torchao.quantization import IntxWeightOnlyConfig
+                from torchao.quantization.granularity import PerGroup
+                from torchao.dtypes import MappingType
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
+
+            base_config = IntxWeightOnlyConfig(
+                weight_dtype = torch.int8,
+                granularity = PerGroup(32),
+                mapping_type = MappingType.SYMMETRIC,
+            )
+            filter_fn = (
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and m.in_features >= 32
+            )
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
+            )
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
         assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
