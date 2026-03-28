@@ -45,8 +45,12 @@ if [ "$_next_is_python" = true ]; then
     exit 1
 fi
 
-# Validate --package to prevent injection into shell/Python commands
+# Validate --package to prevent injection into shell/Python commands.
+# Must start with a letter/digit (rejects leading dashes that uv would parse as flags).
 case "$PACKAGE_NAME" in
+    [!a-zA-Z0-9]*)
+        echo "❌ ERROR: --package name must start with a letter or digit." >&2
+        exit 1 ;;
     *[!a-zA-Z0-9._-]*)
         echo "❌ ERROR: --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" >&2
         exit 1 ;;
@@ -1018,7 +1022,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
@@ -1029,7 +1033,7 @@ else
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+        uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
 fi
 
