@@ -6,16 +6,6 @@
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 set -e
 
-# ── Ensure common tool paths are on PATH ──
-# macOS .app bundles inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
-# Homebrew, MacPorts, and ~/.local/bin are not included by default.
-for _extra_path in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do
-    case ":$PATH:" in
-        *":$_extra_path:"*) ;;
-        *) [ -d "$_extra_path" ] && export PATH="$_extra_path:$PATH" ;;
-    esac
-done
-
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
