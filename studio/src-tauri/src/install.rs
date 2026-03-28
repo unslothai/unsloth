@@ -1,5 +1,5 @@
-use command_group::{CommandGroup, GroupChild};
 use log::{error, info, warn};
+use process_wrap::std::*;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub struct InstallProcess {
     /// Process group handle — killing this kills the entire subprocess tree.
-    pub child: Option<GroupChild>,
+    pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     /// Packages needing elevated install, parsed from [TAURI:NEED_SUDO] output.
     pub needed_packages: Vec<String>,
@@ -131,24 +131,31 @@ fn spawn_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // AppImage/Flatpak set LD_LIBRARY_PATH to their bundled libs, which breaks
-    // Python spawned by the install script. Clear these env vars.
+    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
+    // spawned by the install script. Only clear inside AppImage — native installs
+    // may need these for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
-    {
+    if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
         cmd.env_remove("LD_LIBRARY_PATH");
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
 
     // Spawn in a process group so kill() terminates the entire tree
-    let mut group_child = cmd
-        .group()
+    // (bash/powershell + all subprocesses like uv, cmake, pip)
+    let mut wrap = CommandWrap::from(cmd);
+    #[cfg(unix)]
+    wrap.wrap(ProcessGroup::leader());
+    #[cfg(windows)]
+    wrap.wrap(JobObject);
+
+    let mut child = wrap
         .spawn()
         .map_err(|e| format!("Failed to spawn install script: {}", e))?;
 
-    let stdout = group_child.inner().stdout.take();
-    let stderr = group_child.inner().stderr.take();
-    install.child = Some(group_child);
+    let stdout = child.stdout().take();
+    let stderr = child.stderr().take();
+    install.child = Some(child);
     Ok((stdout, stderr))
 }
 
@@ -316,7 +323,7 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
 
     let pid = child.id();
     info!("Stopping installer process group (pid {})", pid);
-    // GroupChild::kill() sends SIGKILL to the entire process group on Unix
+    // process-wrap kill() sends SIGKILL to the entire process group on Unix
     // and terminates all processes in the job object on Windows.
     let _ = child.kill();
     let _ = child.wait();
