@@ -1,8 +1,10 @@
 # Data Designer runtime deps installed explicitly (single-env mode).
-# DuckDB 1.5 removed Relation.record_batch(); keep <1.5 until upstream ships the fix.
+# Synced with data-designer-engine==0.5.4 requirements.
 anyascii<1,>=0.3.3
-duckdb<1.5,>=1.1.3
+chardet<6,>=3.0.2
+duckdb<2,>=1.5.0
 faker<21,>=20.1.0
+fsspec<2026,>=2025.3.0
 httpx<1,>=0.27.2
 httpx-retries<1,>=0.4.2
 json-repair<1,>=0.48.0
@@ -10,12 +12,14 @@ jsonpath-rust-bindings<2,>=1.0
 jsonschema<5,>=4.0.0
 lxml<7,>=6.0.2
 marko<3,>=2.1.2
+mcp<2,>=1.26.0
 networkx<4,>=3.0
-python-json-logger<4,>=3
+python-json-logger>=3,<4
 ruff<1,>=0.14.10
 scipy<2,>=1.11.0
 sqlfluff<4,>=3.2.0
 tiktoken<1,>=0.8.0
+# Unstructured-seed plugin deps (plugin installed with --no-deps)
 pymupdf>=1.24.0
 pymupdf4llm>=0.0.17
 mammoth>=1.8.0

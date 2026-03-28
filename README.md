@@ -57,19 +57,19 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
-If you don't have `curl`, use `wget`. Launch after setup via:
-```bash
-source unsloth_studio/bin/activate
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
-Launch after setup via:
-```powershell
-& .\unsloth_studio\Scripts\unsloth.exe studio -H 0.0.0.0 -p 8888
+
+#### Launch
+```bash
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Update
+```bash
+unsloth studio update
 ```
 
 #### Docker
@@ -82,64 +82,8 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
   unsloth/unsloth
   ```
 
-#### macOS, Linux, WSL developer installs:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv unsloth_studio --python 3.13
-source unsloth_studio/bin/activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
-#### Windows PowerShell developer installs:
-```powershell
-winget install -e --id Python.Python.3.13
-winget install --id=astral-sh.uv  -e
-uv venv unsloth_studio --python 3.13
-.\unsloth_studio\Scripts\activate
-uv pip install unsloth --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
-#### Nightly - MacOS, Linux, WSL:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
-cd unsloth_studio
-uv venv --python 3.13
-source .venv/bin/activate
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to launch every time:
-```bash
-cd unsloth_studio
-source .venv/bin/activate
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
-#### Nightly - Windows:
-Run in Windows Powershell:
-```bash
-winget install -e --id Python.Python.3.13
-winget install --id=astral-sh.uv  -e
-git clone --filter=blob:none https://github.com/unslothai/unsloth.git unsloth_studio
-cd unsloth_studio
-uv venv --python 3.13
-.\.venv\Scripts\activate
-uv pip install -e . --torch-backend=auto
-unsloth studio setup
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to launch every time:
-```bash
-cd unsloth_studio
-.\.venv\Scripts\activate
-unsloth studio -H 0.0.0.0 -p 8888
-```
+#### Developer, Nightly, Uninstall
+To see developer, nightly and uninstallation etc. instructions, see [advanced installation](#-advanced-installation).
 
 ### Unsloth Core (code-based)
 #### Linux, WSL:
@@ -196,6 +140,76 @@ Train for free with our notebooks. Read our [guide](https://unsloth.ai/docs/get-
 - **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning)
 - **FP8 & Vision RL**: You can now do FP8 & VLM GRPO on consumer GPUs. [FP8 Blog](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) • [Vision RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/vision-reinforcement-learning-vlm-rl)
 - **gpt-oss** by OpenAI: Read our [RL blog](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/gpt-oss-reinforcement-learning), [Flex Attention](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/long-context-gpt-oss-training) blog and [Guide](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune).
+
+## 📥 Advanced Installation
+The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
+#### Developer installs: macOS, Linux, WSL:
+```bash
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+./install.sh --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update --local
+```
+
+#### Developer installs: Windows PowerShell:
+```powershell
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update --local
+```
+
+#### Nightly: MacOS, Linux, WSL:
+```bash
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+git checkout nightly
+./install.sh --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch every time:
+```bash
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Nightly: Windows:
+Run in Windows Powershell:
+```bash
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+git checkout nightly
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch every time:
+```bash
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Uninstall
+You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
+
+* ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
+* ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
+
+For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
+
+#### Deleting model files
+
+You can delete old model files either from the bin icon in model search or by removing the relevant cached model folder from the default Hugging Face cache directory. By default, HF uses:
+
+* ​ **MacOS, Linux, WSL:** `~/.cache/huggingface/hub/`
+* ​ **Windows:** `%USERPROFILE%\.cache\huggingface\hub\`
 
 ## 💚 Community and Links
 | Type                                                                                                                                      | Links                                                                          |

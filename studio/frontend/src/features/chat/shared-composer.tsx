@@ -241,6 +241,7 @@ export function SharedComposer({
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
@@ -337,7 +338,7 @@ export function SharedComposer({
       async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
         const resp = await loadModel({
           model_path: sel.id,
-          hf_token: null,
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: maxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
@@ -528,6 +529,7 @@ export function SharedComposer({
             type="button"
             disabled={reasoningDisabled}
             onClick={() => {
+              if (reasoningAlwaysOn) return;
               const next = !reasoningEnabled;
               setReasoningEnabled(next);
               // Qwen3/3.5: adjust params for thinking on/off
@@ -544,13 +546,13 @@ export function SharedComposer({
               "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
               reasoningDisabled
                 ? "cursor-not-allowed opacity-40"
-                : reasoningEnabled
+                : (reasoningEnabled || reasoningAlwaysOn)
                   ? "bg-primary/10 text-primary hover:bg-primary/20"
                   : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
             )}
             aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
           >
-            {reasoningEnabled && !reasoningDisabled ? (
+            {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
               <LightbulbIcon className="size-3" />
             ) : (
               <LightbulbOffIcon className="size-3" />

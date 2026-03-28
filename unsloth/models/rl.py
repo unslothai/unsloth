@@ -273,8 +273,17 @@ def PatchRL(FastLanguageModel):
         with torch.no_grad():
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
+                    try:
+                        num_items_in_batch = self._get_num_items_in_batch(
+                            [inputs], self.args.device
+                        )
+                    except (AttributeError, TypeError):
+                        num_items_in_batch = None
                     loss, outputs = self.compute_loss(
-                        model, inputs, return_outputs = True
+                        model,
+                        inputs,
+                        return_outputs = True,
+                        num_items_in_batch = num_items_in_batch,
                     )
                 loss = loss.mean().detach()
 
@@ -357,7 +366,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -367,6 +375,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -387,12 +412,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
