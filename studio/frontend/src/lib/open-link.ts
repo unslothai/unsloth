@@ -8,7 +8,7 @@ export function openLink(url: string) {
   if (!url) return;
   if (isTauri) {
     import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
-      openUrl(url);
+      openUrl(url).catch(console.error);
     });
   } else {
     window.open(url, "_blank", "noopener,noreferrer");

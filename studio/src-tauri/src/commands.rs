@@ -258,7 +258,9 @@ async fn health_watchdog(app: AppHandle, state: BackendState) {
                     consecutive_failures, port
                 );
                 if consecutive_failures >= 3 {
-                    error!("Health watchdog: backend unresponsive for 45s, declaring dead");
+                    error!("Health watchdog: backend unresponsive for 45s, killing and declaring dead");
+                    // Kill the zombie process so retry can start fresh
+                    let _ = process::stop_backend(&state);
                     let _ = app.emit("server-crashed", ());
                     break;
                 }
