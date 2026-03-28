@@ -411,6 +411,7 @@ def run_training_process(
         _tqdm_thread.start()
 
         training_type = config.get("training_type", "LoRA/QLoRA")
+        is_cpt = training_type == "Continued Pretraining"
         use_lora = training_type == "LoRA/QLoRA"
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
@@ -442,7 +443,7 @@ def run_training_process(
                 )
             return
 
-        # ── 4d. Prepare model (LoRA or full finetuning) ──
+        # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
@@ -464,7 +465,8 @@ def run_training_process(
                 use_loftq = config.get("use_loftq", False),
             )
         else:
-            _send_status(event_queue, "Preparing model for full finetuning...")
+            label = "continued pretraining" if is_cpt else "full finetuning"
+            _send_status(event_queue, f"Preparing model for {label}...")
             success = trainer.prepare_model_for_training(use_lora = False)
 
         if not success or trainer.should_stop:
@@ -535,8 +537,8 @@ def run_training_process(
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
             weight_decay = config.get("weight_decay", 0.01),
             random_seed = config.get("random_seed", 3407),
-            packing = config.get("packing", False),
-            train_on_completions = config.get("train_on_completions", False),
+            packing = True if is_cpt else config.get("packing", False),
+            train_on_completions = False if is_cpt else config.get("train_on_completions", False),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),
             wandb_token = config.get("wandb_token"),
@@ -547,6 +549,7 @@ def run_training_process(
             max_seq_length = config.get("max_seq_length", 2048),
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
+            is_cpt = is_cpt,
         )
 
         _tqdm_stop.set()

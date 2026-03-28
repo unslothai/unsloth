@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export type ModelType = "vision" | "audio" | "embeddings" | "text";
-export type TrainingMethod = "qlora" | "lora" | "full";
+export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
 export function isAdapterMethod(method: TrainingMethod): boolean {
   return method === "lora" || method === "qlora";

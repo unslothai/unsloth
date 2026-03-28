@@ -6,6 +6,7 @@ import type { TrainingStartRequest } from "../types/api";
 
 const BACKEND_LORA_TYPE = "LoRA/QLoRA";
 const BACKEND_FULL_TYPE = "Full Finetuning";
+const BACKEND_CPT_TYPE = "Continued Pretraining";
 
 function parseSliceValue(value: string | null): number | null {
   if (value == null) return null;
@@ -17,13 +18,16 @@ function parseSliceValue(value: string | null): number | null {
 }
 
 export function toBackendTrainingType(trainingMethod: string): string {
-  return trainingMethod === "full" ? BACKEND_FULL_TYPE : BACKEND_LORA_TYPE;
+  if (trainingMethod === "full") return BACKEND_FULL_TYPE;
+  if (trainingMethod === "cpt") return BACKEND_CPT_TYPE;
+  return BACKEND_LORA_TYPE;
 }
 
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
 ): TrainingStartRequest {
-  const adapterMethod = config.trainingMethod !== "full";
+  const isCpt = config.trainingMethod === "cpt";
+  const adapterMethod = config.trainingMethod !== "full" && !isCpt;
   const isQloraMethod = config.trainingMethod === "qlora";
   const isEmbedding = config.isEmbeddingModel;
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
@@ -80,7 +84,8 @@ export function buildTrainingStartPayload(
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     random_seed: config.randomSeed,
-    packing: isEmbedding ? false : config.packing,
+    // CPT: enable packing by default for raw-text pretraining (more efficient)
+    packing: isEmbedding ? false : isCpt ? true : config.packing,
     optim: config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
@@ -91,7 +96,8 @@ export function buildTrainingStartPayload(
     gradient_checkpointing: config.gradientCheckpointing,
     use_rslora: config.loraVariant === "rslora",
     use_loftq: config.loraVariant === "loftq",
-    train_on_completions: isEmbedding ? false : config.trainOnCompletions,
+    // CPT always trains on full sequences (no chat format masking)
+    train_on_completions: isEmbedding || isCpt ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,

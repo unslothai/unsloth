@@ -3113,7 +3113,11 @@ class UnslothTrainer:
                     }
                 )
             else:
-                logger.info("Configuring text model training parameters\n")
+                is_cpt = training_args.get("is_cpt", False)
+                if is_cpt:
+                    logger.info("Configuring Continued Pretraining (CPT) parameters\n")
+                else:
+                    logger.info("Configuring text model training parameters\n")
                 config_args.update(
                     {
                         "optim": optim_value,
@@ -3124,10 +3128,11 @@ class UnslothTrainer:
 
                 # Only add packing for text models (not DeepSeek OCR which is VLM)
                 if not is_deepseek_ocr:
-                    packing_enabled = training_args.get("packing", False)
+                    # CPT always uses packing for efficient raw-text pretraining
+                    packing_enabled = True if is_cpt else training_args.get("packing", False)
                     config_args["packing"] = packing_enabled
                     logger.info(
-                        f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"
+                        f"Sequence packing: {'enabled (CPT default)' if is_cpt else ('enabled' if packing_enabled else 'disabled')}\n"
                     )
 
             # Audio codec overrides — BiCodec/DAC use the text SFTTrainer path
@@ -3213,11 +3218,18 @@ class UnslothTrainer:
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Determine if we should train on responses only
+            # CPT always skips this — it trains on all tokens in the raw text.
             instruction_part = None
             response_part = None
-            train_on_responses_enabled = training_args.get(
-                "train_on_completions", False
+            is_cpt = training_args.get("is_cpt", False)
+            train_on_responses_enabled = (
+                False if is_cpt else training_args.get("train_on_completions", False)
             )
+
+            if is_cpt:
+                logger.info(
+                    "CPT mode: skipping train_on_responses_only — training on all tokens\n"
+                )
 
             # DeepSeek OCR handles this internally in its collator, so skip
             # Audio VLM handles label masking in its collator, so skip
