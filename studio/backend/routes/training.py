@@ -236,9 +236,7 @@ async def start_training(
             load_in_4bit = training_kwargs["load_in_4bit"],
             max_seq_length = training_kwargs["max_seq_length"],
             batch_size = training_kwargs["batch_size"],
-            gradient_accumulation_steps = training_kwargs[
-                "gradient_accumulation_steps"
-            ],
+            gradient_accumulation_steps = training_kwargs["gradient_accumulation_steps"],
             use_lora = training_kwargs["use_lora"],
             cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES"),
         )

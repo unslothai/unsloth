@@ -179,13 +179,15 @@ class TestGpuAutoSelection(unittest.TestCase):
             return_value = (eight_gb, "config"),
         ):
             required_gb, metadata = estimate_required_model_memory_gb(
-                "unsloth/test", load_in_4bit = False,
+                "unsloth/test",
+                load_in_4bit = False,
             )
             self.assertAlmostEqual(required_gb, 10.4, places = 3)
             self.assertEqual(metadata["model_size_source"], "config")
 
             required_gb, _ = estimate_required_model_memory_gb(
-                "unsloth/test", load_in_4bit = True,
+                "unsloth/test",
+                load_in_4bit = True,
             )
             self.assertAlmostEqual(required_gb, 10.4, places = 3)
 
