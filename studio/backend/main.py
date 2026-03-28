@@ -36,8 +36,9 @@ from contextlib import asynccontextmanager
 # to execute .js files served as text/plain — resulting in a blank page.
 # Calling add_type() *before* StaticFiles is instantiated ensures the correct
 # types are used regardless of the OS registry.
-mimetypes.add_type("application/javascript", ".js")
-mimetypes.add_type("text/css", ".css")
+if sys.platform == "win32":
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
 
 # Suppress annoying dependency warnings in production
 if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
