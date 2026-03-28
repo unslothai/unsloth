@@ -79,6 +79,8 @@ pub async fn start_server(
 }
 
 /// Stop the backend server.
+/// Sends SIGTERM to the process group, which triggers uvicorn's graceful
+/// shutdown (same codepath as /api/shutdown). Falls back to SIGKILL after 5s.
 #[tauri::command]
 pub fn stop_server(state: tauri::State<'_, BackendState>) -> Result<(), String> {
     info!("stop_server command called");
