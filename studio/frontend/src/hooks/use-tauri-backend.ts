@@ -110,11 +110,17 @@ export function useTauriBackend() {
         );
       }
     } catch (e) {
-      // "Backend is already running" is not an error — just start polling
       const msg = String(e);
       if (msg.includes("already running")) {
-        // Already started by another path, just wait for health
+        // Already started by another path (tray toggle, retry, etc.).
+        // Don't bail — fall through to let startingRef reset so the
+        // next retry can re-enter. The health watchdog or a manual
+        // retry will pick up the running backend.
         startingRef.current = false;
+        setStatus("starting");
+        // Kick off a fresh checkInstallAndStart which will find the
+        // existing server via find_existing_server and transition to running.
+        checkInstallAndStart();
         return;
       }
       setStatus("error");
