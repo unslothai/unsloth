@@ -33,6 +33,38 @@ export function useTauriBackend() {
   const seenStepsRef = useRef(new Set<string>());
   // True when we attached to a server we didn't spawn (can't stop it)
   const [isExternalServer, setIsExternalServer] = useState(false);
+  const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function stopExternalServerPoll() {
+    if (externalPollRef.current) {
+      clearInterval(externalPollRef.current);
+      externalPollRef.current = null;
+    }
+  }
+
+  function startExternalServerPoll(port: number) {
+    stopExternalServerPoll();
+    let failures = 0;
+    externalPollRef.current = setInterval(async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const healthy = await invoke<boolean>("check_health", { port });
+        if (healthy) {
+          failures = 0;
+        } else {
+          failures++;
+        }
+      } catch {
+        failures++;
+      }
+      if (failures >= 3) {
+        stopExternalServerPoll();
+        setIsExternalServer(false);
+        setStatus("error");
+        setError("External server is no longer responding");
+      }
+    }, 15_000);
+  }
 
   // Keep ref in sync for event listener closures
   useEffect(() => {
@@ -48,6 +80,8 @@ export function useTauriBackend() {
       setApiBase(existingPort);
       setIsExternalServer(true);
       setStatus("running");
+      // Monitor external server — we can't get Rust-side crash events for it
+      startExternalServerPoll(existingPort);
       return;
     }
 
@@ -135,6 +169,7 @@ export function useTauriBackend() {
       // just disconnect the UI.
       startingRef.current = false;
       setIsExternalServer(false);
+      stopExternalServerPoll();
       setStatus("stopped");
       return;
     }
@@ -179,6 +214,7 @@ export function useTauriBackend() {
     setProgressDetail(null);
     setElevationPackages([]);
     setIsExternalServer(false);
+    stopExternalServerPoll();
     seenStepsRef.current.clear();
     checkInstallAndStart();
   }, []);
@@ -282,6 +318,7 @@ export function useTauriBackend() {
 
     return () => {
       cleanup.forEach((fn) => fn());
+      stopExternalServerPoll();
     };
   }, []);
 
