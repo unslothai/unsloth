@@ -2565,8 +2565,7 @@ def _prepare_model_for_qat(
                 mapping_type = MappingType.SYMMETRIC,
             )
             filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
-                and m.in_features >= 32
+                lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= 32
             )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
