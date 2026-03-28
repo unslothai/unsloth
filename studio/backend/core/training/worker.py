@@ -538,7 +538,9 @@ def run_training_process(
             weight_decay = config.get("weight_decay", 0.01),
             random_seed = config.get("random_seed", 3407),
             packing = True if is_cpt else config.get("packing", False),
-            train_on_completions = False if is_cpt else config.get("train_on_completions", False),
+            train_on_completions = False
+            if is_cpt
+            else config.get("train_on_completions", False),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),
             wandb_token = config.get("wandb_token"),
