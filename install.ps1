@@ -1,6 +1,7 @@
 # Unsloth Studio Installer for Windows PowerShell
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
 
 function Install-UnslothStudio {
@@ -11,12 +12,14 @@ function Install-UnslothStudio {
     $PackageName = "unsloth"
     $RepoRoot = ""
     $TauriMode = $false
+    $SkipTorch = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
-            "--local"   { $StudioLocalInstall = $true }
-            "--tauri"   { $TauriMode = $true }
-            "--package" {
+            "--local"    { $StudioLocalInstall = $true }
+            "--tauri"    { $TauriMode = $true }
+            "--no-torch" { $SkipTorch = $true }
+            "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
                     Write-Host "[ERROR] --package requires an argument." -ForegroundColor Red
@@ -173,6 +176,44 @@ function Find-HealthyStudioPort {
     return `$null
 }
 
+function Test-PortBusy {
+    param([Parameter(Mandatory = `$true)][int]`$Port)
+    `$listener = `$null
+    try {
+        `$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, `$Port)
+        `$listener.Start()
+        return `$false
+    } catch {
+        return `$true
+    } finally {
+        if (`$listener) { try { `$listener.Stop() } catch {} }
+    }
+}
+
+function Find-FreeLaunchPort {
+    `$maxPort = `$basePort + `$maxPortOffset
+    try {
+        `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
+            Select-Object -ExpandProperty LocalPort
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (`$candidate -notin `$listening) {
+                return `$candidate
+            }
+        }
+    } catch {
+        # Get-NetTCPConnection unavailable or restricted; probe ports directly
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (-not (Test-PortBusy -Port `$candidate)) {
+                return `$candidate
+            }
+        }
+    }
+    return `$null
+}
+
 # If Studio is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
@@ -201,7 +242,16 @@ try {
 
     `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     `$studioExe = '$SingleQuotedExePath'
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
+    `$launchPort = Find-FreeLaunchPort
+    if (-not `$launchPort) {
+        `$msg = "No free port found in range `$basePort-`$(`$basePort + `$maxPortOffset)"
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+        exit 1
+    }
+    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
@@ -599,6 +649,16 @@ shell.Run cmd, 0, False
     }
     $TorchIndexUrl = Get-TorchIndexUrl
 
+    # ── Print CPU-only hint when no GPU detected ──
+    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+        Write-Host ""
+        Write-Host "  NOTE: No NVIDIA GPU detected." -ForegroundColor Yellow
+        Write-Host "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
+        Write-Host "  re-run with --no-torch for a faster, lighter install:"
+        Write-Host "    .\install.ps1 --no-torch"
+        Write-Host ""
+    }
+
     # ── Install PyTorch first, then unsloth separately ──
     #
     # Why two steps?
@@ -622,23 +682,41 @@ shell.Run cmd, 0, False
         # in the new venv location, while preserving existing torch/CUDA
         Write-TauriLog "STEP" "Installing unsloth"
         Write-Host "==> Upgrading unsloth in migrated environment..."
-        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+        if ($SkipTorch) {
+            # No-torch: install packages without deps to avoid pulling torch.
+            # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
+            uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+        } else {
+            uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+        }
         if ($StudioLocalInstall) {
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
         }
     } elseif ($TorchIndexUrl) {
-        Write-TauriLog "STEP" "Installing PyTorch"
-        Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-        uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
-            return
+        if ($SkipTorch) {
+            Write-Host "==> Skipping PyTorch (--no-torch flag set)."
+        } else {
+            Write-TauriLog "STEP" "Installing PyTorch"
+            Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
+            uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
+                return
+            }
         }
 
         Write-TauriLog "STEP" "Installing unsloth"
         Write-Host "==> Installing unsloth (this may take a few minutes)..."
-        if ($StudioLocalInstall) {
+        if ($SkipTorch) {
+            # No-torch: install packages without deps to avoid pulling torch.
+            # Runtime deps are installed by install_python_stack.py via no-torch-runtime.txt.
+            uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+            if ($StudioLocalInstall) {
+                Write-Host "==> Overlaying local repo (editable)..."
+                uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            }
+        } elseif ($StudioLocalInstall) {
             uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
             Write-Host "==> Overlaying local repo (editable)..."
             uv pip install --python $VenvPython -e $RepoRoot --no-deps
@@ -676,8 +754,11 @@ shell.Run cmd, 0, False
         return
     }
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
-    $env:SKIP_STUDIO_BASE = "1"
+    # When no-torch, don't skip base so install_python_stack installs
+    # no-torch-runtime.txt (the runtime deps that --no-deps skipped).
+    $env:SKIP_STUDIO_BASE = if ($SkipTorch) { "0" } else { "1" }
     $env:STUDIO_PACKAGE_NAME = $PackageName
+    $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
     # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
     if ($TauriMode) {
         $env:SKIP_STUDIO_FRONTEND = "1"

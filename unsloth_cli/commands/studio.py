@@ -240,31 +240,41 @@ def stop():
 # ── unsloth studio setup / update ─────────────────────────────────────
 
 
-def _run_setup_script() -> None:
+def _run_setup_script(*, verbose: bool = False) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script()
     if not script:
         typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
         raise typer.Exit(1)
 
+    env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
+
     if platform.system() == "Windows":
         result = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            env = env,
         )
     else:
-        result = subprocess.run(["bash", str(script)])
+        result = subprocess.run(["bash", str(script)], env = env)
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
 
 
 @studio_app.command(hidden = True)
-def setup():
+def setup(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help = "Full pip/build output during setup for troubleshooting.",
+    ),
+):
     """Deprecated: use 'unsloth studio update' or re-run install.sh."""
     typer.echo(
         "Note: 'unsloth studio setup' is deprecated. Use 'unsloth studio update' or re-run install.sh."
     )
-    _run_setup_script()
+    _run_setup_script(verbose = verbose)
 
 
 @studio_app.command()
@@ -275,6 +285,12 @@ def update(
     package: str = typer.Option(
         "unsloth", "--package", help = "Package name to install/update (for testing)"
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help = "Full pip/build output during update for troubleshooting.",
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     os.environ["STUDIO_LOCAL_INSTALL"] = "1" if local else "0"
@@ -284,7 +300,7 @@ def update(
         # have to guess from SCRIPT_DIR (which may be inside site-packages).
         repo_root = Path(__file__).resolve().parents[2]
         os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
-    _run_setup_script()
+    _run_setup_script(verbose = verbose)
 
 
 # ── unsloth studio reset-password ────────────────────────────────────

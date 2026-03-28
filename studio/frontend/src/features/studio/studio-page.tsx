@@ -164,11 +164,13 @@ export function StudioPage(): ReactElement {
             </div>
 
             <TabsContent value="configure">
-              <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-12">
+              <div className="flex min-w-0 flex-col gap-4 md:gap-6">
                 <ModelSection />
-                <DatasetSection />
-                <ParamsSection />
-                <TrainingSection />
+                <div className="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-3 xl:gap-6">
+                  <DatasetSection />
+                  <ParamsSection />
+                  <TrainingSection />
+                </div>
               </div>
             </TabsContent>
 

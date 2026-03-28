@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
 import { deleteTrainingRun, listTrainingRuns } from "@/features/training";
+import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -129,16 +130,6 @@ function formatRelativeTime(isoDate: string): string {
   return `${days}d ago`;
 }
 
-function formatDuration(seconds: number | null): string {
-  if (seconds == null) return "--";
-  const total = Math.floor(seconds);
-  if (total < 60) return `${total}s`;
-  const min = Math.floor(total / 60);
-  const sec = total % 60;
-  if (min < 60) return `${min}m ${sec}s`;
-  const hrs = Math.floor(min / 60);
-  return `${hrs}h ${min % 60}m`;
-}
 
 interface HistoryCardGridProps {
   onSelectRun: (runId: string) => void;
