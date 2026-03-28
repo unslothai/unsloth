@@ -120,6 +120,7 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(install::new_install_state())
         .manage(new_backend_state())
         .invoke_handler(tauri::generate_handler![

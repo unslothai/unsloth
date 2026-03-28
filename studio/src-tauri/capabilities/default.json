@@ -9,6 +9,10 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:tray:default",
-    "process:default"
+    "process:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
+    }
   ]
 }

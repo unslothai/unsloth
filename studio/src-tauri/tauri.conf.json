@@ -52,6 +52,19 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": {
+        "postRemoveScript": "./linux/postremove.sh"
+      },
+      "rpm": {
+        "postRemoveScript": "./linux/postremove.sh"
+      }
+    },
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "dmg": {
