@@ -111,14 +111,21 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
     // --api-only skips frontend serving (Tauri has its own) and enables:
     // 1. TAURI_PORT= output for port discovery
     // 2. Tighter Tauri-only CORS in main.py
-    // The install script always installs the latest version with this flag.
+    // Only pass in dev mode until the flag is available on PyPI.
+    let use_api_only = cfg!(debug_assertions);
+
     info!(
-        "Starting backend: {:?} studio --api-only -H 127.0.0.1 -p {}",
-        bin, port
+        "Starting backend: {:?} studio {}-H 127.0.0.1 -p {}",
+        bin,
+        if use_api_only { "--api-only " } else { "" },
+        port
     );
 
     let mut cmd = Command::new(&bin);
-    cmd.args(["studio", "--api-only"]);
+    cmd.arg("studio");
+    if use_api_only {
+        cmd.arg("--api-only");
+    }
     cmd.args(["-H", "127.0.0.1", "-p", &port.to_string()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
