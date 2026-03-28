@@ -683,7 +683,7 @@ export function ExportPage() {
                                 onValueChange={setSelectedSourceModel}
                                 onInputValueChange={(val) => {
                                   setModelInput(val);
-                                  if (!val.trim()) setSelectedSourceModel(null);
+                                  setSelectedSourceModel(null);
                                 }}
                                 itemToStringValue={(id) => id}
                                 autoHighlight={true}
