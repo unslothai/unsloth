@@ -57,7 +57,7 @@ export type VramFitStatus = "fits" | "tight" | "exceeds";
  */
 export const FP16_LOADING_BYTES = 2.0;
 
-export type TrainingMethod = "qlora" | "lora" | "full";
+export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
 /**
  * Estimate VRAM (GB) needed to load a model with Unsloth.
@@ -66,6 +66,7 @@ export type TrainingMethod = "qlora" | "lora" | "full";
  *   - QLoRA  : 4-bit quantized via bnb  -> 0.90 bytes/param (calibrated)
  *   - LoRA   : fp16                      -> 2.0  bytes/param (theoretical)
  *   - Full   : fp16                      -> 2.0  bytes/param (theoretical)
+ *   - CPT    : fp16 (full model, no qnt) -> 2.0  bytes/param (theoretical)
  *
  * Formula:  totalParams * bytesPerParam + 1.4 GB overhead
  */
