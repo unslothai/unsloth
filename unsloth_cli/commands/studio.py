@@ -79,10 +79,15 @@ def studio_default(
     host: str = typer.Option("0.0.0.0", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    debug: bool = typer.Option(False, "--debug"),
 ):
     """Launch the Unsloth Studio server."""
     if ctx.invoked_subcommand is not None:
         return
+
+    if debug:
+        os.environ["LOG_LEVEL"] = "DEBUG"
+        os.environ.setdefault("ENVIRONMENT_TYPE", "development")
 
     # Always use the studio venv if it exists and we're not already in it
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
@@ -106,6 +111,8 @@ def studio_default(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
+            if debug:
+                args.append("--debug")
             # On Windows, os.execvp() spawns a child but the parent lingers,
             # so Ctrl+C only kills the parent leaving the child orphaned.
             # Use subprocess.run() on Windows so the parent waits for the child.
@@ -142,6 +149,8 @@ def studio_default(
 
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
+        if debug:
+            typer.echo("Debug logging enabled (LOG_LEVEL=DEBUG)")
 
     run_kwargs = dict(host = host, port = port, silent = silent)
     if frontend is not None:

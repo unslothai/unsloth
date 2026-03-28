@@ -16,6 +16,7 @@ from core.training.training import TrainingBackend
 from models.inference import LoadRequest
 from models.training import TrainingStartRequest
 from utils.hardware import (
+    apply_gpu_ids,
     DeviceType,
     auto_select_gpu_ids,
     estimate_required_model_memory_gb,
@@ -81,6 +82,17 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             self.assertEqual(resolve_requested_gpu_ids([]), [1, 3])
+
+    def test_apply_gpu_ids_only_updates_cuda_visible_devices(self):
+        with patch.dict(
+            os.environ,
+            {"CUDA_VISIBLE_DEVICES": "1,3", "TEST_PARENT_ENV": "keep-me"},
+            clear = True,
+        ):
+            apply_gpu_ids([5, 6])
+
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "5,6")
+            self.assertEqual(os.environ["TEST_PARENT_ENV"], "keep-me")
 
 
 class TestVisibleGpuUtilization(unittest.TestCase):

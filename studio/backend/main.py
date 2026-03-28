@@ -70,25 +70,18 @@ def _log_training_gpu_selection_mode() -> None:
     import utils.hardware as hardware_utils
 
     model_fields = getattr(TrainingStartRequest, "model_fields", {})
-    has_gpu_ids = "gpu_ids" in model_fields
-    has_prepare_gpu_selection = hasattr(hardware_utils, "prepare_gpu_selection")
-
-    if has_gpu_ids and has_prepare_gpu_selection:
-        logger.info(
-            "Training GPU selection mode",
-            mode = "request_aware",
-            request_gpu_ids_supported = True,
-            backend_auto_selector_available = True,
-            behavior = "gpu_ids can be respected explicitly and omitted gpu_ids can be auto-selected",
-        )
-    else:
-        logger.info(
-            "Training GPU selection mode",
-            mode = "legacy",
-            request_gpu_ids_supported = has_gpu_ids,
-            backend_auto_selector_available = has_prepare_gpu_selection,
-            behavior = "training inherits CUDA_VISIBLE_DEVICES and does not do request-aware GPU subset selection",
-        )
+    request_gpu_ids_supported = "gpu_ids" in model_fields
+    backend_auto_selector_available = hasattr(hardware_utils, "prepare_gpu_selection")
+    logger.info(
+        "Training GPU selection mode",
+        mode = (
+            "request_aware"
+            if request_gpu_ids_supported and backend_auto_selector_available
+            else "legacy"
+        ),
+        request_gpu_ids_supported = request_gpu_ids_supported,
+        backend_auto_selector_available = backend_auto_selector_available,
+    )
 
 
 @asynccontextmanager
