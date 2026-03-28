@@ -20,17 +20,7 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
-        "visible": false
-      },
-      {
-        "label": "splashscreen",
-        "url": "/splashscreen.html",
-        "width": 400,
-        "height": 300,
-        "center": true,
-        "decorations": false,
-        "resizable": false,
-        "alwaysOnTop": true
+        "visible": true
       }
     ],
     "trayIcon": {

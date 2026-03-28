@@ -267,14 +267,3 @@ async fn health_watchdog(app: AppHandle, state: BackendState) {
     }
 }
 
-/// Close the native splash screen and show the main window.
-/// Called by the frontend once React has mounted.
-#[tauri::command]
-pub fn close_splashscreen(app: AppHandle) {
-    if let Some(window) = app.get_webview_window("splashscreen") {
-        let _ = window.close();
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-    }
-}

@@ -134,7 +134,6 @@ fn main() {
             commands::get_bootstrap_password,
             commands::open_logs_dir,
             commands::install_system_packages,
-            commands::close_splashscreen,
         ])
         .setup(|app| {
             setup_tray(app)?;
