@@ -1,15 +1,54 @@
 use crate::install;
 use crate::process::{self, BackendState};
-use log::{error, info};
-use tauri::{AppHandle, Manager};
+use log::{error, info, warn};
+use tauri::{AppHandle, Emitter, Manager};
 
-/// Check if the unsloth binary is installed in the managed venv.
+/// Check if unsloth is installed AND functional.
+/// Runs `unsloth -h` to verify the import chain works — a partial install
+/// (binary exists but deps missing) will fail on import and return false,
+/// which sends the user to the install screen for a clean re-install.
 #[tauri::command]
-pub fn check_install_status() -> bool {
-    process::find_unsloth_binary().is_some()
+pub async fn check_install_status() -> bool {
+    let Some(bin) = process::find_unsloth_binary() else {
+        return false;
+    };
+
+    let mut child = match tokio::process::Command::new(&bin)
+        .arg("-h")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Install check: failed to spawn {:?}: {}", bin, e);
+            return false;
+        }
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await {
+        Ok(Ok(status)) => {
+            let ok = status.success();
+            if !ok {
+                warn!("Install check: `unsloth -h` exited with {}", status);
+            }
+            ok
+        }
+        Ok(Err(e)) => {
+            warn!("Install check: wait failed: {}", e);
+            false
+        }
+        Err(_) => {
+            warn!("Install check: `unsloth -h` timed out after 10s");
+            let _ = child.kill().await;
+            false
+        }
+    }
 }
 
 /// Start the backend server on the given port.
+/// Also spawns a health watchdog that monitors the backend and emits
+/// `server-crashed` if it becomes unresponsive (deadlock, OOM, etc.).
 #[tauri::command]
 pub async fn start_server(
     app: AppHandle,
@@ -17,7 +56,17 @@ pub async fn start_server(
     port: u16,
 ) -> Result<(), String> {
     info!("start_server command called with port {}", port);
-    process::start_backend(&app, &state, port)
+    process::start_backend(&app, &state, port)?;
+
+    // Spawn health watchdog — detects deadlocks and hangs that stdout-based
+    // crash detection misses (process alive, pipe open, but not responding).
+    let watchdog_state = state.inner().clone();
+    let watchdog_app = app.clone();
+    tokio::spawn(async move {
+        health_watchdog(watchdog_app, watchdog_state).await;
+    });
+
+    Ok(())
 }
 
 /// Stop the backend server.
@@ -154,6 +203,58 @@ pub fn install_system_packages(packages: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 pub fn install_system_packages(_packages: Vec<String>) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
+}
+
+/// Periodic health check that detects deadlocked or hung backends.
+/// Starts 30s after the backend is launched (to allow initial startup),
+/// then pings /api/health every 15s. After 3 consecutive failures (45s)
+/// with the process still alive, emits `server-crashed` so the frontend
+/// can offer a restart.
+async fn health_watchdog(app: AppHandle, state: BackendState) {
+    // Give the backend time to start up
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
+    let mut consecutive_failures: u32 = 0;
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+        let (port, intentional_stop, has_child) = {
+            let proc = match state.lock() {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            (proc.port, proc.intentional_stop, proc.child.is_some())
+        };
+
+        // Stop watching if the backend was intentionally stopped or is gone
+        if intentional_stop || !has_child {
+            info!("Health watchdog: backend stopped, exiting");
+            break;
+        }
+
+        let Some(port) = port else {
+            continue; // Port not yet known
+        };
+
+        match check_health_inner(port).await {
+            Ok(true) => {
+                consecutive_failures = 0;
+            }
+            _ => {
+                consecutive_failures += 1;
+                warn!(
+                    "Health watchdog: failure {}/3 on port {}",
+                    consecutive_failures, port
+                );
+                if consecutive_failures >= 3 {
+                    error!("Health watchdog: backend unresponsive for 45s, declaring dead");
+                    let _ = app.emit("server-crashed", ());
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Close the native splash screen and show the main window.

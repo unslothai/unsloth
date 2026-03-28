@@ -96,7 +96,16 @@ export function useTauriBackend() {
         await new Promise((r) => setTimeout(r, 500));
       }
       setStatus("error");
-      setError("Backend did not start within 60 seconds");
+      if (!portRef.current) {
+        setError(
+          "Could not start the server — all ports 8888–8907 may be in use. " +
+            "Close other Unsloth instances or free a port and try again.",
+        );
+      } else {
+        setError(
+          "Server started but is not responding. Check the logs for details.",
+        );
+      }
     } catch (e) {
       // "Backend is already running" is not an error — just start polling
       const msg = String(e);
