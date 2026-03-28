@@ -111,7 +111,13 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
     // --api-only skips frontend serving (Tauri has its own) and enables:
     // 1. TAURI_PORT= output for port discovery
     // 2. Tighter Tauri-only CORS in main.py
-    // Only pass in dev mode until the flag is available on PyPI.
+    //
+    // TODO(production): Once --api-only is published to PyPI, change this to:
+    //   let use_api_only = true;
+    // This will enable instant port discovery via TAURI_PORT= and restrict
+    // CORS to Tauri origins only. Currently gated to dev because the PyPI
+    // version doesn't have the flag yet — production falls back to port
+    // scanning (2s slower) and allows broader CORS.
     let use_api_only = cfg!(debug_assertions);
 
     info!(
