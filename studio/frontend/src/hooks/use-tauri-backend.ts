@@ -31,6 +31,8 @@ export function useTauriBackend() {
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
   // Track seen step names to deduplicate (Strict Mode, event replay, etc.)
   const seenStepsRef = useRef(new Set<string>());
+  // True when we attached to a server we didn't spawn (can't stop it)
+  const [isExternalServer, setIsExternalServer] = useState(false);
 
   // Keep ref in sync for event listener closures
   useEffect(() => {
@@ -44,6 +46,7 @@ export function useTauriBackend() {
     const existingPort = await invoke<number | null>("find_existing_server");
     if (existingPort) {
       setApiBase(existingPort);
+      setIsExternalServer(true);
       setStatus("running");
       return;
     }
@@ -83,7 +86,7 @@ export function useTauriBackend() {
         } else if (i >= 4) {
           // Only scan the full range after ~2s (4 x 500ms) if the server-port
           // event hasn't arrived yet. This is the rare fallback path.
-          for (let p = 8888; p <= 8907; p++) {
+          for (let p = 8888; p <= 8908; p++) {
             const healthy = await invoke<boolean>("check_health", { port: p });
             if (healthy) {
               setApiBase(p);
@@ -98,7 +101,7 @@ export function useTauriBackend() {
       setStatus("error");
       if (!portRef.current) {
         setError(
-          "Could not start the server — all ports 8888–8907 may be in use. " +
+          "Could not start the server — all ports 8888–8908 may be in use. " +
             "Close other Unsloth instances or free a port and try again.",
         );
       } else {
@@ -121,6 +124,14 @@ export function useTauriBackend() {
   }
 
   async function stopServer() {
+    if (isExternalServer) {
+      // We attached to a server we didn't spawn — can't kill it,
+      // just disconnect the UI.
+      startingRef.current = false;
+      setIsExternalServer(false);
+      setStatus("stopped");
+      return;
+    }
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("stop_server");
     startingRef.current = false;
@@ -143,8 +154,13 @@ export function useTauriBackend() {
       setStatus("starting");
       await startServer();
     } catch (e) {
+      const msg = String(e);
+      // NEEDS_ELEVATION is not a real error — the Rust side also emits
+      // install-needs-elevation which sets needs-elevation status.
+      // Don't race with it by setting install-error here.
+      if (msg.includes("NEEDS_ELEVATION")) return;
       setStatus("install-error");
-      setError(String(e));
+      setError(msg);
     }
   }
 
@@ -156,6 +172,7 @@ export function useTauriBackend() {
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     setElevationPackages([]);
+    setIsExternalServer(false);
     seenStepsRef.current.clear();
     checkInstallAndStart();
   }, []);
@@ -267,7 +284,7 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status, logs, error,
+    status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation,
