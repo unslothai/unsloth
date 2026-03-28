@@ -212,10 +212,6 @@ export function useTauriBackend() {
       setStatus("running");
       return;
     }
-    // Close native splash immediately when React renders
-    import("@tauri-apps/api/core").then(({ invoke }) => {
-      invoke("close_splashscreen");
-    });
     checkInstallAndStart();
   }, []);
 
