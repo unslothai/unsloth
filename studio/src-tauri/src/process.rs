@@ -1,15 +1,16 @@
 use log::{error, info, warn};
+use process_wrap::std::*;
 use regex::Regex;
 use std::collections::VecDeque;
 use std::io::BufRead;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 const MAX_LOG_LINES: usize = 1000;
 
 pub struct BackendProcess {
-    pub child: Option<Child>,
+    pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub port: Option<u16>,
     pub logs: VecDeque<String>,
     pub intentional_stop: bool,
@@ -125,14 +126,15 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
         cmd.arg("--api-only");
     }
     cmd.args(["-H", "127.0.0.1", "-p", &port.to_string()])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    // AppImage/Flatpak set LD_LIBRARY_PATH to their bundled libs, which breaks
-    // the spawned Python process (wrong libpython/libz → "No module named encodings").
-    // Clear these so the backend uses the system/venv libraries.
+    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks the spawned
+    // Python process (wrong libpython/libz → "No module named encodings").
+    // Only clear when running inside an AppImage — native .deb/.rpm installs may
+    // need these env vars for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
-    {
+    if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
         cmd.env_remove("LD_LIBRARY_PATH");
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
@@ -146,12 +148,20 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    let mut child = cmd
+    // Spawn in a process group so stop_backend() kills the entire subprocess tree
+    // (Python + any workers it spawns), not just the top-level process.
+    let mut wrap = CommandWrap::from(cmd);
+    #[cfg(unix)]
+    wrap.wrap(ProcessGroup::leader());
+    #[cfg(windows)]
+    wrap.wrap(JobObject);
+
+    let mut child = wrap
         .spawn()
         .map_err(|e| format!("Failed to spawn backend: {}", e))?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let stdout = child.stdout().take();
+    let stderr = child.stderr().take();
 
     // Store child in state
     {
@@ -261,9 +271,9 @@ fn read_output_stream<R: std::io::Read>(
     }
 }
 
-/// Graceful shutdown of the backend process.
-/// Unix: SIGTERM -> wait up to 5s -> SIGKILL
-/// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> TerminateProcess
+/// Graceful shutdown of the backend process and its entire subprocess tree.
+/// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL to group
+/// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> kill job object
 pub fn stop_backend(state: &BackendState) -> Result<(), String> {
     // Extract the child and mark intentional stop.
     // We take the child OUT of the mutex so we don't hold the lock during the wait loop.
@@ -278,13 +288,14 @@ pub fn stop_backend(state: &BackendState) -> Result<(), String> {
     };
 
     let pid = child.id();
-    info!("Stopping backend process (pid {})", pid);
+    info!("Stopping backend process group (pid {})", pid);
 
-    // Send the initial signal
+    // Send SIGTERM to the entire process group (negative PID = group signal).
+    // This gives Python and any workers a chance to shut down gracefully.
     #[cfg(unix)]
     {
         unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+            libc::kill(-(pid as i32), libc::SIGTERM);
         }
     }
     #[cfg(windows)]
@@ -314,24 +325,15 @@ pub fn stop_backend(state: &BackendState) -> Result<(), String> {
         }
     }
 
-    // Force kill
+    // Force kill the entire process group/job object
     warn!(
-        "Backend did not exit gracefully, force killing (pid {})",
+        "Backend did not exit gracefully, force killing group (pid {})",
         pid
     );
-    #[cfg(unix)]
-    {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let _ = child.kill();
-    }
+    let _ = child.kill();
 
     // Reap the process
     let _ = child.wait();
-    info!("Backend process forcefully stopped");
+    info!("Backend process group forcefully stopped");
     Ok(())
 }

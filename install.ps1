@@ -760,9 +760,7 @@ shell.Run cmd, 0, False
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
     # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
-    if ($TauriMode) {
-        $env:SKIP_STUDIO_FRONTEND = "1"
-    }
+    $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
     if ($StudioLocalInstall) {
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
