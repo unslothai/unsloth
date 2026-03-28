@@ -19,6 +19,7 @@ dirs = "6"
 regex = "1"
 open = "5"
 command-group = "5"
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

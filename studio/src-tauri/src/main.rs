@@ -104,6 +104,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
+    // GUI apps don't inherit shell dotfile PATH — this spawns the user's
+    // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
+    let _ = fix_path_env::fix();
+
     setup_logging();
     info!("Unsloth Studio desktop app starting");
 
