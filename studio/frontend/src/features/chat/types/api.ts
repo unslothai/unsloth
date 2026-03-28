@@ -87,6 +87,7 @@ export interface LoadModelResponse {
   };
   context_length?: number | null;
   supports_reasoning?: boolean;
+  reasoning_always_on?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
@@ -115,6 +116,7 @@ export interface InferenceStatusResponse {
     trust_remote_code?: boolean;
   };
   supports_reasoning?: boolean;
+  reasoning_always_on?: boolean;
   supports_tools?: boolean;
   context_length?: number | null;
 }

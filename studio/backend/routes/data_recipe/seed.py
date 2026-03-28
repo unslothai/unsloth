@@ -388,7 +388,7 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
         import pymupdf4llm
 
         raw = pymupdf4llm.to_markdown(
-            str(file_path), write_images = False, show_progress = False
+            str(file_path), write_images = False, show_progress = False, use_ocr = False
         )
     elif ext == ".docx":
         import mammoth
