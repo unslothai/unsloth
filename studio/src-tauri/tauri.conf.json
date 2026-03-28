@@ -3,7 +3,7 @@
   "identifier": "ai.unsloth.studio",
   "build": {
     "beforeDevCommand": "sh -c 'if [ -f package.json ] && [ -f vite.config.ts ]; then npm run dev -- --port 5173 --strictPort; elif [ -f frontend/package.json ]; then npm --prefix frontend run dev -- --port 5173 --strictPort; else cd ../frontend && npm run dev -- --port 5173 --strictPort; fi'",
-    "beforeBuildCommand": "sh -c 'if [ -f package.json ] && [ -f vite.config.ts ]; then npm run build; elif [ -f frontend/package.json ]; then npm --prefix frontend run build; else cd ../frontend && npm run build; fi'",
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173"
   },
