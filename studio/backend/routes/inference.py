@@ -1128,6 +1128,8 @@ async def openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_start":
+                                prev_text = ""
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 

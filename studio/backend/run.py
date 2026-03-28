@@ -24,6 +24,7 @@ if str(backend_dir) not in sys.path:
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
+from startup_banner import print_studio_access_banner
 
 logger = get_logger(__name__)
 
@@ -346,21 +347,22 @@ def run_server(
 
     atexit.register(_remove_pid_file)
 
+    # Expose a shutdown callable via app.state so the /api/shutdown endpoint
+    # can trigger graceful shutdown without circular imports.
+    def _trigger_shutdown():
+        _graceful_shutdown(_server)
+        if _shutdown_event is not None:
+            _shutdown_event.set()
+
+    app.state.trigger_shutdown = _trigger_shutdown
+
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
-
-        print("")
-        print("=" * 50)
-        print(f"🦥 Open your web browser, and enter http://localhost:{port}")
-        print("=" * 50)
-        print("")
-        print("=" * 50)
-        print(f"🦥 Unsloth Studio is running on port {port}")
-        print(f"   Local Access:          http://localhost:{port}")
-        print(f"   Worldwide Web Address: http://{display_host}:{port}")
-        print(f"   API:                   http://{display_host}:{port}/api")
-        print(f"   Health:                http://{display_host}:{port}/api/health")
-        print("=" * 50)
+        print_studio_access_banner(
+            port = port,
+            bind_host = host,
+            display_host = display_host,
+        )
 
     return app
 
