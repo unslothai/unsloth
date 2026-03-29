@@ -19,17 +19,22 @@ QUANT_4BIT_FACTOR = 16 / 5
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
 
 DEFAULT_TARGET_MODULES = [
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
 ]
 
 # Empirically calibrated bytes/param — see VRAM_ESTIMATION.md for rationale.
 OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
-    "adamw_8bit": 4,         # BNB upcasts to fp32 during step
+    "adamw_8bit": 4,  # BNB upcasts to fp32 during step
     "paged_adamw_8bit": 4,
     "adamw_bnb_8bit": 4,
     "paged_adamw_32bit": 8,
-    "adamw_torch": 6,        # fused, no master copy
+    "adamw_torch": 6,  # fused, no master copy
     "adamw_torch_fused": 6,
     "sgd": 4,
 }
@@ -37,9 +42,9 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
 # (full_ft_multiplier, lora_multiplier) — fraction of num_layers.
 # LoRA: frozen base layers skip activation storage entirely.
 GC_LAYER_MULTIPLIERS = {
-    "none":    (None, None),
-    "true":    (2.0,  0.5),
-    "unsloth": (1.5,  0.3),
+    "none": (None, None),
+    "true": (2.0, 0.5),
+    "unsloth": (1.5, 0.3),
 }
 
 
@@ -90,13 +95,13 @@ class VramBreakdown:
 
     def to_gb_dict(self) -> Dict[str, float]:
         return {
-            "model_weights_gb":    round(self.model_weights    / (1024**3), 3),
-            "lora_adapters_gb":    round(self.lora_adapters    / (1024**3), 3),
+            "model_weights_gb": round(self.model_weights / (1024**3), 3),
+            "lora_adapters_gb": round(self.lora_adapters / (1024**3), 3),
             "optimizer_states_gb": round(self.optimizer_states / (1024**3), 3),
-            "gradients_gb":        round(self.gradients        / (1024**3), 3),
-            "activations_gb":      round(self.activations      / (1024**3), 3),
-            "cuda_overhead_gb":    round(self.cuda_overhead    / (1024**3), 3),
-            "total_gb":            round(self.total            / (1024**3), 3),
+            "gradients_gb": round(self.gradients / (1024**3), 3),
+            "activations_gb": round(self.activations / (1024**3), 3),
+            "cuda_overhead_gb": round(self.cuda_overhead / (1024**3), 3),
+            "total_gb": round(self.total / (1024**3), 3),
         }
 
 
@@ -114,9 +119,10 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     if intermediate_size is None and hidden_size is not None:
         intermediate_size = hidden_size * 4
 
-    if not all(v is not None for v in (
-        hidden_size, num_layers, num_heads, intermediate_size, vocab_size
-    )):
+    if not all(
+        v is not None
+        for v in (hidden_size, num_layers, num_heads, intermediate_size, vocab_size)
+    ):
         return None
     if num_heads <= 0:
         return None
@@ -185,8 +191,7 @@ def compute_model_weights_bytes(
 
     if training_method == "qlora" and load_in_4bit:
         return int(
-            quantizable_elements * 2 / QUANT_4BIT_FACTOR
-            + non_quantizable_elements * 2
+            quantizable_elements * 2 / QUANT_4BIT_FACTOR + non_quantizable_elements * 2
         )
 
     total_elements = quantizable_elements + non_quantizable_elements
@@ -225,12 +230,12 @@ def compute_lora_params(
     r = lora_rank
 
     module_elements = {
-        "q_proj":    (hd * r,       r * hd),
-        "k_proj":    (hd * r,       r * kv_size),
-        "v_proj":    (hd * r,       r * kv_size),
-        "o_proj":    (hd * r,       r * hd),
-        "gate_proj": (hd * r,       r * mlp_size),
-        "up_proj":   (hd * r,       r * mlp_size),
+        "q_proj": (hd * r, r * hd),
+        "k_proj": (hd * r, r * kv_size),
+        "v_proj": (hd * r, r * kv_size),
+        "o_proj": (hd * r, r * hd),
+        "gate_proj": (hd * r, r * mlp_size),
+        "up_proj": (hd * r, r * mlp_size),
         "down_proj": (mlp_size * r, r * hd),
     }
 
@@ -307,7 +312,9 @@ def estimate_training_vram(
     lora_adapter_bytes = 0
     if is_lora:
         lora_params = compute_lora_params(
-            arch, config.lora_rank, config.target_modules,
+            arch,
+            config.lora_rank,
+            config.target_modules,
         )
         lora_adapter_bytes = compute_lora_adapter_bytes(lora_params)
 
@@ -315,8 +322,11 @@ def estimate_training_vram(
     optimizer_bytes = compute_optimizer_bytes(trainable_params, config.optimizer)
     gradient_bytes = compute_gradient_bytes(trainable_params)
     activation_bytes = compute_activation_bytes(
-        arch, config.batch_size, config.max_seq_length,
-        config.gradient_checkpointing, is_lora = is_lora,
+        arch,
+        config.batch_size,
+        config.max_seq_length,
+        config.gradient_checkpointing,
+        is_lora = is_lora,
     )
 
     return VramBreakdown(

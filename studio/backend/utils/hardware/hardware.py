@@ -364,13 +364,15 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
             allocated_bytes = mod.memory_allocated(ordinal)
-            devices.append({
-                "index": phys_idx,
-                "visible_ordinal": ordinal,
-                "name": props.name,
-                "total_gb": round(total_bytes / (1024**3), 2),
-                "used_gb": round(allocated_bytes / (1024**3), 2),
-            })
+            devices.append(
+                {
+                    "index": phys_idx,
+                    "visible_ordinal": ordinal,
+                    "name": props.name,
+                    "total_gb": round(total_bytes / (1024**3), 2),
+                    "used_gb": round(allocated_bytes / (1024**3), 2),
+                }
+            )
         except Exception as e:
             logger.debug("torch device query failed for ordinal %d: %s", ordinal, e)
     return devices
@@ -437,21 +439,23 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             for td in torch_devices:
                 total = td["total_gb"]
                 used = td["used_gb"]
-                devices.append({
-                    "index": td["index"],
-                    "index_kind": "physical" if parent_ids else "relative",
-                    "visible_ordinal": td["visible_ordinal"],
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
-                    "vram_used_gb": used,
-                    "vram_total_gb": total,
-                    "vram_utilization_pct": round((used / total) * 100, 1)
-                    if total > 0
-                    else None,
-                    "power_draw_w": None,
-                    "power_limit_w": None,
-                    "power_utilization_pct": None,
-                })
+                devices.append(
+                    {
+                        "index": td["index"],
+                        "index_kind": "physical" if parent_ids else "relative",
+                        "visible_ordinal": td["visible_ordinal"],
+                        "gpu_utilization_pct": None,
+                        "temperature_c": None,
+                        "vram_used_gb": used,
+                        "vram_total_gb": total,
+                        "vram_utilization_pct": round((used / total) * 100, 1)
+                        if total > 0
+                        else None,
+                        "power_draw_w": None,
+                        "power_limit_w": None,
+                        "power_utilization_pct": None,
+                    }
+                )
             return {
                 "available": True,
                 "backend": device.value,
@@ -833,8 +837,10 @@ def estimate_required_model_memory_gb(
         metadata["required_gb"] = round(required_gb, 3)
         return required_gb, metadata
 
-    training_method = "full" if training_type == "Full Finetuning" else (
-        "qlora" if load_in_4bit else "lora"
+    training_method = (
+        "full"
+        if training_type == "Full Finetuning"
+        else ("qlora" if load_in_4bit else "lora")
     )
     vram_config = TrainingVramConfig(
         training_method = training_method,

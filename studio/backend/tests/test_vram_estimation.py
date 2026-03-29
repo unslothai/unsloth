@@ -57,7 +57,6 @@ MOE_CONFIG = ModelArchConfig(
 
 
 class TestExtractArchConfig(unittest.TestCase):
-
     def test_basic_config(self):
         hf_config = SimpleNamespace(
             hidden_size = 4096,
@@ -124,7 +123,6 @@ class TestExtractArchConfig(unittest.TestCase):
 
 
 class TestModelWeightsBytes(unittest.TestCase):
-
     def test_llama_8b_fp16(self):
         weight_bytes = compute_model_weights_bytes(LLAMA_8B, "full", False)
         weight_gb = _gb(weight_bytes)
@@ -152,7 +150,6 @@ class TestModelWeightsBytes(unittest.TestCase):
 
 
 class TestLoraParams(unittest.TestCase):
-
     def test_llama_8b_default_modules_rank16(self):
         lora_p = compute_lora_params(LLAMA_8B, 16, DEFAULT_TARGET_MODULES)
         total_p = compute_total_params(LLAMA_8B)
@@ -171,19 +168,26 @@ class TestLoraParams(unittest.TestCase):
         self.assertLess(qv_only, all_mods)
 
     def test_moe_mlp_modules_scale_with_experts(self):
-        dense_lora = compute_lora_params(LLAMA_8B, 16, ["gate_proj", "up_proj", "down_proj"])
-        moe_lora = compute_lora_params(MOE_CONFIG, 16, ["gate_proj", "up_proj", "down_proj"])
+        dense_lora = compute_lora_params(
+            LLAMA_8B, 16, ["gate_proj", "up_proj", "down_proj"]
+        )
+        moe_lora = compute_lora_params(
+            MOE_CONFIG, 16, ["gate_proj", "up_proj", "down_proj"]
+        )
         ratio = moe_lora / dense_lora
         self.assertAlmostEqual(ratio, 8.0, delta = 0.5)
 
     def test_attention_modules_same_for_moe(self):
-        dense_attn = compute_lora_params(LLAMA_8B, 16, ["q_proj", "k_proj", "v_proj", "o_proj"])
-        moe_attn = compute_lora_params(MOE_CONFIG, 16, ["q_proj", "k_proj", "v_proj", "o_proj"])
+        dense_attn = compute_lora_params(
+            LLAMA_8B, 16, ["q_proj", "k_proj", "v_proj", "o_proj"]
+        )
+        moe_attn = compute_lora_params(
+            MOE_CONFIG, 16, ["q_proj", "k_proj", "v_proj", "o_proj"]
+        )
         self.assertEqual(dense_attn, moe_attn)
 
 
 class TestOptimizerBytes(unittest.TestCase):
-
     def test_adamw_8bit(self):
         self.assertEqual(compute_optimizer_bytes(1_000_000, "adamw_8bit"), 4_000_000)
 
@@ -198,13 +202,11 @@ class TestOptimizerBytes(unittest.TestCase):
 
 
 class TestGradientBytes(unittest.TestCase):
-
     def test_fp16_gradients(self):
         self.assertEqual(compute_gradient_bytes(1_000_000), 2_000_000)
 
 
 class TestActivationBytes(unittest.TestCase):
-
     def test_no_gc_scales_with_layers(self):
         act_none = compute_activation_bytes(LLAMA_8B, 2, 2048, "none")
         act_gc = compute_activation_bytes(LLAMA_8B, 2, 2048, "true")
@@ -233,7 +235,6 @@ class TestActivationBytes(unittest.TestCase):
 
 
 class TestEstimateTrainingVram(unittest.TestCase):
-
     def test_llama_8b_qlora_reasonable_total(self):
         config = TrainingVramConfig(
             training_method = "qlora",
@@ -265,12 +266,16 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_qlora_much_less_than_full_ft(self):
         qlora_config = TrainingVramConfig(
-            training_method = "qlora", load_in_4bit = True,
-            batch_size = 2, max_seq_length = 2048,
+            training_method = "qlora",
+            load_in_4bit = True,
+            batch_size = 2,
+            max_seq_length = 2048,
         )
         full_config = TrainingVramConfig(
-            training_method = "full", load_in_4bit = False,
-            batch_size = 2, max_seq_length = 2048,
+            training_method = "full",
+            load_in_4bit = False,
+            batch_size = 2,
+            max_seq_length = 2048,
         )
         qlora = estimate_training_vram(LLAMA_8B, qlora_config)
         full = estimate_training_vram(LLAMA_8B, full_config)
@@ -310,8 +315,13 @@ class TestEstimateTrainingVram(unittest.TestCase):
         breakdown = estimate_training_vram(LLAMA_8B, config)
         gb_dict = breakdown.to_gb_dict()
         expected_keys = {
-            "model_weights_gb", "lora_adapters_gb", "optimizer_states_gb",
-            "gradients_gb", "activations_gb", "cuda_overhead_gb", "total_gb",
+            "model_weights_gb",
+            "lora_adapters_gb",
+            "optimizer_states_gb",
+            "gradients_gb",
+            "activations_gb",
+            "cuda_overhead_gb",
+            "total_gb",
         }
         self.assertEqual(set(gb_dict.keys()), expected_keys)
 
@@ -319,18 +329,25 @@ class TestEstimateTrainingVram(unittest.TestCase):
         config = TrainingVramConfig(training_method = "qlora", load_in_4bit = True)
         breakdown = estimate_training_vram(LLAMA_8B, config)
         parts_sum = (
-            breakdown.model_weights + breakdown.lora_adapters
-            + breakdown.optimizer_states + breakdown.gradients
-            + breakdown.activations + breakdown.cuda_overhead
+            breakdown.model_weights
+            + breakdown.lora_adapters
+            + breakdown.optimizer_states
+            + breakdown.gradients
+            + breakdown.activations
+            + breakdown.cuda_overhead
         )
         self.assertEqual(breakdown.total, parts_sum)
 
     def test_larger_batch_increases_total(self):
         small = TrainingVramConfig(
-            training_method = "qlora", load_in_4bit = True, batch_size = 1,
+            training_method = "qlora",
+            load_in_4bit = True,
+            batch_size = 1,
         )
         large = TrainingVramConfig(
-            training_method = "qlora", load_in_4bit = True, batch_size = 8,
+            training_method = "qlora",
+            load_in_4bit = True,
+            batch_size = 8,
         )
         small_v = estimate_training_vram(LLAMA_8B, small)
         large_v = estimate_training_vram(LLAMA_8B, large)
@@ -338,14 +355,20 @@ class TestEstimateTrainingVram(unittest.TestCase):
 
     def test_adamw_fp32_uses_more_optimizer_memory(self):
         opt8 = TrainingVramConfig(
-            training_method = "full", load_in_4bit = False, optimizer = "adamw_8bit",
+            training_method = "full",
+            load_in_4bit = False,
+            optimizer = "adamw_8bit",
         )
         opt32 = TrainingVramConfig(
-            training_method = "full", load_in_4bit = False, optimizer = "adamw_torch",
+            training_method = "full",
+            load_in_4bit = False,
+            optimizer = "adamw_torch",
         )
         v8 = estimate_training_vram(LLAMA_8B, opt8)
         v32 = estimate_training_vram(LLAMA_8B, opt32)
-        self.assertAlmostEqual(v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1)
+        self.assertAlmostEqual(
+            v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1
+        )
 
 
 if __name__ == "__main__":
