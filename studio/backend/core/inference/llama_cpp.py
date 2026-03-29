@@ -1074,7 +1074,9 @@ class LlamaCppBackend:
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
-                    max_available_ctx = effective_ctx
+                    # Keep UI ceiling independent from current requested context.
+                    if self._context_length is not None:
+                        max_available_ctx = self._context_length
 
                 if effective_ctx < original_ctx:
                     kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
@@ -1097,7 +1099,9 @@ class LlamaCppBackend:
                 logger.warning(f"GPU selection failed ({e}), using --fit on")
                 gpu_indices, use_fit = None, True
                 effective_ctx = n_ctx  # fall back to original
-                max_available_ctx = effective_ctx
+                # Preserve native-context ceiling when available.
+                if self._context_length is not None:
+                    max_available_ctx = self._context_length
 
             cmd = [
                 binary,
