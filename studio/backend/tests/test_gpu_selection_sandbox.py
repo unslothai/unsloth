@@ -342,13 +342,13 @@ class TestGetDeviceMap(unittest.TestCase):
             dm = get_device_map(gpu_ids = [0, 1], load_in_4bit = True)
             self.assertEqual(dm, "balanced")
 
-    def test_multi_gpu_non4bit_returns_balanced_low_0(self):
+    def test_multi_gpu_non4bit_returns_balanced(self):
         from utils.hardware.hardware import get_device_map
         import utils.hardware.hardware as hw
 
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA):
             dm = get_device_map(gpu_ids = [0, 1], load_in_4bit = False)
-            self.assertEqual(dm, "balanced_low_0")
+            self.assertEqual(dm, "balanced")
 
     def test_cpu_returns_sequential(self):
         from utils.hardware.hardware import get_device_map

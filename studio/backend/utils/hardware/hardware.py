@@ -1251,7 +1251,7 @@ def get_device_map(
         if multi_gpu:
             if load_in_4bit:
                 return "balanced"
-            return "balanced_low_0"
+            return "balanced"
 
     return "sequential"
 
