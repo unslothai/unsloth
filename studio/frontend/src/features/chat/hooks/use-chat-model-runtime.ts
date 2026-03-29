@@ -425,13 +425,9 @@ export function useChatModelRuntime() {
             const reportedMaxCtx = loadResponse.is_gguf
               ? (loadResponse.max_context_length ?? null)
               : null;
-            // Keep customContextLength if the user set one and it differs
-            // from the model's native context; otherwise clear it so the
-            // display shows the native value without a dirty marker.
-            const keepCustomCtx = customContextLength != null
-              && customContextLength !== nativeCtx
-              ? customContextLength
-              : null;
+            // A successful reload has applied settings, so clear pending custom
+            // context state and display the backend-reported effective context.
+            const keepCustomCtx = null;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const ggufMaxContextLength = reportedMaxCtx;
             useChatRuntimeStore.setState({
