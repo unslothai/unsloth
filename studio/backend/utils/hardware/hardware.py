@@ -797,8 +797,7 @@ def auto_select_gpu_ids(
             # First GPU: full capacity. Additional GPUs: reduced by overhead.
             first_gpu_id = selected[0]
             usable_gb = free_by_index[first_gpu_id] + sum(
-                free_by_index[gpu_id] * multi_gpu_overhead
-                for gpu_id in selected[1:]
+                free_by_index[gpu_id] * multi_gpu_overhead for gpu_id in selected[1:]
             )
 
         if usable_gb >= required_gb:
