@@ -296,7 +296,7 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet_no_exit_always "npm install" npm install --no-fund --no-audit --loglevel=error
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
     _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then
         exit "$_npm_install_rc"
@@ -323,7 +323,7 @@ fi  # end frontend build check
 # ── oxc-validator runtime ──
 if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    run_quiet_no_exit_always "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
     _oxc_install_rc=$?
     if [ "$_oxc_install_rc" -ne 0 ]; then
         exit "$_oxc_install_rc"
@@ -816,7 +816,7 @@ else
 fi
 echo ""
 
-# Return non-zero when GGUF is unavailable so automation can detect degraded installs.
-if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
-    exit 1
-fi
+# Keep degraded installs successful; the footer above already reports the limitation.
+# Do not exit non-zero here -- install.sh runs setup.sh under set -e, so a non-zero
+# exit would abort the entire installer (PATH setup, shortcuts, first-run launch)
+# even though Studio itself is fully usable without llama.cpp / GGUF support.
