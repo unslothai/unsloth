@@ -15,6 +15,8 @@ export interface ThreadRecord {
   pairId?: string;
   archived: boolean;
   createdAt: number;
+  /** Set to true once the thread has been confirmed on the backend. */
+  backendSynced?: boolean;
 }
 
 export interface MessageRecord {
