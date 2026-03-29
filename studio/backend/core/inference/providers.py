@@ -119,6 +119,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Web-grounded responses with built-in search.",
     },
+    "openrouter": {
+        "display_name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "default_models": [
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet-4-5",
+            "google/gemini-2.5-flash",
+            "meta-llama/llama-4-maverick",
+            "mistralai/mistral-small-3.1-24b-instruct",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "extra_headers": {
+            "HTTP-Referer": "https://unsloth.ai",
+            "X-Title": "Unsloth Studio",
+        },
+        "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
+    },
 }
 
 

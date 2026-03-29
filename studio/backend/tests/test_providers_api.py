@@ -48,6 +48,7 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "together":   ("TOGETHER_API_KEY",  "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
     "fireworks":  ("FIREWORKS_API_KEY", "accounts/fireworks/models/llama4-maverick-instruct-basic"),
     "perplexity": ("PERPLEXITY_API_KEY", "sonar"),
+    "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
 }
 
 PROVIDER_KEYS: dict[str, str] = {
@@ -230,7 +231,7 @@ class TestPublicKey:
 
 
 class TestRegistry:
-    def test_registry_returns_7_providers(self, auth_headers: dict[str, str]):
+    def test_registry_returns_8_providers(self, auth_headers: dict[str, str]):
         """GET /api/providers/registry returns all 7 supported providers."""
         resp = requests.get(
             _url("/api/providers/registry"),
@@ -239,7 +240,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 7, f"Expected 7 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 8, f"Expected 8 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:

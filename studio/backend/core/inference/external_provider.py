@@ -34,10 +34,17 @@ class ExternalProviderClient:
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers. All supported providers use Bearer tokens."""
-        return {
+        from core.inference.providers import get_provider_info
+
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        # Merge any provider-specific extra headers (e.g. OpenRouter attribution headers)
+        provider_info = get_provider_info(self.provider_type)
+        if provider_info:
+            headers.update(provider_info.get("extra_headers", {}))
+        return headers
 
     async def stream_chat_completion(
         self,
