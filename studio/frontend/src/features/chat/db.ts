@@ -36,6 +36,22 @@ db.version(3)
       }),
   );
 
+db.version(4)
+  .stores({
+    threads: "id, modelType, pairId, archived, createdAt",
+    messages: "id, threadId, createdAt",
+  })
+  .upgrade((tx) =>
+    tx
+      .table("threads")
+      .toCollection()
+      .modify((thread) => {
+        // Pre-existing threads are assumed backend-synced if the backend
+        // was previously populated. Safe default for the upgrade path.
+        thread.backendSynced = true;
+      }),
+  );
+
 export { db };
 
 /**

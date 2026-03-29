@@ -725,18 +725,27 @@ function ActiveThreadSync({
 // Module-level singleton: ensures hydration runs exactly once across all
 // ChatRuntimeProvider instances (e.g. compare mode) and React StrictMode remounts.
 let hydrationPromise: Promise<void> | null = null;
+let hydrationComplete = false;
 
 function hydrateChatStoreOnce(): Promise<void> {
+  if (hydrationComplete) return Promise.resolve();
   if (hydrationPromise) return hydrationPromise;
+
   hydrationPromise = (async () => {
     const data = await fetchHydrate();
-    if (!data) return;
+    if (!data) {
+      // Transient failure -- allow a later mount to retry
+      hydrationPromise = null;
+      return;
+    }
 
     // Snapshot local state before merging backend data
     const localThreads = await db.threads.toArray();
     const localMessages = await db.messages.toArray();
 
-    // Merge backend threads into Dexie (backend wins for shared records)
+    // Merge backend threads into Dexie (backend wins for shared records).
+    // Mark them as backendSynced so we can distinguish "known remote" from
+    // "created locally but never synced" during reconciliation.
     await db.threads.bulkPut(
       data.threads.map((t) => ({
         id: t.id,
@@ -746,6 +755,7 @@ function hydrateChatStoreOnce(): Promise<void> {
         pairId: t.pair_id ?? undefined,
         archived: t.archived,
         createdAt: t.created_at,
+        backendSynced: true,
       })),
     );
 
@@ -768,14 +778,23 @@ function hydrateChatStoreOnce(): Promise<void> {
     }
     await db.messages.bulkPut(parsedMessages);
 
-    // Reconcile: push local-only threads to backend instead of deleting them.
-    // Absence from the backend is ambiguous without tombstones -- the thread
-    // may have been created locally but not yet synced, so always preserve it.
+    // Reconcile local threads against backend state.
     const backendThreadIds = new Set(data.threads.map((t) => t.id));
     const backendMessageIds = new Set(data.messages.map((m) => m.id));
 
     for (const lt of localThreads) {
       if (backendThreadIds.has(lt.id)) continue;
+
+      if (lt.backendSynced) {
+        // Thread was previously on the backend but is now absent --
+        // another client deleted it. Honor the remote deletion.
+        await db.messages.where("threadId").equals(lt.id).delete();
+        await db.threads.delete(lt.id);
+        continue;
+      }
+
+      // Thread was created locally but never confirmed on the backend
+      // (e.g. first sync or the create request failed). Push it up.
       syncCreateThread({
         id: lt.id,
         title: lt.title,
@@ -802,7 +821,13 @@ function hydrateChatStoreOnce(): Promise<void> {
         created_at: msg.createdAt,
       });
     }
-  })();
+
+    hydrationComplete = true;
+  })().catch((err) => {
+    // Transient failure -- allow future mounts to retry
+    hydrationPromise = null;
+    throw err;
+  });
   return hydrationPromise;
 }
 

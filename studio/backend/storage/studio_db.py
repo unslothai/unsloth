@@ -459,6 +459,7 @@ def upsert_chat_message(
             """INSERT INTO chat_messages (id, thread_id, role, content, attachments, metadata, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
+                   thread_id = excluded.thread_id,
                    content = excluded.content,
                    attachments = excluded.attachments,
                    metadata = excluded.metadata""",
