@@ -33,18 +33,27 @@ class ExternalProviderClient:
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
 
     def _auth_headers(self) -> dict[str, str]:
-        """Build authentication headers. All supported providers use Bearer tokens."""
+        """Build authentication headers using the provider's registry config."""
         from core.inference.providers import get_provider_info
 
+        provider_info = get_provider_info(self.provider_type) or {}
+        auth_header = provider_info.get("auth_header", "Authorization")
+        auth_prefix = provider_info.get("auth_prefix", "Bearer ")
+
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            auth_header: f"{auth_prefix}{self.api_key}",
         }
-        # Merge any provider-specific extra headers (e.g. OpenRouter attribution headers)
-        provider_info = get_provider_info(self.provider_type)
-        if provider_info:
-            headers.update(provider_info.get("extra_headers", {}))
+        # Merge any provider-specific extra headers (e.g. anthropic-version, OpenRouter attribution)
+        headers.update(provider_info.get("extra_headers", {}))
         return headers
+
+    def _is_openai_compatible(self) -> bool:
+        """Return False for providers that need request/response translation (e.g. Anthropic)."""
+        from core.inference.providers import get_provider_info
+
+        info = get_provider_info(self.provider_type) or {}
+        return info.get("openai_compatible", True)
 
     async def stream_chat_completion(
         self,
@@ -57,11 +66,18 @@ class ExternalProviderClient:
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
-        Yield raw SSE lines from the external provider.
+        Yield OpenAI-format SSE lines from the external provider.
 
-        Each yielded string is a complete SSE line (e.g. 'data: {...}' or
-        'data: [DONE]'). The caller wraps these into a StreamingResponse.
+        For OpenAI-compatible providers, lines are forwarded verbatim.
+        For Anthropic, the native Messages API SSE is translated to OpenAI format.
         """
+        if not self._is_openai_compatible():
+            async for line in self._stream_anthropic(
+                messages, model, temperature, top_p, max_tokens
+            ):
+                yield line
+            return
+
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -96,7 +112,6 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    # Yield an error in SSE format so the frontend can display it
                     yield _error_sse_line(
                         response.status_code, error_text, self.provider_type
                     )
@@ -121,6 +136,133 @@ class ExternalProviderClient:
             yield _error_sse_line(
                 502, f"Error communicating with {self.provider_type}: {exc}", self.provider_type
             )
+
+    async def _stream_anthropic(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: Optional[int],
+    ) -> AsyncGenerator[str, None]:
+        """
+        Call the Anthropic Messages API and translate its SSE to OpenAI format.
+
+        Anthropic SSE event types:
+          content_block_delta  → OpenAI chunk with delta.content
+          message_delta        → OpenAI chunk with finish_reason
+          message_stop         → data: [DONE]
+          (all others skipped)
+        """
+        import json as _json
+
+        # Extract system prompt — Anthropic sends it as a top-level field, not in messages
+        system: Optional[str] = None
+        filtered: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system = msg.get("content", "")
+            else:
+                filtered.append(msg)
+
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": filtered,
+            "max_tokens": max_tokens or 1024,  # required by Anthropic
+            "temperature": temperature,
+            "top_p": top_p,
+            "stream": True,
+        }
+        if system:
+            body["system"] = system
+
+        url = f"{self.base_url}/v1/messages"
+        completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
+
+        _finish_reason_map = {
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "stop_sequence": "stop",
+        }
+
+        logger.info(
+            "Proxying Anthropic Messages API to %s (model=%s)", url, model
+        )
+
+        try:
+            async with self._client.stream(
+                "POST",
+                url,
+                json=body,
+                headers=self._auth_headers(),
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors="replace")
+                    logger.error(
+                        "Anthropic returned %d: %s", response.status_code, error_text[:500]
+                    )
+                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line or line.startswith("event:"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+
+                    data_str = line[len("data:"):].strip()
+                    if not data_str:
+                        continue
+
+                    try:
+                        event = _json.loads(data_str)
+                    except _json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("type")
+
+                    if event_type == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            chunk = {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": delta.get("text", "")},
+                                    "finish_reason": None,
+                                }],
+                            }
+                            yield f"data: {_json.dumps(chunk)}"
+
+                    elif event_type == "message_delta":
+                        stop_reason = event.get("delta", {}).get("stop_reason")
+                        if stop_reason:
+                            chunk = {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": _finish_reason_map.get(stop_reason, "stop"),
+                                }],
+                            }
+                            yield f"data: {_json.dumps(chunk)}"
+
+                    elif event_type == "message_stop":
+                        yield "data: [DONE]"
+                        return
+
+        except httpx.ConnectError as exc:
+            logger.error("Connection error to %s: %s", self.provider_type, exc)
+            yield _error_sse_line(502, f"Failed to connect to {self.provider_type}: {exc}", self.provider_type)
+        except httpx.ReadTimeout as exc:
+            logger.error("Read timeout from %s: %s", self.provider_type, exc)
+            yield _error_sse_line(504, f"Timeout waiting for {self.provider_type} response", self.provider_type)
+        except httpx.HTTPError as exc:
+            logger.error("HTTP error from %s: %s", self.provider_type, exc)
+            yield _error_sse_line(502, f"Error communicating with {self.provider_type}: {exc}", self.provider_type)
 
     async def chat_completion(
         self,

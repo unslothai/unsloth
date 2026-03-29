@@ -119,6 +119,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Web-grounded responses with built-in search.",
     },
+    "anthropic": {
+        "display_name": "Anthropic",
+        "base_url": "https://api.anthropic.com",
+        "default_models": [
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "x-api-key",
+        "auth_prefix": "",
+        "extra_headers": {
+            "anthropic-version": "2023-06-01",
+        },
+        "openai_compatible": False,
+        "notes": "Native Anthropic Messages API. Uses x-api-key header and /v1/messages endpoint with SSE translation.",
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
