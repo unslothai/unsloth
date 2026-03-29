@@ -80,18 +80,13 @@ run_install_cmd() {
     _label="$1"
     shift
     if _is_verbose; then
-        if "$@"; then
-            return 0
-        fi
+        "$@" && return 0
         _rc=$?
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
-    if "$@" >"$_log" 2>&1; then
-        rm -f "$_log"
-        return 0
-    fi
+    "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
     _rc=$?
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     cat "$_log" >&2
