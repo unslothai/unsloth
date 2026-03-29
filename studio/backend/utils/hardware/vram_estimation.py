@@ -347,8 +347,11 @@ def estimate_training_vram(
         int(model_weights * 0.10),
     )
     activations_computed = compute_activation_bytes(
-        arch, config.batch_size, config.max_seq_length,
-        config.gradient_checkpointing, is_lora = is_lora,
+        arch,
+        config.batch_size,
+        config.max_seq_length,
+        config.gradient_checkpointing,
+        is_lora = is_lora,
     )
     activation_bytes = max(
         activations_computed,
