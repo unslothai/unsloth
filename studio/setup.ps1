@@ -1351,8 +1351,6 @@ function Fast-Install {
     & python -m pip install @Args_ 2>&1
 }
 
-Fast-Install --upgrade pip | Out-Null
-
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
@@ -1361,11 +1359,11 @@ $SkipPythonDeps = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
-    $InstalledVer = try { & python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null } catch { "" }
+    $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
     $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
-        $LatestVer = $pypiJson.info.version
+        $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
@@ -1397,6 +1395,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 # }
 
 if (-not $SkipPythonDeps) {
+
+Fast-Install --upgrade pip | Out-Null
 
 # Pre-install PyTorch with CUDA support.
 # On Windows, the default PyPI torch wheel is CPU-only.
