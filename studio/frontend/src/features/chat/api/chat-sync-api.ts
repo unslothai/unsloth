@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { db } from "../db";
 
 const MAX_RETRIES = 2;
 const BACKOFF_MS = [1000, 2000];
@@ -41,11 +42,16 @@ const threadQueues = new Map<string, Promise<unknown>>();
 function enqueueThreadSync(
   threadId: string,
   op: () => Promise<Response | null>,
+  onSuccess?: () => Promise<void> | void,
 ): void {
   const prev = threadQueues.get(threadId) ?? Promise.resolve();
   const next = prev
     .catch(() => undefined)
-    .then(op)
+    .then(async () => {
+      const res = await op();
+      if (res?.ok && onSuccess) await onSuccess();
+      return res;
+    })
     .finally(() => {
       if (threadQueues.get(threadId) === next) threadQueues.delete(threadId);
     });
@@ -61,7 +67,11 @@ export function syncCreateThread(data: {
   pair_id?: string;
   created_at: number;
 }): void {
-  enqueueThreadSync(data.id, () => syncFetch("/api/chat/threads", jsonBody(data)));
+  enqueueThreadSync(
+    data.id,
+    () => syncFetch("/api/chat/threads", jsonBody(data)),
+    () => db.threads.update(data.id, { backendSynced: true }),
+  );
 }
 
 export function syncUpdateThread(

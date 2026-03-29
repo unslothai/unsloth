@@ -46,9 +46,10 @@ db.version(4)
       .table("threads")
       .toCollection()
       .modify((thread) => {
-        // Pre-existing threads are assumed backend-synced if the backend
-        // was previously populated. Safe default for the upgrade path.
-        thread.backendSynced = true;
+        // Pre-sync releases only had local data. Keep legacy rows unsynced
+        // so first hydration uploads them instead of treating absence as
+        // a remote deletion.
+        if (thread.backendSynced == null) thread.backendSynced = false;
       }),
   );
 
