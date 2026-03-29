@@ -85,6 +85,17 @@ def get_visible_gpu_utilization(
     parent_visible_ids: Optional[list[int]],
     parent_cuda_visible_devices: Optional[str] = None,
 ) -> dict[str, Any]:
+    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
+    # map nvidia-smi rows to the process's visible devices. Return empty
+    # instead of exposing all physical GPUs.
+    if parent_visible_ids is None:
+        return {
+            "available": False,
+            "backend_cuda_visible_devices": parent_cuda_visible_devices,
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "unresolved",
+        }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
     result = subprocess.run(
         [
@@ -161,6 +172,16 @@ def get_backend_visible_gpu_info(
     parent_visible_ids: Optional[list[int]],
     backend_cuda_visible_devices: Optional[str],
 ) -> dict[str, Any]:
+    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
+    # map nvidia-smi rows to the process's visible devices.
+    if parent_visible_ids is None:
+        return {
+            "available": False,
+            "backend_cuda_visible_devices": backend_cuda_visible_devices,
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "unresolved",
+        }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
     result = subprocess.run(
         [

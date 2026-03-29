@@ -633,7 +633,7 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            device_map = get_device_map(gpu_ids, load_in_4bit=load_in_4bit)
+            device_map = get_device_map(gpu_ids, load_in_4bit = load_in_4bit)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -857,6 +857,7 @@ class UnslothTrainer:
                     is_dataset_audio = is_dataset_audio,
                     trust_remote_code = trust_remote_code,
                     full_finetuning = full_finetuning,
+                    gpu_ids = gpu_ids,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()

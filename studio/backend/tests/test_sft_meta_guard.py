@@ -60,7 +60,9 @@ def test_maybe_enable_sft_meta_guard_noops_for_materialized_model():
     old_value = os.environ.get("UNSLOTH_IGNORED_TOKENIZER_NAMES")
     os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "keep/me"
     try:
-        assert maybe_enable_sft_meta_guard(model, "unsloth/Qwen3.5-27B", logger) is False
+        assert (
+            maybe_enable_sft_meta_guard(model, "unsloth/Qwen3.5-27B", logger) is False
+        )
         assert os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] == "keep/me"
         logger.warning.assert_not_called()
     finally:

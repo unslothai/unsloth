@@ -822,9 +822,14 @@ def estimate_required_model_memory_gb(
 
     model_size_gb = model_size_bytes / (1024**3)
     metadata["model_size_gb"] = round(model_size_gb, 3)
+    min_buffer_gb = 2.0
 
     if training_type is None:
-        required_gb = model_size_gb * 1.3
+        if load_in_4bit:
+            base_4bit_gb = model_size_gb / 3.0
+            required_gb = base_4bit_gb + max(base_4bit_gb * 0.3, min_buffer_gb)
+        else:
+            required_gb = model_size_gb * 1.3
         metadata["required_gb"] = round(required_gb, 3)
         return required_gb, metadata
 
@@ -913,8 +918,13 @@ def auto_select_gpu_ids(
         return None, metadata
 
     if required_gb is None:
-        metadata["selection_mode"] = "unavailable"
-        return None, metadata
+        # Cannot estimate model size -- fall back to all visible GPUs
+        # rather than risk loading on a single GPU that may not have
+        # enough memory.
+        parent_ids = get_parent_visible_gpu_ids()
+        metadata["selection_mode"] = "fallback_all"
+        metadata["selected_gpu_ids"] = parent_ids
+        return parent_ids, metadata
 
     utilization = get_visible_gpu_utilization()
     devices = utilization.get("devices", [])
@@ -948,30 +958,54 @@ def auto_select_gpu_ids(
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
-    multi_gpu_factor = 0.8
+    # Multi-GPU sharding has overhead from inter-GPU communication, so
+    # each additional GPU contributes less than its raw free memory.
+    # The first GPU keeps its full capacity (no cross-device overhead).
+    multi_gpu_overhead = 0.85
 
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
         else:
-            usable_gb = sum(
-                free_by_index[gpu_id] * multi_gpu_factor for gpu_id in selected
+            # First GPU: full capacity. Additional GPUs: reduced by overhead.
+            first_gpu_id = selected[0]
+            usable_gb = free_by_index[first_gpu_id] + sum(
+                free_by_index[gpu_id] * multi_gpu_overhead for gpu_id in selected[1:]
             )
 
         if usable_gb >= required_gb:
             metadata["usable_gb"] = round(usable_gb, 3)
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected
+            logger.debug(
+                "Selected GPUs automatically",
+                model_name = model_name,
+                selected_gpu_ids = selected,
+                usable_gb = metadata["usable_gb"],
+                required_gb = metadata.get("required_gb"),
+                multi_gpu_overhead = multi_gpu_overhead,
+            )
             return selected, metadata
 
     fallback_all = [device["index"] for device in devices]
     metadata["selection_mode"] = "fallback_all"
-    metadata["usable_gb"] = round(
-        sum(candidate["free_gb"] * multi_gpu_factor for candidate in ranked),
-        3,
-    )
+    if ranked:
+        fallback_usable = ranked[0]["free_gb"] + sum(
+            c["free_gb"] * multi_gpu_overhead for c in ranked[1:]
+        )
+    else:
+        fallback_usable = 0.0
+    metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
+    logger.debug(
+        "Falling back to all visible GPUs",
+        model_name = model_name,
+        selected_gpu_ids = fallback_all,
+        usable_gb = metadata["usable_gb"],
+        required_gb = metadata.get("required_gb"),
+        multi_gpu_overhead = multi_gpu_overhead,
+    )
     return fallback_all, metadata
 
 
