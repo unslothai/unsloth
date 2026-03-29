@@ -22,7 +22,7 @@ export function buildModelProvider(
     name: config.name,
     endpoint: config.endpoint,
     // biome-ignore lint/style/useNamingConvention: api schema
-    provider_type: "openai",
+    provider_type: config.provider_type || "openai",
     // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: config.api_key_env?.trim() || undefined,
     // biome-ignore lint/style/useNamingConvention: api schema
