@@ -20,19 +20,22 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-_tmpdir = tempfile.mkdtemp(prefix="chat_edge_test_")
+_tmpdir = tempfile.mkdtemp(prefix = "chat_edge_test_")
 _test_db = os.path.join(_tmpdir, "test_studio.db")
 
 
 def _patched_studio_db_path():
     from pathlib import Path
+
     return Path(_test_db)
 
 
 import utils.paths as _paths_mod
+
 _paths_mod.studio_db_path = _patched_studio_db_path
 
 import storage.studio_db as sdb
+
 sdb._schema_ready = False
 
 
@@ -52,13 +55,21 @@ def test_unicode_content():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="CJK test", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "CJK test",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content=json.dumps([{"type": "text", "text": "Bonjour le monde"}]),
-        attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = json.dumps([{"type": "text", "text": "Bonjour le monde"}]),
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
 
     msgs = sdb.get_chat_thread_messages("t1")
@@ -66,7 +77,7 @@ def test_unicode_content():
     assert parsed[0]["text"] == "Bonjour le monde"
 
     # Emoji
-    sdb.update_chat_thread("t1", title="Chat with emojis")
+    sdb.update_chat_thread("t1", title = "Chat with emojis")
     threads = sdb.list_chat_threads()
     assert threads[0]["title"] == "Chat with emojis"
 
@@ -79,8 +90,12 @@ def test_large_message_content():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Large", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Large",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
 
     # ~500 KB of content
@@ -88,8 +103,13 @@ def test_large_message_content():
     content = json.dumps(parts)
 
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="assistant",
-        content=content, attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "assistant",
+        content = content,
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
 
     msgs = sdb.get_chat_thread_messages("t1")
@@ -108,13 +128,17 @@ def test_concurrent_thread_creation():
     def create_thread(i):
         try:
             sdb.create_chat_thread(
-                thread_id=f"t{i}", title=f"Thread {i}", model_type="base",
-                model_id="", pair_id=None, created_at=now + i,
+                thread_id = f"t{i}",
+                title = f"Thread {i}",
+                model_type = "base",
+                model_id = "",
+                pair_id = None,
+                created_at = now + i,
             )
         except Exception as e:
             errors.append((i, str(e)))
 
-    threads = [threading.Thread(target=create_thread, args=(i,)) for i in range(20)]
+    threads = [threading.Thread(target = create_thread, args = (i,)) for i in range(20)]
     for t in threads:
         t.start()
     for t in threads:
@@ -135,21 +159,29 @@ def test_concurrent_message_upsert():
     errors = []
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
 
     def upsert_msg(i):
         try:
             sdb.upsert_chat_message(
-                message_id=f"m{i}", thread_id="t1", role="user",
-                content=f'[{{"type":"text","text":"msg{i}"}}]',
-                attachments=None, metadata=None, created_at=now + i,
+                message_id = f"m{i}",
+                thread_id = "t1",
+                role = "user",
+                content = f'[{{"type":"text","text":"msg{i}"}}]',
+                attachments = None,
+                metadata = None,
+                created_at = now + i,
             )
         except Exception as e:
             errors.append((i, str(e)))
 
-    threads = [threading.Thread(target=upsert_msg, args=(i,)) for i in range(50)]
+    threads = [threading.Thread(target = upsert_msg, args = (i,)) for i in range(50)]
     for t in threads:
         t.start()
     for t in threads:
@@ -169,14 +201,23 @@ def test_empty_content_fields():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
 
     # Empty content string (valid)
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content="[]", attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = "[]",
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
 
     msgs = sdb.get_chat_thread_messages("t1")
@@ -186,8 +227,13 @@ def test_empty_content_fields():
 
     # Update with metadata
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content="[]", attachments='[]', metadata='{}', created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = "[]",
+        attachments = "[]",
+        metadata = "{}",
+        created_at = now,
     )
 
     msgs = sdb.get_chat_thread_messages("t1")
@@ -203,12 +249,20 @@ def test_pair_id_threading():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Base Thread", model_type="base",
-        model_id="llama", pair_id="pair-abc", created_at=now,
+        thread_id = "t1",
+        title = "Base Thread",
+        model_type = "base",
+        model_id = "llama",
+        pair_id = "pair-abc",
+        created_at = now,
     )
     sdb.create_chat_thread(
-        thread_id="t2", title="LoRA Thread", model_type="lora",
-        model_id="adapter", pair_id="pair-abc", created_at=now + 1,
+        thread_id = "t2",
+        title = "LoRA Thread",
+        model_type = "lora",
+        model_id = "adapter",
+        pair_id = "pair-abc",
+        created_at = now + 1,
     )
 
     # Both threads exist
@@ -216,11 +270,11 @@ def test_pair_id_threading():
     assert len(all_threads) == 2
 
     # Filter by model_type
-    base_threads = sdb.list_chat_threads(model_type="base")
+    base_threads = sdb.list_chat_threads(model_type = "base")
     assert len(base_threads) == 1
     assert base_threads[0]["id"] == "t1"
 
-    lora_threads = sdb.list_chat_threads(model_type="lora")
+    lora_threads = sdb.list_chat_threads(model_type = "lora")
     assert len(lora_threads) == 1
     assert lora_threads[0]["id"] == "t2"
 
@@ -237,8 +291,12 @@ def test_updated_at_is_set_on_update():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
 
     threads = sdb.list_chat_threads()
@@ -246,13 +304,13 @@ def test_updated_at_is_set_on_update():
     assert original_updated == now  # created_at == updated_at on creation
 
     time.sleep(0.01)  # Ensure timestamp difference
-    sdb.update_chat_thread("t1", title="New Title")
+    sdb.update_chat_thread("t1", title = "New Title")
 
     threads = sdb.list_chat_threads()
     new_updated = threads[0]["updated_at"]
-    assert new_updated > original_updated, (
-        f"updated_at should increase after update: {new_updated} <= {original_updated}"
-    )
+    assert (
+        new_updated > original_updated
+    ), f"updated_at should increase after update: {new_updated} <= {original_updated}"
 
     print("  PASS: test_updated_at_is_set_on_update")
 
@@ -281,7 +339,8 @@ def main():
     print(f"\nAll 8 edge case tests passed!")
 
     import shutil
-    shutil.rmtree(_tmpdir, ignore_errors=True)
+
+    shutil.rmtree(_tmpdir, ignore_errors = True)
 
 
 if __name__ == "__main__":

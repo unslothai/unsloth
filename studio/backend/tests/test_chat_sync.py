@@ -27,20 +27,23 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 # Patch studio_db_path before importing storage module so tests use a temp DB
-_tmpdir = tempfile.mkdtemp(prefix="chat_sync_test_")
+_tmpdir = tempfile.mkdtemp(prefix = "chat_sync_test_")
 _test_db = os.path.join(_tmpdir, "test_studio.db")
 
 
 def _patched_studio_db_path():
     from pathlib import Path
+
     return Path(_test_db)
 
 
 import utils.paths as _paths_mod
+
 _paths_mod.studio_db_path = _patched_studio_db_path
 
 # Reset schema state so each import gets a fresh schema
 import storage.studio_db as sdb
+
 sdb._schema_ready = False
 
 
@@ -63,7 +66,8 @@ def test_schema_creation():
     conn = sdb.get_connection()
     try:
         tables = [
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             ).fetchall()
         ]
@@ -90,8 +94,12 @@ def test_thread_crud():
 
     # Create
     sdb.create_chat_thread(
-        thread_id="t1", title="Test Thread", model_type="base",
-        model_id="llama-3", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Test Thread",
+        model_type = "base",
+        model_id = "llama-3",
+        pair_id = None,
+        created_at = now,
     )
 
     # List
@@ -102,21 +110,21 @@ def test_thread_crud():
     assert threads[0]["archived"] == 0
 
     # List with filter
-    threads_filtered = sdb.list_chat_threads(model_type="lora")
+    threads_filtered = sdb.list_chat_threads(model_type = "lora")
     assert len(threads_filtered) == 0
 
     # Update
-    ok = sdb.update_chat_thread("t1", title="Updated Title")
+    ok = sdb.update_chat_thread("t1", title = "Updated Title")
     assert ok is True
     threads = sdb.list_chat_threads()
     assert threads[0]["title"] == "Updated Title"
 
     # Update non-existent
-    ok = sdb.update_chat_thread("nonexistent", title="X")
+    ok = sdb.update_chat_thread("nonexistent", title = "X")
     assert ok is False
 
     # Archive
-    ok = sdb.update_chat_thread("t1", archived=1)
+    ok = sdb.update_chat_thread("t1", archived = 1)
     assert ok is True
     threads = sdb.list_chat_threads()
     assert threads[0]["archived"] == 1
@@ -140,15 +148,23 @@ def test_message_upsert():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
 
     # Insert message
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content='[{"type":"text","text":"Hello"}]',
-        attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = '[{"type":"text","text":"Hello"}]',
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
 
     msgs = sdb.get_chat_thread_messages("t1")
@@ -157,9 +173,13 @@ def test_message_upsert():
 
     # Upsert (update content)
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content='[{"type":"text","text":"Hello updated"}]',
-        attachments=None, metadata='{"key":"val"}', created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = '[{"type":"text","text":"Hello updated"}]',
+        attachments = None,
+        metadata = '{"key":"val"}',
+        created_at = now,
     )
 
     msgs = sdb.get_chat_thread_messages("t1")
@@ -176,16 +196,30 @@ def test_fk_cascade_on_thread_delete():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content="[]", attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = "[]",
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
     sdb.upsert_chat_message(
-        message_id="m2", thread_id="t1", role="assistant",
-        content="[]", attachments=None, metadata=None, created_at=now + 1,
+        message_id = "m2",
+        thread_id = "t1",
+        role = "assistant",
+        content = "[]",
+        attachments = None,
+        metadata = None,
+        created_at = now + 1,
     )
 
     # Verify messages exist
@@ -213,8 +247,13 @@ def test_orphan_message_integrity_error():
 
     try:
         sdb.upsert_chat_message(
-            message_id="m1", thread_id="nonexistent", role="user",
-            content="[]", attachments=None, metadata=None, created_at=now,
+            message_id = "m1",
+            thread_id = "nonexistent",
+            role = "user",
+            content = "[]",
+            attachments = None,
+            metadata = None,
+            created_at = now,
         )
         assert False, "Expected IntegrityError for orphan message"
     except sqlite3.IntegrityError:
@@ -229,13 +268,21 @@ def test_idempotent_thread_create():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Original", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Original",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
     # Second create with different title -- should be ignored
     sdb.create_chat_thread(
-        thread_id="t1", title="Duplicate", model_type="base",
-        model_id="", pair_id=None, created_at=now + 1000,
+        thread_id = "t1",
+        title = "Duplicate",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now + 1000,
     )
 
     threads = sdb.list_chat_threads()
@@ -251,22 +298,38 @@ def test_hydrate_all():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread 1", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread 1",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
     sdb.create_chat_thread(
-        thread_id="t2", title="Thread 2", model_type="lora",
-        model_id="adapter-1", pair_id="p1", created_at=now + 1,
+        thread_id = "t2",
+        title = "Thread 2",
+        model_type = "lora",
+        model_id = "adapter-1",
+        pair_id = "p1",
+        created_at = now + 1,
     )
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content='[{"type":"text","text":"msg1"}]',
-        attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = '[{"type":"text","text":"msg1"}]',
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
     sdb.upsert_chat_message(
-        message_id="m2", thread_id="t2", role="assistant",
-        content='[{"type":"text","text":"msg2"}]',
-        attachments=None, metadata='{"timing":{"total":1.5}}', created_at=now + 2,
+        message_id = "m2",
+        thread_id = "t2",
+        role = "assistant",
+        content = '[{"type":"text","text":"msg2"}]',
+        attachments = None,
+        metadata = '{"timing":{"total":1.5}}',
+        created_at = now + 2,
     )
 
     data = sdb.get_all_chat_data()
@@ -288,12 +351,16 @@ def test_update_only_allowed_fields():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
 
     # Try to inject a non-allowed field
-    ok = sdb.update_chat_thread("t1", model_type="hacked")
+    ok = sdb.update_chat_thread("t1", model_type = "hacked")
     assert ok is False, "Non-allowed field should be silently dropped, returning False"
 
     threads = sdb.list_chat_threads()
@@ -308,12 +375,21 @@ def test_on_conflict_do_update_preserves_row():
     now = int(time.time() * 1000)
 
     sdb.create_chat_thread(
-        thread_id="t1", title="Thread", model_type="base",
-        model_id="", pair_id=None, created_at=now,
+        thread_id = "t1",
+        title = "Thread",
+        model_type = "base",
+        model_id = "",
+        pair_id = None,
+        created_at = now,
     )
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content='["v1"]', attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = '["v1"]',
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
 
     # Get rowid before upsert
@@ -327,8 +403,13 @@ def test_on_conflict_do_update_preserves_row():
 
     # Upsert same message with new content
     sdb.upsert_chat_message(
-        message_id="m1", thread_id="t1", role="user",
-        content='["v2"]', attachments=None, metadata=None, created_at=now,
+        message_id = "m1",
+        thread_id = "t1",
+        role = "user",
+        content = '["v2"]',
+        attachments = None,
+        metadata = None,
+        created_at = now,
     )
 
     # Rowid should be preserved (ON CONFLICT DO UPDATE, not INSERT OR REPLACE)
@@ -363,7 +444,8 @@ def main():
 
     # Cleanup
     import shutil
-    shutil.rmtree(_tmpdir, ignore_errors=True)
+
+    shutil.rmtree(_tmpdir, ignore_errors = True)
 
 
 if __name__ == "__main__":
