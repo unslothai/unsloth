@@ -253,13 +253,34 @@ def MistralForCausalLM_fast_forward(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
 
-    if past_key_values is not None:
+    if (
+        past_key_values is not None
+        and input_ids is not None
+        and input_ids.shape[1] == 1
+    ):
         outputs = LlamaModel_fast_forward_inference(
             self,
             input_ids,
             past_key_values,
             position_ids = position_ids,
             attention_mask = attention_mask,
+        )
+    elif (
+        past_key_values is not None and input_ids is not None and input_ids.shape[1] > 1
+    ):
+        # Multi-token prefill with user-provided KV cache
+        self.model._has_no_labels = labels is None
+        outputs = self.model(
+            input_ids = input_ids,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            inputs_embeds = inputs_embeds,
+            use_cache = use_cache if use_cache is not None else True,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            return_dict = return_dict,
+            **kwargs,
         )
     else:
         outputs = self.model(
