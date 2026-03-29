@@ -862,7 +862,10 @@ def estimate_required_model_memory_gb(
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
-        metadata["_vram_breakdown_obj"] = breakdown
+        metadata["vram_breakdown"]["min_per_gpu_1"] = round(breakdown.min_gpu_vram(1) / (1024**3), 3)
+        metadata["vram_breakdown"]["min_per_gpu_2"] = round(breakdown.min_gpu_vram(2) / (1024**3), 3)
+        metadata["vram_breakdown"]["min_per_gpu_4"] = round(breakdown.min_gpu_vram(4) / (1024**3), 3)
+        metadata["vram_breakdown"]["min_per_gpu_8"] = round(breakdown.min_gpu_vram(8) / (1024**3), 3)
         return required_gb, metadata
 
     # Fallback when model config is unavailable
@@ -970,9 +973,9 @@ def auto_select_gpu_ids(
     # The first GPU keeps its full capacity (no cross-device overhead).
     multi_gpu_overhead = 0.85
 
-    # Per-GPU check: activations don't shard across GPUs. Use min_gpu_vram
-    # from the breakdown to verify each GPU can hold its shard + activations.
-    breakdown_obj = estimate_metadata.get("_vram_breakdown_obj")
+    # Per-GPU check: activations don't shard, so each GPU needs its weight
+    # shard + full activation cost. Use precomputed min_per_gpu_N values.
+    vram_breakdown = estimate_metadata.get("vram_breakdown", {})
 
     for candidate in ranked:
         selected.append(candidate["index"])
@@ -987,10 +990,12 @@ def auto_select_gpu_ids(
         total_fits = usable_gb >= required_gb
 
         per_gpu_fits = True
-        if total_fits and breakdown_obj is not None and len(selected) > 1:
-            min_per_gpu_gb = breakdown_obj.min_gpu_vram(len(selected)) / (1024**3)
-            smallest_free = min(free_by_index[gpu_id] for gpu_id in selected)
-            per_gpu_fits = smallest_free >= min_per_gpu_gb
+        if total_fits and len(selected) > 1:
+            min_key = f"min_per_gpu_{len(selected)}"
+            min_per_gpu_gb = vram_breakdown.get(min_key)
+            if min_per_gpu_gb is not None:
+                smallest_free = min(free_by_index[gpu_id] for gpu_id in selected)
+                per_gpu_fits = smallest_free >= min_per_gpu_gb
 
         if total_fits and per_gpu_fits:
             metadata["usable_gb"] = round(usable_gb, 3)
