@@ -688,7 +688,7 @@ def estimate_required_model_memory_gb(
     elif training_type == "Full Finetuning":
         required_gb = model_size_gb * 6.0
     elif load_in_4bit:
-        base_4bit_gb = model_size_gb / 4.0
+        base_4bit_gb = model_size_gb / 3.0 # Ideally should be 4.0 but we take some buffer for scales and whatnot
         required_gb = base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb)
     else:
         required_gb = model_size_gb * 1.3
@@ -833,6 +833,12 @@ def prepare_gpu_selection(
     training_type: Optional[str] = None,
     load_in_4bit: bool = True,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
+    if gpu_ids and get_device() != DeviceType.CUDA:
+        raise ValueError(
+            f"gpu_ids {list(gpu_ids)} is only supported on CUDA devices, "
+            f"but the current backend is '{get_device().value}'."
+        )
+
     if gpu_ids:
         resolved = resolve_requested_gpu_ids(gpu_ids)
         metadata = {
@@ -973,8 +979,6 @@ def get_visible_gpu_count() -> int:
     if _visible_gpu_count is not None:
         return _visible_gpu_count
 
-    import os
-
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cuda_visible is not None:
         # "" means zero GPUs, "0" means 1, "0,1,2" means 3
@@ -1072,7 +1076,6 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     Returns:
         A safe integer ≥ 1.
     """
-    import os
     import sys
 
     # Windows and macOS use 'spawn' for multiprocessing -- the overhead of
@@ -1111,8 +1114,6 @@ def safe_thread_num_proc(desired: Optional[int] = None) -> int:
     Returns:
         A safe integer >= 1.
     """
-    import os
-
     if desired is None or not isinstance(desired, int):
         desired = max(1, (os.cpu_count() or 1) // 3)
 

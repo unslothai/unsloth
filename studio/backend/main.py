@@ -249,7 +249,9 @@ async def get_system_info():
 
 
 @app.get("/api/system/gpu-visibility")
-async def get_gpu_visibility():
+async def get_gpu_visibility(
+    current_subject: str = Depends(get_current_subject),
+):
     return get_backend_visible_gpu_info()
 
 

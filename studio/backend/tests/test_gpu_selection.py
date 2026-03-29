@@ -305,7 +305,7 @@ class TestGpuAutoSelection(unittest.TestCase):
                 training_type = "LoRA/QLoRA",
                 load_in_4bit = True,
             )
-            self.assertAlmostEqual(required_gb, 4.0, places = 3)
+            self.assertAlmostEqual(required_gb, 4.667, places = 2)
             self.assertEqual(metadata["min_buffer_gb"], 2.0)
 
         sixteen_gb = 16 * (1024**3)
@@ -318,7 +318,7 @@ class TestGpuAutoSelection(unittest.TestCase):
                 training_type = "LoRA/QLoRA",
                 load_in_4bit = True,
             )
-            self.assertAlmostEqual(required_gb, 6.0, places = 3)
+            self.assertAlmostEqual(required_gb, 8.0, places = 2)
 
     def test_estimate_fp16_model_size_bytes_uses_vllm_fallback_last(self):
         config = object()
@@ -681,39 +681,12 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
 
 
 class TestRouteErrors(unittest.TestCase):
-    def test_inference_route_rejects_gpu_ids_on_non_cuda_backend(self):
-        inference_route = _load_route_module(
-            "inference_route_module_for_non_cuda_gpu_ids_test",
-            "routes/inference.py",
-        )
-        request = LoadRequest(model_path = "unsloth/test", gpu_ids = [0])
-        model_config = SimpleNamespace(
-            is_gguf = False,
-            is_lora = False,
-            path = None,
-            identifier = "unsloth/test",
-            display_name = "unsloth/test",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+    def test_prepare_gpu_selection_rejects_gpu_ids_on_non_cuda_backend(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+            with self.assertRaises(ValueError) as exc_info:
+                prepare_gpu_selection([0], model_name = "unsloth/test")
 
-        with (
-            patch.object(
-                inference_route.ModelConfig,
-                "from_identifier",
-                return_value = model_config,
-            ),
-            patch.object(inference_route, "get_device", return_value = DeviceType.CPU),
-        ):
-            with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route.load_model(request, current_subject = "test-user")
-                )
-
-        self.assertEqual(exc_info.exception.status_code, 400)
-        self.assertIn("CUDA inference", exc_info.exception.detail)
+        self.assertIn("only supported on CUDA", str(exc_info.exception))
 
     def test_inference_route_rejects_gpu_ids_for_gguf(self):
         inference_route = _load_route_module(

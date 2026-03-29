@@ -49,7 +49,6 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import LlamaCppBackend
-    from utils.hardware import DeviceType, get_device
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -59,7 +58,6 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import LlamaCppBackend
-    from utils.hardware import DeviceType, get_device
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -205,12 +203,6 @@ async def load_model(
             raise HTTPException(
                 status_code = 400,
                 detail = f"Invalid model identifier: {request.model_path}",
-            )
-
-        if request.gpu_ids is not None and get_device() != DeviceType.CUDA:
-            raise HTTPException(
-                status_code = 400,
-                detail = "gpu_ids is only supported for CUDA inference.",
             )
 
         # ── GGUF path: load via llama-server ──────────────────────
