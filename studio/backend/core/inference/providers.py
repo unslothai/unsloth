@@ -61,9 +61,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Cohere",
         "base_url": "https://api.cohere.ai/compatibility/v1",
         "default_models": [
-            "command-r-plus",
-            "command-r",
-            "command-a",
+            "command-a-03-2025",
+            "command-r-plus-08-2024",
+            "command-r-08-2024",
         ],
         "supports_streaming": True,
         "supports_vision": False,
