@@ -1610,8 +1610,17 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
-        $prebuiltExit = $LASTEXITCODE
+        if ($script:UnslothVerbose) {
+            # Show live output in verbose mode while still capturing for error log
+            $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
+            & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
+            $prebuiltExit = $LASTEXITCODE
+            $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
+            Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
+        } else {
+            $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+            $prebuiltExit = $LASTEXITCODE
+        }
         $ErrorActionPreference = $prevEAPPrebuilt
 
         if ($prebuiltExit -eq 0) {

@@ -98,10 +98,6 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
-run_quiet_no_exit_always() {
-    (UNSLOTH_VERBOSE=0 _run_quiet return "$@")
-}
-
 print_llama_error_log() {
     local log_file=$1
     [ -s "$log_file" ] || return 0
@@ -528,8 +524,13 @@ else
         fi
         _PREBUILT_LOG="$(mktemp)"
         set +e
-        "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
-        _PREBUILT_STATUS=$?
+        if _is_verbose; then
+            "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+            _PREBUILT_STATUS=${PIPESTATUS[0]}
+        else
+            "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
+            _PREBUILT_STATUS=$?
+        fi
         set -e
 
         if [ "$_PREBUILT_STATUS" -eq 0 ]; then

@@ -96,7 +96,7 @@ def print_studio_access_banner(
                 style(f"    {external_url}", secondary),
             ]
         )
-    elif not listen_all and not loopback_bind:
+    elif not listen_all and not loopback_bind and external_url != primary_url:
         lines.extend(
             [
                 "",
