@@ -1368,6 +1368,24 @@ class FastBaseModel:
             patch_modules_to_save = True,
         )
 
+        # Gemma3N audio conformer processes variable-length audio tensors
+        # that cause stride mismatches in AOT autograd compiled backward
+        # when non-reentrant checkpointing is used. The notebook or TRL
+        # may override gradient_checkpointing_kwargs with use_reentrant=False
+        # after this point, so we intercept gradient_checkpointing_enable
+        # to always force use_reentrant=True for Gemma3N.
+        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
+        if "gemma3n" in _model_type.lower():
+            _original_gc_enable = model.gradient_checkpointing_enable
+
+            def _gc_enable_reentrant(**kwargs):
+                gc_kwargs = kwargs.get("gradient_checkpointing_kwargs", {}) or {}
+                gc_kwargs["use_reentrant"] = True
+                kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
+                return _original_gc_enable(**kwargs)
+
+            model.gradient_checkpointing_enable = _gc_enable_reentrant
+
         from transformers.trainer import Trainer
 
         if (

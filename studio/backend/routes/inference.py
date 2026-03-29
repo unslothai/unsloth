@@ -156,6 +156,7 @@ async def load_model(
                     inference = inference_config,
                     context_length = llama_backend.context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
+                    reasoning_always_on = llama_backend.reasoning_always_on,
                     chat_template = llama_backend.chat_template,
                 )
         else:
@@ -280,6 +281,7 @@ async def load_model(
                 inference = inference_config,
                 context_length = llama_backend.context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
@@ -609,6 +611,7 @@ async def get_status(
                 loaded = [_model_id],
                 inference = _inference_cfg,
                 supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
             )
@@ -1128,6 +1131,8 @@ async def openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_start":
+                                prev_text = ""
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 

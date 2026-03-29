@@ -23,9 +23,22 @@ if _backend_dir not in sys.path:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
+import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
+
+# Fix broken Windows registry MIME types.  Some Windows installs map .js to
+# "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
+# module reads from the registry, and FastAPI/Starlette's StaticFiles uses
+# mimetypes.guess_type() to set Content-Type headers.  Browsers enforce strict
+# MIME checking for ES module scripts (<script type="module">) and will refuse
+# to execute .js files served as text/plain — resulting in a blank page.
+# Calling add_type() *before* StaticFiles is instantiated ensures the correct
+# types are used regardless of the OS registry.
+if sys.platform == "win32":
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
 
 # Suppress annoying dependency warnings in production
 if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
@@ -34,7 +47,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -54,6 +67,7 @@ from routes import (
     training_router,
 )
 from auth import storage
+from auth.authentication import get_current_subject
 from utils.hardware import detect_hardware, get_device, DeviceType
 import utils.hardware.hardware as _hw_module
 
@@ -184,6 +198,34 @@ async def health_check():
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
     }
+
+
+@app.post("/api/shutdown")
+async def shutdown_server(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Gracefully shut down the Unsloth Studio server.
+
+    Called by the frontend quit dialog so users can stop the server from the UI
+    without needing to use the CLI or kill the process manually.
+    """
+    import asyncio
+
+    async def _delayed_shutdown():
+        await asyncio.sleep(0.2)  # Let the HTTP response return first
+        trigger = getattr(request.app.state, "trigger_shutdown", None)
+        if trigger is not None:
+            trigger()
+        else:
+            # Fallback when not launched via run_server() (e.g. direct uvicorn)
+            import signal
+            import os
+
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
+    return {"status": "shutting_down"}
 
 
 @app.get("/api/system")
