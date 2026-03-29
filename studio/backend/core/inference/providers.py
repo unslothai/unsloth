@@ -121,7 +121,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "anthropic": {
         "display_name": "Anthropic",
-        "base_url": "https://api.anthropic.com",
+        "base_url": "https://api.anthropic.com/v1",
         "default_models": [
             "claude-opus-4-5",
             "claude-sonnet-4-5",

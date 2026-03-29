@@ -170,13 +170,13 @@ class ExternalProviderClient:
             "messages": filtered,
             "max_tokens": max_tokens or 1024,  # required by Anthropic
             "temperature": temperature,
-            "top_p": top_p,
+            # Anthropic rejects requests that set both temperature and top_p
             "stream": True,
         }
         if system:
             body["system"] = system
 
-        url = f"{self.base_url}/v1/messages"
+        url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
         _finish_reason_map = {
@@ -185,9 +185,7 @@ class ExternalProviderClient:
             "stop_sequence": "stop",
         }
 
-        logger.info(
-            "Proxying Anthropic Messages API to %s (model=%s)", url, model
-        )
+        logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         try:
             async with self._client.stream(
