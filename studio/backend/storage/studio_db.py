@@ -465,6 +465,10 @@ def upsert_chat_message(
                    metadata = excluded.metadata""",
             (message_id, thread_id, role, content, attachments, metadata, created_at),
         )
+        conn.execute(
+            "UPDATE chat_threads SET updated_at = ? WHERE id = ?",
+            (int(time.time() * 1000), thread_id),
+        )
         conn.commit()
     finally:
         conn.close()
