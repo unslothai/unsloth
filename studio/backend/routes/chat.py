@@ -138,8 +138,10 @@ async def create_message(
             metadata = body.metadata,
             created_at = body.created_at,
         )
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    except sqlite3.IntegrityError as exc:
+        if "FOREIGN KEY" in str(exc).upper():
+            raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise
     return ChatMessageResponse(
         id = body.id,
         thread_id = thread_id,

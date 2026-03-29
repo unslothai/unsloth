@@ -433,6 +433,7 @@ function createDexieAdapter(
         pairId,
         archived: false,
         createdAt: now,
+        backendSynced: false,
       };
       await db.threads.add(thread);
       syncCreateThread({
