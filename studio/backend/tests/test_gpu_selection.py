@@ -686,7 +686,7 @@ class TestRouteErrors(unittest.TestCase):
             with self.assertRaises(ValueError) as exc_info:
                 prepare_gpu_selection([0], model_name = "unsloth/test")
 
-        self.assertIn("only supported on CUDA", str(exc_info.exception))
+        self.assertIn("only supported on GPU devices", str(exc_info.exception))
 
     def test_inference_route_rejects_gpu_ids_for_gguf(self):
         inference_route = _load_route_module(

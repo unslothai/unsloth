@@ -329,15 +329,6 @@ def run_server(
     }:
         uvicorn_log_level = "info"
 
-    logger.debug(
-        "Starting Studio backend",
-        host = host,
-        port = port,
-        frontend_path = str(frontend_path),
-        uvicorn_log_level = uvicorn_log_level,
-        environment = os.getenv("ENVIRONMENT_TYPE", "production"),
-    )
-
     config = uvicorn.Config(
         app,
         host = host,

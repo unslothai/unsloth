@@ -34,6 +34,7 @@ class DeviceType(str, Enum):
     """Supported compute backends. Inherits from str so it serializes cleanly in JSON."""
 
     CUDA = "cuda"
+    XPU = "xpu"
     MLX = "mlx"
     CPU = "cpu"
 
@@ -98,6 +99,17 @@ def detect_hardware() -> DeviceType:
             print(f"Hardware detected: CUDA — {device_name}")
             return DEVICE
 
+    # --- XPU: Intel GPU ---
+    if _has_torch():
+        import torch
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            DEVICE = DeviceType.XPU
+            CHAT_ONLY = False
+            device_name = torch.xpu.get_device_name(0)
+            print(f"Hardware detected: XPU — {device_name}")
+            return DEVICE
+
     # --- MLX: Apple Silicon ---
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
@@ -142,6 +154,11 @@ def clear_gpu_cache():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+    elif device == DeviceType.XPU:
+        import torch
+
+        torch.xpu.synchronize()
+        torch.xpu.empty_cache()
     elif device == DeviceType.MLX:
         # MLX manages memory automatically; no explicit cache clear needed.
         # mlx.core has no empty_cache equivalent — gc.collect() above is enough.
@@ -180,6 +197,33 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             }
         except Exception as e:
             logger.error(f"Error getting CUDA GPU info: {e}")
+            return {"available": False, "backend": device.value, "error": str(e)}
+
+    # ---- XPU path (Intel GPU) ----
+    if device == DeviceType.XPU:
+        try:
+            import torch
+
+            idx = torch.xpu.current_device()
+            props = torch.xpu.get_device_properties(idx)
+
+            total = props.total_memory
+            allocated = torch.xpu.memory_allocated(idx)
+            reserved = torch.xpu.memory_reserved(idx)
+
+            return {
+                "available": True,
+                "backend": device.value,
+                "device": idx,
+                "device_name": props.name,
+                "total_gb": total / (1024**3),
+                "allocated_gb": allocated / (1024**3),
+                "reserved_gb": reserved / (1024**3),
+                "free_gb": (total - allocated) / (1024**3),
+                "utilization_pct": (allocated / total) * 100,
+            }
+        except Exception as e:
+            logger.error(f"Error getting XPU GPU info: {e}")
             return {"available": False, "backend": device.value, "error": str(e)}
 
     # ---- MLX path (Apple Silicon) ----
@@ -282,6 +326,56 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     return versions
 
 
+# ========== Torch-based GPU fallbacks (AMD ROCm, Intel XPU, nvidia-smi missing) ==========
+
+
+def _torch_get_device_module():
+    """Return the appropriate torch device module (cuda or xpu) and its name."""
+    device = get_device()
+    import torch
+
+    if device == DeviceType.CUDA:
+        return torch.cuda, "cuda"
+    if device == DeviceType.XPU and hasattr(torch, "xpu"):
+        return torch.xpu, "xpu"
+    return None, None
+
+
+def _torch_get_physical_gpu_count() -> Optional[int]:
+    mod, _ = _torch_get_device_module()
+    if mod is None:
+        return None
+    try:
+        return mod.device_count()
+    except Exception:
+        return None
+
+
+def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]]:
+    """Query torch for per-GPU name, total VRAM, and used VRAM."""
+    mod, _ = _torch_get_device_module()
+    if mod is None:
+        return []
+
+    devices = []
+    for ordinal, phys_idx in enumerate(device_indices):
+        try:
+            # torch uses 0-based ordinals relative to CUDA_VISIBLE_DEVICES
+            props = mod.get_device_properties(ordinal)
+            total_bytes = props.total_memory
+            allocated_bytes = mod.memory_allocated(ordinal)
+            devices.append({
+                "index": phys_idx,
+                "visible_ordinal": ordinal,
+                "name": props.name,
+                "total_gb": round(total_bytes / (1024**3), 2),
+                "used_gb": round(allocated_bytes / (1024**3), 2),
+            })
+        except Exception as e:
+            logger.debug("torch device query failed for ordinal %d: %s", ordinal, e)
+    return devices
+
+
 # ========== Live GPU Utilization ==========
 
 
@@ -333,6 +427,38 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             return result
         except Exception as e:
             logger.warning("nvidia-smi visible GPU utilization query failed: %s", e)
+
+    # Torch-based fallback for CUDA (AMD ROCm) and XPU (Intel)
+    if device in (DeviceType.CUDA, DeviceType.XPU):
+        parent_ids = get_parent_visible_gpu_ids()
+        torch_devices = _torch_get_per_device_info(parent_ids)
+        if torch_devices:
+            devices = []
+            for td in torch_devices:
+                total = td["total_gb"]
+                used = td["used_gb"]
+                devices.append({
+                    "index": td["index"],
+                    "index_kind": "physical" if parent_ids else "relative",
+                    "visible_ordinal": td["visible_ordinal"],
+                    "gpu_utilization_pct": None,
+                    "temperature_c": None,
+                    "vram_used_gb": used,
+                    "vram_total_gb": total,
+                    "vram_utilization_pct": round((used / total) * 100, 1)
+                    if total > 0
+                    else None,
+                    "power_draw_w": None,
+                    "power_limit_w": None,
+                    "power_utilization_pct": None,
+                })
+            return {
+                "available": True,
+                "backend": device.value,
+                "parent_visible_gpu_ids": parent_ids,
+                "devices": devices,
+                "index_kind": "physical" if parent_ids else "relative",
+            }
 
     if device == DeviceType.MLX:
         mem = get_gpu_memory_info()
@@ -695,15 +821,6 @@ def estimate_required_model_memory_gb(
 
     metadata["required_gb"] = round(required_gb, 3)
     metadata["min_buffer_gb"] = min_buffer_gb
-    logger.debug(
-        "Estimated required model memory",
-        model_name = model_name,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        model_size_source = metadata["model_size_source"],
-        model_size_gb = metadata["model_size_gb"],
-        required_gb = metadata["required_gb"],
-    )
     return required_gb, metadata
 
 
@@ -716,7 +833,7 @@ def auto_select_gpu_ids(
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
-    if get_device() != DeviceType.CUDA:
+    if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
         metadata["selection_mode"] = "non_cuda"
         return None, metadata
 
@@ -768,17 +885,6 @@ def auto_select_gpu_ids(
         return parent_ids, metadata
 
     ranked = sorted(gpu_candidates, key = lambda item: (-item["free_gb"], item["index"]))
-    logger.debug(
-        "Evaluating automatic gpu selection",
-        model_name = model_name,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        required_gb = metadata.get("required_gb"),
-        visible_gpu_candidates = [
-            {"gpu_id": item["index"], "free_gb": round(item["free_gb"], 3)}
-            for item in ranked
-        ],
-    )
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
@@ -797,14 +903,6 @@ def auto_select_gpu_ids(
             metadata["usable_gb"] = round(usable_gb, 3)
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected
-            logger.debug(
-                "Selected GPUs automatically",
-                model_name = model_name,
-                selected_gpu_ids = selected,
-                usable_gb = metadata["usable_gb"],
-                required_gb = metadata.get("required_gb"),
-                multi_gpu_factor = multi_gpu_factor,
-            )
             return selected, metadata
 
     fallback_all = [device["index"] for device in devices]
@@ -814,14 +912,6 @@ def auto_select_gpu_ids(
         3,
     )
     metadata["selected_gpu_ids"] = fallback_all
-    logger.debug(
-        "Falling back to all visible GPUs",
-        model_name = model_name,
-        selected_gpu_ids = fallback_all,
-        usable_gb = metadata["usable_gb"],
-        required_gb = metadata.get("required_gb"),
-        multi_gpu_factor = multi_gpu_factor,
-    )
     return fallback_all, metadata
 
 
@@ -833,9 +923,9 @@ def prepare_gpu_selection(
     training_type: Optional[str] = None,
     load_in_4bit: bool = True,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
-    if gpu_ids and get_device() != DeviceType.CUDA:
+    if gpu_ids and get_device() not in (DeviceType.CUDA, DeviceType.XPU):
         raise ValueError(
-            f"gpu_ids {list(gpu_ids)} is only supported on CUDA devices, "
+            f"gpu_ids {list(gpu_ids)} is only supported on GPU devices (CUDA/XPU), "
             f"but the current backend is '{get_device().value}'."
         )
 
@@ -845,12 +935,6 @@ def prepare_gpu_selection(
             "selection_mode": "explicit",
             "selected_gpu_ids": resolved,
         }
-        logger.debug(
-            "Respecting explicit gpu_ids",
-            model_name = model_name,
-            requested_gpu_ids = gpu_ids,
-            selected_gpu_ids = resolved,
-        )
         return resolved, metadata
 
     selected_gpu_ids, metadata = auto_select_gpu_ids(
@@ -859,26 +943,15 @@ def prepare_gpu_selection(
         training_type = training_type,
         load_in_4bit = load_in_4bit,
     )
-    logger.debug(
-        "Prepared automatic gpu selection",
-        model_name = model_name,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        selection_mode = metadata.get("selection_mode"),
-        selected_gpu_ids = metadata.get("selected_gpu_ids"),
-        required_gb = metadata.get("required_gb"),
-        usable_gb = metadata.get("usable_gb"),
-        model_size_source = metadata.get("model_size_source"),
-    )
     return selected_gpu_ids, metadata
 
 
 def get_physical_gpu_count() -> int:
     """
-    Return the number of physical NVIDIA GPUs on the machine.
+    Return the number of physical GPUs on the machine.
 
-    Uses ``nvidia-smi -L`` which is NOT affected by CUDA_VISIBLE_DEVICES,
-    so it always reflects the true hardware count.
+    Uses ``nvidia-smi -L`` on NVIDIA (unaffected by CUDA_VISIBLE_DEVICES),
+    with a torch-based fallback for AMD ROCm and Intel XPU.
     Result is cached after the first call.
     """
     global _physical_gpu_count
@@ -893,7 +966,14 @@ def get_physical_gpu_count() -> int:
 
             _physical_gpu_count = nvidia.get_physical_gpu_count()
         except Exception:
-            _physical_gpu_count = 1
+            # nvidia-smi unavailable (AMD ROCm) — fall back to torch
+            count = _torch_get_physical_gpu_count()
+            _physical_gpu_count = count if count is not None else 1
+        return _physical_gpu_count
+
+    if device == DeviceType.XPU:
+        count = _torch_get_physical_gpu_count()
+        _physical_gpu_count = count if count is not None else 1
         return _physical_gpu_count
 
     if device == DeviceType.MLX:
@@ -907,24 +987,50 @@ def get_physical_gpu_count() -> int:
 
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
-    if device == DeviceType.CUDA:
-        parent_visible_spec = _get_parent_visible_gpu_spec()
-        try:
-            from . import nvidia
+    if device in (DeviceType.CUDA, DeviceType.XPU):
+        parent_visible_ids = get_parent_visible_gpu_ids()
+        # Try nvidia-smi first (NVIDIA only)
+        if device == DeviceType.CUDA:
+            try:
+                from . import nvidia
 
-            result = nvidia.get_backend_visible_gpu_info(
-                parent_visible_spec["numeric_ids"],
-                parent_visible_spec["raw"],
-            )
-            result["backend"] = device.value
-            return result
-        except Exception as e:
-            logger.warning("Backend GPU visibility query failed: %s", e)
+                parent_visible_spec = _get_parent_visible_gpu_spec()
+                result = nvidia.get_backend_visible_gpu_info(
+                    parent_visible_spec["numeric_ids"],
+                    parent_visible_spec["raw"],
+                )
+                result["backend"] = device.value
+                return result
+            except Exception as e:
+                logger.warning("Backend GPU visibility query failed: %s", e)
+
+        # Torch fallback (AMD ROCm, Intel XPU, or nvidia-smi missing)
+        torch_devices = _torch_get_per_device_info(parent_visible_ids)
+        if torch_devices:
+            devices = [
+                {
+                    "index": td["index"],
+                    "index_kind": "physical" if parent_visible_ids else "relative",
+                    "visible_ordinal": td["visible_ordinal"],
+                    "name": td["name"],
+                    "memory_total_gb": td["total_gb"],
+                }
+                for td in torch_devices
+            ]
+            return {
+                "available": True,
+                "backend": device.value,
+                "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "parent_visible_gpu_ids": parent_visible_ids,
+                "devices": devices,
+                "index_kind": "physical" if parent_visible_ids else "relative",
+            }
+
         return {
             "available": False,
             "backend": device.value,
             "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "parent_visible_gpu_ids": get_parent_visible_gpu_ids(),
+            "parent_visible_gpu_ids": parent_visible_ids,
             "devices": [],
             "index_kind": "physical",
         }
@@ -993,7 +1099,10 @@ def get_visible_gpu_count() -> int:
     try:
         import torch
 
-        _visible_gpu_count = torch.cuda.device_count()
+        if get_device() == DeviceType.XPU and hasattr(torch, "xpu"):
+            _visible_gpu_count = torch.xpu.device_count()
+        else:
+            _visible_gpu_count = torch.cuda.device_count()
     except Exception:
         _visible_gpu_count = get_physical_gpu_count()
 
@@ -1022,7 +1131,7 @@ def get_device_map(
     load_in_4bit: bool = False,
 ) -> str:
     device = get_device()
-    if device == DeviceType.CUDA:
+    if device in (DeviceType.CUDA, DeviceType.XPU):
         multi_gpu = gpu_ids is not None and len(gpu_ids) > 1
 
         if not multi_gpu:
