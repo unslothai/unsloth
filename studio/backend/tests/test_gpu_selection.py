@@ -176,32 +176,18 @@ class TestVisibleGpuUtilization(unittest.TestCase):
         self.assertEqual(result["devices"][0]["name"], "GPU One")
         self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places = 1)
 
-    def test_uuid_parent_visibility_reports_all_backend_visible_gpus(self):
-        smi_output = "\n".join(
-            [
-                "0, GPU Zero, 10000",
-                "1, GPU One, 20000",
-                "3, GPU Three, 30000",
-            ]
-        )
-
+    def test_uuid_parent_visibility_returns_unresolved(self):
         with (
             patch.dict(
                 os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
             ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
-            mock_run.return_value = SimpleNamespace(
-                returncode = 0,
-                stdout = smi_output,
-            )
             result = get_backend_visible_gpu_info()
 
-        self.assertTrue(result["available"])
-        self.assertEqual(result["backend_cuda_visible_devices"], "GPU-aaa,GPU-bbb")
+        self.assertFalse(result["available"])
         self.assertEqual(result["parent_visible_gpu_ids"], [])
-        self.assertEqual([device["index"] for device in result["devices"]], [0, 1, 3])
+        self.assertEqual(result["devices"], [])
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
@@ -277,6 +263,7 @@ class TestGpuAutoSelection(unittest.TestCase):
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (eight_gb, "config"),
         ):
+            # FP16 inference: 8GB * 1.3 = 10.4GB
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = False,
@@ -284,11 +271,13 @@ class TestGpuAutoSelection(unittest.TestCase):
             self.assertAlmostEqual(required_gb, 10.4, places = 3)
             self.assertEqual(metadata["model_size_source"], "config")
 
+            # 4bit inference: base_4bit = 8/3 = 2.667GB
+            # required = 2.667 + max(2.667*0.3, 2.0) = 2.667 + 2.0 = 4.667GB
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = True,
             )
-            self.assertAlmostEqual(required_gb, 10.4, places = 3)
+            self.assertAlmostEqual(required_gb, 4.667, places = 2)
 
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test", training_type = "Full Finetuning"
@@ -384,7 +373,8 @@ class TestGpuAutoSelection(unittest.TestCase):
 
         self.assertEqual(selected, [0, 1])
         self.assertEqual(metadata["selection_mode"], "auto")
-        self.assertAlmostEqual(metadata["usable_gb"], 17.6, places = 3)
+        # First GPU full (12GB) + second GPU with overhead (10*0.85=8.5) = 20.5GB
+        self.assertAlmostEqual(metadata["usable_gb"], 20.5, places = 3)
 
     def test_auto_select_gpu_ids_falls_back_to_all_visible(self):
         fake_devices = {
@@ -412,7 +402,8 @@ class TestGpuAutoSelection(unittest.TestCase):
 
         self.assertEqual(selected, [0, 1])
         self.assertEqual(metadata["selection_mode"], "fallback_all")
-        self.assertAlmostEqual(metadata["usable_gb"], 16.0, places = 3)
+        # First GPU full (10GB) + second GPU with overhead (10*0.85=8.5) = 18.5GB
+        self.assertAlmostEqual(metadata["usable_gb"], 18.5, places = 3)
 
     def test_prepare_gpu_selection_preserves_explicit_ids_without_auto_selection(self):
         with (
