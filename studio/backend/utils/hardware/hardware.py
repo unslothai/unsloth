@@ -297,7 +297,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
             result["backend"] = device.value
             return result
         except Exception as e:
-            logger.warning(f"nvidia-smi utilization query failed: {e}")
+            logger.warning("nvidia-smi utilization query failed: %s", e)
 
     mem = get_gpu_memory_info()
     if device != DeviceType.CPU and mem.get("available"):
@@ -321,15 +321,18 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
     device = get_device()
 
     if device == DeviceType.CUDA:
-        parent_visible_ids = get_parent_visible_gpu_ids()
+        parent_visible_spec = _get_parent_visible_gpu_spec()
         try:
             from . import nvidia
 
-            result = nvidia.get_visible_gpu_utilization(parent_visible_ids)
+            result = nvidia.get_visible_gpu_utilization(
+                parent_visible_spec["numeric_ids"],
+                parent_cuda_visible_devices = parent_visible_spec["raw"],
+            )
             result["backend"] = device.value
             return result
         except Exception as e:
-            logger.warning(f"nvidia-smi visible CUDA utilization query failed: {e}")
+            logger.warning("nvidia-smi visible GPU utilization query failed: %s", e)
 
     if device == DeviceType.MLX:
         mem = get_gpu_memory_info()
@@ -378,23 +381,48 @@ _physical_gpu_count: Optional[int] = None
 _visible_gpu_count: Optional[int] = None
 
 
-def get_parent_visible_gpu_ids() -> list[int]:
+def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible is not None:
-        cuda_visible = cuda_visible.strip()
-        if cuda_visible == "" or cuda_visible == "-1":
-            return []
-        try:
-            return [
-                int(value.strip()) for value in cuda_visible.split(",") if value.strip()
-            ]
-        except ValueError:
-            pass
 
-    return list(range(get_physical_gpu_count()))
+    if cuda_visible is None:
+        return {
+            "raw": None,
+            "numeric_ids": list(range(get_physical_gpu_count())),
+            "supports_explicit_gpu_ids": True,
+        }
+
+    cuda_visible = cuda_visible.strip()
+    if cuda_visible == "" or cuda_visible == "-1":
+        return {
+            "raw": cuda_visible,
+            "numeric_ids": [],
+            "supports_explicit_gpu_ids": True,
+        }
+
+    tokens = [value.strip() for value in cuda_visible.split(",") if value.strip()]
+    try:
+        numeric_ids = [int(value) for value in tokens]
+    except ValueError:
+        return {
+            "raw": cuda_visible,
+            "numeric_ids": None,
+            "supports_explicit_gpu_ids": False,
+        }
+
+    return {
+        "raw": cuda_visible,
+        "numeric_ids": numeric_ids,
+        "supports_explicit_gpu_ids": True,
+    }
+
+
+def get_parent_visible_gpu_ids() -> list[int]:
+    parent_visible_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
+    return list(parent_visible_ids) if parent_visible_ids is not None else []
 
 
 def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
+    parent_visible_spec = _get_parent_visible_gpu_spec()
     parent_visible_ids = get_parent_visible_gpu_ids()
     physical_gpu_count = get_physical_gpu_count()
 
@@ -404,6 +432,14 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
     requested_ids = list(gpu_ids)
     if len(requested_ids) == 0:
         return parent_visible_ids
+
+    if not parent_visible_spec["supports_explicit_gpu_ids"]:
+        raise ValueError(
+            f"Invalid gpu_ids {requested_ids}: explicit physical GPU IDs are "
+            f"unsupported when CUDA_VISIBLE_DEVICES uses UUID/MIG entries "
+            f"({parent_visible_spec['raw']!r}). Omit gpu_ids to use the "
+            "parent-visible devices."
+        )
 
     if len(set(requested_ids)) != len(requested_ids):
         raise ValueError(
@@ -691,6 +727,14 @@ def auto_select_gpu_ids(
         load_in_4bit = load_in_4bit,
     )
     metadata.update(estimate_metadata)
+    parent_visible_spec = _get_parent_visible_gpu_spec()
+    metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
+
+    if not parent_visible_spec["supports_explicit_gpu_ids"]:
+        metadata["selection_mode"] = "inherit_parent_visible"
+        metadata["selected_gpu_ids"] = None
+        return None, metadata
+
     if required_gb is None:
         metadata["selection_mode"] = "unavailable"
         return None, metadata
@@ -858,23 +902,23 @@ def get_physical_gpu_count() -> int:
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
     if device == DeviceType.CUDA:
-        parent_visible_ids = get_parent_visible_gpu_ids()
+        parent_visible_spec = _get_parent_visible_gpu_spec()
         try:
             from . import nvidia
 
             result = nvidia.get_backend_visible_gpu_info(
-                parent_visible_ids,
-                os.environ.get("CUDA_VISIBLE_DEVICES"),
+                parent_visible_spec["numeric_ids"],
+                parent_visible_spec["raw"],
             )
             result["backend"] = device.value
             return result
         except Exception as e:
-            logger.warning(f"Backend GPU visibility query failed: {e}")
+            logger.warning("Backend GPU visibility query failed: %s", e)
         return {
             "available": False,
             "backend": device.value,
             "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "parent_visible_gpu_ids": parent_visible_ids,
+            "parent_visible_gpu_ids": get_parent_visible_gpu_ids(),
             "devices": [],
             "index_kind": "physical",
         }
@@ -968,11 +1012,40 @@ def apply_gpu_ids(gpu_ids) -> None:
     logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
-def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
+def get_device_map(
+    gpu_ids: Optional[list[int]] = None,
+    *,
+    load_in_4bit: bool = False,
+) -> str:
     device = get_device()
-    if device == DeviceType.CUDA and gpu_ids is not None and len(gpu_ids) > 1:
-        return "balanced_low_0"
+    if device == DeviceType.CUDA:
+        multi_gpu = gpu_ids is not None and len(gpu_ids) > 1
+
+        if not multi_gpu:
+            parent_visible_spec = _get_parent_visible_gpu_spec()
+            if (
+                parent_visible_spec["numeric_ids"] is None
+                and get_visible_gpu_count() > 1
+            ):
+                multi_gpu = True
+
+        if multi_gpu:
+            if load_in_4bit:
+                return "balanced"
+            return "balanced_low_0"
+
     return "sequential"
+
+
+def get_offloaded_device_map_entries(model) -> dict[str, str]:
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if not isinstance(hf_device_map, dict):
+        return {}
+    return {
+        module_name: placement
+        for module_name, placement in hf_device_map.items()
+        if placement in ("cpu", "disk")
+    }
 
 
 def safe_num_proc(desired: Optional[int] = None) -> int:

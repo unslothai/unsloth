@@ -15,7 +15,11 @@ def _parse_smi_value(raw: str):
         return None
 
 
-def _visible_ordinal_map(parent_visible_ids: list[int]) -> dict[int, int]:
+def _visible_ordinal_map(
+    parent_visible_ids: Optional[list[int]],
+) -> Optional[dict[int, int]]:
+    if parent_visible_ids is None:
+        return None
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
 
@@ -77,7 +81,10 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     }
 
 
-def get_visible_gpu_utilization(parent_visible_ids: list[int]) -> dict[str, Any]:
+def get_visible_gpu_utilization(
+    parent_visible_ids: Optional[list[int]],
+    parent_cuda_visible_devices: Optional[str] = None,
+) -> dict[str, Any]:
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
     result = subprocess.run(
         [
@@ -93,7 +100,8 @@ def get_visible_gpu_utilization(parent_visible_ids: list[int]) -> dict[str, Any]
     if result.returncode != 0 or not result.stdout.strip():
         return {
             "available": False,
-            "parent_visible_gpu_ids": parent_visible_ids,
+            "backend_cuda_visible_devices": parent_cuda_visible_devices,
+            "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
             "index_kind": "physical",
         }
@@ -105,7 +113,7 @@ def get_visible_gpu_utilization(parent_visible_ids: list[int]) -> dict[str, Any]
             continue
 
         idx = int(parts[0])
-        if idx not in visible_ordinals:
+        if visible_ordinals is not None and idx not in visible_ordinals:
             continue
 
         vram_used_mb = _parse_smi_value(parts[3])
@@ -116,7 +124,11 @@ def get_visible_gpu_utilization(parent_visible_ids: list[int]) -> dict[str, Any]
             {
                 "index": idx,
                 "index_kind": "physical",
-                "visible_ordinal": visible_ordinals[idx],
+                "visible_ordinal": (
+                    visible_ordinals[idx]
+                    if visible_ordinals is not None
+                    else len(devices)
+                ),
                 "gpu_utilization_pct": _parse_smi_value(parts[1]),
                 "temperature_c": _parse_smi_value(parts[2]),
                 "vram_used_gb": round(vram_used_mb / 1024, 2)
@@ -138,14 +150,15 @@ def get_visible_gpu_utilization(parent_visible_ids: list[int]) -> dict[str, Any]
 
     return {
         "available": len(devices) > 0,
-        "parent_visible_gpu_ids": parent_visible_ids,
+        "backend_cuda_visible_devices": parent_cuda_visible_devices,
+        "parent_visible_gpu_ids": parent_visible_ids or [],
         "devices": devices,
         "index_kind": "physical",
     }
 
 
 def get_backend_visible_gpu_info(
-    parent_visible_ids: list[int],
+    parent_visible_ids: Optional[list[int]],
     backend_cuda_visible_devices: Optional[str],
 ) -> dict[str, Any]:
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
@@ -163,7 +176,7 @@ def get_backend_visible_gpu_info(
         return {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,
-            "parent_visible_gpu_ids": parent_visible_ids,
+            "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
             "index_kind": "physical",
         }
@@ -174,13 +187,17 @@ def get_backend_visible_gpu_info(
         if len(parts) != 3:
             continue
         idx = int(parts[0])
-        if idx not in visible_ordinals:
+        if visible_ordinals is not None and idx not in visible_ordinals:
             continue
         devices.append(
             {
                 "index": idx,
                 "index_kind": "physical",
-                "visible_ordinal": visible_ordinals[idx],
+                "visible_ordinal": (
+                    visible_ordinals[idx]
+                    if visible_ordinals is not None
+                    else len(devices)
+                ),
                 "name": parts[1],
                 "memory_total_gb": round(int(parts[2]) / 1024, 2),
             }
@@ -189,7 +206,7 @@ def get_backend_visible_gpu_info(
     return {
         "available": len(devices) > 0,
         "backend_cuda_visible_devices": backend_cuda_visible_devices,
-        "parent_visible_gpu_ids": parent_visible_ids,
+        "parent_visible_gpu_ids": parent_visible_ids or [],
         "devices": devices,
         "index_kind": "physical",
     }

@@ -38,37 +38,6 @@ _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 
 
-def _log_worker_gpu_environment() -> None:
-    try:
-        import torch
-
-        cuda_available = torch.cuda.is_available()
-        visible_gpu_count = torch.cuda.device_count() if cuda_available else 0
-        device_names = (
-            [torch.cuda.get_device_name(i) for i in range(visible_gpu_count)]
-            if cuda_available
-            else []
-        )
-        current_device = torch.cuda.current_device() if visible_gpu_count > 0 else None
-        logger.debug(
-            "Training worker GPU environment",
-            cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES"),
-            cuda_available = cuda_available,
-            visible_gpu_count = visible_gpu_count,
-            current_device = current_device,
-            device_names = device_names,
-            world_size = os.environ.get("WORLD_SIZE"),
-            local_rank = os.environ.get("LOCAL_RANK"),
-            rank = os.environ.get("RANK"),
-        )
-        if visible_gpu_count > 1 and os.environ.get("WORLD_SIZE", "1") == "1":
-            logger.info(
-                "Multiple GPUs are visible to the training worker, but training is running in single-process mode"
-            )
-    except Exception as e:
-        logger.debug(f"Failed to inspect training worker GPU environment: {e}")
-
-
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
     return any(
@@ -500,7 +469,6 @@ def run_training_process(
         import transformers
 
         logger.info("Subprocess loaded transformers %s", transformers.__version__)
-        _log_worker_gpu_environment()
     except Exception as exc:
         event_queue.put(
             {

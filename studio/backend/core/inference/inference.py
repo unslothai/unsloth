@@ -18,7 +18,10 @@ from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
-from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory, get_device_map
+from utils.hardware import (
+    get_device, clear_gpu_cache, log_gpu_memory,
+    get_device_map, get_offloaded_device_map_entries, get_visible_gpu_count,
+)
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -261,7 +264,10 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
-            device_map = get_device_map(gpu_ids)
+            device_map = get_device_map(gpu_ids, load_in_4bit=load_in_4bit)
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
 
             self.models[model_name] = {
                 "is_vision": config.is_vision,
@@ -516,6 +522,17 @@ class InferenceBackend:
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+
+            offloaded = get_offloaded_device_map_entries(self.models[model_name]["model"])
+            if offloaded:
+                example_modules = ", ".join(
+                    f"{name}={placement}"
+                    for name, placement in list(offloaded.items())[:5]
+                )
+                raise ValueError(
+                    "Inference does not support models loaded with CPU or disk offload. "
+                    f"device_map='{device_map}' produced offloaded modules: {example_modules}"
+                )
 
             # Load chat template info
             self._load_chat_template_info(model_name)

@@ -32,6 +32,7 @@ from .hardware import (
     safe_thread_num_proc,
     dataset_map_num_proc,
     get_device_map,
+    get_offloaded_device_map_entries,
     apply_gpu_ids,
 )
 
@@ -62,5 +63,6 @@ __all__ = [
     "safe_thread_num_proc",
     "dataset_map_num_proc",
     "get_device_map",
+    "get_offloaded_device_map_entries",
     "apply_gpu_ids",
 ]

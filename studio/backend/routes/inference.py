@@ -213,11 +213,9 @@ async def load_model(
                 detail = "gpu_ids is only supported for CUDA inference.",
             )
 
-        effective_gpu_ids = request.gpu_ids if get_device() == DeviceType.CUDA else None
-
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            if effective_gpu_ids is not None:
+            if request.gpu_ids is not None:
                 raise HTTPException(
                     status_code = 400,
                     detail = "gpu_ids is not supported for GGUF models yet.",
@@ -383,7 +381,7 @@ async def load_model(
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
-            gpu_ids = effective_gpu_ids,
+            gpu_ids = request.gpu_ids,
         )
 
         if not success:

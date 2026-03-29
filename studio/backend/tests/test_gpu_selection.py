@@ -22,6 +22,7 @@ from utils.hardware import (
     estimate_required_model_memory_gb,
     get_backend_visible_gpu_info,
     get_device_map,
+    get_offloaded_device_map_entries,
     get_parent_visible_gpu_ids,
     get_visible_gpu_utilization,
     prepare_gpu_selection,
@@ -53,6 +54,15 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
 
+    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
+        with (
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [])
+
     def test_invalid_requests_raise_clear_value_errors(self):
         cases = [
             ([1, 1], "duplicate GPU IDs"),
@@ -75,6 +85,18 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             self.assertEqual(resolve_requested_gpu_ids([1, 3]), [1, 3])
+
+    def test_explicit_ids_are_rejected_for_uuid_parent_visibility(self):
+        with (
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "unsupported when CUDA_VISIBLE_DEVICES uses UUID/MIG"
+            ):
+                resolve_requested_gpu_ids([1])
 
     def test_empty_list_is_treated_as_auto(self):
         with (
@@ -154,6 +176,33 @@ class TestVisibleGpuUtilization(unittest.TestCase):
         self.assertEqual(result["devices"][0]["name"], "GPU One")
         self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places = 1)
 
+    def test_uuid_parent_visibility_reports_all_backend_visible_gpus(self):
+        smi_output = "\n".join(
+            [
+                "0, GPU Zero, 10000",
+                "1, GPU One, 20000",
+                "3, GPU Three, 30000",
+            ]
+        )
+
+        with (
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(
+                returncode = 0,
+                stdout = smi_output,
+            )
+            result = get_backend_visible_gpu_info()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend_cuda_visible_devices"], "GPU-aaa,GPU-bbb")
+        self.assertEqual(result["parent_visible_gpu_ids"], [])
+        self.assertEqual([device["index"] for device in result["devices"]], [0, 1, 3])
+
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
@@ -182,6 +231,42 @@ class TestGpuAutoSelection(unittest.TestCase):
             self.assertEqual(get_device_map(None), "sequential")
             self.assertEqual(get_device_map([0]), "sequential")
             self.assertEqual(get_device_map([0, 1]), "balanced_low_0")
+
+    def test_get_device_map_quantized_multi_gpu_uses_balanced(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(get_device_map([0, 1], load_in_4bit=True), "balanced")
+            self.assertEqual(get_device_map([0, 1], load_in_4bit=False), "balanced_low_0")
+            self.assertEqual(get_device_map([0], load_in_4bit=True), "sequential")
+
+    def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
+        with (
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+        ):
+            self.assertEqual(get_device_map(None), "balanced_low_0")
+
+    def test_get_offloaded_device_map_entries_returns_only_cpu_and_disk(self):
+        model = SimpleNamespace(
+            hf_device_map = {
+                "model.embed_tokens": 0,
+                "model.layers.0": 1,
+                "model.layers.1": "cpu",
+                "lm_head": "disk",
+            }
+        )
+
+        self.assertEqual(
+            get_offloaded_device_map_entries(model),
+            {
+                "model.layers.1": "cpu",
+                "lm_head": "disk",
+            },
+        )
+
+    def test_get_offloaded_device_map_entries_handles_models_without_device_map(self):
+        self.assertEqual(get_offloaded_device_map_entries(SimpleNamespace()), {})
 
     def test_estimate_required_memory_formulas(self):
         eight_gb = 8 * (1024**3)
@@ -358,6 +443,28 @@ class TestGpuAutoSelection(unittest.TestCase):
         self.assertEqual(metadata["selection_mode"], "auto")
         mock_auto_select.assert_called_once()
 
+    def test_prepare_gpu_selection_preserves_uuid_parent_visibility_in_auto_mode(self):
+        with (
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
+            patch(
+                "utils.hardware.hardware.estimate_required_model_memory_gb",
+                return_value = (
+                    14.0,
+                    {"required_gb": 14.0, "model_size_source": "config"},
+                ),
+            ),
+        ):
+            selected, metadata = prepare_gpu_selection(
+                None,
+                model_name = "unsloth/test",
+            )
+
+        self.assertIsNone(selected)
+        self.assertEqual(metadata["selection_mode"], "inherit_parent_visible")
+        self.assertIsNone(metadata["selected_gpu_ids"])
+
 
 class TestPreSpawnGpuResolution(unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
@@ -445,6 +552,56 @@ class TestPreSpawnGpuResolution(unittest.TestCase):
         self.assertIsNone(config["gpu_ids"])
         self.assertEqual(config["resolved_gpu_ids"], [0, 1])
         self.assertEqual(config["gpu_selection"]["selection_mode"], "auto")
+
+    def test_training_backend_preserves_uuid_parent_visibility_in_auto_mode(self):
+        backend = TrainingBackend()
+
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        with (
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread", return_value = DummyThread()
+            ),
+            patch(
+                "utils.hardware.hardware.estimate_required_model_memory_gb",
+                return_value = (
+                    14.0,
+                    {"required_gb": 14.0, "model_size_source": "config"},
+                ),
+            ),
+        ):
+            backend.start_training(
+                job_id = "test-job-uuid-auto",
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                gpu_ids = None,
+            )
+
+        config = mock_process.call_args.kwargs["kwargs"]["config"]
+        self.assertIsNone(config["resolved_gpu_ids"])
+        self.assertEqual(
+            config["gpu_selection"]["selection_mode"], "inherit_parent_visible"
+        )
 
     def test_inference_orchestrator_resolves_explicit_gpu_ids_before_spawn(self):
         class DummyThread:
@@ -634,6 +791,50 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
 
+    def test_training_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
+        training_route = _load_route_module(
+            "training_route_module_for_uuid_parent_visibility_test",
+            "routes/training.py",
+        )
+        request = TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            gpu_ids = [1],
+        )
+
+        class DummyBackend:
+            current_job_id = None
+
+            def is_training_active(self):
+                return False
+
+            def start_training(self, **kwargs):
+                raise ValueError(
+                    "Invalid gpu_ids [1]: explicit physical GPU IDs are unsupported when CUDA_VISIBLE_DEVICES uses UUID/MIG entries"
+                )
+
+        with (
+            patch.object(
+                training_route, "get_training_backend", return_value = DummyBackend()
+            ),
+            patch(
+                "core.inference.get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(current_checkpoint = None),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    training_route.start_training(request, current_subject = "test-user")
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("UUID/MIG", exc_info.exception.detail)
+
     def test_inference_route_returns_400_for_invalid_gpu_ids(self):
         inference_route = _load_route_module(
             "inference_route_module_for_test",
@@ -687,3 +888,59 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
+
+    def test_inference_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_uuid_parent_visibility_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test", gpu_ids = [1])
+        model_config = SimpleNamespace(
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            identifier = "unsloth/test",
+            display_name = "unsloth/test",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+
+        class DummyInferenceBackend:
+            active_model_name = None
+            models = {}
+
+            def load_model(self, **kwargs):
+                raise ValueError(
+                    "Invalid gpu_ids [1]: explicit physical GPU IDs are unsupported when CUDA_VISIBLE_DEVICES uses UUID/MIG entries"
+                )
+
+        with (
+            patch.object(
+                inference_route.ModelConfig,
+                "from_identifier",
+                return_value = model_config,
+            ),
+            patch.object(
+                inference_route,
+                "get_inference_backend",
+                return_value = DummyInferenceBackend(),
+            ),
+            patch.object(
+                inference_route,
+                "get_llama_cpp_backend",
+                return_value = SimpleNamespace(is_loaded = False),
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(current_checkpoint = None),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route.load_model(request, current_subject = "test-user")
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("UUID/MIG", exc_info.exception.detail)

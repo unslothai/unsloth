@@ -65,25 +65,6 @@ import utils.hardware.hardware as _hw_module
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
 
-def _log_training_gpu_selection_mode() -> None:
-    from models.training import TrainingStartRequest
-    import utils.hardware as hardware_utils
-
-    model_fields = getattr(TrainingStartRequest, "model_fields", {})
-    request_gpu_ids_supported = "gpu_ids" in model_fields
-    backend_auto_selector_available = hasattr(hardware_utils, "prepare_gpu_selection")
-    logger.info(
-        "Training GPU selection mode",
-        mode = (
-            "request_aware"
-            if request_gpu_ids_supported and backend_auto_selector_available
-            else "legacy"
-        ),
-        request_gpu_ids_supported = request_gpu_ids_supported,
-        backend_auto_selector_available = backend_auto_selector_available,
-    )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -98,7 +79,6 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
-    _log_training_gpu_selection_mode()
 
     from storage.studio_db import cleanup_orphaned_runs
 

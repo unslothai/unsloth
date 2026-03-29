@@ -38,6 +38,7 @@ from utils.hardware import (
     safe_num_proc,
     dataset_map_num_proc,
     get_device_map,
+    get_offloaded_device_map_entries,
     get_visible_gpu_count,
 )
 
@@ -67,6 +68,7 @@ from utils.paths import (
     resolve_tensorboard_dir,
 )
 from trl import SFTTrainer, SFTConfig
+from .sft_meta_guard import maybe_enable_sft_meta_guard
 
 logger = get_logger(__name__)
 
@@ -631,7 +633,7 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            device_map = get_device_map(gpu_ids)
+            device_map = get_device_map(gpu_ids, load_in_4bit=load_in_4bit)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -811,6 +813,17 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                 )
                 logger.info("Loaded text model")
+
+            offloaded_modules = get_offloaded_device_map_entries(self.model)
+            if offloaded_modules:
+                example_modules = ", ".join(
+                    f"{name}={placement}"
+                    for name, placement in list(offloaded_modules.items())[:5]
+                )
+                raise ValueError(
+                    "Studio training does not support models loaded with CPU or disk offload. "
+                    f"device_map='{device_map}' produced offloaded modules: {example_modules}"
+                )
 
             if self.should_stop:
                 return False
@@ -3182,6 +3195,7 @@ class UnslothTrainer:
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
+                maybe_enable_sft_meta_guard(self.model, self.model_name, logger)
                 self.trainer = SFTTrainer(**trainer_kwargs)
             elif self.is_vlm:
                 # Image VLM: dataset is dict wrapper from format_and_template_dataset
@@ -3197,6 +3211,7 @@ class UnslothTrainer:
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
+                maybe_enable_sft_meta_guard(self.model, self.model_name, logger)
                 self.trainer = SFTTrainer(**trainer_kwargs)
             else:
                 # For text-only training, if the tokenizer is actually a Processor
@@ -3224,31 +3239,13 @@ class UnslothTrainer:
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
+                maybe_enable_sft_meta_guard(self.model, self.model_name, logger)
                 self.trainer = SFTTrainer(**trainer_kwargs)
                 # Restore the full processor as processing_class so checkpoint
                 # saves include preprocessor_config.json (needed for GGUF export).
                 if sft_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer
             logger.info("Trainer initialized\n")
-            logger.debug(
-                "Trainer runtime placement",
-                cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES"),
-                torch_visible_gpu_count = torch.cuda.device_count()
-                if torch.cuda.is_available()
-                else 0,
-                n_gpu = getattr(self.trainer.args, "n_gpu", None),
-                world_size = getattr(self.trainer.args, "world_size", None),
-                local_rank = getattr(self.trainer.args, "local_rank", None),
-                parallel_mode = str(getattr(self.trainer.args, "parallel_mode", None)),
-            )
-            if (
-                torch.cuda.is_available()
-                and torch.cuda.device_count() > 1
-                and getattr(self.trainer.args, "world_size", 1) == 1
-            ):
-                logger.info(
-                    "Studio training sees multiple visible GPUs, but this run is still single-process with world_size=1"
-                )
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Determine if we should train on responses only

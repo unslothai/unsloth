@@ -5,7 +5,6 @@
 Training API routes
 """
 
-import os
 import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -227,19 +226,6 @@ async def start_training(
                     f"YAML config sets trust_remote_code=True for {request.model_name}"
                 )
                 training_kwargs["trust_remote_code"] = True
-
-        logger.debug(
-            "Prepared training request",
-            job_id = job_id,
-            model_name = training_kwargs["model_name"],
-            training_type = training_kwargs["training_type"],
-            load_in_4bit = training_kwargs["load_in_4bit"],
-            max_seq_length = training_kwargs["max_seq_length"],
-            batch_size = training_kwargs["batch_size"],
-            gradient_accumulation_steps = training_kwargs["gradient_accumulation_steps"],
-            use_lora = training_kwargs["use_lora"],
-            cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES"),
-        )
 
         # Free GPU memory: shut down any running inference/export subprocesses
         # before training starts (they'd compete for VRAM otherwise)
