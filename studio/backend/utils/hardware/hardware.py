@@ -784,15 +784,21 @@ def auto_select_gpu_ids(
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
-    multi_gpu_factor = 0.8
+    # Multi-GPU sharding has overhead from inter-GPU communication, so
+    # each additional GPU contributes less than its raw free memory.
+    # The first GPU keeps its full capacity (no cross-device overhead).
+    multi_gpu_overhead = 0.85
 
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
         else:
-            usable_gb = sum(
-                free_by_index[gpu_id] * multi_gpu_factor for gpu_id in selected
+            # First GPU: full capacity. Additional GPUs: reduced by overhead.
+            first_gpu_id = selected[0]
+            usable_gb = free_by_index[first_gpu_id] + sum(
+                free_by_index[gpu_id] * multi_gpu_overhead
+                for gpu_id in selected[1:]
             )
 
         if usable_gb >= required_gb:
@@ -805,16 +811,19 @@ def auto_select_gpu_ids(
                 selected_gpu_ids = selected,
                 usable_gb = metadata["usable_gb"],
                 required_gb = metadata.get("required_gb"),
-                multi_gpu_factor = multi_gpu_factor,
+                multi_gpu_overhead = multi_gpu_overhead,
             )
             return selected, metadata
 
     fallback_all = [device["index"] for device in devices]
     metadata["selection_mode"] = "fallback_all"
-    metadata["usable_gb"] = round(
-        sum(candidate["free_gb"] * multi_gpu_factor for candidate in ranked),
-        3,
-    )
+    if ranked:
+        fallback_usable = ranked[0]["free_gb"] + sum(
+            c["free_gb"] * multi_gpu_overhead for c in ranked[1:]
+        )
+    else:
+        fallback_usable = 0.0
+    metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
     logger.debug(
         "Falling back to all visible GPUs",
@@ -822,7 +831,7 @@ def auto_select_gpu_ids(
         selected_gpu_ids = fallback_all,
         usable_gb = metadata["usable_gb"],
         required_gb = metadata.get("required_gb"),
-        multi_gpu_factor = multi_gpu_factor,
+        multi_gpu_overhead = multi_gpu_overhead,
     )
     return fallback_all, metadata
 
