@@ -857,6 +857,7 @@ class UnslothTrainer:
                     is_dataset_audio = is_dataset_audio,
                     trust_remote_code = trust_remote_code,
                     full_finetuning = full_finetuning,
+                    gpu_ids = gpu_ids,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()

@@ -684,7 +684,12 @@ def estimate_required_model_memory_gb(
     min_buffer_gb = 2.0
 
     if training_type is None:
-        required_gb = model_size_gb * 1.3
+        if load_in_4bit:
+            # 4-bit inference: ~25% of fp16 size + buffer for dequantization
+            base_4bit_gb = model_size_gb / 3.0
+            required_gb = base_4bit_gb + max(base_4bit_gb * 0.3, min_buffer_gb)
+        else:
+            required_gb = model_size_gb * 1.3
     elif training_type == "Full Finetuning":
         required_gb = model_size_gb * 6.0
     elif load_in_4bit:
@@ -738,8 +743,13 @@ def auto_select_gpu_ids(
         return None, metadata
 
     if required_gb is None:
-        metadata["selection_mode"] = "unavailable"
-        return None, metadata
+        # Cannot estimate model size -- fall back to all visible GPUs
+        # rather than risk loading on a single GPU that may not have
+        # enough memory.
+        parent_ids = get_parent_visible_gpu_ids()
+        metadata["selection_mode"] = "fallback_all"
+        metadata["selected_gpu_ids"] = parent_ids
+        return parent_ids, metadata
 
     utilization = get_visible_gpu_utilization()
     devices = utilization.get("devices", [])

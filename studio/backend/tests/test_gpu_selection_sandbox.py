@@ -120,7 +120,7 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
 class TestEstimateRequiredModelMemory(unittest.TestCase):
     """Test memory requirement estimation."""
 
-    def test_inference_uses_1_3x(self):
+    def test_inference_fp16_uses_1_3x(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
 
         with patch(
@@ -130,10 +130,27 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
             required, meta = estimate_required_model_memory_gb(
                 "test/model",
                 training_type = None,  # inference
+                load_in_4bit = False,
             )
             self.assertIsNotNone(required)
             self.assertAlmostEqual(required, 13.0, places = 0)
             self.assertEqual(meta["mode"], "inference")
+
+    def test_inference_4bit_uses_reduced_estimate(self):
+        from utils.hardware.hardware import estimate_required_model_memory_gb
+
+        with patch(
+            "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+            return_value=(30 * (1024**3), "config"),  # 30GB fp16 model
+        ):
+            required, meta = estimate_required_model_memory_gb(
+                "test/model",
+                training_type=None,  # inference
+                load_in_4bit=True,
+            )
+            self.assertIsNotNone(required)
+            # 4bit base = 30/3 = 10GB, required = 10 + max(10*0.3, 2) = 13GB
+            self.assertAlmostEqual(required, 13.0, places=0)
 
     def test_4bit_training_reduces_base(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb

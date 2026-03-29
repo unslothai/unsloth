@@ -205,9 +205,12 @@ async def load_model(
                 detail = f"Invalid model identifier: {request.model_path}",
             )
 
+        # Normalize gpu_ids: empty list means auto-selection, same as None
+        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            if request.gpu_ids is not None:
+            if effective_gpu_ids is not None:
                 raise HTTPException(
                     status_code = 400,
                     detail = "gpu_ids is not supported for GGUF models yet.",
@@ -373,7 +376,7 @@ async def load_model(
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
-            gpu_ids = request.gpu_ids,
+            gpu_ids = effective_gpu_ids,
         )
 
         if not success:
