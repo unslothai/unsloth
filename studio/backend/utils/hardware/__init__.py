@@ -36,6 +36,14 @@ from .hardware import (
     apply_gpu_ids,
 )
 
+from .vram_estimation import (
+    ModelArchConfig,
+    TrainingVramConfig,
+    VramBreakdown,
+    extract_arch_config,
+    estimate_training_vram,
+)
+
 __all__ = [
     "DeviceType",
     "DEVICE",
@@ -65,4 +73,9 @@ __all__ = [
     "get_device_map",
     "get_offloaded_device_map_entries",
     "apply_gpu_ids",
+    "ModelArchConfig",
+    "TrainingVramConfig",
+    "VramBreakdown",
+    "extract_arch_config",
+    "estimate_training_vram",
 ]

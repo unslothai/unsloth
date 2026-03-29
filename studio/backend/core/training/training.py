@@ -200,6 +200,12 @@ class TrainingBackend:
             hf_token = config["hf_token"] or None,
             training_type = config["training_type"],
             load_in_4bit = config["load_in_4bit"],
+            batch_size = config.get("batch_size", 4),
+            max_seq_length = config.get("max_seq_length", 2048),
+            lora_rank = config.get("lora_r", 16),
+            target_modules = config.get("target_modules"),
+            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+            optimizer = config.get("optim", "adamw_8bit"),
         )
         config["resolved_gpu_ids"] = resolved_gpu_ids
         config["gpu_selection"] = gpu_selection

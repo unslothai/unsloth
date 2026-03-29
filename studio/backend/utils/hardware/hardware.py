@@ -793,7 +793,22 @@ def estimate_required_model_memory_gb(
     hf_token: Optional[str] = None,
     training_type: Optional[str] = None,
     load_in_4bit: bool = True,
+    batch_size: int = 4,
+    max_seq_length: int = 2048,
+    lora_rank: int = 16,
+    target_modules: Optional[list] = None,
+    gradient_checkpointing: str = "unsloth",
+    optimizer: str = "adamw_8bit",
 ) -> tuple[Optional[float], Dict[str, Any]]:
+    from .vram_estimation import (
+        TrainingVramConfig,
+        extract_arch_config,
+        estimate_training_vram,
+        CUDA_OVERHEAD_BYTES,
+        QUANT_4BIT_FACTOR,
+        DEFAULT_TARGET_MODULES,
+    )
+
     model_size_bytes, source = estimate_fp16_model_size_bytes(
         model_name, hf_token = hf_token
     )
@@ -807,20 +822,53 @@ def estimate_required_model_memory_gb(
 
     model_size_gb = model_size_bytes / (1024**3)
     metadata["model_size_gb"] = round(model_size_gb, 3)
-    min_buffer_gb = 2.0
 
     if training_type is None:
         required_gb = model_size_gb * 1.3
-    elif training_type == "Full Finetuning":
-        required_gb = model_size_gb * 6.0
-    elif load_in_4bit:
-        base_4bit_gb = model_size_gb / 3.0 # Ideally should be 4.0 but we take some buffer for scales and whatnot
-        required_gb = base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb)
+        metadata["required_gb"] = round(required_gb, 3)
+        return required_gb, metadata
+
+    training_method = "full" if training_type == "Full Finetuning" else (
+        "qlora" if load_in_4bit else "lora"
+    )
+    vram_config = TrainingVramConfig(
+        training_method = training_method,
+        batch_size = batch_size,
+        max_seq_length = max_seq_length,
+        lora_rank = lora_rank,
+        target_modules = target_modules or list(DEFAULT_TARGET_MODULES),
+        gradient_checkpointing = gradient_checkpointing,
+        optimizer = optimizer,
+        load_in_4bit = load_in_4bit,
+    )
+
+    config = _load_config_for_gpu_estimate(model_name, hf_token = hf_token)
+    arch = extract_arch_config(config) if config is not None else None
+
+    if arch is not None:
+        breakdown = estimate_training_vram(arch, vram_config)
+        required_gb = breakdown.total / (1024**3)
+        metadata["required_gb"] = round(required_gb, 3)
+        metadata["estimation_mode"] = "detailed"
+        metadata["vram_breakdown"] = breakdown.to_gb_dict()
+        return required_gb, metadata
+
+    # Fallback when model config is unavailable
+    overhead_gb = CUDA_OVERHEAD_BYTES / (1024**3)
+    if training_method == "full":
+        required_gb = model_size_gb * 3.5 + overhead_gb
+    elif training_method == "qlora":
+        base_4bit_gb = model_size_gb / QUANT_4BIT_FACTOR
+        lora_overhead_gb = model_size_gb * 0.04
+        act_gb = model_size_gb * 0.15 * (batch_size / 4) * (max_seq_length / 2048)
+        required_gb = base_4bit_gb + lora_overhead_gb + act_gb + overhead_gb
     else:
-        required_gb = model_size_gb * 1.3
+        lora_overhead_gb = model_size_gb * 0.04
+        act_gb = model_size_gb * 0.15 * (batch_size / 4) * (max_seq_length / 2048)
+        required_gb = model_size_gb + lora_overhead_gb + act_gb + overhead_gb
 
     metadata["required_gb"] = round(required_gb, 3)
-    metadata["min_buffer_gb"] = min_buffer_gb
+    metadata["estimation_mode"] = "fallback"
     return required_gb, metadata
 
 
@@ -830,6 +878,12 @@ def auto_select_gpu_ids(
     hf_token: Optional[str] = None,
     training_type: Optional[str] = None,
     load_in_4bit: bool = True,
+    batch_size: int = 4,
+    max_seq_length: int = 2048,
+    lora_rank: int = 16,
+    target_modules: Optional[list] = None,
+    gradient_checkpointing: str = "unsloth",
+    optimizer: str = "adamw_8bit",
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
@@ -842,6 +896,12 @@ def auto_select_gpu_ids(
         hf_token = hf_token,
         training_type = training_type,
         load_in_4bit = load_in_4bit,
+        batch_size = batch_size,
+        max_seq_length = max_seq_length,
+        lora_rank = lora_rank,
+        target_modules = target_modules,
+        gradient_checkpointing = gradient_checkpointing,
+        optimizer = optimizer,
     )
     metadata.update(estimate_metadata)
     parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -922,6 +982,12 @@ def prepare_gpu_selection(
     hf_token: Optional[str] = None,
     training_type: Optional[str] = None,
     load_in_4bit: bool = True,
+    batch_size: int = 4,
+    max_seq_length: int = 2048,
+    lora_rank: int = 16,
+    target_modules: Optional[list] = None,
+    gradient_checkpointing: str = "unsloth",
+    optimizer: str = "adamw_8bit",
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     if gpu_ids and get_device() not in (DeviceType.CUDA, DeviceType.XPU):
         raise ValueError(
@@ -942,6 +1008,12 @@ def prepare_gpu_selection(
         hf_token = hf_token,
         training_type = training_type,
         load_in_4bit = load_in_4bit,
+        batch_size = batch_size,
+        max_seq_length = max_seq_length,
+        lora_rank = lora_rank,
+        target_modules = target_modules,
+        gradient_checkpointing = gradient_checkpointing,
+        optimizer = optimizer,
     )
     return selected_gpu_ids, metadata
 

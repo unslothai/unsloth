@@ -275,6 +275,7 @@ class TestGpuAutoSelection(unittest.TestCase):
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (eight_gb, "config"),
         ):
+            # Inference: model_size * 1.3
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = False,
@@ -282,32 +283,42 @@ class TestGpuAutoSelection(unittest.TestCase):
             self.assertAlmostEqual(required_gb, 10.4, places = 3)
             self.assertEqual(metadata["model_size_source"], "config")
 
+            # Inference with 4bit flag — still inference (no training_type)
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = True,
             )
             self.assertAlmostEqual(required_gb, 10.4, places = 3)
 
-            required_gb, _ = estimate_required_model_memory_gb(
+            # Full FT fallback: model_size * 3.5 + overhead
+            required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test", training_type = "Full Finetuning"
             )
-            self.assertAlmostEqual(required_gb, 48.0, places = 3)
+            self.assertEqual(metadata.get("estimation_mode"), "fallback")
+            self.assertGreater(required_gb, 25.0)
+            self.assertLess(required_gb, 40.0)
 
-            required_gb, _ = estimate_required_model_memory_gb(
+            # LoRA fp16 fallback: model_size + lora_overhead + activations + overhead
+            required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 load_in_4bit = False,
             )
-            self.assertAlmostEqual(required_gb, 10.4, places = 3)
+            self.assertEqual(metadata.get("estimation_mode"), "fallback")
+            self.assertGreater(required_gb, 8.0)
+            self.assertLess(required_gb, 15.0)
 
+            # QLoRA 4-bit fallback: compressed weights + lora overhead + activations + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 load_in_4bit = True,
             )
-            self.assertAlmostEqual(required_gb, 4.667, places = 2)
-            self.assertEqual(metadata["min_buffer_gb"], 2.0)
+            self.assertEqual(metadata.get("estimation_mode"), "fallback")
+            self.assertGreater(required_gb, 3.0)
+            self.assertLess(required_gb, 8.0)
 
+        # Larger model: 16GB fp16
         sixteen_gb = 16 * (1024**3)
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
@@ -318,7 +329,9 @@ class TestGpuAutoSelection(unittest.TestCase):
                 training_type = "LoRA/QLoRA",
                 load_in_4bit = True,
             )
-            self.assertAlmostEqual(required_gb, 8.0, places = 2)
+            # QLoRA for 16GB model should be < 12 GB
+            self.assertGreater(required_gb, 5.0)
+            self.assertLess(required_gb, 12.0)
 
     def test_estimate_fp16_model_size_bytes_uses_vllm_fallback_last(self):
         config = object()
