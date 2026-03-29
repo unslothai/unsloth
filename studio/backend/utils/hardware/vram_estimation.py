@@ -43,9 +43,9 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
 # LoRA: frozen base layers skip activation storage, but you always need
 # at least ~1 layer in flight during backprop recomputation.
 GC_LAYER_MULTIPLIERS = {
-    "none":    (None, None),
-    "true":    (2.0,  1.0),
-    "unsloth": (1.5,  1.0),
+    "none": (None, None),
+    "true": (2.0, 1.0),
+    "unsloth": (1.5, 1.0),
 }
 
 
@@ -327,8 +327,11 @@ def estimate_training_vram(
     )
     activation_bytes = max(
         compute_activation_bytes(
-            arch, config.batch_size, config.max_seq_length,
-            config.gradient_checkpointing, is_lora = is_lora,
+            arch,
+            config.batch_size,
+            config.max_seq_length,
+            config.gradient_checkpointing,
+            is_lora = is_lora,
         ),
         int(model_weights * 0.20 * (config.batch_size / 2)),
     )

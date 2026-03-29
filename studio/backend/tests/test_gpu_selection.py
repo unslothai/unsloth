@@ -221,9 +221,7 @@ class TestGpuAutoSelection(unittest.TestCase):
     def test_get_device_map_quantized_multi_gpu_uses_balanced(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertEqual(get_device_map([0, 1], load_in_4bit = True), "balanced")
-            self.assertEqual(
-                get_device_map([0, 1], load_in_4bit = False), "balanced"
-            )
+            self.assertEqual(get_device_map([0, 1], load_in_4bit = False), "balanced")
             self.assertEqual(get_device_map([0], load_in_4bit = True), "sequential")
 
     def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
