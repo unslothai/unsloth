@@ -1589,11 +1589,9 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
 
-        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
-        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
-        if not is_local:
-            identifier = identifier.lower()
-            path = path.lower()
+        # Preserve the user/canonical repo casing for downstream HF calls.
+        # Cache lookups normalize separately so we do not rewrite the repo ID
+        # into a different local cache key than the one already downloaded.
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:

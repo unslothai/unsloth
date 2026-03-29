@@ -93,12 +93,28 @@ def is_local_path(path: str) -> bool:
 
 
 def get_cache_path(model_name: str) -> Optional[Path]:
-    """Get HuggingFace cache path for a model if it exists."""
+    """Get HuggingFace cache path for a model if it exists.
+
+    Hugging Face repo IDs are case-insensitive remotely, but cache folders keep
+    the case that was used at download time. Resolve the cache dir
+    case-insensitively so callers can preserve the canonical repo ID.
+    """
     cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
     model_cache_name = model_name.replace("/", "--")
     model_cache_path = cache_dir / f"models--{model_cache_name}"
 
-    return model_cache_path if model_cache_path.exists() else None
+    if model_cache_path.exists():
+        return model_cache_path
+
+    target_name = model_cache_path.name.lower()
+    try:
+        for entry in cache_dir.iterdir():
+            if entry.name.lower() == target_name:
+                return entry
+    except OSError:
+        return None
+
+    return None
 
 
 def is_model_cached(model_name: str) -> bool:
