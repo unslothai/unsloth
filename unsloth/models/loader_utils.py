@@ -99,6 +99,202 @@ def prepare_device_map():
     return device_map, True
 
 
+def _get_gpu_free_memory():
+    """Return a list of (gpu_index, free_memory_bytes) for all visible GPUs.
+
+    Uses torch.cuda if available. Falls back to returning an empty list
+    on non-CUDA platforms or import failures.
+    """
+    if DEVICE_TYPE_TORCH != "cuda":
+        return []
+    try:
+        count = torch.cuda.device_count()
+        result = []
+        for i in range(count):
+            free, total = torch.cuda.mem_get_info(i)
+            result.append((i, free))
+        return result
+    except Exception:
+        return []
+
+
+def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
+    """Estimate model weight size in bytes using HF safetensors metadata or config.
+
+    Returns the estimated size or None if unavailable. For 4bit models
+    (bnb-4bit in name or load_in_4bit=True), we estimate the compressed size.
+    """
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        info = hf_model_info(model_name, token=token)
+        safetensors = getattr(info, "safetensors", None)
+        if isinstance(safetensors, dict):
+            total_params = safetensors.get("total")
+            if total_params:
+                total_params = int(total_params)
+                # fp16 = 2 bytes per param
+                fp16_bytes = total_params * 2
+                if load_in_4bit or "-bnb-4bit" in model_name.lower():
+                    # ~5 bits per param effective (4bit + scales)
+                    return int(fp16_bytes * 5 / 16)
+                return fp16_bytes
+    except Exception:
+        pass
+
+    # Fallback: try to estimate from config
+    try:
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            model_name, token=token, trust_remote_code=model_name.lower().startswith("unsloth/"),
+        )
+        text_config = getattr(config, "text_config", None) or config
+
+        vocab_size = getattr(text_config, "vocab_size", None)
+        hidden_size = getattr(text_config, "hidden_size", None)
+        intermediate_size = getattr(text_config, "intermediate_size", None)
+        num_layers = getattr(text_config, "num_hidden_layers", None)
+        num_heads = getattr(text_config, "num_attention_heads", None)
+
+        if isinstance(intermediate_size, (list, tuple)):
+            intermediate_size = intermediate_size[0] if intermediate_size else None
+        if intermediate_size is None and hidden_size is not None:
+            intermediate_size = hidden_size * 4
+
+        if not all(v is not None for v in (vocab_size, hidden_size, intermediate_size, num_layers, num_heads)):
+            return None
+        if num_heads <= 0:
+            return None
+
+        num_kv_heads = getattr(text_config, "num_key_value_heads", num_heads)
+        kv_size = (hidden_size // num_heads) * num_kv_heads
+
+        num_experts = None
+        for attr in ("num_local_experts", "num_experts", "n_routed_experts"):
+            num_experts = getattr(text_config, attr, None)
+            if num_experts is not None:
+                break
+
+        moe_intermediate = getattr(text_config, "moe_intermediate_size", None)
+        if moe_intermediate is not None:
+            intermediate_size = moe_intermediate
+
+        qkvo = (hidden_size + kv_size + kv_size + hidden_size) * hidden_size
+        if num_experts and num_experts > 1:
+            mlp = (hidden_size * intermediate_size) * 3 * num_experts
+            mlp += num_experts * hidden_size  # router
+        else:
+            mlp = (hidden_size * intermediate_size) * 3
+        embed_tokens = vocab_size * hidden_size
+        lm_head = 0 if getattr(text_config, "tie_word_embeddings", True) else vocab_size * hidden_size
+
+        total_elements = (qkvo + mlp) * num_layers + embed_tokens + lm_head
+        fp16_bytes = int(total_elements * 2)
+
+        if load_in_4bit or "-bnb-4bit" in model_name.lower():
+            return int(fp16_bytes * 5 / 16)
+        return fp16_bytes
+    except Exception:
+        pass
+    return None
+
+
+def resolve_optimal_device_map(
+    model_name,
+    load_in_4bit=False,
+    token=None,
+    overhead_factor=1.5,
+):
+    """Resolve device_map='optimal' to a concrete device map string.
+
+    Logic:
+      1. If only 1 GPU visible, return 'sequential'.
+      2. Estimate model weight size in bytes.
+      3. If model * overhead_factor fits on the single GPU with most free
+         memory, restrict to that GPU and return 'sequential'.
+      4. If it needs 2+ GPUs, find the minimum set and return
+         'balanced' (4bit) or 'balanced_low_0' (non-4bit).
+      5. If it cannot fit at all, raise ValueError.
+
+    Falls back to 'sequential' if estimation fails.
+
+    Returns:
+        tuple: (device_map_str, cuda_visible_override)
+            device_map_str: 'sequential', 'balanced', or 'balanced_low_0'
+            cuda_visible_override: None or a CUDA_VISIBLE_DEVICES string
+                to restrict GPU visibility. Caller should set env var.
+    """
+    gpus = _get_gpu_free_memory()
+    if len(gpus) <= 1:
+        return "sequential", None
+
+    model_bytes = _estimate_model_bytes(model_name, load_in_4bit=load_in_4bit, token=token)
+    if model_bytes is None:
+        # Cannot estimate -- fall back to sequential and let accelerate handle it
+        print(
+            f"Unsloth: Could not estimate model size for '{model_name}'. "
+            f"Using device_map='sequential' with all {len(gpus)} GPUs."
+        )
+        return "sequential", None
+
+    required_bytes = int(model_bytes * overhead_factor)
+    required_gb = required_bytes / (1024**3)
+    model_gb = model_bytes / (1024**3)
+
+    # Sort GPUs by free memory descending
+    ranked = sorted(gpus, key=lambda x: -x[1])
+
+    # Check if single GPU suffices
+    best_gpu_idx, best_free = ranked[0]
+    if best_free >= required_bytes:
+        print(
+            f"Unsloth: Model ~{model_gb:.1f}GB fits on GPU {best_gpu_idx} "
+            f"({best_free / (1024**3):.1f}GB free). Using single GPU."
+        )
+        return "sequential", str(best_gpu_idx)
+
+    # Find minimum number of GPUs needed
+    multi_gpu_overhead = 0.85  # Each additional GPU has sharding overhead
+    accumulated = 0
+    selected_indices = []
+    for gpu_idx, free_mem in ranked:
+        selected_indices.append(gpu_idx)
+        if len(selected_indices) == 1:
+            accumulated = free_mem
+        else:
+            accumulated = ranked[0][1] + sum(
+                mem * multi_gpu_overhead
+                for _, mem in ranked[1:len(selected_indices)]
+            )
+        if accumulated >= required_bytes:
+            break
+
+    if accumulated < required_bytes:
+        total_available = sum(free for _, free in ranked)
+        raise ValueError(
+            f"Model '{model_name}' requires ~{required_gb:.1f}GB but only "
+            f"{total_available / (1024**3):.1f}GB total free across "
+            f"{len(gpus)} GPUs. Cannot fit the model."
+        )
+
+    # Build CUDA_VISIBLE_DEVICES override
+    selected_str = ",".join(str(idx) for idx in selected_indices)
+    n_gpus = len(selected_indices)
+
+    if n_gpus == 1:
+        device_map = "sequential"
+    elif load_in_4bit or "-bnb-4bit" in model_name.lower():
+        device_map = "balanced"
+    else:
+        device_map = "balanced_low_0"
+
+    print(
+        f"Unsloth: Model ~{model_gb:.1f}GB needs {n_gpus} GPU(s) "
+        f"({accumulated / (1024**3):.1f}GB usable). "
+        f"Using device_map='{device_map}' on GPUs [{selected_str}]."
+    )
+    return device_map, selected_str
+
+
 def __get_model_name(
     model_name,
     load_in_4bit = True,

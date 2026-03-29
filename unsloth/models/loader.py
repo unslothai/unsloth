@@ -38,6 +38,7 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
+    resolve_optimal_device_map,
 )
 import os, contextlib, sys
 
@@ -287,6 +288,16 @@ class FastLanguageModel(FastLlamaModel):
                 bnb_compute_dtype = getattr(torch, bnb_compute_dtype, None)
             if isinstance(bnb_compute_dtype, torch.dtype):
                 dtype = bnb_compute_dtype
+
+        # Resolve device_map="optimal" -- auto-detect best GPU allocation
+        if isinstance(device_map, str) and device_map == "optimal":
+            device_map, cuda_override = resolve_optimal_device_map(
+                model_name,
+                load_in_4bit=load_in_4bit,
+                token=token,
+            )
+            if cuda_override is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = cuda_override
 
         # Distributed-safe device placement for quantized models.
         # In multi-GPU (torchrun), each rank must load the model on its own device
@@ -951,6 +962,16 @@ class FastModel(FastBaseModel):
             )
         if qat_scheme == "phone-deployment":
             qat_scheme = "int8-int4"
+
+        # Resolve device_map="optimal" -- auto-detect best GPU allocation
+        if isinstance(device_map, str) and device_map == "optimal":
+            device_map, cuda_override = resolve_optimal_device_map(
+                model_name,
+                load_in_4bit=load_in_4bit,
+                token=token,
+            )
+            if cuda_override is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = cuda_override
 
         # Distributed-safe device placement for quantized models.
         # In multi-GPU (torchrun), each rank must load the model on its own device
