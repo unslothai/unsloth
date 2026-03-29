@@ -62,6 +62,7 @@ from routes import (
     export_router,
     inference_router,
     models_router,
+    providers_router,
     training_history_router,
     training_router,
 )
@@ -112,6 +113,10 @@ async def lifespan(app: FastAPI):
             pass  # non-critical
 
     threading.Thread(target = _precache, daemon = True).start()
+
+    # Initialize RSA key pair for API key encryption (external providers)
+    from core.inference.key_exchange import init_key_pair
+    init_key_pair()
 
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
@@ -172,6 +177,7 @@ app.include_router(inference_router, prefix = "/api/inference", tags = ["inferen
 # so external tools (Open WebUI, SillyTavern, etc.) can use the
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])

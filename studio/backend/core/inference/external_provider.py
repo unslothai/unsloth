@@ -1,0 +1,185 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""
+Async HTTP client for proxying chat completions to external LLM providers.
+
+All target providers (OpenAI, Mistral, Google Gemini, Cohere, Together AI,
+Fireworks AI, Perplexity) expose OpenAI-compatible /v1/chat/completions
+endpoints, so a single client handles all of them.
+"""
+
+import logging
+from typing import Any, AsyncGenerator, Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class ExternalProviderClient:
+    """Async proxy for OpenAI-compatible external LLM APIs."""
+
+    def __init__(
+        self,
+        provider_type: str,
+        base_url: str,
+        api_key: str,
+        timeout: float = 120.0,
+    ):
+        self.provider_type = provider_type
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Build authentication headers. All supported providers use Bearer tokens."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def stream_chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        max_tokens: Optional[int] = None,
+        presence_penalty: float = 0.0,
+        stream: bool = True,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Yield raw SSE lines from the external provider.
+
+        Each yielded string is a complete SSE line (e.g. 'data: {...}' or
+        'data: [DONE]'). The caller wraps these into a StreamingResponse.
+        """
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+            "temperature": temperature,
+            "top_p": top_p,
+            "presence_penalty": presence_penalty,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+
+        url = f"{self.base_url}/chat/completions"
+        logger.info(
+            "Proxying chat completion to %s (provider=%s, model=%s)",
+            url,
+            self.provider_type,
+            model,
+        )
+
+        try:
+            async with self._client.stream(
+                "POST",
+                url,
+                json=body,
+                headers=self._auth_headers(),
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors="replace")
+                    logger.error(
+                        "External provider returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    # Yield an error in SSE format so the frontend can display it
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        yield line
+
+        except httpx.ConnectError as exc:
+            logger.error("Connection error to %s: %s", self.provider_type, exc)
+            yield _error_sse_line(
+                502, f"Failed to connect to {self.provider_type}: {exc}", self.provider_type
+            )
+        except httpx.ReadTimeout as exc:
+            logger.error("Read timeout from %s: %s", self.provider_type, exc)
+            yield _error_sse_line(
+                504, f"Timeout waiting for {self.provider_type} response", self.provider_type
+            )
+        except httpx.HTTPError as exc:
+            logger.error("HTTP error from %s: %s", self.provider_type, exc)
+            yield _error_sse_line(
+                502, f"Error communicating with {self.provider_type}: {exc}", self.provider_type
+            )
+
+    async def chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        max_tokens: Optional[int] = None,
+        presence_penalty: float = 0.0,
+    ) -> dict[str, Any]:
+        """Non-streaming chat completion. Returns the full response dict."""
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "temperature": temperature,
+            "top_p": top_p,
+            "presence_penalty": presence_penalty,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+
+        response = await self._client.post(
+            f"{self.base_url}/chat/completions",
+            json=body,
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """
+        Call GET /models on the provider to discover available models.
+
+        Returns a list of model dicts with at least 'id' and optionally
+        'created', 'owned_by', etc.
+        """
+        try:
+            response = await self._client.get(
+                f"{self.base_url}/models",
+                headers=self._auth_headers(),
+            )
+            response.raise_for_status()
+            data = response.json()
+            # OpenAI format: {"data": [{"id": "...", ...}, ...]}
+            models = data.get("data", [])
+            return models
+        except httpx.HTTPError as exc:
+            logger.error("Failed to list models from %s: %s", self.provider_type, exc)
+            raise
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
+
+
+def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
+    """Format an error as an SSE data line in OpenAI error format."""
+    import json
+
+    error_obj = {
+        "error": {
+            "message": message,
+            "type": "provider_error",
+            "code": str(status_code),
+            "provider": provider_type,
+        }
+    }
+    return f"data: {json.dumps(error_obj)}"
