@@ -30,6 +30,12 @@ function Install-UnslothStudio {
             }
         }
     }
+    # Propagate to child processes so they also respect verbose mode.
+    # Process-scoped -- does not persist.
+    if ($script:UnslothVerbose) {
+        $env:UNSLOTH_VERBOSE = '1'
+    }
+
     if ($StudioLocalInstall) {
         $RepoRoot = (Resolve-Path (Split-Path -Parent $PSCommandPath)).Path
         if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
@@ -177,13 +183,12 @@ function Install-UnslothStudio {
             # Reset to avoid stale values from prior native commands.
             $global:LASTEXITCODE = 0
             if ($script:UnslothVerbose) {
-                # Keep verbose output visible, but do not let it become function output.
-                & $Command | Out-Host
+                # Merge stderr into stdout so progress/warning output stays visible
+                # without flipping $? on successful native commands (PS 5.1 treats
+                # stderr records as errors that set $? = $false even on exit code 0).
+                & $Command 2>&1 | Out-Host
             } else {
                 & $Command *> $null
-            }
-            if (-not $? -and $LASTEXITCODE -eq 0) {
-                return 1
             }
             return [int]$LASTEXITCODE
         } finally {

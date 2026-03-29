@@ -23,13 +23,17 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
-# Do not mutate the caller environment when parsing flags.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
     if ($a -eq '--verbose' -or $a -eq '-v') {
         $script:UnslothVerbose = $true
         break
     }
+}
+# Propagate to child processes (e.g. install_python_stack.py) so they
+# also respect verbose mode. Process-scoped -- does not persist.
+if ($script:UnslothVerbose) {
+    $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
 

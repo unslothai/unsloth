@@ -625,7 +625,7 @@ else
         fi
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
-        run_quiet_no_exit_always "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_BUILD_TMP" || BUILD_OK=false
+        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_BUILD_TMP" || BUILD_OK=false
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
