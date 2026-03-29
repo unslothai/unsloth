@@ -293,8 +293,8 @@ class FastLanguageModel(FastLlamaModel):
         if isinstance(device_map, str) and device_map == "optimal":
             device_map, cuda_override = resolve_optimal_device_map(
                 model_name,
-                load_in_4bit=load_in_4bit,
-                token=token,
+                load_in_4bit = load_in_4bit,
+                token = token,
             )
             if cuda_override is not None:
                 os.environ["CUDA_VISIBLE_DEVICES"] = cuda_override
@@ -967,8 +967,8 @@ class FastModel(FastBaseModel):
         if isinstance(device_map, str) and device_map == "optimal":
             device_map, cuda_override = resolve_optimal_device_map(
                 model_name,
-                load_in_4bit=load_in_4bit,
-                token=token,
+                load_in_4bit = load_in_4bit,
+                token = token,
             )
             if cuda_override is not None:
                 os.environ["CUDA_VISIBLE_DEVICES"] = cuda_override

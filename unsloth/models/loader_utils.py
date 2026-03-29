@@ -118,7 +118,7 @@ def _get_gpu_free_memory():
         return []
 
 
-def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
+def _estimate_model_bytes(model_name, load_in_4bit = False, token = None):
     """Estimate model weight size in bytes using HF safetensors metadata or config.
 
     Returns the estimated size or None if unavailable. For 4bit models
@@ -126,7 +126,8 @@ def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
     """
     try:
         from huggingface_hub import model_info as hf_model_info
-        info = hf_model_info(model_name, token=token)
+
+        info = hf_model_info(model_name, token = token)
         safetensors = getattr(info, "safetensors", None)
         if isinstance(safetensors, dict):
             total_params = safetensors.get("total")
@@ -144,8 +145,11 @@ def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
     # Fallback: try to estimate from config
     try:
         from transformers import AutoConfig
+
         config = AutoConfig.from_pretrained(
-            model_name, token=token, trust_remote_code=model_name.lower().startswith("unsloth/"),
+            model_name,
+            token = token,
+            trust_remote_code = model_name.lower().startswith("unsloth/"),
         )
         text_config = getattr(config, "text_config", None) or config
 
@@ -160,7 +164,10 @@ def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
         if intermediate_size is None and hidden_size is not None:
             intermediate_size = hidden_size * 4
 
-        if not all(v is not None for v in (vocab_size, hidden_size, intermediate_size, num_layers, num_heads)):
+        if not all(
+            v is not None
+            for v in (vocab_size, hidden_size, intermediate_size, num_layers, num_heads)
+        ):
             return None
         if num_heads <= 0:
             return None
@@ -185,7 +192,11 @@ def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
         else:
             mlp = (hidden_size * intermediate_size) * 3
         embed_tokens = vocab_size * hidden_size
-        lm_head = 0 if getattr(text_config, "tie_word_embeddings", True) else vocab_size * hidden_size
+        lm_head = (
+            0
+            if getattr(text_config, "tie_word_embeddings", True)
+            else vocab_size * hidden_size
+        )
 
         total_elements = (qkvo + mlp) * num_layers + embed_tokens + lm_head
         fp16_bytes = int(total_elements * 2)
@@ -200,9 +211,9 @@ def _estimate_model_bytes(model_name, load_in_4bit=False, token=None):
 
 def resolve_optimal_device_map(
     model_name,
-    load_in_4bit=False,
-    token=None,
-    overhead_factor=1.5,
+    load_in_4bit = False,
+    token = None,
+    overhead_factor = 1.5,
 ):
     """Resolve device_map='optimal' to a concrete device map string.
 
@@ -227,7 +238,9 @@ def resolve_optimal_device_map(
     if len(gpus) <= 1:
         return "sequential", None
 
-    model_bytes = _estimate_model_bytes(model_name, load_in_4bit=load_in_4bit, token=token)
+    model_bytes = _estimate_model_bytes(
+        model_name, load_in_4bit = load_in_4bit, token = token
+    )
     if model_bytes is None:
         # Cannot estimate -- fall back to sequential and let accelerate handle it
         print(
@@ -241,7 +254,7 @@ def resolve_optimal_device_map(
     model_gb = model_bytes / (1024**3)
 
     # Sort GPUs by free memory descending
-    ranked = sorted(gpus, key=lambda x: -x[1])
+    ranked = sorted(gpus, key = lambda x: -x[1])
 
     # Check if single GPU suffices
     best_gpu_idx, best_free = ranked[0]
@@ -262,8 +275,7 @@ def resolve_optimal_device_map(
             accumulated = free_mem
         else:
             accumulated = ranked[0][1] + sum(
-                mem * multi_gpu_overhead
-                for _, mem in ranked[1:len(selected_indices)]
+                mem * multi_gpu_overhead for _, mem in ranked[1 : len(selected_indices)]
             )
         if accumulated >= required_bytes:
             break
