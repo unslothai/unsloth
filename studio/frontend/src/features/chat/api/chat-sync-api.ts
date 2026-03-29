@@ -35,6 +35,24 @@ function jsonBody(data: unknown): RequestInit {
   };
 }
 
+// Per-thread queue ensures create lands before any update/message/delete
+const threadQueues = new Map<string, Promise<unknown>>();
+
+function enqueueThreadSync(
+  threadId: string,
+  op: () => Promise<Response | null>,
+): void {
+  const prev = threadQueues.get(threadId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined)
+    .then(op)
+    .finally(() => {
+      if (threadQueues.get(threadId) === next) threadQueues.delete(threadId);
+    });
+  threadQueues.set(threadId, next);
+  void next;
+}
+
 export function syncCreateThread(data: {
   id: string;
   title: string;
@@ -43,18 +61,22 @@ export function syncCreateThread(data: {
   pair_id?: string;
   created_at: number;
 }): void {
-  void syncFetch("/api/chat/threads", jsonBody(data));
+  enqueueThreadSync(data.id, () => syncFetch("/api/chat/threads", jsonBody(data)));
 }
 
 export function syncUpdateThread(
   threadId: string,
   data: { title?: string; archived?: boolean },
 ): void {
-  void syncFetch(`/api/chat/threads/${threadId}`, { ...jsonBody(data), method: "PATCH" });
+  enqueueThreadSync(threadId, () =>
+    syncFetch(`/api/chat/threads/${threadId}`, { ...jsonBody(data), method: "PATCH" }),
+  );
 }
 
 export function syncDeleteThread(threadId: string): void {
-  void syncFetch(`/api/chat/threads/${threadId}`, { method: "DELETE" });
+  enqueueThreadSync(threadId, () =>
+    syncFetch(`/api/chat/threads/${threadId}`, { method: "DELETE" }),
+  );
 }
 
 export function syncUpsertMessage(
@@ -68,7 +90,9 @@ export function syncUpsertMessage(
     created_at: number;
   },
 ): void {
-  void syncFetch(`/api/chat/threads/${threadId}/messages`, jsonBody(data));
+  enqueueThreadSync(threadId, () =>
+    syncFetch(`/api/chat/threads/${threadId}/messages`, jsonBody(data)),
+  );
 }
 
 export interface HydrateThread {

@@ -4,11 +4,13 @@
 """
 SQLite storage for training run history and metrics.
 
-Follows the same pattern as auth/storage.py — module-level functions,
+Follows the same pattern as auth/storage.py -- module-level functions,
 raw sqlite3, per-function connections. Enhancements over auth:
   - WAL mode for concurrent read/write access
   - PRAGMA foreign_keys = ON for CASCADE deletes
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -68,8 +70,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
     )
-    cursor = conn.cursor()
-    cursor.execute("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_threads (
             id           TEXT PRIMARY KEY,
             title        TEXT NOT NULL DEFAULT 'New Chat',
@@ -81,7 +82,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             updated_at   INTEGER NOT NULL
         )
     """)
-    cursor.execute("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id           TEXT PRIMARY KEY,
             thread_id    TEXT NOT NULL,
@@ -93,7 +94,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
         )
     """)
-    cursor.execute("""
+    conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id
         ON chat_messages(thread_id)
     """)
@@ -455,8 +456,12 @@ def upsert_chat_message(
     conn = get_connection()
     try:
         conn.execute(
-            """INSERT OR REPLACE INTO chat_messages (id, thread_id, role, content, attachments, metadata, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO chat_messages (id, thread_id, role, content, attachments, metadata, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   content = excluded.content,
+                   attachments = excluded.attachments,
+                   metadata = excluded.metadata""",
             (message_id, thread_id, role, content, attachments, metadata, created_at),
         )
         conn.commit()

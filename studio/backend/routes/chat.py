@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sqlite3
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
@@ -126,15 +128,18 @@ async def create_message(
     body: ChatMessageCreate,
     current_subject: str = Depends(get_current_subject),
 ):
-    upsert_chat_message(
-        message_id = body.id,
-        thread_id = thread_id,
-        role = body.role,
-        content = body.content,
-        attachments = body.attachments,
-        metadata = body.metadata,
-        created_at = body.created_at,
-    )
+    try:
+        upsert_chat_message(
+            message_id = body.id,
+            thread_id = thread_id,
+            role = body.role,
+            content = body.content,
+            attachments = body.attachments,
+            metadata = body.metadata,
+            created_at = body.created_at,
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageResponse(
         id = body.id,
         thread_id = thread_id,

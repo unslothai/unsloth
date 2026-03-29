@@ -22,7 +22,7 @@ import {
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
-import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
+import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
@@ -722,6 +722,90 @@ function ActiveThreadSync({
   return null;
 }
 
+// Module-level singleton: ensures hydration runs exactly once across all
+// ChatRuntimeProvider instances (e.g. compare mode) and React StrictMode remounts.
+let hydrationPromise: Promise<void> | null = null;
+
+function hydrateChatStoreOnce(): Promise<void> {
+  if (hydrationPromise) return hydrationPromise;
+  hydrationPromise = (async () => {
+    const data = await fetchHydrate();
+    if (!data) return;
+
+    // Snapshot local state before merging backend data
+    const localThreads = await db.threads.toArray();
+    const localMessages = await db.messages.toArray();
+
+    // Merge backend threads into Dexie (backend wins for shared records)
+    await db.threads.bulkPut(
+      data.threads.map((t) => ({
+        id: t.id,
+        title: t.title,
+        modelType: t.model_type as ModelType,
+        modelId: t.model_id,
+        pairId: t.pair_id ?? undefined,
+        archived: t.archived,
+        createdAt: t.created_at,
+      })),
+    );
+
+    // Merge backend messages into Dexie (skip corrupt records)
+    const parsedMessages: MessageRecord[] = [];
+    for (const m of data.messages) {
+      try {
+        parsedMessages.push({
+          id: m.id,
+          threadId: m.thread_id,
+          role: m.role as MessageRecord["role"],
+          content: JSON.parse(m.content),
+          ...(m.attachments && { attachments: JSON.parse(m.attachments) }),
+          ...(m.metadata && { metadata: JSON.parse(m.metadata) }),
+          createdAt: m.created_at,
+        });
+      } catch {
+        console.warn(`[chat-sync] Skipping corrupt message ${m.id}`);
+      }
+    }
+    await db.messages.bulkPut(parsedMessages);
+
+    // Reconcile: push local-only threads to backend instead of deleting them.
+    // Absence from the backend is ambiguous without tombstones -- the thread
+    // may have been created locally but not yet synced, so always preserve it.
+    const backendThreadIds = new Set(data.threads.map((t) => t.id));
+    const backendMessageIds = new Set(data.messages.map((m) => m.id));
+
+    for (const lt of localThreads) {
+      if (backendThreadIds.has(lt.id)) continue;
+      syncCreateThread({
+        id: lt.id,
+        title: lt.title,
+        model_type: lt.modelType,
+        model_id: lt.modelId ?? "",
+        pair_id: lt.pairId,
+        created_at: lt.createdAt,
+      });
+      backendThreadIds.add(lt.id);
+    }
+
+    // Push local messages missing from backend (e.g. failed syncs)
+    for (const msg of localMessages) {
+      if (!backendThreadIds.has(msg.threadId)) continue;
+      if (backendMessageIds.has(msg.id)) continue;
+      const meta = msg.metadata as Record<string, unknown> | undefined;
+      if (msg.role === "assistant" && !meta?.timing) continue;
+      syncUpsertMessage(msg.threadId, {
+        id: msg.id,
+        role: msg.role,
+        content: JSON.stringify(msg.content),
+        attachments: msg.attachments ? JSON.stringify(msg.attachments) : undefined,
+        metadata: msg.metadata ? JSON.stringify(msg.metadata) : undefined,
+        created_at: msg.createdAt,
+      });
+    }
+  })();
+  return hydrationPromise;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -747,106 +831,8 @@ export function ChatRuntimeProvider({
     suggestions: Suggestions(DEFAULT_SUGGESTIONS),
   });
 
-  const hydratedRef = useRef(false);
-
   useEffect(() => {
-    if (hydratedRef.current) return;
-    hydratedRef.current = true;
-
-    (async () => {
-      const data = await fetchHydrate();
-      if (!data) return;
-
-      // Snapshot local threads before overwriting with backend data
-      const localThreads = await db.threads.toArray();
-      const localMessages = await db.messages.toArray();
-
-      // Merge backend threads into Dexie (backend wins)
-      await db.threads.bulkPut(
-        data.threads.map((t) => ({
-          id: t.id,
-          title: t.title,
-          modelType: t.model_type as ModelType,
-          modelId: t.model_id,
-          pairId: t.pair_id ?? undefined,
-          archived: t.archived,
-          createdAt: t.created_at,
-        })),
-      );
-
-      // Merge backend messages into Dexie (skip corrupt records)
-      const parsedMessages: MessageRecord[] = [];
-      for (const m of data.messages) {
-        try {
-          parsedMessages.push({
-            id: m.id,
-            threadId: m.thread_id,
-            role: m.role as MessageRecord["role"],
-            content: JSON.parse(m.content),
-            ...(m.attachments && { attachments: JSON.parse(m.attachments) }),
-            ...(m.metadata && { metadata: JSON.parse(m.metadata) }),
-            createdAt: m.created_at,
-          });
-        } catch {
-          console.warn(`[chat-sync] Skipping corrupt message ${m.id}`);
-        }
-      }
-      await db.messages.bulkPut(parsedMessages);
-
-      // Reconcile local data against backend
-      const backendThreadIds = new Set(data.threads.map((t) => t.id));
-      const backendMessageIds = new Set(data.messages.map((m) => m.id));
-      const backendHasData = data.threads.length > 0;
-
-      if (backendHasData) {
-        // Backend is initialized — prune local threads deleted on other clients
-        const threadsToDelete = localThreads
-          .filter((lt) => !backendThreadIds.has(lt.id))
-          .map((lt) => lt.id);
-        if (threadsToDelete.length > 0) {
-          await db.messages.where("threadId").anyOf(threadsToDelete).delete();
-          await db.threads.bulkDelete(threadsToDelete);
-        }
-      } else {
-        // Backend is empty (first run or reset) — push all local threads up
-        for (const lt of localThreads) {
-          syncCreateThread({
-            id: lt.id,
-            title: lt.title,
-            model_type: lt.modelType,
-            model_id: lt.modelId ?? "",
-            pair_id: lt.pairId,
-            created_at: lt.createdAt,
-          });
-        }
-      }
-
-      // Push local messages missing from backend (e.g. failed syncs)
-      const messagesByThread = new Map<string, typeof localMessages>();
-      for (const msg of localMessages) {
-        // Skip messages for threads not on backend (unless we just pushed them)
-        if (backendHasData && !backendThreadIds.has(msg.threadId)) continue;
-        const arr = messagesByThread.get(msg.threadId);
-        if (arr) arr.push(msg);
-        else messagesByThread.set(msg.threadId, [msg]);
-      }
-
-      for (const [threadId, msgs] of messagesByThread) {
-        for (const msg of msgs) {
-          if (backendMessageIds.has(msg.id)) continue;
-          const meta = msg.metadata as Record<string, unknown> | undefined;
-          if (msg.role === "assistant" && !meta?.timing) continue;
-          syncUpsertMessage(threadId, {
-            id: msg.id,
-            role: msg.role,
-            content: JSON.stringify(msg.content),
-            attachments: msg.attachments ? JSON.stringify(msg.attachments) : undefined,
-            metadata: msg.metadata ? JSON.stringify(msg.metadata) : undefined,
-            created_at: msg.createdAt,
-          });
-        }
-      }
-    })().catch((err) => {
+    void hydrateChatStoreOnce().catch((err) => {
       console.warn("[chat-sync] Hydration failed:", err);
     });
   }, []);
