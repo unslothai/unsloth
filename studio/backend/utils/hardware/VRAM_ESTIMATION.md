@@ -1,21 +1,17 @@
 # VRAM Estimation for Training
 
-Estimates total GPU memory (nvidia-smi level) as:
-
 ```
-Total VRAM = Model Weights + LoRA Adapters + Optimizer States + Gradients + Activations + CUDA Overhead
+Total VRAM = Weights + LoRA Adapters + Optimizer + Gradients + Activations + CUDA Overhead
 ```
-
-All formulas below use these symbols:
 
 | Symbol | Meaning |
 |--------|---------|
 | `H` | `hidden_size` |
 | `L` | `num_hidden_layers` |
 | `V` | `vocab_size` |
-| `K` | KV dimension = `(H / num_attention_heads) * num_key_value_heads` |
-| `M` | `intermediate_size` (or `moe_intermediate_size` for MoE) |
-| `E` | `num_experts` (1 for dense models) |
+| `K` | `(H / num_attention_heads) * num_key_value_heads` |
+| `M` | `intermediate_size` (or `moe_intermediate_size`) |
+| `E` | `num_experts` (1 for dense) |
 | `r` | LoRA rank |
 | `B` | `per_device_train_batch_size` |
 | `S` | `max_seq_length` |
@@ -24,197 +20,119 @@ All formulas below use these symbols:
 
 ## 1. Model Weights
 
-Per-layer parameter groups:
-
 ```
-QKVO  = (H + K + K + H) * H
-MLP   = H * M * 3 * E  +  (E * H  if E > 1 else 0)      # router weights for MoE
-Norms = 2 * H
-```
+QKVO = (H + K + K + H) * H
+MLP  = H * M * 3 * E  +  (E * H if E > 1 else 0)
 
-Global (outside layers):
-
-```
-Embed   = V * H
-LM_Head = V * H    (0 if tie_word_embeddings)
-```
-
-Quantizable vs non-quantizable split:
-
-```
 Quantizable     = (QKVO + MLP) * L
-Non-quantizable = Norms * L + Embed + LM_Head
+Non-quantizable = 2*H*L + V*H + (V*H if not tie_embeddings else 0)
 ```
 
 | Mode | Bytes |
 |------|-------|
-| **QLoRA 4-bit** | `Quantizable * 2 / (16/5) + Non-quantizable * 2` |
-| **LoRA fp16** | `(Quantizable + Non-quantizable) * 2` |
-| **Full FT fp16** | `(Quantizable + Non-quantizable) * 2` |
+| QLoRA 4-bit | `Quantizable * 2 / 3.2 + Non-quantizable * 2` |
+| LoRA / Full fp16 | `(Quantizable + Non-quantizable) * 2` |
 
-The `16/5 = 3.2` factor for 4-bit comes from bitsandbytes NF4 quantization overhead (theoretically 4-bit = factor 4, but blockwise scales + metadata bring effective compression to ~3.2x). Source: `unsloth_zoo/vllm_utils.py:1563`.
-
----
+The 3.2 factor (`16/5`) accounts for BNB NF4 blockwise scales.
 
 ## 2. LoRA Adapters
 
-Each target module has an A matrix (input -> rank) and B matrix (rank -> output):
+| Module | A | B |
+|--------|---|---|
+| q_proj | `H×r` | `r×H` |
+| k_proj | `H×r` | `r×K` |
+| v_proj | `H×r` | `r×K` |
+| o_proj | `H×r` | `r×H` |
+| gate_proj | `H×r` | `r×M` |
+| up_proj | `H×r` | `r×M` |
+| down_proj | `M×r` | `r×H` |
 
-| Module | A elements | B elements |
-|--------|-----------|-----------|
-| `q_proj` | `H * r` | `r * H` |
-| `k_proj` | `H * r` | `r * K` |
-| `v_proj` | `H * r` | `r * K` |
-| `o_proj` | `H * r` | `r * H` |
-| `gate_proj` | `H * r` | `r * M` |
-| `up_proj` | `H * r` | `r * M` |
-| `down_proj` | `M * r` | `r * H` |
-
-For MoE models, MLP modules (`gate_proj`, `up_proj`, `down_proj`) multiply by `E` (each expert has its own LoRA). Attention modules are shared.
+MLP modules multiply by `E` for MoE.
 
 ```
-LoRA_params = sum(A + B for each selected module) * L
-LoRA_bytes  = LoRA_params * 2                              # fp16
+LoRA_bytes = sum(A + B per selected module) * L * 2
 ```
 
----
+## 3. Optimizer States (calibrated)
 
-## 3. Optimizer States (empirically calibrated)
+| Optimizer | Bytes/param | Notes |
+|-----------|------------|-------|
+| `adamw_8bit` | 4 | BNB upcasts to fp32 during step |
+| `adamw_torch` | 6 | Fused, no master copy |
+| `paged_adamw_32bit` | 8 | Full fp32 states |
+| `sgd` | 4 | |
 
-Trainable parameters:
-- **Full FT**: all model parameters
-- **LoRA / QLoRA**: LoRA adapter parameters only
-
-| Optimizer | Bytes/param | Theoretical | Why higher |
-|-----------|------------|-------------|------------|
-| `adamw_8bit` | **4** | 2 (8-bit m+v) | BNB upcasts params to fp32 during step (temporary master copy) |
-| `adamw_torch` | **6** | 8 (fp32 m+v) | Fused AdamW operates on bf16 directly, no separate master copy |
-| `sgd` | **4** | 4 (fp32 m) | Matches theoretical |
-
-```
-Optimizer_bytes = trainable_params * bytes_per_param
-```
-
----
+Trainable params = all params (Full FT) or LoRA params only.
 
 ## 4. Gradients
 
-Stored in fp16 (mixed precision training). Gradient accumulation is in-place and does NOT increase memory.
-
 ```
-Gradient_bytes = trainable_params * 2
+Gradient_bytes = trainable_params * 2    (fp16, accumulated in-place)
 ```
-
----
 
 ## 5. Activations
 
-Per-layer activation memory (adapted from `unsloth_zoo/vllm_utils.py:1542-1551`):
-
+Per-layer (from `unsloth_zoo/vllm_utils.py`):
 ```
-Act_QKV      = S * B * (H + K + K)
-Act_Residual = S * B * 2
-Act_MLP      = S * B * (M + M)
-
-Per_layer    = (Act_QKV + Act_Residual + Act_MLP) * 2 * 1.25
-                                                   ^fp16 ^25% safety
+Per_layer = (S*B*(H+K+K) + S*B*2 + S*B*(M+M)) * 2 * 1.25
 ```
 
-Gradient checkpointing scaling differs between Full FT and LoRA. For LoRA/QLoRA, the frozen base model layers don't save activations (no `requires_grad` on main weights) — only LoRA-path activations contribute.
+| GC Mode | Full FT | LoRA/QLoRA |
+|---------|---------|------------|
+| none | `L` layers | `L` layers |
+| true (HF) | 2.0 | 1.0 |
+| unsloth | 1.5 | 1.0 |
 
-| Mode | Full FT layers | LoRA/QLoRA layers | Rationale |
-|------|---------------|-------------------|-----------|
-| `none` | `L` | `L` | All layers stored |
-| `true` (HF) | `2.0` | `0.5` | Frozen layers skip activation storage |
-| `unsloth` | `1.5` | `0.3` | Aggressive recompute + frozen layer skip |
+## 6. Floors
+
+Gradients and activations have minimum floors at **20% of model weight memory** to account for autograd overhead, attention score matrices, NCCL buffers, mixed-precision scaling, and PyTorch fragmentation.
 
 ```
-Activation_bytes = Per_layer * effective_layers
+gradient_bytes  = max(computed, weights * 0.20)
+activation_bytes = max(computed, weights * 0.20 * B/2)
 ```
+
+## 7. CUDA Overhead
+
+**1.4 GB** fixed — CUDA driver + PyTorch runtime, calibrated on RTX 5070 Ti.
 
 ---
 
-## 6. CUDA Overhead
+## Reference Table (bsz=2, seq=2048, rank=16, GC=unsloth, adamw_8bit)
 
-Fixed nvidia-smi overhead for CUDA driver context and PyTorch runtime. Empirically calibrated at 1.4 GB on RTX 5070 Ti (see `frontend/src/lib/vram.ts`).
+| Model | Weights | LoRA | Optim | Grad | Act | CUDA | Total |
+|-------|---------|------|-------|------|-----|------|-------|
+| 0.5B QLoRA | 0.5 | 0.0 | 0.0 | 0.1 | 0.1 | 1.4 | **2.1** |
+| 1B QLoRA | 1.1 | 0.0 | 0.0 | 0.2 | 0.2 | 1.4 | **2.9** |
+| 3B QLoRA | 2.4 | 0.0 | 0.1 | 0.5 | 0.5 | 1.4 | **4.9** |
+| 8B QLoRA | 6.0 | 0.1 | 0.2 | 1.2 | 1.2 | 1.4 | **10.1** |
+| 8B LoRA fp16 | 15.0 | 0.1 | 0.2 | 3.0 | 3.0 | 1.4 | **22.6** |
+| 8B Full FT | 15.0 | — | 29.9 | 15.0 | 3.0 | 1.4 | **64.2** |
+| 32B LoRA fp16 | 61.0 | 0.2 | 0.5 | 12.2 | 12.2 | 1.4 | **87.6** |
+| 72B QLoRA | 45.5 | 0.4 | 0.8 | 9.1 | 9.1 | 1.4 | **66.3** |
 
-```
-Overhead = 1.4 GB
-```
-
----
-
-## Validation Results
-
-Validated against actual training of **Llama-3.2-1B-Instruct** using `torch.cuda.set_per_process_memory_fraction` to emulate 24 GB VRAM. Comparison at nvidia-smi level (allocated + 1.4 GB CUDA context):
+## E2E Validation (Llama-3.2-1B, B200 emulating 24GB)
 
 | Config | Estimated | Actual (nvsmi) | Error |
 |--------|----------|----------------|-------|
-| QLoRA bsz=2 seq=512 | 2.55 GB | 2.65 GB | **-3.7%** |
-| QLoRA bsz=2 seq=2048 | 2.60 GB | 2.65 GB | **-1.8%** |
-| QLoRA bsz=4 seq=2048 | 2.65 GB | 2.65 GB | **+0.0%** |
-| QLoRA bsz=2 r=64 | 2.85 GB | 2.96 GB | **-3.8%** |
-| LoRA fp16 bsz=2 | 3.84 GB | 3.88 GB | **-1.0%** |
-| Full FT adamw_8bit seq=512 | 10.68 GB | 10.80 GB | **-1.1%** |
-| Full FT adamw_8bit seq=2048 | 10.89 GB | 10.80 GB | **+0.8%** |
-| Full FT adamw_torch | 13.19 GB | 12.93 GB | **+2.0%** |
+| QLoRA bsz=2 seq=512 | 2.55 GB | 2.65 GB | -3.7% |
+| QLoRA bsz=2 seq=2048 | 2.60 GB | 2.65 GB | -1.8% |
+| QLoRA bsz=4 seq=2048 | 2.65 GB | 2.65 GB | +0.0% |
+| LoRA fp16 bsz=2 | 3.84 GB | 3.88 GB | -1.0% |
+| Full FT adamw_8bit | 10.89 GB | 10.80 GB | +0.8% |
+| Full FT adamw_torch | 13.19 GB | 12.93 GB | +2.0% |
 
-All estimates within **-4% to +2%** of actual usage.
-
----
-
-## Worked Example: Llama-3.2-1B-Instruct
-
-Architecture: `H=2048, L=16, V=128256, heads=32, kv_heads=8, M=8192, tie_embeddings=True`
-
-### QLoRA (bsz=2, seq=2048, rank=16, GC=unsloth, adamw_8bit)
-
-| Component | GB |
-|-----------|-----|
-| Weights (4-bit) | 1.06 |
-| LoRA adapters | 0.02 |
-| Optimizer (4 bytes/param) | 0.04 |
-| Gradients | 0.02 |
-| Activations (0.3 layers) | 0.06 |
-| CUDA overhead | 1.40 |
-| **Total** | **2.60** |
-| **Actual (nvidia-smi)** | **2.65** |
-
-### Full FT (bsz=2, seq=2048, GC=unsloth, adamw_8bit)
-
-| Component | GB |
-|-----------|-----|
-| Weights (fp16) | 2.30 |
-| Optimizer (4 bytes/param) | 4.60 |
-| Gradients | 2.30 |
-| Activations (1.5 layers) | 0.28 |
-| CUDA overhead | 1.40 |
-| **Total** | **10.89** |
-| **Actual (nvidia-smi)** | **10.80** |
+*Note: e2e numbers predate the 20% floors, which add safety margin on top.*
 
 ---
 
 ## Parameter Flow
 
-All training hyperparameters flow from the frontend through to VRAM estimation:
-
 ```
-Frontend (config)
-  -> training.py start_training(kwargs)
-    -> prepare_gpu_selection(batch_size, lora_r, optim, ...)
-      -> auto_select_gpu_ids(...)
-        -> estimate_required_model_memory_gb(...)
-          -> estimate_training_vram(arch, config)  # detailed
-          or fallback multipliers                  # if no arch config
+Frontend -> training.py -> prepare_gpu_selection -> auto_select_gpu_ids
+         -> estimate_required_model_memory_gb -> estimate_training_vram
 ```
 
-Parameters threaded: `batch_size`, `max_seq_length`, `lora_r`, `target_modules`, `gradient_checkpointing`, `optim`.
-
----
-
-## Implementation
-
-- **Detailed path**: When `AutoConfig` is available, uses full architecture decomposition above.
-- **Fallback path**: When config unavailable (e.g. private/gated model), uses simplified multipliers on `model_size_gb` calibrated from the detailed formulas.
+Threaded params: `batch_size`, `max_seq_length`, `lora_r`, `target_modules`, `gradient_checkpointing`, `optim`.
 
 Source: `studio/backend/utils/hardware/vram_estimation.py`

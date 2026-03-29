@@ -862,6 +862,7 @@ def estimate_required_model_memory_gb(
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
+        metadata["_vram_breakdown_obj"] = breakdown
         return required_gb, metadata
 
     # Fallback when model config is unavailable
@@ -969,18 +970,29 @@ def auto_select_gpu_ids(
     # The first GPU keeps its full capacity (no cross-device overhead).
     multi_gpu_overhead = 0.85
 
+    # Per-GPU check: activations don't shard across GPUs. Use min_gpu_vram
+    # from the breakdown to verify each GPU can hold its shard + activations.
+    breakdown_obj = estimate_metadata.get("_vram_breakdown_obj")
+
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
         else:
-            # First GPU: full capacity. Additional GPUs: reduced by overhead.
             first_gpu_id = selected[0]
             usable_gb = free_by_index[first_gpu_id] + sum(
                 free_by_index[gpu_id] * multi_gpu_overhead for gpu_id in selected[1:]
             )
 
-        if usable_gb >= required_gb:
+        total_fits = usable_gb >= required_gb
+
+        per_gpu_fits = True
+        if total_fits and breakdown_obj is not None and len(selected) > 1:
+            min_per_gpu_gb = breakdown_obj.min_gpu_vram(len(selected)) / (1024**3)
+            smallest_free = min(free_by_index[gpu_id] for gpu_id in selected)
+            per_gpu_fits = smallest_free >= min_per_gpu_gb
+
+        if total_fits and per_gpu_fits:
             metadata["usable_gb"] = round(usable_gb, 3)
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected

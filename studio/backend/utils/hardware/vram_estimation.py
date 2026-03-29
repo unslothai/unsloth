@@ -82,6 +82,9 @@ class VramBreakdown:
     gradients: int
     activations: int
     cuda_overhead: int
+    # The computed (formula-based) activation cost before floors.
+    # This is the true per-layer cost that doesn't shard across GPUs.
+    activations_computed: int = 0
 
     @property
     def total(self) -> int:
@@ -93,6 +96,23 @@ class VramBreakdown:
             + self.activations
             + self.cuda_overhead
         )
+
+    def min_gpu_vram(self, n_gpus: int) -> int:
+        """Minimum VRAM a single GPU needs: its shard + non-shardable costs.
+
+        Weights/LoRA/optimizer/gradients shard across GPUs.
+        The computed activation cost does NOT shard (one GPU runs the layer).
+        The floor portion (activations - computed) is overhead that shards.
+        """
+        shardable = (
+            self.model_weights
+            + self.lora_adapters
+            + self.optimizer_states
+            + self.gradients
+            + (self.activations - self.activations_computed)  # floor overhead shards
+        )
+        per_gpu_fixed = self.activations_computed + self.cuda_overhead
+        return shardable // max(n_gpus, 1) + per_gpu_fixed
 
     def to_gb_dict(self) -> Dict[str, float]:
         return {
@@ -306,8 +326,9 @@ def estimate_training_vram(
 ) -> VramBreakdown:
     method = config.training_method.lower()
     is_lora = method in ("qlora", "lora")
+    load_in_4bit = config.load_in_4bit or method == "qlora"
 
-    model_weights = compute_model_weights_bytes(arch, method, config.load_in_4bit)
+    model_weights = compute_model_weights_bytes(arch, method, load_in_4bit)
 
     lora_params = 0
     lora_adapter_bytes = 0
@@ -323,17 +344,15 @@ def estimate_training_vram(
     optimizer_bytes = compute_optimizer_bytes(trainable_params, config.optimizer)
     gradient_bytes = max(
         compute_gradient_bytes(trainable_params),
-        int(model_weights * 0.20),
+        int(model_weights * 0.10),
+    )
+    activations_computed = compute_activation_bytes(
+        arch, config.batch_size, config.max_seq_length,
+        config.gradient_checkpointing, is_lora = is_lora,
     )
     activation_bytes = max(
-        compute_activation_bytes(
-            arch,
-            config.batch_size,
-            config.max_seq_length,
-            config.gradient_checkpointing,
-            is_lora = is_lora,
-        ),
-        int(model_weights * 0.20 * (config.batch_size / 2)),
+        activations_computed,
+        int(model_weights * 0.10 * (config.batch_size / 2)),
     )
 
     return VramBreakdown(
@@ -343,4 +362,5 @@ def estimate_training_vram(
         gradients = gradient_bytes,
         activations = activation_bytes,
         cuda_overhead = CUDA_OVERHEAD_BYTES,
+        activations_computed = activations_computed,
     )
