@@ -103,19 +103,56 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
 
 @pytest.fixture(scope="session")
 def auth_headers() -> dict[str, str]:
-    """Log in once per test session and return auth headers."""
+    """
+    Log in once per session and return auth headers.
+
+    On a fresh Studio install the bootstrap password triggers a forced password
+    change (must_change_password=True).  Any subsequent API call using that token
+    returns 403 "Password change required".  This fixture detects that state,
+    automatically completes the change-password flow, and re-logs in so all other
+    tests get a fully usable token.
+
+    The new password used during auto-change is:
+        STUDIO_TEST_NEW_PASSWORD  (env var, optional)
+        or PASSWORD + "-test"     (derived default)
+
+    On the second run, set STUDIO_TEST_PASSWORD to the new password.
+    """
     assert PASSWORD, (
         "STUDIO_TEST_PASSWORD is not set.\n"
         "Run: export STUDIO_TEST_PASSWORD=$(cat studio/backend/.bootstrap_password)"
     )
+
     resp = requests.post(
         _url("/api/auth/login"),
         json={"username": USERNAME, "password": PASSWORD},
         timeout=10,
     )
     assert resp.status_code == 200, f"Login failed ({resp.status_code}): {resp.text}"
-    token = resp.json()["access_token"]
+    body = resp.json()
+    token = body["access_token"]
     assert token, "access_token is empty"
+
+    if body.get("must_change_password"):
+        # Bootstrap token is restricted — only /api/auth/change-password works with it.
+        # Auto-complete the forced change so the rest of the tests get a full token.
+        new_password = os.getenv("STUDIO_TEST_NEW_PASSWORD") or f"{PASSWORD}-test"
+        change_resp = requests.post(
+            _url("/api/auth/change-password"),
+            headers={"Authorization": f"Bearer {token}"},
+            json={"current_password": PASSWORD, "new_password": new_password},
+            timeout=10,
+        )
+        assert change_resp.status_code == 200, (
+            f"Auto password-change failed ({change_resp.status_code}): {change_resp.text}"
+        )
+        token = change_resp.json()["access_token"]
+        print(
+            f"\n  NOTE: Bootstrap password changed automatically.\n"
+            f"  New password: {new_password!r}\n"
+            f"  Set STUDIO_TEST_PASSWORD={new_password!r} for future runs."
+        )
+
     return {"Authorization": f"Bearer {token}"}
 
 
