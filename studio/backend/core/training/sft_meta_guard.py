@@ -69,7 +69,9 @@ def inspect_meta_backed_embeddings(model) -> list[str]:
     return reasons
 
 
-def maybe_enable_sft_meta_guard(model, requested_model_name: str | None, logger) -> bool:
+def maybe_enable_sft_meta_guard(
+    model, requested_model_name: str | None, logger
+) -> bool:
     reasons = inspect_meta_backed_embeddings(model)
     if not reasons:
         return False
@@ -83,7 +85,9 @@ def maybe_enable_sft_meta_guard(model, requested_model_name: str | None, logger)
         guard_model_names = names,
         reasons = reasons,
         hf_device_map_populated = bool(hf_device_map),
-        hf_device_map_entries = len(hf_device_map) if isinstance(hf_device_map, dict) else None,
+        hf_device_map_entries = len(hf_device_map)
+        if isinstance(hf_device_map, dict)
+        else None,
         ignored_tokenizer_name_count = len(updated),
     )
     return True

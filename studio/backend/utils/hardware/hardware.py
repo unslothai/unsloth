@@ -688,7 +688,9 @@ def estimate_required_model_memory_gb(
     elif training_type == "Full Finetuning":
         required_gb = model_size_gb * 6.0
     elif load_in_4bit:
-        base_4bit_gb = model_size_gb / 3.0 # Ideally should be 4.0 but we take some buffer for scales and whatnot
+        base_4bit_gb = (
+            model_size_gb / 3.0
+        )  # Ideally should be 4.0 but we take some buffer for scales and whatnot
         required_gb = base_4bit_gb + max(base_4bit_gb * 0.5, min_buffer_gb)
     else:
         required_gb = model_size_gb * 1.3

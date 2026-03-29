@@ -633,7 +633,7 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            device_map = get_device_map(gpu_ids, load_in_4bit=load_in_4bit)
+            device_map = get_device_map(gpu_ids, load_in_4bit = load_in_4bit)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
