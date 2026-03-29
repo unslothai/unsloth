@@ -438,6 +438,20 @@ class InferenceBackend:
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
 
+                # Reject CPU/disk offload for audio models too
+                offloaded = get_offloaded_device_map_entries(
+                    self.models[model_name]["model"]
+                )
+                if offloaded:
+                    example_modules = ", ".join(
+                        f"{name}={placement}"
+                        for name, placement in list(offloaded.items())[:5]
+                    )
+                    raise ValueError(
+                        "Inference does not support models loaded with CPU or disk offload. "
+                        f"device_map='{device_map}' produced offloaded modules: {example_modules}"
+                    )
+
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
                 logger.info(f"Successfully loaded audio model: {model_name}")
