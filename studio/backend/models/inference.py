@@ -210,7 +210,8 @@ class InferenceStatusResponse(BaseModel):
         None, description = "Context length of the active model"
     )
     max_context_length: Optional[int] = Field(
-        None, description = "Maximum context length currently available for the active model"
+        None,
+        description = "Maximum context length currently available for the active model",
     )
 
 

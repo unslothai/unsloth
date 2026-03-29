@@ -1345,7 +1345,9 @@ class LlamaCppBackend:
                 effective_ctx if effective_ctx > 0 else self._context_length
             )
             self._max_context_length = (
-                max_available_ctx if max_available_ctx > 0 else self._effective_context_length
+                max_available_ctx
+                if max_available_ctx > 0
+                else self._effective_context_length
             )
 
             # Wait for llama-server to become healthy
