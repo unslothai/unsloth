@@ -29,6 +29,7 @@ from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
 from .cohere import FastCohereModel
+from .phi import FastPhiModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -642,6 +643,8 @@ class FastLanguageModel(FastLlamaModel):
         #             f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
         #             f"to obtain the latest transformers build, then restart this session."\
         #         )
+        elif model_type == "phi":
+            dispatch_model = FastPhiModel
         # Temporary disable optimized Cohere until errors match
         # elif model_type == "cohere":
         #     dispatch_model = FastCohereModel
@@ -748,6 +751,12 @@ class FastLanguageModel(FastLlamaModel):
                     "unsloth",
                 ]
             )
+
+        # Allow model-specific post patches (e.g., Phi-2 defaults)
+        try:
+            model, tokenizer = dispatch_model.post_patch(model, tokenizer)
+        except Exception:
+            pass
 
         if load_in_4bit:
             # Fix up bitsandbytes config, but respect user-provided quantization_config
