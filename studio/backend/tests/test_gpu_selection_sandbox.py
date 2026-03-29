@@ -141,16 +141,16 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value=(30 * (1024**3), "config"),  # 30GB fp16 model
+            return_value = (30 * (1024**3), "config"),  # 30GB fp16 model
         ):
             required, meta = estimate_required_model_memory_gb(
                 "test/model",
-                training_type=None,  # inference
-                load_in_4bit=True,
+                training_type = None,  # inference
+                load_in_4bit = True,
             )
             self.assertIsNotNone(required)
             # 4bit base = 30/3 = 10GB, required = 10 + max(10*0.3, 2) = 13GB
-            self.assertAlmostEqual(required, 13.0, places=0)
+            self.assertAlmostEqual(required, 13.0, places = 0)
 
     def test_4bit_training_reduces_base(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
