@@ -862,10 +862,18 @@ def estimate_required_model_memory_gb(
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
-        metadata["vram_breakdown"]["min_per_gpu_1"] = round(breakdown.min_gpu_vram(1) / (1024**3), 3)
-        metadata["vram_breakdown"]["min_per_gpu_2"] = round(breakdown.min_gpu_vram(2) / (1024**3), 3)
-        metadata["vram_breakdown"]["min_per_gpu_4"] = round(breakdown.min_gpu_vram(4) / (1024**3), 3)
-        metadata["vram_breakdown"]["min_per_gpu_8"] = round(breakdown.min_gpu_vram(8) / (1024**3), 3)
+        metadata["vram_breakdown"]["min_per_gpu_1"] = round(
+            breakdown.min_gpu_vram(1) / (1024**3), 3
+        )
+        metadata["vram_breakdown"]["min_per_gpu_2"] = round(
+            breakdown.min_gpu_vram(2) / (1024**3), 3
+        )
+        metadata["vram_breakdown"]["min_per_gpu_4"] = round(
+            breakdown.min_gpu_vram(4) / (1024**3), 3
+        )
+        metadata["vram_breakdown"]["min_per_gpu_8"] = round(
+            breakdown.min_gpu_vram(8) / (1024**3), 3
+        )
         return required_gb, metadata
 
     # Fallback when model config is unavailable
