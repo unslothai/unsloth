@@ -1331,8 +1331,18 @@ class FastModel(FastBaseModel):
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
         model_types = ["siglip"] + model_types
-        # Set forced float32 env flag
-        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        # Preserve explicit user force-float32 requests without leaking prior
+        # auto-detected force state into later model loads in the same process.
+        user_forced_float32 = (
+            type(float32_mixed_precision) is bool and float32_mixed_precision
+        )
+        if not user_forced_float32:
+            user_forced_float32 = (
+                os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+                and os.environ.get("UNSLOTH_AUTO_FORCE_FLOAT32", "0") != "1"
+            )
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "1" if user_forced_float32 else "0"
+        os.environ["UNSLOTH_AUTO_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
         for model_type_arch in model_types:
             if model_type_arch != "siglip":
@@ -1346,6 +1356,7 @@ class FastModel(FastBaseModel):
                 or disable_name.lower() in model_types_all
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                os.environ["UNSLOTH_AUTO_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
         # Apply gradient checkpointing with smart heuristics
