@@ -135,9 +135,7 @@ def get_provider(id: str) -> Optional[dict]:
     """Fetch a single provider by ID."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM llm_providers WHERE id = ?", (id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM llm_providers WHERE id = ?", (id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

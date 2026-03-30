@@ -55,7 +55,7 @@ async def get_public_key(
 # ── Provider registry (static) ───────────────────────────────────
 
 
-@router.get("/registry", response_model=list[ProviderRegistryEntry])
+@router.get("/registry", response_model = list[ProviderRegistryEntry])
 async def list_registry(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -66,7 +66,7 @@ async def list_registry(
 # ── Provider config CRUD ──────────────────────────────────────────
 
 
-@router.get("/", response_model=list[ProviderResponse])
+@router.get("/", response_model = list[ProviderResponse])
 async def list_provider_configs(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -74,19 +74,19 @@ async def list_provider_configs(
     rows = providers_db.list_providers()
     return [
         ProviderResponse(
-            id=row["id"],
-            provider_type=row["provider_type"],
-            display_name=row["display_name"],
-            base_url=row["base_url"],
-            is_enabled=bool(row["is_enabled"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
+            id = row["id"],
+            provider_type = row["provider_type"],
+            display_name = row["display_name"],
+            base_url = row["base_url"],
+            is_enabled = bool(row["is_enabled"]),
+            created_at = row["created_at"],
+            updated_at = row["updated_at"],
         )
         for row in rows
     ]
 
 
-@router.post("/", response_model=ProviderResponse, status_code=201)
+@router.post("/", response_model = ProviderResponse, status_code = 201)
 async def create_provider_config(
     payload: ProviderCreate,
     current_subject: str = Depends(get_current_subject),
@@ -95,8 +95,8 @@ async def create_provider_config(
     info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unknown provider type: {payload.provider_type}. "
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}. "
             f"Use GET /api/providers/registry to see available types.",
         )
 
@@ -104,25 +104,25 @@ async def create_provider_config(
     base_url = payload.base_url or info["base_url"]
 
     providers_db.create_provider(
-        id=provider_id,
-        provider_type=payload.provider_type,
-        display_name=payload.display_name,
-        base_url=base_url,
+        id = provider_id,
+        provider_type = payload.provider_type,
+        display_name = payload.display_name,
+        base_url = base_url,
     )
 
     row = providers_db.get_provider(provider_id)
     return ProviderResponse(
-        id=row["id"],
-        provider_type=row["provider_type"],
-        display_name=row["display_name"],
-        base_url=row["base_url"],
-        is_enabled=bool(row["is_enabled"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        id = row["id"],
+        provider_type = row["provider_type"],
+        display_name = row["display_name"],
+        base_url = row["base_url"],
+        is_enabled = bool(row["is_enabled"]),
+        created_at = row["created_at"],
+        updated_at = row["updated_at"],
     )
 
 
-@router.put("/{provider_id}", response_model=ProviderResponse)
+@router.put("/{provider_id}", response_model = ProviderResponse)
 async def update_provider_config(
     provider_id: str,
     payload: ProviderUpdate,
@@ -131,30 +131,30 @@ async def update_provider_config(
     """Update a saved provider configuration."""
     existing = providers_db.get_provider(provider_id)
     if not existing:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code = 404, detail = "Provider not found")
 
     updated = providers_db.update_provider(
-        id=provider_id,
-        display_name=payload.display_name,
-        base_url=payload.base_url,
-        is_enabled=payload.is_enabled,
+        id = provider_id,
+        display_name = payload.display_name,
+        base_url = payload.base_url,
+        is_enabled = payload.is_enabled,
     )
     if not updated:
-        raise HTTPException(status_code=400, detail="No fields to update")
+        raise HTTPException(status_code = 400, detail = "No fields to update")
 
     row = providers_db.get_provider(provider_id)
     return ProviderResponse(
-        id=row["id"],
-        provider_type=row["provider_type"],
-        display_name=row["display_name"],
-        base_url=row["base_url"],
-        is_enabled=bool(row["is_enabled"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        id = row["id"],
+        provider_type = row["provider_type"],
+        display_name = row["display_name"],
+        base_url = row["base_url"],
+        is_enabled = bool(row["is_enabled"]),
+        created_at = row["created_at"],
+        updated_at = row["updated_at"],
     )
 
 
-@router.delete("/{provider_id}", status_code=204)
+@router.delete("/{provider_id}", status_code = 204)
 async def delete_provider_config(
     provider_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -162,13 +162,13 @@ async def delete_provider_config(
     """Delete a saved provider configuration."""
     deleted = providers_db.delete_provider(provider_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code = 404, detail = "Provider not found")
 
 
 # ── Test connectivity ─────────────────────────────────────────────
 
 
-@router.post("/test", response_model=ProviderTestResult)
+@router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
     payload: ProviderTestRequest,
     current_subject: str = Depends(get_current_subject),
@@ -182,8 +182,8 @@ async def test_provider(
     info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unknown provider type: {payload.provider_type}",
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
         )
 
     try:
@@ -191,31 +191,31 @@ async def test_provider(
     except Exception as exc:
         logger.warning("Failed to decrypt API key: %s", exc)
         raise HTTPException(
-            status_code=400,
-            detail="Failed to decrypt API key. The public key may have changed — try refreshing the page.",
+            status_code = 400,
+            detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
         )
 
     base_url = payload.base_url or info["base_url"]
     client = ExternalProviderClient(
-        provider_type=payload.provider_type,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=15.0,
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 15.0,
     )
 
     try:
         models = await client.list_models()
         return ProviderTestResult(
-            success=True,
-            message=f"Connected successfully. Found {len(models)} model(s).",
-            models_count=len(models),
+            success = True,
+            message = f"Connected successfully. Found {len(models)} model(s).",
+            models_count = len(models),
         )
     except Exception as exc:
         logger.warning("Provider test failed for %s: %s", payload.provider_type, exc)
         return ProviderTestResult(
-            success=False,
-            message=f"Connection failed: {exc}",
-            models_count=None,
+            success = False,
+            message = f"Connection failed: {exc}",
+            models_count = None,
         )
     finally:
         await client.close()
@@ -224,7 +224,7 @@ async def test_provider(
 # ── List models from provider ─────────────────────────────────────
 
 
-@router.post("/models", response_model=list[ProviderModelInfo])
+@router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
     current_subject: str = Depends(get_current_subject),
@@ -237,8 +237,8 @@ async def list_provider_models(
     info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unknown provider type: {payload.provider_type}",
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
         )
 
     try:
@@ -246,34 +246,34 @@ async def list_provider_models(
     except Exception as exc:
         logger.warning("Failed to decrypt API key: %s", exc)
         raise HTTPException(
-            status_code=400,
-            detail="Failed to decrypt API key. The public key may have changed — try refreshing the page.",
+            status_code = 400,
+            detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
         )
 
     base_url = payload.base_url or info["base_url"]
     client = ExternalProviderClient(
-        provider_type=payload.provider_type,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=15.0,
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 15.0,
     )
 
     try:
         models = await client.list_models()
         return [
             ProviderModelInfo(
-                id=m.get("id", ""),
-                display_name=m.get("id", ""),
-                context_length=m.get("context_length") or m.get("context_window"),
-                owned_by=m.get("owned_by"),
+                id = m.get("id", ""),
+                display_name = m.get("id", ""),
+                context_length = m.get("context_length") or m.get("context_window"),
+                owned_by = m.get("owned_by"),
             )
             for m in models
         ]
     except Exception as exc:
         logger.error("Failed to list models from %s: %s", payload.provider_type, exc)
         raise HTTPException(
-            status_code=502,
-            detail=f"Failed to list models from {payload.provider_type}: {exc}",
+            status_code = 502,
+            detail = f"Failed to list models from {payload.provider_type}: {exc}",
         )
     finally:
         await client.close()

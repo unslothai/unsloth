@@ -869,10 +869,12 @@ def _build_external_messages(
                     if part.type == "text":
                         parts.append({"type": "text", "text": part.text})
                     elif part.type == "image_url":
-                        parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": part.image_url.url},
-                        })
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part.image_url.url},
+                            }
+                        )
                 result.append({"role": msg.role, "content": parts})
             else:
                 # Non-vision provider — strip images, keep text only
@@ -944,6 +946,7 @@ async def _proxy_to_external_provider(
 
     # Build messages preserving multimodal content for vision-capable providers
     from core.inference.providers import get_provider_info as _get_provider_info
+
     _pinfo = _get_provider_info(provider_type) or {}
     _supports_vision = _pinfo.get("supports_vision", False)
     chat_messages = _build_external_messages(payload.messages, _supports_vision)

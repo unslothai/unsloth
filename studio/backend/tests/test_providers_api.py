@@ -41,18 +41,17 @@ PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 
 # Map provider_type → (env var name, model to use for inference test)
 _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
-    "openai":     ("OPENAI_API_KEY",    "gpt-4o-mini"),
-    "mistral":    ("MISTRAL_API_KEY",   "mistral-small-2506"),
-    "gemini":     ("GEMINI_API_KEY",     "gemini-3-flash-preview"),
-    "cohere":     ("COHERE_API_KEY",    "command-a-03-2025"),
+    "openai": ("OPENAI_API_KEY", "gpt-4o-mini"),
+    "mistral": ("MISTRAL_API_KEY", "mistral-small-2506"),
+    "gemini": ("GEMINI_API_KEY", "gemini-3-flash-preview"),
+    "cohere": ("COHERE_API_KEY", "command-a-03-2025"),
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
-    "anthropic":  ("ANTHROPIC_API_KEY",  "claude-haiku-4-5"),
-    "deepseek":   ("DEEPSEEK_API_KEY",   "deepseek-chat"),
+    "anthropic": ("ANTHROPIC_API_KEY", "claude-haiku-4-5"),
+    "deepseek": ("DEEPSEEK_API_KEY", "deepseek-chat"),
 }
 
 PROVIDER_KEYS: dict[str, str] = {
-    ptype: os.getenv(env_var, "")
-    for ptype, (env_var, _) in _PROVIDER_CONFIGS.items()
+    ptype: os.getenv(env_var, "") for ptype, (env_var, _) in _PROVIDER_CONFIGS.items()
 }
 
 EXPECTED_PROVIDER_TYPES = set(_PROVIDER_CONFIGS.keys())
@@ -79,7 +78,7 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
             raw_line = raw_line.decode("utf-8")
         if not raw_line.startswith("data:"):
             continue
-        data = raw_line[len("data:"):].strip()
+        data = raw_line[len("data:") :].strip()
         if data == "[DONE]":
             saw_done = True
             break
@@ -101,7 +100,7 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
 # ── Session-scoped fixtures ────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def auth_headers() -> dict[str, str]:
     """
     Log in once per session and return auth headers.
@@ -125,8 +124,8 @@ def auth_headers() -> dict[str, str]:
 
     resp = requests.post(
         _url("/api/auth/login"),
-        json={"username": USERNAME, "password": PASSWORD},
-        timeout=10,
+        json = {"username": USERNAME, "password": PASSWORD},
+        timeout = 10,
     )
     assert resp.status_code == 200, f"Login failed ({resp.status_code}): {resp.text}"
     body = resp.json()
@@ -139,13 +138,13 @@ def auth_headers() -> dict[str, str]:
         new_password = os.getenv("STUDIO_TEST_NEW_PASSWORD") or f"{PASSWORD}-test"
         change_resp = requests.post(
             _url("/api/auth/change-password"),
-            headers={"Authorization": f"Bearer {token}"},
-            json={"current_password": PASSWORD, "new_password": new_password},
-            timeout=10,
+            headers = {"Authorization": f"Bearer {token}"},
+            json = {"current_password": PASSWORD, "new_password": new_password},
+            timeout = 10,
         )
-        assert change_resp.status_code == 200, (
-            f"Auto password-change failed ({change_resp.status_code}): {change_resp.text}"
-        )
+        assert (
+            change_resp.status_code == 200
+        ), f"Auto password-change failed ({change_resp.status_code}): {change_resp.text}"
         token = change_resp.json()["access_token"]
         print(
             f"\n  NOTE: Bootstrap password changed automatically.\n"
@@ -156,13 +155,13 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def public_key_pem(auth_headers: dict[str, str]) -> str:
     """Fetch RSA public key PEM once per session."""
     resp = requests.get(
         _url("/api/providers/public-key"),
-        headers=auth_headers,
-        timeout=10,
+        headers = auth_headers,
+        timeout = 10,
     )
     assert resp.status_code == 200, f"Public key fetch failed: {resp.text}"
     pem = resp.json().get("public_key", "")
@@ -170,7 +169,7 @@ def public_key_pem(auth_headers: dict[str, str]) -> str:
     return pem
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def vision_image_data_url() -> str:
     """
     Download the sloth image once per session and return it as a base64 data URI.
@@ -179,14 +178,14 @@ def vision_image_data_url() -> str:
     the image inline — Gemini's OpenAI-compatible layer does not fetch external
     HTTP URLs, so raw image_url links silently produce empty replies for Gemini.
     """
-    resp = requests.get(_VISION_IMAGE_URL, timeout=30)
+    resp = requests.get(_VISION_IMAGE_URL, timeout = 30)
     resp.raise_for_status()
     content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
     b64 = base64.b64encode(resp.content).decode("utf-8")
     return f"data:{content_type};base64,{b64}"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def encrypt_key(public_key_pem: str):
     """
     Return a callable encrypt_key(plaintext: str) -> str (base64 RSA-OAEP ciphertext).
@@ -200,9 +199,9 @@ def encrypt_key(public_key_pem: str):
         ciphertext = rsa_pub.encrypt(
             plaintext.encode("utf-8"),
             padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
+                mgf = padding.MGF1(algorithm = hashes.SHA256()),
+                algorithm = hashes.SHA256(),
+                label = None,
             ),
         )
         return base64.b64encode(ciphertext).decode("utf-8")
@@ -219,21 +218,27 @@ class TestAuth:
         assert PASSWORD, "STUDIO_TEST_PASSWORD not set"
         resp = requests.post(
             _url("/api/auth/login"),
-            json={"username": USERNAME, "password": PASSWORD},
-            timeout=10,
+            json = {"username": USERNAME, "password": PASSWORD},
+            timeout = 10,
         )
-        assert resp.status_code == 200, f"Login failed ({resp.status_code}): {resp.text}"
+        assert (
+            resp.status_code == 200
+        ), f"Login failed ({resp.status_code}): {resp.text}"
         body = resp.json()
         assert body.get("access_token"), "access_token is missing or empty"
         assert body.get("token_type") == "bearer"
-        print(f"\n  token_type={body['token_type']}, must_change_password={body.get('must_change_password')}")
+        print(
+            f"\n  token_type={body['token_type']}, must_change_password={body.get('must_change_password')}"
+        )
 
 
 # ── TestPublicKey ────────────────────────────────────────────────────
 
 
 class TestPublicKey:
-    def test_public_key_is_valid_pem(self, auth_headers: dict[str, str], public_key_pem: str):
+    def test_public_key_is_valid_pem(
+        self, auth_headers: dict[str, str], public_key_pem: str
+    ):
         """GET /api/providers/public-key returns an importable RSA PEM key."""
         pem_bytes = public_key_pem.encode("utf-8")
         key = serialization.load_pem_public_key(pem_bytes)
@@ -250,12 +255,14 @@ class TestRegistry:
         """GET /api/providers/registry returns all 7 supported providers."""
         resp = requests.get(
             _url("/api/providers/registry"),
-            headers=auth_headers,
-            timeout=10,
+            headers = auth_headers,
+            timeout = 10,
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 7, f"Expected 7 providers, got {len(providers)}: {providers}"
+        assert (
+            len(providers) == 7
+        ), f"Expected 7 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
@@ -265,8 +272,8 @@ class TestRegistry:
         """All 7 provider_type values are present in the registry."""
         resp = requests.get(
             _url("/api/providers/registry"),
-            headers=auth_headers,
-            timeout=10,
+            headers = auth_headers,
+            timeout = 10,
         )
         assert resp.status_code == 200
         returned_types = {p["provider_type"] for p in resp.json()}
@@ -275,10 +282,17 @@ class TestRegistry:
 
     def test_registry_entries_have_required_fields(self, auth_headers: dict[str, str]):
         """Each registry entry has provider_type, display_name, base_url, default_models."""
-        resp = requests.get(_url("/api/providers/registry"), headers=auth_headers, timeout=10)
+        resp = requests.get(
+            _url("/api/providers/registry"), headers = auth_headers, timeout = 10
+        )
         assert resp.status_code == 200
         for entry in resp.json():
-            for field in ("provider_type", "display_name", "base_url", "default_models"):
+            for field in (
+                "provider_type",
+                "display_name",
+                "base_url",
+                "default_models",
+            ):
                 assert field in entry, f"Missing field '{field}' in entry: {entry}"
             assert isinstance(entry["default_models"], list)
             assert len(entry["default_models"]) > 0
@@ -299,11 +313,13 @@ class TestProviderCRUD:
         """POST /api/providers/ creates a provider config and returns 201."""
         resp = requests.post(
             _url("/api/providers/"),
-            headers=auth_headers,
-            json={"provider_type": "openai", "display_name": "Test OpenAI (pytest)"},
-            timeout=10,
+            headers = auth_headers,
+            json = {"provider_type": "openai", "display_name": "Test OpenAI (pytest)"},
+            timeout = 10,
         )
-        assert resp.status_code == 201, f"Create failed ({resp.status_code}): {resp.text}"
+        assert (
+            resp.status_code == 201
+        ), f"Create failed ({resp.status_code}): {resp.text}"
         body = resp.json()
         assert body.get("id"), "No id in response"
         assert body["provider_type"] == "openai"
@@ -314,13 +330,15 @@ class TestProviderCRUD:
 
     def test_list_includes_created(self, auth_headers: dict[str, str]):
         """GET /api/providers/ includes the newly created config."""
-        assert TestProviderCRUD._created_id, "No created_id (run test_create_provider first)"
-        resp = requests.get(_url("/api/providers/"), headers=auth_headers, timeout=10)
+        assert (
+            TestProviderCRUD._created_id
+        ), "No created_id (run test_create_provider first)"
+        resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         assert resp.status_code == 200
         ids = [p["id"] for p in resp.json()]
-        assert TestProviderCRUD._created_id in ids, (
-            f"Created id {TestProviderCRUD._created_id!r} not found in list: {ids}"
-        )
+        assert (
+            TestProviderCRUD._created_id in ids
+        ), f"Created id {TestProviderCRUD._created_id!r} not found in list: {ids}"
         print(f"\n  found id={TestProviderCRUD._created_id} in list of {len(ids)}")
 
     def test_update_display_name(self, auth_headers: dict[str, str]):
@@ -329,11 +347,13 @@ class TestProviderCRUD:
         new_name = "Test OpenAI (pytest updated)"
         resp = requests.put(
             _url(f"/api/providers/{TestProviderCRUD._created_id}"),
-            headers=auth_headers,
-            json={"display_name": new_name},
-            timeout=10,
+            headers = auth_headers,
+            json = {"display_name": new_name},
+            timeout = 10,
         )
-        assert resp.status_code == 200, f"Update failed ({resp.status_code}): {resp.text}"
+        assert (
+            resp.status_code == 200
+        ), f"Update failed ({resp.status_code}): {resp.text}"
         assert resp.json()["display_name"] == new_name
         print(f"\n  updated display_name to '{new_name}'")
 
@@ -342,13 +362,17 @@ class TestProviderCRUD:
         assert TestProviderCRUD._created_id, "No created_id"
         resp = requests.delete(
             _url(f"/api/providers/{TestProviderCRUD._created_id}"),
-            headers=auth_headers,
-            timeout=10,
+            headers = auth_headers,
+            timeout = 10,
         )
-        assert resp.status_code == 204, f"Delete failed ({resp.status_code}): {resp.text}"
+        assert (
+            resp.status_code == 204
+        ), f"Delete failed ({resp.status_code}): {resp.text}"
 
         # Confirm gone from list
-        list_resp = requests.get(_url("/api/providers/"), headers=auth_headers, timeout=10)
+        list_resp = requests.get(
+            _url("/api/providers/"), headers = auth_headers, timeout = 10
+        )
         ids = [p["id"] for p in list_resp.json()]
         assert TestProviderCRUD._created_id not in ids, "Deleted provider still in list"
         print(f"\n  deleted id={TestProviderCRUD._created_id} confirmed gone")
@@ -363,10 +387,10 @@ _INFERENCE_PARAMS = [
         ptype,
         model,
         PROVIDER_KEYS.get(ptype, ""),
-        id=ptype,
-        marks=pytest.mark.skipif(
+        id = ptype,
+        marks = pytest.mark.skipif(
             not PROVIDER_KEYS.get(ptype, ""),
-            reason=f"no {env_var} set",
+            reason = f"no {env_var} set",
         ),
     )
     for ptype, (env_var, model) in _PROVIDER_CONFIGS.items()
@@ -392,15 +416,17 @@ class TestProviderInference:
         encrypted = encrypt_key(api_key)
         resp = requests.post(
             _url("/api/providers/test"),
-            headers=auth_headers,
-            json={"provider_type": provider_type, "encrypted_api_key": encrypted},
-            timeout=30,
+            headers = auth_headers,
+            json = {"provider_type": provider_type, "encrypted_api_key": encrypted},
+            timeout = 30,
         )
-        assert resp.status_code == 200, f"Request failed ({resp.status_code}): {resp.text}"
+        assert (
+            resp.status_code == 200
+        ), f"Request failed ({resp.status_code}): {resp.text}"
         body = resp.json()
-        assert body["success"] is True, (
-            f"Connection test failed for {provider_type}: {body.get('message')}"
-        )
+        assert (
+            body["success"] is True
+        ), f"Connection test failed for {provider_type}: {body.get('message')}"
         print(f"\n  [{provider_type}] connection OK — {body['message']}")
 
     @pytest.mark.parametrize("provider_type,model,api_key", _INFERENCE_PARAMS)
@@ -416,11 +442,13 @@ class TestProviderInference:
         encrypted = encrypt_key(api_key)
         resp = requests.post(
             _url("/api/providers/models"),
-            headers=auth_headers,
-            json={"provider_type": provider_type, "encrypted_api_key": encrypted},
-            timeout=30,
+            headers = auth_headers,
+            json = {"provider_type": provider_type, "encrypted_api_key": encrypted},
+            timeout = 30,
         )
-        assert resp.status_code == 200, f"Request failed ({resp.status_code}): {resp.text}"
+        assert (
+            resp.status_code == 200
+        ), f"Request failed ({resp.status_code}): {resp.text}"
         models = resp.json()
         assert isinstance(models, list), f"Expected list, got {type(models)}"
         assert len(models) > 0, f"No models returned for {provider_type}"
@@ -449,14 +477,14 @@ class TestProviderInference:
         }
         with requests.post(
             _url("/v1/chat/completions"),
-            headers={**auth_headers, "Content-Type": "application/json"},
-            json=payload,
-            stream=True,
-            timeout=60,
+            headers = {**auth_headers, "Content-Type": "application/json"},
+            json = payload,
+            stream = True,
+            timeout = 60,
         ) as resp:
-            assert resp.status_code == 200, (
-                f"Chat completions failed ({resp.status_code}): {resp.text[:500]}"
-            )
+            assert (
+                resp.status_code == 200
+            ), f"Chat completions failed ({resp.status_code}): {resp.text[:500]}"
             reply, saw_done = _parse_sse_stream(resp)
 
         assert reply.strip(), f"Empty reply from {provider_type}/{model}"
@@ -467,17 +495,19 @@ class TestProviderInference:
 # ── TestVisionInference ─────────────────────────────────────────────
 
 # Sloth photo — used to test vision routing across providers
-_VISION_IMAGE_URL = "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
+_VISION_IMAGE_URL = (
+    "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
+)
 
 _VISION_PARAMS = [
     pytest.param(
         ptype,
         model,
         PROVIDER_KEYS.get(ptype, ""),
-        id=ptype,
-        marks=pytest.mark.skipif(
+        id = ptype,
+        marks = pytest.mark.skipif(
             not PROVIDER_KEYS.get(ptype, ""),
-            reason=f"no key for {ptype}",
+            reason = f"no key for {ptype}",
         ),
     )
     for ptype, (_, model) in _PROVIDER_CONFIGS.items()
@@ -504,13 +534,21 @@ class TestVisionInference:
         """Image URL + text message → non-empty streamed reply."""
         encrypted = encrypt_key(api_key)
         payload = {
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Which animal is in this image? Reply in one word."},
-                    {"type": "image_url", "image_url": {"url": vision_image_data_url}},
-                ],
-            }],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Which animal is in this image? Reply in one word.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": vision_image_data_url},
+                        },
+                    ],
+                }
+            ],
             "stream": True,
             "max_tokens": 215,
             "provider_type": provider_type,
@@ -519,14 +557,14 @@ class TestVisionInference:
         }
         with requests.post(
             _url("/v1/chat/completions"),
-            headers={**auth_headers, "Content-Type": "application/json"},
-            json=payload,
-            stream=True,
-            timeout=60,
+            headers = {**auth_headers, "Content-Type": "application/json"},
+            json = payload,
+            stream = True,
+            timeout = 60,
         ) as resp:
-            assert resp.status_code == 200, (
-                f"Vision request failed ({resp.status_code}): {resp.text[:300]}"
-            )
+            assert (
+                resp.status_code == 200
+            ), f"Vision request failed ({resp.status_code}): {resp.text[:300]}"
             reply, saw_done = _parse_sse_stream(resp)
 
         assert reply.strip(), f"Empty reply from {provider_type}/{model}"
@@ -548,17 +586,21 @@ class TestLocalInferenceUnaffected:
         """
         resp = requests.post(
             _url("/v1/chat/completions"),
-            headers={**auth_headers, "Content-Type": "application/json"},
-            json={
+            headers = {**auth_headers, "Content-Type": "application/json"},
+            json = {
                 "messages": [{"role": "user", "content": "Hello"}],
                 "stream": False,
             },
-            timeout=15,
+            timeout = 15,
         )
         allowed = {200, 400, 503}
         assert resp.status_code in allowed, (
             f"Unexpected status {resp.status_code} for local inference path: {resp.text[:300]}\n"
             f"This likely means the provider fields broke the base request schema."
         )
-        status_label = "local model responded" if resp.status_code == 200 else "no model loaded (expected)"
+        status_label = (
+            "local model responded"
+            if resp.status_code == 200
+            else "no model loaded (expected)"
+        )
         print(f"\n  status={resp.status_code} ({status_label}) — local path unaffected")

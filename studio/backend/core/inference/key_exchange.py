@@ -29,13 +29,17 @@ def init_key_pair() -> None:
     """Generate an RSA-2048 key pair. Called once at server startup."""
     global _private_key, _public_key_pem
     _private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
+        public_exponent = 65537,
+        key_size = 2048,
     )
-    _public_key_pem = _private_key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("utf-8")
+    _public_key_pem = (
+        _private_key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("utf-8")
+    )
     logger.info("RSA key pair generated for API key encryption")
 
 
@@ -63,9 +67,9 @@ def decrypt_api_key(encrypted_b64: str) -> str:
     plaintext = _private_key.decrypt(
         ciphertext,
         padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None,
+            mgf = padding.MGF1(algorithm = hashes.SHA256()),
+            algorithm = hashes.SHA256(),
+            label = None,
         ),
     )
     return plaintext.decode("utf-8")

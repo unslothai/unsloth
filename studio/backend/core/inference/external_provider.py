@@ -30,7 +30,7 @@ class ExternalProviderClient:
         self.provider_type = provider_type
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
+        self._client = httpx.AsyncClient(timeout = httpx.Timeout(timeout, connect = 10.0))
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -101,12 +101,12 @@ class ExternalProviderClient:
             async with self._client.stream(
                 "POST",
                 url,
-                json=body,
-                headers=self._auth_headers(),
+                json = body,
+                headers = self._auth_headers(),
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error_text = error_body.decode("utf-8", errors = "replace")
                     logger.error(
                         "External provider returned %d: %s",
                         response.status_code,
@@ -127,7 +127,7 @@ class ExternalProviderClient:
                         if line.strip():
                             yield line
                 except GeneratorExit:
-                    await response.aclose()   # set PoolByteStream._closed=True FIRST
+                    await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
@@ -137,17 +137,23 @@ class ExternalProviderClient:
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
             yield _error_sse_line(
-                502, f"Failed to connect to {self.provider_type}: {exc}", self.provider_type
+                502,
+                f"Failed to connect to {self.provider_type}: {exc}",
+                self.provider_type,
             )
         except httpx.ReadTimeout as exc:
             logger.error("Read timeout from %s: %s", self.provider_type, exc)
             yield _error_sse_line(
-                504, f"Timeout waiting for {self.provider_type} response", self.provider_type
+                504,
+                f"Timeout waiting for {self.provider_type} response",
+                self.provider_type,
             )
         except httpx.HTTPError as exc:
             logger.error("HTTP error from %s: %s", self.provider_type, exc)
             yield _error_sse_line(
-                502, f"Error communicating with {self.provider_type}: {exc}", self.provider_type
+                502,
+                f"Error communicating with {self.provider_type}: {exc}",
+                self.provider_type,
             )
 
     async def _stream_anthropic(
@@ -175,8 +181,13 @@ class ExternalProviderClient:
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
-                system = content if isinstance(content, str) else \
-                    "\n".join(p["text"] for p in content if p.get("type") == "text")
+                system = (
+                    content
+                    if isinstance(content, str)
+                    else "\n".join(
+                        p["text"] for p in content if p.get("type") == "text"
+                    )
+                )
                 continue
 
             content = msg.get("content")
@@ -191,24 +202,31 @@ class ExternalProviderClient:
                         if url.startswith("data:"):
                             # data:image/png;base64,<DATA> → split header and data
                             header, _, b64data = url.partition(",")
-                            media_type = header.split(";")[0].replace("data:", "") or "image/jpeg"
-                            anthropic_parts.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": b64data,
-                                },
-                            })
+                            media_type = (
+                                header.split(";")[0].replace("data:", "")
+                                or "image/jpeg"
+                            )
+                            anthropic_parts.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": b64data,
+                                    },
+                                }
+                            )
                         else:
                             # Remote URL — Anthropic supports url source type natively
-                            anthropic_parts.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "url",
-                                    "url": url,
-                                },
-                            })
+                            anthropic_parts.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "url",
+                                        "url": url,
+                                    },
+                                }
+                            )
                 filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
                 filtered.append(msg)
@@ -239,16 +257,20 @@ class ExternalProviderClient:
             async with self._client.stream(
                 "POST",
                 url,
-                json=body,
-                headers=self._auth_headers(),
+                json = body,
+                headers = self._auth_headers(),
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error_text = error_body.decode("utf-8", errors = "replace")
                     logger.error(
-                        "Anthropic returned %d: %s", response.status_code, error_text[:500]
+                        "Anthropic returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -263,7 +285,7 @@ class ExternalProviderClient:
                         if not line.startswith("data:"):
                             continue
 
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                         if not data_str:
                             continue
 
@@ -280,11 +302,13 @@ class ExternalProviderClient:
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {"content": delta.get("text", "")},
-                                        "finish_reason": None,
-                                    }],
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": delta.get("text", "")},
+                                            "finish_reason": None,
+                                        }
+                                    ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
 
@@ -294,20 +318,26 @@ class ExternalProviderClient:
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {},
-                                        "finish_reason": _finish_reason_map.get(stop_reason, "stop"),
-                                    }],
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {},
+                                            "finish_reason": _finish_reason_map.get(
+                                                stop_reason, "stop"
+                                            ),
+                                        }
+                                    ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
 
                         elif event_type == "message_stop":
                             yield "data: [DONE]"
-                            await response.aclose()   # set PoolByteStream._closed=True FIRST
+                            await (
+                                response.aclose()
+                            )  # set PoolByteStream._closed=True FIRST
                             break
                 except GeneratorExit:
-                    await response.aclose()   # set PoolByteStream._closed=True FIRST
+                    await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
@@ -316,13 +346,25 @@ class ExternalProviderClient:
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
-            yield _error_sse_line(502, f"Failed to connect to {self.provider_type}: {exc}", self.provider_type)
+            yield _error_sse_line(
+                502,
+                f"Failed to connect to {self.provider_type}: {exc}",
+                self.provider_type,
+            )
         except httpx.ReadTimeout as exc:
             logger.error("Read timeout from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(504, f"Timeout waiting for {self.provider_type} response", self.provider_type)
+            yield _error_sse_line(
+                504,
+                f"Timeout waiting for {self.provider_type} response",
+                self.provider_type,
+            )
         except httpx.HTTPError as exc:
             logger.error("HTTP error from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(502, f"Error communicating with {self.provider_type}: {exc}", self.provider_type)
+            yield _error_sse_line(
+                502,
+                f"Error communicating with {self.provider_type}: {exc}",
+                self.provider_type,
+            )
 
     async def chat_completion(
         self,
@@ -347,8 +389,8 @@ class ExternalProviderClient:
 
         response = await self._client.post(
             f"{self.base_url}/chat/completions",
-            json=body,
-            headers=self._auth_headers(),
+            json = body,
+            headers = self._auth_headers(),
         )
         response.raise_for_status()
         return response.json()
@@ -363,7 +405,7 @@ class ExternalProviderClient:
         try:
             response = await self._client.get(
                 f"{self.base_url}/models",
-                headers=self._auth_headers(),
+                headers = self._auth_headers(),
             )
             response.raise_for_status()
             data = response.json()

@@ -116,6 +116,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
+
     init_key_pair()
 
     if storage.ensure_default_admin():
