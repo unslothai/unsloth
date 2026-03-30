@@ -58,7 +58,8 @@ studio = [
 ]
 
 [tool.setuptools.packages.find]
-exclude = ["images*", "tests*", "kernels/moe*"]
+include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
+exclude = ["images*", "tests*", "*.node_modules*"]
 
 [project.optional-dependencies]
 triton = [
