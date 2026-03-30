@@ -49,7 +49,8 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "fireworks":  ("FIREWORKS_API_KEY", "accounts/fireworks/models/llama4-maverick-instruct-basic"),
     "perplexity": ("PERPLEXITY_API_KEY", "sonar"),
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
-    "anthropic": ("ANTHROPIC_API_KEY",  "claude-haiku-4-5"),
+    "anthropic":  ("ANTHROPIC_API_KEY",  "claude-haiku-4-5"),
+    "deepseek":   ("DEEPSEEK_API_KEY",   "deepseek-chat"),
 }
 
 PROVIDER_KEYS: dict[str, str] = {
@@ -241,7 +242,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 9, f"Expected 9 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 10, f"Expected 10 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:

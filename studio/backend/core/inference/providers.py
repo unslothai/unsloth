@@ -140,6 +140,20 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "openai_compatible": False,
         "notes": "Native Anthropic Messages API. Uses x-api-key header and /v1/messages endpoint with SSE translation.",
     },
+    "deepseek": {
+        "display_name": "DeepSeek",
+        "base_url": "https://api.deepseek.com/v1",
+        "default_models": [
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
