@@ -13,6 +13,8 @@ import { type ModelEntry, modelInfo } from "@huggingface/hub";
  */
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// HF API allows bursts but rate-limits sustained traffic; 3 parallel requests
+// keeps startup snappy while staying well under the observed throttle threshold.
 const MAX_CONCURRENT = 3;
 
 // ── Cache & in-flight maps ──────────────────────────────────────
