@@ -144,7 +144,8 @@ def _compute_num_dense_layers(text_config, total_layers: int) -> int:
     if sparse_step is not None and sparse_step > 0:
         mlp_only_set = set(mlp_only)
         moe_count = sum(
-            1 for i in range(total_layers)
+            1
+            for i in range(total_layers)
             if i not in mlp_only_set and (i + 1) % sparse_step == 0
         )
         return total_layers - moe_count
@@ -271,8 +272,10 @@ def _compute_layer_elements(arch: ModelArchConfig):
     if n_experts > 1:
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
-        mlp_total = (_compute_moe_mlp_elements(arch) * n_moe
-                     + _compute_dense_mlp_elements(arch) * n_dense)
+        mlp_total = (
+            _compute_moe_mlp_elements(arch) * n_moe
+            + _compute_dense_mlp_elements(arch) * n_dense
+        )
     else:
         mlp_total = _compute_dense_mlp_elements(arch) * n_layers
 
@@ -292,9 +295,7 @@ def compute_model_weights_bytes(
     non_quantizable = layernorms * n_layers + embed_tokens + lm_head
 
     if training_method == "qlora" and load_in_4bit:
-        return int(
-            total_quantizable * 2 / QUANT_4BIT_FACTOR + non_quantizable * 2
-        )
+        return int(total_quantizable * 2 / QUANT_4BIT_FACTOR + non_quantizable * 2)
 
     return int((total_quantizable + non_quantizable) * 2)
 
@@ -306,7 +307,9 @@ def compute_total_params(arch: ModelArchConfig) -> int:
 
 
 def _lora_attn_elements(
-    arch: ModelArchConfig, r: int, target_modules: list,
+    arch: ModelArchConfig,
+    r: int,
+    target_modules: list,
 ) -> int:
     hd = arch.hidden_size
     if arch.q_lora_rank is not None:
@@ -337,7 +340,11 @@ def _lora_attn_elements(
 
 
 def _lora_mlp_elements(
-    hd: int, mlp_size: int, r: int, target_modules: list, expert_mult: int,
+    hd: int,
+    mlp_size: int,
+    r: int,
+    target_modules: list,
+    expert_mult: int,
 ) -> int:
     module_ab = {
         "gate_proj": (hd * r, r * mlp_size),
@@ -367,16 +374,31 @@ def compute_lora_params(
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
         moe_mlp = _lora_mlp_elements(
-            hd, _get_mlp_size(arch), r, target_modules, n_experts,
+            hd,
+            _get_mlp_size(arch),
+            r,
+            target_modules,
+            n_experts,
         )
         dense_mlp = _lora_mlp_elements(
-            hd, arch.intermediate_size, r, target_modules, 1,
+            hd,
+            arch.intermediate_size,
+            r,
+            target_modules,
+            1,
         )
         mlp_total = moe_mlp * n_moe + dense_mlp * n_dense
     else:
-        mlp_total = _lora_mlp_elements(
-            hd, arch.intermediate_size, r, target_modules, 1,
-        ) * n_layers
+        mlp_total = (
+            _lora_mlp_elements(
+                hd,
+                arch.intermediate_size,
+                r,
+                target_modules,
+                1,
+            )
+            * n_layers
+        )
 
     return attn_total + mlp_total
 

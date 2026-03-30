@@ -945,17 +945,23 @@ class TestRaiseIfOffloaded(unittest.TestCase):
 class TestMinGpuVram(unittest.TestCase):
     def test_min_gpu_vram_decreases_with_more_gpus(self):
         from utils.hardware.vram_estimation import (
-            ModelArchConfig, TrainingVramConfig, estimate_training_vram,
+            ModelArchConfig,
+            TrainingVramConfig,
+            estimate_training_vram,
         )
 
         arch = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 32,
-            num_attention_heads = 32, num_key_value_heads = 8,
-            intermediate_size = 14336, vocab_size = 128256,
+            hidden_size = 4096,
+            num_hidden_layers = 32,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 128256,
             tie_word_embeddings = False,
         )
         config = TrainingVramConfig(
-            training_method = "qlora", load_in_4bit = True,
+            training_method = "qlora",
+            load_in_4bit = True,
         )
         breakdown = estimate_training_vram(arch, config)
         v1 = breakdown.min_gpu_vram(1)
@@ -967,17 +973,23 @@ class TestMinGpuVram(unittest.TestCase):
 
     def test_total_equals_min_gpu_vram_1(self):
         from utils.hardware.vram_estimation import (
-            ModelArchConfig, TrainingVramConfig, estimate_training_vram,
+            ModelArchConfig,
+            TrainingVramConfig,
+            estimate_training_vram,
         )
 
         arch = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 32,
-            num_attention_heads = 32, num_key_value_heads = 8,
-            intermediate_size = 14336, vocab_size = 128256,
+            hidden_size = 4096,
+            num_hidden_layers = 32,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 128256,
             tie_word_embeddings = False,
         )
         config = TrainingVramConfig(
-            training_method = "qlora", load_in_4bit = True,
+            training_method = "qlora",
+            load_in_4bit = True,
         )
         breakdown = estimate_training_vram(arch, config)
         self.assertEqual(breakdown.total, breakdown.min_gpu_vram(1))
@@ -998,9 +1010,12 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
             patch(
                 "utils.hardware.hardware._load_config_for_gpu_estimate",
                 return_value = SimpleNamespace(
-                    hidden_size = 4096, num_hidden_layers = 32,
-                    num_attention_heads = 32, num_key_value_heads = 8,
-                    intermediate_size = 14336, vocab_size = 128256,
+                    hidden_size = 4096,
+                    num_hidden_layers = 32,
+                    num_attention_heads = 32,
+                    num_key_value_heads = 8,
+                    intermediate_size = 14336,
+                    vocab_size = 128256,
                     tie_word_embeddings = False,
                 ),
             ),
@@ -1068,9 +1083,7 @@ class TestDeviceMapForInference(unittest.TestCase):
 
     def test_training_uses_balanced(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
-            self.assertEqual(
-                get_device_map([0, 1], for_inference = False), "balanced"
-            )
+            self.assertEqual(get_device_map([0, 1], for_inference = False), "balanced")
 
     def test_single_gpu_always_sequential(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):

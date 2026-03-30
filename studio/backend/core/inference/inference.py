@@ -268,7 +268,7 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
-            device_map = get_device_map(gpu_ids, for_inference=True)
+            device_map = get_device_map(gpu_ids, for_inference = True)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -669,8 +669,12 @@ class InferenceBackend:
                     base_model_name, None, is_lora = False
                 )
                 if not self.load_model(
-                    base_config, max_seq_length, dtype, load_in_4bit, hf_token,
-                    gpu_ids=gpu_ids,
+                    base_config,
+                    max_seq_length,
+                    dtype,
+                    load_in_4bit,
+                    hf_token,
+                    gpu_ids = gpu_ids,
                 ):
                     return False, None, None
 

@@ -547,18 +547,28 @@ class TestExtractArchConfigMoE(unittest.TestCase):
 class TestSharedExperts(unittest.TestCase):
     def test_shared_experts_increase_weight_bytes(self):
         no_shared = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 32,
-            num_attention_heads = 32, num_key_value_heads = 8,
-            intermediate_size = 14336, vocab_size = 32000,
-            tie_word_embeddings = False, num_experts = 64,
-            moe_intermediate_size = 1407, n_shared_experts = 0,
+            hidden_size = 4096,
+            num_hidden_layers = 32,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 32000,
+            tie_word_embeddings = False,
+            num_experts = 64,
+            moe_intermediate_size = 1407,
+            n_shared_experts = 0,
         )
         with_shared = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 32,
-            num_attention_heads = 32, num_key_value_heads = 8,
-            intermediate_size = 14336, vocab_size = 32000,
-            tie_word_embeddings = False, num_experts = 64,
-            moe_intermediate_size = 1407, n_shared_experts = 2,
+            hidden_size = 4096,
+            num_hidden_layers = 32,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 32000,
+            tie_word_embeddings = False,
+            num_experts = 64,
+            moe_intermediate_size = 1407,
+            n_shared_experts = 2,
         )
         w_no = compute_model_weights_bytes(no_shared, "full", False)
         w_yes = compute_model_weights_bytes(with_shared, "full", False)
@@ -566,7 +576,9 @@ class TestSharedExperts(unittest.TestCase):
         delta_per_layer = 4096 * 1407 * 3 * 2
         expected_delta = delta_per_layer * 32 * 2
         actual_delta = w_yes - w_no
-        self.assertAlmostEqual(actual_delta, expected_delta, delta = expected_delta * 0.01)
+        self.assertAlmostEqual(
+            actual_delta, expected_delta, delta = expected_delta * 0.01
+        )
 
     def test_deepseek_v3_params_in_range(self):
         total = compute_total_params(DEEPSEEK_V3)
@@ -578,11 +590,15 @@ class TestSharedExperts(unittest.TestCase):
 class TestMLA(unittest.TestCase):
     def test_mla_different_from_standard(self):
         from utils.hardware.vram_estimation import _compute_attn_elements
+
         mla_arch = DEEPSEEK_V3
         std_arch = ModelArchConfig(
-            hidden_size = 7168, num_hidden_layers = 61,
-            num_attention_heads = 128, num_key_value_heads = 128,
-            intermediate_size = 18432, vocab_size = 129280,
+            hidden_size = 7168,
+            num_hidden_layers = 61,
+            num_attention_heads = 128,
+            num_key_value_heads = 128,
+            intermediate_size = 18432,
+            vocab_size = 129280,
         )
         mla_attn = _compute_attn_elements(mla_arch)
         std_attn = _compute_attn_elements(std_arch)
@@ -596,19 +612,29 @@ class TestMLA(unittest.TestCase):
 class TestDenseMoEMix(unittest.TestCase):
     def test_dense_layers_change_total(self):
         all_moe = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 46,
-            num_attention_heads = 96, num_key_value_heads = 8,
-            intermediate_size = 10944, vocab_size = 151552,
-            tie_word_embeddings = False, num_experts = 128,
-            moe_intermediate_size = 1408, n_shared_experts = 1,
+            hidden_size = 4096,
+            num_hidden_layers = 46,
+            num_attention_heads = 96,
+            num_key_value_heads = 8,
+            intermediate_size = 10944,
+            vocab_size = 151552,
+            tie_word_embeddings = False,
+            num_experts = 128,
+            moe_intermediate_size = 1408,
+            n_shared_experts = 1,
             num_dense_layers = 0,
         )
         mixed = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 46,
-            num_attention_heads = 96, num_key_value_heads = 8,
-            intermediate_size = 10944, vocab_size = 151552,
-            tie_word_embeddings = False, num_experts = 128,
-            moe_intermediate_size = 1408, n_shared_experts = 1,
+            hidden_size = 4096,
+            num_hidden_layers = 46,
+            num_attention_heads = 96,
+            num_key_value_heads = 8,
+            intermediate_size = 10944,
+            vocab_size = 151552,
+            tie_word_embeddings = False,
+            num_experts = 128,
+            moe_intermediate_size = 1408,
+            n_shared_experts = 1,
             num_dense_layers = 1,
         )
         w_all = compute_model_weights_bytes(all_moe, "full", False)
@@ -635,20 +661,32 @@ class TestDenseMoEMix(unittest.TestCase):
 
     def test_lora_dense_vs_moe_layers_differ(self):
         all_moe = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 10,
-            num_attention_heads = 32, num_key_value_heads = 8,
-            intermediate_size = 14336, vocab_size = 32000,
-            tie_word_embeddings = False, num_experts = 8,
-            moe_intermediate_size = 1024, num_dense_layers = 0,
+            hidden_size = 4096,
+            num_hidden_layers = 10,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 32000,
+            tie_word_embeddings = False,
+            num_experts = 8,
+            moe_intermediate_size = 1024,
+            num_dense_layers = 0,
         )
         mixed = ModelArchConfig(
-            hidden_size = 4096, num_hidden_layers = 10,
-            num_attention_heads = 32, num_key_value_heads = 8,
-            intermediate_size = 14336, vocab_size = 32000,
-            tie_word_embeddings = False, num_experts = 8,
-            moe_intermediate_size = 1024, num_dense_layers = 5,
+            hidden_size = 4096,
+            num_hidden_layers = 10,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 32000,
+            tie_word_embeddings = False,
+            num_experts = 8,
+            moe_intermediate_size = 1024,
+            num_dense_layers = 5,
         )
-        lora_all = compute_lora_params(all_moe, 16, ["gate_proj", "up_proj", "down_proj"])
+        lora_all = compute_lora_params(
+            all_moe, 16, ["gate_proj", "up_proj", "down_proj"]
+        )
         lora_mix = compute_lora_params(mixed, 16, ["gate_proj", "up_proj", "down_proj"])
         self.assertNotEqual(lora_all, lora_mix)
 
