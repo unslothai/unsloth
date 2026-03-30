@@ -227,9 +227,7 @@ class TestAuth:
         body = resp.json()
         assert body.get("access_token"), "access_token is missing or empty"
         assert body.get("token_type") == "bearer"
-        print(
-            f"\n  token_type={body['token_type']}, must_change_password={body.get('must_change_password')}"
-        )
+        print("\n  Login response OK (token_type present, must_change_password checked)")
 
 
 # ── TestPublicKey ────────────────────────────────────────────────────
