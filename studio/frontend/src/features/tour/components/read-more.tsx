@@ -2,11 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export function ReadMore({ href = "#" }: { href?: string }) {
+  const isExternal = href.startsWith("http");
   return (
     <a
       href={href}
-      target="_blank"
-      rel="noopener noreferrer"
+      target={isExternal ? "_blank" : undefined}
+      rel={isExternal ? "noopener noreferrer" : undefined}
       onClick={(e) => {
         if (href === "#") e.preventDefault();
       }}
