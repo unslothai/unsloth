@@ -259,8 +259,8 @@ _try_bun_install() {
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
-        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ]; } \
-        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ]; }; then
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
         rm -f "$_log"
         return 0
     fi

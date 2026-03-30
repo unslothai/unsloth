@@ -1115,8 +1115,8 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         # On Windows, .bin/ entries vary by package manager:
         #   npm  → tsc, tsc.cmd, tsc.ps1
         #   bun  → tsc.exe, tsc.bunx
-        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe")
-        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe")
+        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
         if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
             # bun install succeeded and critical binaries are present
         } elseif ($bunExit -eq 0) {
@@ -1126,8 +1126,8 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
             $bunExit = Invoke-SetupCommand { bun install }
-            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe")
-            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe")
+            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
                 Write-Host "   bun retry failed, falling back to npm" -ForegroundColor Yellow
                 if (Test-Path "node_modules") {
