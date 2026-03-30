@@ -966,7 +966,11 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size + estimated KV cache
+            # Select GPU(s) based on model size + estimated KV cache.
+            # Seed safe defaults before GPU probing so the except path
+            # still has valid state to publish.
+            effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+            max_available_ctx = self._context_length or effective_ctx
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
