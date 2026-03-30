@@ -106,6 +106,25 @@ function makeMapModel(excludeGguf: boolean) {
 const UNSLOTH_PREFETCH = 20;
 
 /**
+ * Prime the hf-cache from a listModels result. For public (non-gated,
+ * non-private) models, also prime the anonymous slot so the VRAM hook
+ * gets cache hits without re-fetching. Gated/private models are only
+ * cached under the caller's token to avoid auth leakage.
+ */
+function primeFromListing(
+  name: string,
+  accessToken: string | undefined,
+  model: unknown,
+): void {
+  const data = model as Parameters<typeof primeCacheFromListing>[2];
+  const r = model as { gated?: false | "auto" | "manual"; private?: boolean };
+  primeCacheFromListing(name, accessToken, data);
+  if (accessToken && !r.private && !r.gated) {
+    primeCacheFromListing(name, undefined, data);
+  }
+}
+
+/**
  * Creates a merged async generator that yields unsloth-owned models first,
  * then general results (with deduplication).
  */
@@ -137,15 +156,7 @@ async function* mergedModelIterator(
     const m = model as { name?: string };
     if (m.name) {
       seen.add(m.name);
-      // Prime cache from listing results. For public models, also prime the
-      // anonymous slot so the VRAM hook gets cache hits without re-fetching.
-      // Skip anon priming for gated/private models to avoid auth leakage.
-      const data = model as Parameters<typeof primeCacheFromListing>[2];
-      const r = model as { gated?: false | "auto" | "manual"; private?: boolean };
-      primeCacheFromListing(m.name, accessToken, data);
-      if (accessToken && !r.private && !r.gated) {
-        primeCacheFromListing(m.name, undefined, data);
-      }
+      primeFromListing(m.name, accessToken, model);
     }
     yield model;
     count++;
@@ -157,15 +168,7 @@ async function* mergedModelIterator(
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
-      // Prime cache from listing results. For public models, also prime the
-      // anonymous slot so the VRAM hook gets cache hits without re-fetching.
-      // Skip anon priming for gated/private models to avoid auth leakage.
-      const data = model as Parameters<typeof primeCacheFromListing>[2];
-      const r = model as { gated?: false | "auto" | "manual"; private?: boolean };
-      primeCacheFromListing(m.name, accessToken, data);
-      if (accessToken && !r.private && !r.gated) {
-        primeCacheFromListing(m.name, undefined, data);
-      }
+      primeFromListing(m.name, accessToken, model);
     }
     yield model;
   }
@@ -216,15 +219,7 @@ async function* priorityThenListingIterator(
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
-      // Prime cache from listing results. For public models, also prime the
-      // anonymous slot so the VRAM hook gets cache hits without re-fetching.
-      // Skip anon priming for gated/private models to avoid auth leakage.
-      const data = model as Parameters<typeof primeCacheFromListing>[2];
-      const r = model as { gated?: false | "auto" | "manual"; private?: boolean };
-      primeCacheFromListing(m.name, accessToken, data);
-      if (accessToken && !r.private && !r.gated) {
-        primeCacheFromListing(m.name, undefined, data);
-      }
+      primeFromListing(m.name, accessToken, model);
     }
     yield model;
   }
