@@ -28,11 +28,42 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
 
+_is_verbose() {
+    [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
+}
+
+verbose_substep() {
+    if _is_verbose; then
+        substep "$1"
+    fi
+    return 0
+}
+
+run_maybe_quiet() {
+    if _is_verbose; then
+        "$@"
+    else
+        "$@" > /dev/null 2>&1
+    fi
+}
+
 # ── Helper: run command quietly, show output only on failure ──
 _run_quiet() {
     local on_fail=$1
     local label=$2
     shift 2
+
+    if _is_verbose; then
+        local exit_code
+        "$@" && return 0
+        exit_code=$?
+        step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
+        if [ "$on_fail" = "exit" ]; then
+            exit "$exit_code"
+        else
+            return "$exit_code"
+        fi
+    fi
 
     local tmplog
     tmplog=$(mktemp) || {
@@ -65,11 +96,18 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
+print_llama_error_log() {
+    local log_file=$1
+    [ -s "$log_file" ] || return 0
+    substep "llama.cpp diagnostics (last 120 lines):"
+    tail -n 120 "$log_file" | sed 's/^/   | /' >&2
+}
+
 # ── Banner ──
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-
+verbose_substep "verbose diagnostics enabled"
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
@@ -97,6 +135,7 @@ fi
 
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     step "frontend" "up to date"
+    verbose_substep "frontend dist is newer than source inputs"
 else
 
 # ── Node ──
@@ -117,7 +156,7 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
             # In Colab, just upgrade npm directly - nvm doesn't work well
             if [ "$NPM_MAJOR" -lt 11 ]; then
                 substep "upgrading npm..."
-                npm install -g npm@latest > /dev/null 2>&1
+                run_maybe_quiet npm install -g npm@latest
             fi
             NEED_NODE=false
         fi
@@ -127,7 +166,11 @@ fi
 if [ "$NEED_NODE" = true ]; then
     substep "installing nvm..."
     export NODE_OPTIONS=--dns-result-order=ipv4first
-    curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    if _is_verbose; then
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    else
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    fi
 
     export NVM_DIR="$HOME/.nvm"
     set +u
@@ -141,7 +184,11 @@ if [ "$NEED_NODE" = true ]; then
 
     substep "installing Node LTS..."
     run_quiet "nvm install" nvm install --lts
-    nvm use --lts > /dev/null 2>&1
+    if _is_verbose; then
+        nvm use --lts
+    else
+        nvm use --lts > /dev/null 2>&1
+    fi
     set -u
 
     NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -158,13 +205,14 @@ if [ "$NEED_NODE" = true ]; then
 fi
 
 step "node" "$(node -v) | npm $(npm -v)"
+verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NPM_MAJOR=${NPM_MAJOR:-unknown}"
 
 # ── Install bun (optional, faster package installs) ──
 # Uses npm to install bun globally -- Node is already guaranteed above,
 # avoids platform-specific installers, PATH issues, and admin requirements.
 if ! command -v bun &>/dev/null; then
     substep "installing bun..."
-    if npm install -g bun > /dev/null 2>&1 && command -v bun &>/dev/null; then
+    if run_maybe_quiet npm install -g bun && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
@@ -209,7 +257,10 @@ _try_bun_install() {
     _log=$(mktemp)
     bun install >"$_log" 2>&1 || _exit_code=$?
 
-    if [ "$_exit_code" -eq 0 ] && [ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/vite ]; then
+    # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
+    if [ "$_exit_code" -eq 0 ] \
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
         rm -f "$_log"
         return 0
     fi
@@ -228,21 +279,25 @@ _try_bun_install() {
 
 _bun_install_ok=false
 if command -v bun &>/dev/null; then
-    echo "   Using bun for package install (faster)"
+    substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
     else
         # First attempt failed, likely due to corrupt cache entries.
         # Clear the cache and retry once.
         echo "   Clearing bun cache and retrying..."
-        bun pm cache rm > /dev/null 2>&1 || true
+        run_maybe_quiet bun pm cache rm || true
         if _try_bun_install; then
             _bun_install_ok=true
         fi
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet "npm install" npm install
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
+    _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ]; then
+        exit "$_npm_install_rc"
+    fi
 fi
 run_quiet "npm run build" npm run build
 
@@ -265,7 +320,11 @@ fi  # end frontend build check
 # ── oxc-validator runtime ──
 if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    run_quiet "npm install (oxc validator runtime)" npm install
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
+    _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ]; then
+        exit "$_oxc_install_rc"
+    fi
     cd "$SCRIPT_DIR"
 fi
 
@@ -287,9 +346,19 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         # packages (huggingface-hub, datasets, transformers) and only pulls
         # in genuinely missing ones (structlog, fastapi, etc.).
         substep "Colab detected, installing Studio backend dependencies..."
+        _COLAB_REQS_TMP="$(mktemp)"
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
-            | grep -v '^#' | grep -v '^$' \
-            | pip install -q -r /dev/stdin 2>/dev/null || true
+            | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
+        if [ -s "$_COLAB_REQS_TMP" ]; then
+            if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
+                rm -f "$_COLAB_REQS_TMP"
+                step "python" "Colab backend dependency install failed" "$C_ERR"
+                exit 1
+            fi
+        else
+            step "python" "no Colab backend dependencies resolved from requirements file" "$C_WARN"
+        fi
+        rm -f "$_COLAB_REQS_TMP"
         _COLAB_NO_VENV=true
     else
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
@@ -308,7 +377,13 @@ install_python_stack() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
-elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
+elif {
+    if _is_verbose; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    else
+        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    fi
+}; then
     export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
 fi
@@ -325,7 +400,8 @@ cd "$SCRIPT_DIR"
 # On Colab without a venv, skip venv-dependent Python deps sections but
 # continue to llama.cpp install so GGUF inference is available.
 if [ "$_COLAB_NO_VENV" = true ]; then
-    echo "✅ Studio backend dependencies installed into system Python"
+    step "python" "backend deps installed into system Python"
+    substep "continuing to llama.cpp install for GGUF inference support"
 fi
 
 # ── Check if Python deps need updating ──
@@ -375,6 +451,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     step "transformers" "5.x pre-installed"
 else
     step "python" "dependencies up to date"
+    verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
@@ -383,6 +460,7 @@ mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
+_LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-latest}"
 _HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
@@ -400,7 +478,7 @@ else
 fi
 if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
     step "llama.cpp" "failed to resolve prebuilt tag via $_HELPER_RELEASE_REPO" "$C_WARN"
-    cat "$_RESOLVE_LLAMA_LOG" >&2 || true
+    print_llama_error_log "$_RESOLVE_LLAMA_LOG"
     set +e
     # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
     # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
@@ -426,6 +504,7 @@ fi
 rm -f "$_RESOLVE_LLAMA_LOG"
 
 substep "resolved llama.cpp tag: $_RESOLVED_LLAMA_TAG"
+verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
 if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
@@ -447,14 +526,25 @@ else
         if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
             _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
         fi
+        _PREBUILT_LOG="$(mktemp)"
         set +e
-        "${_PREBUILT_CMD[@]}"
-        _PREBUILT_STATUS=$?
+        if _is_verbose; then
+            "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+            _PREBUILT_STATUS=${PIPESTATUS[0]}
+        else
+            "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
+            _PREBUILT_STATUS=$?
+        fi
         set -e
 
         if [ "$_PREBUILT_STATUS" -eq 0 ]; then
             step "llama.cpp" "prebuilt installed and validated"
+            verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
+            rm -f "$_PREBUILT_LOG"
         else
+            step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+            print_llama_error_log "$_PREBUILT_LOG"
+            rm -f "$_PREBUILT_LOG"
             if [ -d "$LLAMA_CPP_DIR" ]; then
                 substep "prebuilt update failed; existing install restored"
             fi
@@ -523,12 +613,15 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = false ]; then
     :
 elif [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
     step "llama.cpp" "skipped (missing build deps)" "$C_WARN"
+    [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
 else
 {
     if ! command -v cmake &>/dev/null; then
         step "llama.cpp" "skipped (cmake not found)" "$C_WARN"
+        [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     elif ! command -v git &>/dev/null; then
         step "llama.cpp" "skipped (git not found)" "$C_WARN"
+        [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     else
         BUILD_OK=true
         _CLONE_BRANCH_ARGS=()
@@ -691,8 +784,10 @@ else
             [ -f "$LLAMA_CPP_DIR/llama-quantize" ] && step "llama-quantize" "built"
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
+            _LLAMA_CPP_DEGRADED=true
         else
             step "llama.cpp" "build failed" "$C_ERR"
+            [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
         fi
     fi
 }
@@ -702,14 +797,35 @@ fi  # end _SKIP_GGUF_BUILD check
 if [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Setup Complete (limited: llama.cpp unavailable)"
+    else
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
+    fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
     substep "from colab import start"
     substep "start()"
 else
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Installed (limited: llama.cpp unavailable)"
+    else
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
+    fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+    else
+        printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+    fi
 fi
 echo ""
+
+# When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
+# installer can report the GGUF failure after finishing PATH/shortcut setup.
+# When called directly via 'unsloth studio update', keep the install
+# successful -- the footer above already reports the limitation and Studio
+# is still usable for non-GGUF workflows.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
+    exit 1
+fi

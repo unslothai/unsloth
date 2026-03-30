@@ -48,6 +48,7 @@ class LlamaCppBackend:
         self._healthy = False
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
+        self._max_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
@@ -99,6 +100,11 @@ class LlamaCppBackend:
     def context_length(self) -> Optional[int]:
         """Return the effective context length the server is running at."""
         return self._effective_context_length or self._context_length
+
+    @property
+    def max_context_length(self) -> Optional[int]:
+        """Return the maximum context currently available on this hardware."""
+        return self._max_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -287,7 +293,8 @@ class LlamaCppBackend:
                         continue
                     gpus.append((idx, free_mib))
             return gpus
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
             return []
 
     @staticmethod
@@ -328,6 +335,11 @@ class LlamaCppBackend:
                 return sorted(selected), False
 
         # Model is too large even for all GPUs, let --fit handle it
+        logger.debug(
+            "Model does not fit in available GPU memory, falling back to --fit",
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
+        )
         return None, True
 
     # ── KV cache VRAM estimation ─────────────────────────────────────
@@ -386,6 +398,11 @@ class LlamaCppBackend:
         If the model weights alone don't fit, returns min_ctx unchanged.
         """
         if not self._can_estimate_kv():
+            logger.debug(
+                "Skipping context fit because KV cache metadata is unavailable",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+            )
             return requested_ctx
 
         budget_bytes = available_mib * 1024 * 1024 * 0.70
@@ -399,6 +416,12 @@ class LlamaCppBackend:
         # Model weights alone exceed budget -- can't help by reducing ctx.
         # Return requested_ctx unchanged; --fit will handle VRAM management.
         if model_footprint >= budget_bytes:
+            logger.debug(
+                "Model footprint exceeds GPU budget before KV cache",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
+            )
             return requested_ctx
 
         # Binary search for max context that fits
@@ -960,7 +983,11 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size + estimated KV cache
+            # Select GPU(s) based on model size + estimated KV cache.
+            # Seed safe defaults before GPU probing so the except path
+            # still has valid state to publish.
+            effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+            max_available_ctx = self._context_length or effective_ctx
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
@@ -975,6 +1002,9 @@ class LlamaCppBackend:
                 else:
                     effective_ctx = 0
                 original_ctx = effective_ctx
+                # Default UI ceiling to the model's native context length.
+                # GPU/VRAM-fit logic below may shrink this if hardware is limited.
+                max_available_ctx = self._context_length or effective_ctx
 
                 # Auto-cap context to fit in GPU VRAM and select GPUs.
                 #
@@ -993,6 +1023,29 @@ class LlamaCppBackend:
                 explicit_ctx = n_ctx > 0
 
                 if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                    # Compute the largest hardware-aware cap from the model's
+                    # native context across all usable GPU subsets (for UI
+                    # bounds), independent of the currently requested context.
+                    native_ctx_for_cap = self._context_length or effective_ctx
+                    if native_ctx_for_cap > 0:
+                        ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        best_cap = 0
+                        for n_gpus in range(1, len(ranked_for_cap) + 1):
+                            subset = ranked_for_cap[:n_gpus]
+                            pool_mib = sum(free for _, free in subset)
+                            capped = self._fit_context_to_vram(
+                                native_ctx_for_cap,
+                                pool_mib,
+                                model_size,
+                                cache_type_kv,
+                            )
+                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            total_mib = (model_size + kv) / (1024 * 1024)
+                            if total_mib <= pool_mib * 0.70:
+                                best_cap = max(best_cap, capped)
+                        if best_cap > 0:
+                            max_available_ctx = best_cap
+
                     if explicit_ctx:
                         # Try to honor the user's requested context exactly.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
@@ -1043,7 +1096,13 @@ class LlamaCppBackend:
                                 break
 
                 elif gpus:
-                    # Can't estimate KV -- fall back to file-size-only check
+                    # Can't estimate KV -- fall back to file-size-only check.
+                    # Without KV estimation we cannot prove a hardware cap, so
+                    # keep the ceiling at the native context (already the default).
+                    logger.debug(
+                        "Falling back to file-size-only GPU selection",
+                        model_size_gb = round(model_size / (1024**3), 2),
+                    )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
 
                 if effective_ctx < original_ctx:
@@ -1313,6 +1372,11 @@ class LlamaCppBackend:
             self._effective_context_length = (
                 effective_ctx if effective_ctx > 0 else self._context_length
             )
+            self._max_context_length = (
+                max_available_ctx
+                if max_available_ctx > 0
+                else self._effective_context_length
+            )
 
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
@@ -1347,6 +1411,7 @@ class LlamaCppBackend:
             self._healthy = False
             self._context_length = None
             self._effective_context_length = None
+            self._max_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
             self._reasoning_always_on = False

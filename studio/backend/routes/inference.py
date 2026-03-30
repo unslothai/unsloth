@@ -160,6 +160,7 @@ async def load_model(
                     else False,
                     inference = inference_config,
                     context_length = llama_backend.context_length,
+                    max_context_length = llama_backend.max_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     chat_template = llama_backend.chat_template,
@@ -210,8 +211,17 @@ async def load_model(
                 detail = f"Invalid model identifier: {request.model_path}",
             )
 
+        # Normalize gpu_ids: empty list means auto-selection, same as None
+        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
+            if effective_gpu_ids is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "gpu_ids is not supported for GGUF models yet.",
+                )
+
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -285,6 +295,7 @@ async def load_model(
                 has_audio_input = is_audio_input_type(_gguf_audio),
                 inference = inference_config,
                 context_length = llama_backend.context_length,
+                max_context_length = llama_backend.max_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
@@ -372,6 +383,7 @@ async def load_model(
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
+            gpu_ids = effective_gpu_ids,
         )
 
         if not success:
@@ -423,6 +435,9 @@ async def load_model(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        logger.warning("Rejected inference GPU selection: %s", e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = str(e)
@@ -619,6 +634,7 @@ async def get_status(
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
+                max_context_length = llama_backend.max_context_length,
             )
 
         # Otherwise, report Unsloth backend status

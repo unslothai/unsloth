@@ -68,6 +68,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Update
+To update, use the same install commands as above. Or run (does not work on Windows):
 ```bash
 unsloth studio update
 ```
@@ -152,7 +153,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update --local
+unsloth studio update
 ```
 
 #### Developer installs: Windows PowerShell:
@@ -165,7 +166,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update --local
+unsloth studio update
 ```
 
 #### Nightly: MacOS, Linux, WSL:

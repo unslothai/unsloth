@@ -27,6 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
+from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
 
@@ -571,6 +572,7 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -594,7 +596,16 @@ class InferenceOrchestrator:
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
+                "gpu_ids": gpu_ids,
             }
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                gpu_ids,
+                model_name = model_name,
+                hf_token = hf_token,
+                load_in_4bit = load_in_4bit,
+            )
+            sub_config["resolved_gpu_ids"] = resolved_gpu_ids
+            sub_config["gpu_selection"] = gpu_selection
 
             # Always kill existing subprocess and spawn fresh.
             # Reusing a subprocess after unsloth patches torch internals
