@@ -165,10 +165,10 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
                 load_in_4bit = True,
             )
             self.assertIsNotNone(required)
-            # 4bit base = 30/3 = 10GB, required = 10 + max(10*0.5, 2) = 15GB
-            self.assertAlmostEqual(required, 15.0, places = 0)
+            # fallback: base=30/3.2=9.375, lora=30*0.04=1.2, act=30*0.15=4.5, cuda=1.4
+            self.assertAlmostEqual(required, 16.5, places = 0)
 
-    def test_full_finetune_uses_6x(self):
+    def test_full_finetune_uses_3_5x(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
 
         with patch(
@@ -180,7 +180,8 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
                 training_type = "Full Finetuning",
             )
             self.assertIsNotNone(required)
-            self.assertAlmostEqual(required, 60.0, places = 0)
+            # fallback: 10 * 3.5 + 1.4 cuda overhead = 36.4
+            self.assertAlmostEqual(required, 36.4, places = 0)
 
     def test_returns_none_when_unavailable(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
@@ -334,20 +335,12 @@ class TestGetDeviceMap(unittest.TestCase):
             dm = get_device_map(gpu_ids = [0])
             self.assertEqual(dm, "sequential")
 
-    def test_multi_gpu_4bit_returns_balanced(self):
+    def test_multi_gpu_returns_balanced(self):
         from utils.hardware.hardware import get_device_map
         import utils.hardware.hardware as hw
 
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA):
-            dm = get_device_map(gpu_ids = [0, 1], load_in_4bit = True)
-            self.assertEqual(dm, "balanced")
-
-    def test_multi_gpu_non4bit_returns_balanced(self):
-        from utils.hardware.hardware import get_device_map
-        import utils.hardware.hardware as hw
-
-        with patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA):
-            dm = get_device_map(gpu_ids = [0, 1], load_in_4bit = False)
+            dm = get_device_map(gpu_ids = [0, 1])
             self.assertEqual(dm, "balanced")
 
     def test_cpu_returns_sequential(self):

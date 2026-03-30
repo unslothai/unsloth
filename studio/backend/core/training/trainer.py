@@ -68,7 +68,6 @@ from utils.paths import (
     resolve_tensorboard_dir,
 )
 from trl import SFTTrainer, SFTConfig
-from .sft_meta_guard import maybe_enable_sft_meta_guard
 
 logger = get_logger(__name__)
 
@@ -633,7 +632,7 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            device_map = get_device_map(gpu_ids, load_in_4bit = load_in_4bit)
+            device_map = get_device_map(gpu_ids)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -3196,7 +3195,6 @@ class UnslothTrainer:
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
-                maybe_enable_sft_meta_guard(self.model, self.model_name, logger)
                 self.trainer = SFTTrainer(**trainer_kwargs)
             elif self.is_vlm:
                 # Image VLM: dataset is dict wrapper from format_and_template_dataset
@@ -3212,7 +3210,6 @@ class UnslothTrainer:
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
-                maybe_enable_sft_meta_guard(self.model, self.model_name, logger)
                 self.trainer = SFTTrainer(**trainer_kwargs)
             else:
                 # For text-only training, if the tokenizer is actually a Processor
@@ -3240,7 +3237,6 @@ class UnslothTrainer:
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
-                maybe_enable_sft_meta_guard(self.model, self.model_name, logger)
                 self.trainer = SFTTrainer(**trainer_kwargs)
                 # Restore the full processor as processing_class so checkpoint
                 # saves include preprocessor_config.json (needed for GGUF export).

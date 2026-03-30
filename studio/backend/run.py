@@ -318,23 +318,8 @@ def run_server(
                 print(f"⚠️ Frontend not found at {frontend_path}")
 
     # Create the uvicorn server and expose it for signal handlers
-    uvicorn_log_level = os.getenv("LOG_LEVEL", "INFO").lower()
-    if uvicorn_log_level not in {
-        "critical",
-        "error",
-        "warning",
-        "info",
-        "debug",
-        "trace",
-    }:
-        uvicorn_log_level = "info"
-
     config = uvicorn.Config(
-        app,
-        host = host,
-        port = port,
-        log_level = uvicorn_log_level,
-        access_log = False,
+        app, host = host, port = port, log_level = "info", access_log = False
     )
     _server = uvicorn.Server(config)
     _shutdown_event = Event()

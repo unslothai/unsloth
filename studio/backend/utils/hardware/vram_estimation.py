@@ -185,15 +185,11 @@ def _get_num_experts(arch: ModelArchConfig) -> int:
     return arch.num_experts if arch.num_experts and arch.num_experts > 1 else 1
 
 
-def compute_model_weights_bytes(
-    arch: ModelArchConfig,
-    training_method: str,
-    load_in_4bit: bool,
-) -> int:
+def _compute_layer_elements(arch: ModelArchConfig):
+    """Return (quantizable_per_layer, non_quant_per_layer, embed, lm_head) element counts."""
     hd = arch.hidden_size
     kv_size = _get_kv_size(arch)
     mlp_size = _get_mlp_size(arch)
-    n_layers = arch.num_hidden_layers
     n_experts = _get_num_experts(arch)
 
     qkvo = (hd + kv_size + kv_size + hd) * hd
@@ -203,11 +199,21 @@ def compute_model_weights_bytes(
     else:
         mlp = (hd * mlp_size) * 3
 
-    quantizable_elements = (qkvo + mlp) * n_layers
-
     layernorms = 2 * hd
     embed_tokens = arch.vocab_size * hd
     lm_head = 0 if arch.tie_word_embeddings else arch.vocab_size * hd
+    return qkvo + mlp, layernorms, embed_tokens, lm_head
+
+
+def compute_model_weights_bytes(
+    arch: ModelArchConfig,
+    training_method: str,
+    load_in_4bit: bool,
+) -> int:
+    quantizable_per_layer, layernorms, embed_tokens, lm_head = _compute_layer_elements(arch)
+    n_layers = arch.num_hidden_layers
+
+    quantizable_elements = quantizable_per_layer * n_layers
     non_quantizable_elements = layernorms * n_layers + embed_tokens + lm_head
 
     if training_method == "qlora" and load_in_4bit:
@@ -220,23 +226,9 @@ def compute_model_weights_bytes(
 
 
 def compute_total_params(arch: ModelArchConfig) -> int:
-    hd = arch.hidden_size
-    kv_size = _get_kv_size(arch)
-    mlp_size = _get_mlp_size(arch)
+    quantizable_per_layer, layernorms, embed_tokens, lm_head = _compute_layer_elements(arch)
     n_layers = arch.num_hidden_layers
-    n_experts = _get_num_experts(arch)
-
-    qkvo = (hd + kv_size + kv_size + hd) * hd
-    if n_experts > 1:
-        mlp = (hd * mlp_size) * 3 * n_experts
-        mlp += n_experts * hd
-    else:
-        mlp = (hd * mlp_size) * 3
-    layernorms = 2 * hd
-    embed_tokens = arch.vocab_size * hd
-    lm_head = 0 if arch.tie_word_embeddings else arch.vocab_size * hd
-
-    return (qkvo + mlp + layernorms) * n_layers + embed_tokens + lm_head
+    return (quantizable_per_layer + layernorms) * n_layers + embed_tokens + lm_head
 
 
 def compute_lora_params(
@@ -344,7 +336,7 @@ def estimate_training_vram(
     optimizer_bytes = compute_optimizer_bytes(trainable_params, config.optimizer)
     gradient_bytes = max(
         compute_gradient_bytes(trainable_params),
-        int(model_weights * 0.10),
+        int(model_weights * 0.15),
     )
     activations_computed = compute_activation_bytes(
         arch,
@@ -355,7 +347,7 @@ def estimate_training_vram(
     )
     activation_bytes = max(
         activations_computed,
-        int(model_weights * 0.10 * (config.batch_size / 2)),
+        int(model_weights * 0.15 * (config.batch_size / 2)),
     )
 
     return VramBreakdown(

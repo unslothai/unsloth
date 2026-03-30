@@ -85,16 +85,24 @@ Per_layer = (S*B*(H+K+K) + S*B*2 + S*B*(M+M)) * 2 * 1.25
 
 ## 6. Floors
 
-Gradients and activations have minimum floors at **20% of model weight memory** to account for autograd overhead, attention score matrices, NCCL buffers, mixed-precision scaling, and PyTorch fragmentation.
+Gradients and activations have minimum floors at **15% of model weight memory** to account for autograd overhead, attention score matrices, NCCL buffers, mixed-precision scaling, and PyTorch fragmentation.
 
 ```
-gradient_bytes  = max(computed, weights * 0.20)
-activation_bytes = max(computed, weights * 0.20 * B/2)
+gradient_bytes  = max(computed, weights * 0.15)
+activation_bytes = max(computed, weights * 0.15 * B/2)
 ```
 
 ## 7. CUDA Overhead
 
 **1.4 GB** fixed — CUDA driver + PyTorch runtime, calibrated on RTX 5070 Ti.
+
+## 8. Multi-GPU Overhead
+
+When sharding across multiple GPUs, each additional GPU (beyond the first) contributes only **85%** of its free VRAM to the usable pool. The 15% discount accounts for NCCL all-reduce buffers, PCIe/NVLink transfer overhead, synchronization barriers, and memory fragmentation from non-uniform shard sizes. Calibrated empirically on 2-8 GPU setups with NVLink and PCIe topologies.
+
+```
+usable_gb = free[gpu_0] + sum(free[gpu_i] * 0.85 for i in 1..N)
+```
 
 ---
 
@@ -122,15 +130,30 @@ activation_bytes = max(computed, weights * 0.20 * B/2)
 | Full FT adamw_8bit | 10.89 GB | 10.80 GB | +0.8% |
 | Full FT adamw_torch | 13.19 GB | 12.93 GB | +2.0% |
 
-*Note: e2e numbers predate the 20% floors, which add safety margin on top.*
+*Note: e2e numbers predate the 15% floors, which add safety margin on top.*
 
 ---
 
 ## Parameter Flow
 
 ```
-Frontend -> training.py -> prepare_gpu_selection -> auto_select_gpu_ids
-         -> estimate_required_model_memory_gb -> estimate_training_vram
+Frontend -> routes/{training,inference}.py
+         -> prepare_gpu_selection(gpu_ids, model_name, ...)
+            |
+            +-- gpu_ids is explicit (e.g. [5,6,7])
+            |     -> resolve_requested_gpu_ids: validate against parent-visible set
+            |     -> return all requested GPUs (model sharded across all of them)
+            |
+            +-- gpu_ids is None or []
+                  -> auto_select_gpu_ids: estimate VRAM, pick minimum GPUs needed
+                  -> estimate_required_model_memory_gb -> estimate_training_vram
+                  -> greedy selection: rank GPUs by free VRAM, add until model fits
+
+         -> get_device_map(resolved_gpu_ids)
+            -> "balanced" if >1 GPU, "sequential" otherwise
+
+         -> worker subprocess: apply_gpu_ids(resolved_gpu_ids)
+            -> sets CUDA_VISIBLE_DEVICES before torch/CUDA init
 ```
 
 Threaded params: `batch_size`, `max_seq_length`, `lora_r`, `target_modules`, `gradient_checkpointing`, `optim`.
