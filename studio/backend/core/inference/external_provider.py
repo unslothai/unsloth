@@ -117,9 +117,13 @@ class ExternalProviderClient:
                     )
                     return
 
-                async for line in response.aiter_lines():
-                    if line.strip():
-                        yield line
+                lines_iter = response.aiter_lines()
+                try:
+                    async for line in lines_iter:
+                        if line.strip():
+                            yield line
+                finally:
+                    await lines_iter.aclose()
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
@@ -238,54 +242,58 @@ class ExternalProviderClient:
                     yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
-                async for line in response.aiter_lines():
-                    if not line or line.startswith("event:"):
-                        continue
-                    if not line.startswith("data:"):
-                        continue
+                lines_iter = response.aiter_lines()
+                try:
+                    async for line in lines_iter:
+                        if not line or line.startswith("event:"):
+                            continue
+                        if not line.startswith("data:"):
+                            continue
 
-                    data_str = line[len("data:"):].strip()
-                    if not data_str:
-                        continue
+                        data_str = line[len("data:"):].strip()
+                        if not data_str:
+                            continue
 
-                    try:
-                        event = _json.loads(data_str)
-                    except _json.JSONDecodeError:
-                        continue
+                        try:
+                            event = _json.loads(data_str)
+                        except _json.JSONDecodeError:
+                            continue
 
-                    event_type = event.get("type")
+                        event_type = event.get("type")
 
-                    if event_type == "content_block_delta":
-                        delta = event.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            chunk = {
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {"content": delta.get("text", "")},
-                                    "finish_reason": None,
-                                }],
-                            }
-                            yield f"data: {_json.dumps(chunk)}"
+                        if event_type == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": delta.get("text", "")},
+                                        "finish_reason": None,
+                                    }],
+                                }
+                                yield f"data: {_json.dumps(chunk)}"
 
-                    elif event_type == "message_delta":
-                        stop_reason = event.get("delta", {}).get("stop_reason")
-                        if stop_reason:
-                            chunk = {
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {},
-                                    "finish_reason": _finish_reason_map.get(stop_reason, "stop"),
-                                }],
-                            }
-                            yield f"data: {_json.dumps(chunk)}"
+                        elif event_type == "message_delta":
+                            stop_reason = event.get("delta", {}).get("stop_reason")
+                            if stop_reason:
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": _finish_reason_map.get(stop_reason, "stop"),
+                                    }],
+                                }
+                                yield f"data: {_json.dumps(chunk)}"
 
-                    elif event_type == "message_stop":
-                        yield "data: [DONE]"
-                        return
+                        elif event_type == "message_stop":
+                            yield "data: [DONE]"
+                            return
+                finally:
+                    await lines_iter.aclose()
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
