@@ -967,7 +967,6 @@ class LlamaCppBackend:
             self._port = self._find_free_port()
 
             # Select GPU(s) based on model size + estimated KV cache
-            max_available_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
@@ -982,7 +981,9 @@ class LlamaCppBackend:
                 else:
                     effective_ctx = 0
                 original_ctx = effective_ctx
-                max_available_ctx = effective_ctx
+                # Default UI ceiling to the model's native context length.
+                # GPU/VRAM-fit logic below may shrink this if hardware is limited.
+                max_available_ctx = self._context_length or effective_ctx
 
                 # Auto-cap context to fit in GPU VRAM and select GPUs.
                 #
@@ -1001,12 +1002,13 @@ class LlamaCppBackend:
                 explicit_ctx = n_ctx > 0
 
                 if gpus and self._can_estimate_kv() and effective_ctx > 0:
-                    # Compute a stable hardware-aware max cap from the model's
-                    # native context (for UI bounds), independent of the
-                    # currently requested context value.
+                    # Compute the largest hardware-aware cap from the model's
+                    # native context across all usable GPU subsets (for UI
+                    # bounds), independent of the currently requested context.
                     native_ctx_for_cap = self._context_length or effective_ctx
                     if native_ctx_for_cap > 0:
                         ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        best_cap = 0
                         for n_gpus in range(1, len(ranked_for_cap) + 1):
                             subset = ranked_for_cap[:n_gpus]
                             pool_mib = sum(free for _, free in subset)
@@ -1019,8 +1021,9 @@ class LlamaCppBackend:
                             kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.70:
-                                max_available_ctx = capped
-                                break
+                                best_cap = max(best_cap, capped)
+                        if best_cap > 0:
+                            max_available_ctx = best_cap
 
                     if explicit_ctx:
                         # Try to honor the user's requested context exactly.
@@ -1072,11 +1075,10 @@ class LlamaCppBackend:
                                 break
 
                 elif gpus:
-                    # Can't estimate KV -- fall back to file-size-only check
+                    # Can't estimate KV -- fall back to file-size-only check.
+                    # Without KV estimation we cannot prove a hardware cap, so
+                    # keep the ceiling at the native context (already the default).
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
-                    # Keep UI ceiling independent from current requested context.
-                    if self._context_length is not None:
-                        max_available_ctx = self._context_length
 
                 if effective_ctx < original_ctx:
                     kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
@@ -1099,9 +1101,6 @@ class LlamaCppBackend:
                 logger.warning(f"GPU selection failed ({e}), using --fit on")
                 gpu_indices, use_fit = None, True
                 effective_ctx = n_ctx  # fall back to original
-                # Preserve native-context ceiling when available.
-                if self._context_length is not None:
-                    max_available_ctx = self._context_length
 
             cmd = [
                 binary,
