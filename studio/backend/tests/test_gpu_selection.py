@@ -1109,10 +1109,10 @@ class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestDeviceMapForInference(_GpuCacheResetMixin, unittest.TestCase):
-    def test_inference_uses_balanced_low_0(self):
+    def test_inference_uses_balanced(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertEqual(
-                get_device_map([0, 1], for_inference = True), "balanced_low_0"
+                get_device_map([0, 1], for_inference = True), "balanced"
             )
 
     def test_training_uses_balanced(self):
