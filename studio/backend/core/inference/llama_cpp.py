@@ -2551,8 +2551,10 @@ class LlamaCppBackend:
                         if content_accum:
                             # Strip leaked tool-call XML before yielding
                             content_accum = re.sub(
-                                r"<tool_call>.*?</tool_call>", "",
-                                content_accum, flags=re.DOTALL,
+                                r"<tool_call>.*?</tool_call>",
+                                "",
+                                content_accum,
+                                flags = re.DOTALL,
                             ).strip()
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
@@ -2667,11 +2669,18 @@ class LlamaCppBackend:
 
                     # Nudge model to try a different approach on errors
                     _error_prefixes = (
-                        "Error", "Search failed", "Execution error",
-                        "Blocked", "No ", "Exit code", "Failed to fetch",
+                        "Error",
+                        "Search failed",
+                        "Execution error",
+                        "Blocked",
+                        "No ",
+                        "Exit code",
+                        "Failed to fetch",
                     )
                     _result_content = result
-                    if isinstance(result, str) and result.lstrip().startswith(_error_prefixes):
+                    if isinstance(result, str) and result.lstrip().startswith(
+                        _error_prefixes
+                    ):
                         _result_content = (
                             result + "\n\nThe tool call encountered an issue. "
                             "Please try a different approach or rephrase your request."

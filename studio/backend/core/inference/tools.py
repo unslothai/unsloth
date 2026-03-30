@@ -157,7 +157,9 @@ def execute_tool(
 _MAX_PAGE_CHARS = 16000  # limit fetched page text
 
 
-def _fetch_page_text(url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 30) -> str:
+def _fetch_page_text(
+    url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 30
+) -> str:
     """Fetch a URL and return plain text content (HTML tags stripped).
 
     Only http:// and https:// schemes are allowed (SSRF protection).
@@ -174,10 +176,10 @@ def _fetch_page_text(url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 
 
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "UnslothStudio/1.0"},
+            headers = {"User-Agent": "UnslothStudio/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="replace")
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
+            raw_html = resp.read().decode("utf-8", errors = "replace")
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
@@ -192,8 +194,15 @@ def _fetch_page_text(url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 
         text = converter.handle(raw_html).strip()
     except ImportError:
         # Fallback: regex-based stripping
-        text = _re.sub(r"<script[^>]*>.*?</script>", "", raw_html, flags=_re.DOTALL | _re.IGNORECASE)
-        text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+        text = _re.sub(
+            r"<script[^>]*>.*?</script>",
+            "",
+            raw_html,
+            flags = _re.DOTALL | _re.IGNORECASE,
+        )
+        text = _re.sub(
+            r"<style[^>]*>.*?</style>", "", text, flags = _re.DOTALL | _re.IGNORECASE
+        )
         text = _re.sub(r"<[^>]+>", " ", text)
         text = _re.sub(r"\s+", " ", text).strip()
 
@@ -216,7 +225,7 @@ def _web_search(
     """
     # Direct URL fetch mode
     if url and url.strip():
-        return _fetch_page_text(url.strip(), timeout=min(timeout, 60))
+        return _fetch_page_text(url.strip(), timeout = min(timeout, 60))
 
     if not query or not query.strip():
         return "No query provided."
@@ -237,7 +246,7 @@ def _web_search(
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
-            "the url parameter (e.g. {\"url\": \"<URL>\"})."
+            'the url parameter (e.g. {"url": "<URL>"}).'
         )
         return text
     except Exception as e:

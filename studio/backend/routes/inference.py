@@ -1071,6 +1071,7 @@ async def openai_chat_completions(
             _has_code = "python" in _tool_names or "terminal" in _tool_names
 
             from datetime import date as _date
+
             _date_line = f"The current date is {_date.today().isoformat()}."
 
             _web_tips = (
@@ -1089,22 +1090,22 @@ async def openai_chat_completions(
                     _date_line + " "
                     "You have access to tools. When appropriate, prefer using "
                     "tools rather than answering from memory. "
-                    + _web_tips + " " + _code_tips
+                    + _web_tips
+                    + " "
+                    + _code_tips
                 )
             elif _has_code:
                 _nudge = (
                     _date_line + " "
                     "You have access to tools. When appropriate, prefer using "
-                    "code execution rather than answering from memory. "
-                    + _code_tips
+                    "code execution rather than answering from memory. " + _code_tips
                 )
             elif _has_web:
                 _nudge = (
                     _date_line + " "
                     "You have access to tools. When appropriate, prefer using "
                     "web search for up-to-date or uncertain factual "
-                    "information rather than answering from memory. "
-                    + _web_tips
+                    "information rather than answering from memory. " + _web_tips
                 )
             else:
                 _nudge = ""
@@ -1122,11 +1123,11 @@ async def openai_chat_completions(
                 gguf_messages.extend(chat_messages)
 
             # ── Strip stale tool-call XML from conversation history ─
-            _TOOL_XML_RE = _re.compile(
-                r"<tool_call>.*?</tool_call>", _re.DOTALL
-            )
+            _TOOL_XML_RE = _re.compile(r"<tool_call>.*?</tool_call>", _re.DOTALL)
             for _msg in gguf_messages:
-                if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                if _msg.get("role") == "assistant" and isinstance(
+                    _msg.get("content"), str
+                ):
                     _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
 
             def gguf_generate_with_tools():
