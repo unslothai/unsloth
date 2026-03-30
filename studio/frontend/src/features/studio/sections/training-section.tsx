@@ -45,9 +45,14 @@ const placeholderData = [
 export function TrainingSection() {
   const store = useTrainingConfigStore();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
+  const isModelCapabilitiesSettled =
+    !!store.selectedModel &&
+    !store.isCheckingVision &&
+    !store.isLoadingModelDefaults;
   const isIncompatible =
-    (!store.isVisionModel && store.isDatasetImage === true) ||
-    (!store.isAudioModel && store.isDatasetAudio === true);
+    isModelCapabilitiesSettled &&
+    ((!store.isVisionModel && store.isDatasetImage === true) ||
+      (!store.isAudioModel && store.isDatasetAudio === true));
   const configValidation = validateTrainingConfig(store);
   const hasMessage = !!(startError || isIncompatible || (!configValidation.ok && configValidation.message));
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -157,7 +162,7 @@ export function TrainingSection() {
           data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible || store.isCheckingDataset || !configValidation.ok}
+          disabled={isStarting || isIncompatible || store.isCheckingDataset || store.isLoadingModelDefaults || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
           {isStarting ? "Starting..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
