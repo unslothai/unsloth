@@ -38,7 +38,7 @@ from utils.hardware import (
     safe_num_proc,
     dataset_map_num_proc,
     get_device_map,
-    get_offloaded_device_map_entries,
+    raise_if_offloaded,
     get_visible_gpu_count,
 )
 
@@ -813,16 +813,7 @@ class UnslothTrainer:
                 )
                 logger.info("Loaded text model")
 
-            offloaded_modules = get_offloaded_device_map_entries(self.model)
-            if offloaded_modules:
-                example_modules = ", ".join(
-                    f"{name}={placement}"
-                    for name, placement in list(offloaded_modules.items())[:5]
-                )
-                raise ValueError(
-                    "Studio training does not support models loaded with CPU or disk offload. "
-                    f"device_map='{device_map}' produced offloaded modules: {example_modules}"
-                )
+            raise_if_offloaded(self.model, device_map, "Studio training")
 
             if self.should_stop:
                 return False

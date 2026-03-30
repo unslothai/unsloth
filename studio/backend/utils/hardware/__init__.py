@@ -33,6 +33,7 @@ from .hardware import (
     dataset_map_num_proc,
     get_device_map,
     get_offloaded_device_map_entries,
+    raise_if_offloaded,
     apply_gpu_ids,
 )
 
@@ -72,6 +73,7 @@ __all__ = [
     "dataset_map_num_proc",
     "get_device_map",
     "get_offloaded_device_map_entries",
+    "raise_if_offloaded",
     "apply_gpu_ids",
     "ModelArchConfig",
     "TrainingVramConfig",

@@ -23,7 +23,7 @@ from utils.hardware import (
     clear_gpu_cache,
     log_gpu_memory,
     get_device_map,
-    get_offloaded_device_map_entries,
+    raise_if_offloaded,
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
@@ -439,18 +439,9 @@ class InferenceBackend:
                     )
 
                 # Reject CPU/disk offload for audio models too
-                offloaded = get_offloaded_device_map_entries(
-                    self.models[model_name]["model"]
+                raise_if_offloaded(
+                    self.models[model_name]["model"], device_map, "Inference"
                 )
-                if offloaded:
-                    example_modules = ", ".join(
-                        f"{name}={placement}"
-                        for name, placement in list(offloaded.items())[:5]
-                    )
-                    raise ValueError(
-                        "Inference does not support models loaded with CPU or disk offload. "
-                        f"device_map='{device_map}' produced offloaded modules: {example_modules}"
-                    )
 
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
@@ -541,18 +532,9 @@ class InferenceBackend:
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
 
-            offloaded = get_offloaded_device_map_entries(
-                self.models[model_name]["model"]
+            raise_if_offloaded(
+                self.models[model_name]["model"], device_map, "Inference"
             )
-            if offloaded:
-                example_modules = ", ".join(
-                    f"{name}={placement}"
-                    for name, placement in list(offloaded.items())[:5]
-                )
-                raise ValueError(
-                    "Inference does not support models loaded with CPU or disk offload. "
-                    f"device_map='{device_map}' produced offloaded modules: {example_modules}"
-                )
 
             # Load chat template info
             self._load_chat_template_info(model_name)

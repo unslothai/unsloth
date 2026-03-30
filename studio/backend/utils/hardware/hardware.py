@@ -642,7 +642,7 @@ def _get_hf_safetensors_total_params(
             if total:
                 return int(total)
     except Exception as e:
-        logger.debug("Could not get safetensors metadata for '%s': %s", model_name, e)
+        logger.warning("Could not get safetensors metadata for '%s': %s", model_name, e)
     return None
 
 
@@ -657,7 +657,7 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
             trust_remote_code = trust_remote_code,
         )
     except Exception as e:
-        logger.debug("Could not load config for '%s': %s", model_name, e)
+        logger.warning("Could not load config for '%s': %s", model_name, e)
         return None
 
 
@@ -1288,6 +1288,20 @@ def get_offloaded_device_map_entries(model) -> dict[str, str]:
         for module_name, placement in hf_device_map.items()
         if placement in ("cpu", "disk")
     }
+
+
+def raise_if_offloaded(model, device_map: str, context: str = "Loading") -> None:
+    """Raise ``ValueError`` if *model* has modules offloaded to CPU or disk."""
+    offloaded = get_offloaded_device_map_entries(model)
+    if not offloaded:
+        return
+    example = ", ".join(
+        f"{name}={placement}" for name, placement in list(offloaded.items())[:5]
+    )
+    raise ValueError(
+        f"{context} does not support models loaded with CPU or disk offload. "
+        f"device_map='{device_map}' produced offloaded modules: {example}"
+    )
 
 
 def safe_num_proc(desired: Optional[int] = None) -> int:
