@@ -148,8 +148,7 @@ def auth_headers() -> dict[str, str]:
         token = change_resp.json()["access_token"]
         print(
             f"\n  NOTE: Bootstrap password changed automatically.\n"
-            f"  New password: {new_password!r}\n"
-            f"  Set STUDIO_TEST_PASSWORD={new_password!r} for future runs."
+            f"  Set STUDIO_TEST_PASSWORD to your STUDIO_TEST_NEW_PASSWORD value for future runs."
         )
 
     return {"Authorization": f"Bearer {token}"}

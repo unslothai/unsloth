@@ -117,6 +117,14 @@ class ExternalProviderClient:
                     )
                     return
 
+                # NOTE: manual __anext__ loop instead of `async for` is intentional.
+                # On Python 3.13 + httpcore 1.0.x, `async for` auto-calls aclose() on
+                # early exit (break/return/GeneratorExit) BEFORE our finally block runs.
+                # That propagates GeneratorExit into PoolByteStream.__aiter__() while it
+                # calls `await self.aclose()` inside `with AsyncShieldCancellation()`,
+                # triggering "RuntimeError: async generator ignored GeneratorExit".
+                # Fix: call response.aclose() FIRST (sets PoolByteStream._closed=True),
+                # then lines_gen.aclose() is a no-op and GeneratorExit re-raises cleanly.
                 lines_gen = response.aiter_lines().__aiter__()
                 try:
                     while True:
@@ -217,7 +225,8 @@ class ExternalProviderClient:
                                 }
                             )
                         else:
-                            # Remote URL — Anthropic supports url source type natively
+                            # Remote URL — Anthropic supports url source type natively.
+                            # See: https://docs.anthropic.com/en/docs/build-with-claude/vision#url-based-images
                             anthropic_parts.append(
                                 {
                                     "type": "image",
@@ -273,6 +282,7 @@ class ExternalProviderClient:
                     )
                     return
 
+                # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
                 lines_gen = response.aiter_lines().__aiter__()
                 try:
                     while True:
@@ -375,7 +385,12 @@ class ExternalProviderClient:
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
     ) -> dict[str, Any]:
-        """Non-streaming chat completion. Returns the full response dict."""
+        """Non-streaming chat completion. Returns the full response dict.
+
+        Note: only valid for OpenAI-compatible providers. Anthropic requires its
+        own Messages API; use stream_chat_completion (with stream=False) instead
+        if a non-streaming Anthropic path is needed in the future.
+        """
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -401,6 +416,10 @@ class ExternalProviderClient:
 
         Returns a list of model dicts with at least 'id' and optionally
         'created', 'owned_by', etc.
+
+        All supported providers expose a /models endpoint:
+        - OpenAI-compatible: standard {"data": [...]} response
+        - Anthropic: https://api.anthropic.com/v1/models — same {"data": [...]} shape
         """
         try:
             response = await self._client.get(
