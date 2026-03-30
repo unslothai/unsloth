@@ -7,6 +7,7 @@ Pydantic schemas for Training API
 
 from pydantic import BaseModel, Field, model_validator
 from typing import Any, Optional, List, Dict, Literal
+from core.training.constants import DEFAULT_WEIGHT_DECAY, DEFAULT_LEARNING_RATE_STR
 
 
 class TrainingStartRequest(BaseModel):
@@ -72,7 +73,7 @@ class TrainingStartRequest(BaseModel):
     )
     # Training parameters
     num_epochs: int = Field(1, description = "Number of training epochs")
-    learning_rate: str = Field("2e-4", description = "Learning rate")
+    learning_rate: str = Field(DEFAULT_LEARNING_RATE_STR, description = "Learning rate")
     batch_size: int = Field(1, description = "Batch size")
     gradient_accumulation_steps: int = Field(
         1, description = "Gradient accumulation steps"
@@ -81,7 +82,7 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.01, description = "Weight decay")
+    weight_decay: float = Field(DEFAULT_WEIGHT_DECAY, description = "Weight decay")
     random_seed: int = Field(42, description = "Random seed")
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")

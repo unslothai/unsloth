@@ -90,10 +90,17 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string 
   { value: "cosine", label: "Cosine" },
 ];
 
+/**
+ * Method-aware learning rate defaults.
+ * Backend mirrors these in studio/backend/core/training/constants.py.
+ */
+export const LR_DEFAULT_LORA = 2e-4;
+export const LR_DEFAULT_FULL = 2e-5;
+
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
-  learningRate: 2e-4,
+  learningRate: LR_DEFAULT_LORA,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",
   loraRank: 16,
@@ -102,7 +109,7 @@ export const DEFAULT_HYPERPARAMS = {
   loraVariant: "lora" as const,
   batchSize: 4,
   gradientAccumulation: 8,
-  weightDecay: 0.01,
+  weightDecay: 0.001,
   warmupSteps: 5,
   maxSteps: 60,
   saveSteps: 0,

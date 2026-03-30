@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
+import { DEFAULT_HYPERPARAMS, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS } from "@/config/training";
 import { authFetch } from "@/features/auth";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
@@ -98,6 +98,11 @@ let _modelConfigController: AbortController | null = null;
 // since the last auto-set (model load or dataset change).
 let _trainOnCompletionsManuallySet = false;
 
+// Track whether the user has manually edited the learning rate
+// since the last model load. When false, switching training method
+// auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
+let _learningRateManuallySet = false;
+
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
@@ -165,6 +170,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (get().selectedModel !== modelName) return;
 
             _trainOnCompletionsManuallySet = false;
+            _learningRateManuallySet = false;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
             // If vision model + image dataset already known, override
@@ -197,7 +203,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
-                  if (method) set({ trainingMethod: method });
+                  if (method) {
+                    const lrPatch = !_learningRateManuallySet
+                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
+                      : {};
+                    set({ trainingMethod: method, ...lrPatch });
+                  }
                 });
             }
 
@@ -366,7 +377,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.modelDefaultsAppliedFor === state.selectedModel) return;
           void loadAndApplyModelDefaults(state.selectedModel);
         },
-        setTrainingMethod: (trainingMethod) => set({ trainingMethod }),
+        setTrainingMethod: (trainingMethod) => {
+          if (!_learningRateManuallySet) {
+            const learningRate = trainingMethod === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA;
+            set({ trainingMethod, learningRate });
+          } else {
+            set({ trainingMethod });
+          }
+        },
         setHfToken: (hfToken) =>
           set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
@@ -509,7 +527,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
-        setLearningRate: (learningRate) => set({ learningRate }),
+        setLearningRate: (learningRate) => {
+          _learningRateManuallySet = true;
+          set({ learningRate });
+        },
         setOptimizerType: (optimizerType) => set({ optimizerType }),
         setLrSchedulerType: (lrSchedulerType) => set({ lrSchedulerType }),
         setLoraRank: (loraRank) => set({ loraRank }),

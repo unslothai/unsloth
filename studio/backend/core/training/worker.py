@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import structlog
 from loggers import get_logger
+from core.training.constants import DEFAULT_WEIGHT_DECAY, DEFAULT_LEARNING_RATE_STR
 import os
 import platform
 import shutil
@@ -744,7 +745,7 @@ def run_training_process(
 
         # Convert learning rate
         try:
-            lr_value = float(config.get("learning_rate", "2e-4"))
+            lr_value = float(config.get("learning_rate", DEFAULT_LEARNING_RATE_STR))
         except ValueError:
             event_queue.put(
                 {
@@ -791,7 +792,7 @@ def run_training_process(
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
-            weight_decay = config.get("weight_decay", 0.01),
+            weight_decay = config.get("weight_decay", DEFAULT_WEIGHT_DECAY),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
             train_on_completions = config.get("train_on_completions", False),
@@ -1097,7 +1098,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 6. Build training arguments ──
     _send_status(event_queue, "Configuring training...")
     try:
-        lr_value = float(config.get("learning_rate", "2e-4"))
+        lr_value = float(config.get("learning_rate", DEFAULT_LEARNING_RATE_STR))
     except ValueError:
         event_queue.put(
             {
@@ -1137,7 +1138,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
         "optim": config.get("optim", "adamw_8bit"),
-        "weight_decay": config.get("weight_decay", 0.01),
+        "weight_decay": config.get("weight_decay", DEFAULT_WEIGHT_DECAY),
         "seed": config.get("random_seed", 3407),
     }
 
