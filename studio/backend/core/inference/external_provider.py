@@ -16,6 +16,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Shared client reused across all requests for HTTP connection pooling.
+# Auth headers and timeouts are passed per-request, so a single client
+# handles every provider without storing credentials.
+_http_client = httpx.AsyncClient()
+
 
 class ExternalProviderClient:
     """Async proxy for OpenAI-compatible external LLM APIs."""
@@ -30,7 +35,7 @@ class ExternalProviderClient:
         self.provider_type = provider_type
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.AsyncClient(timeout = httpx.Timeout(timeout, connect = 10.0))
+        self._timeout = httpx.Timeout(timeout, connect = 10.0)
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -98,11 +103,12 @@ class ExternalProviderClient:
         )
 
         try:
-            async with self._client.stream(
+            async with _http_client.stream(
                 "POST",
                 url,
                 json = body,
                 headers = self._auth_headers(),
+                timeout = self._timeout,
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
@@ -263,11 +269,12 @@ class ExternalProviderClient:
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         try:
-            async with self._client.stream(
+            async with _http_client.stream(
                 "POST",
                 url,
                 json = body,
                 headers = self._auth_headers(),
+                timeout = self._timeout,
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
@@ -402,10 +409,11 @@ class ExternalProviderClient:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
 
-        response = await self._client.post(
+        response = await _http_client.post(
             f"{self.base_url}/chat/completions",
             json = body,
             headers = self._auth_headers(),
+            timeout = self._timeout,
         )
         response.raise_for_status()
         return response.json()
@@ -422,9 +430,10 @@ class ExternalProviderClient:
         - Anthropic: https://api.anthropic.com/v1/models — same {"data": [...]} shape
         """
         try:
-            response = await self._client.get(
+            response = await _http_client.get(
                 f"{self.base_url}/models",
                 headers = self._auth_headers(),
+                timeout = self._timeout,
             )
             response.raise_for_status()
             data = response.json()
@@ -436,8 +445,7 @@ class ExternalProviderClient:
             raise
 
     async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        await self._client.aclose()
+        """No-op — the underlying client is shared across requests."""
 
 
 def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
