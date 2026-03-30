@@ -2634,7 +2634,7 @@ class UnslothTrainer:
         eval_steps: float = 0.00,
         output_dir: str | None = None,
         num_epochs: int = 3,
-        learning_rate: float = 5e-5,
+        learning_rate: float = 2e-4,
         batch_size: int = 2,
         gradient_accumulation_steps: int = 4,
         warmup_steps: int = None,
