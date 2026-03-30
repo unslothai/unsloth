@@ -76,6 +76,13 @@ function cacheKey(name: string, token: string | undefined): string {
 function extractToken(
   params: Parameters<typeof modelInfo>[0],
 ): string | undefined {
+  // The @huggingface/hub CredentialsParams union supports two forms:
+  //   { accessToken: "hf_..." }              -- current preferred form
+  //   { credentials: { accessToken: "..." }} -- deprecated form
+  // Check both so the cache key is correct regardless of which form callers use.
+  if ("accessToken" in params && params.accessToken) {
+    return params.accessToken as string;
+  }
   const creds = params.credentials as { accessToken?: string } | undefined;
   return creds?.accessToken;
 }
