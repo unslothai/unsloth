@@ -1109,15 +1109,10 @@ class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestDeviceMapForInference(_GpuCacheResetMixin, unittest.TestCase):
-    def test_inference_uses_balanced(self):
+    def test_multi_gpu_uses_balanced(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
-            self.assertEqual(get_device_map([0, 1], for_inference = True), "balanced")
-
-    def test_training_uses_balanced(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
-            self.assertEqual(get_device_map([0, 1], for_inference = False), "balanced")
+            self.assertEqual(get_device_map([0, 1]), "balanced")
 
     def test_single_gpu_always_sequential(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
-            self.assertEqual(get_device_map([0], for_inference = True), "sequential")
-            self.assertEqual(get_device_map([0], for_inference = False), "sequential")
+            self.assertEqual(get_device_map([0]), "sequential")
