@@ -1127,12 +1127,10 @@ if ! command -v bash >/dev/null 2>&1; then
 fi
 
 step "setup" "running unsloth studio update..."
-# When no-torch, don't skip base so install_python_stack installs
-# no-torch-runtime.txt (the runtime deps that --no-deps skipped).
+# install.sh already installs base packages (unsloth + unsloth-zoo) and
+# no-torch-runtime.txt above, so tell install_python_stack.py to skip
+# the base step to avoid redundant reinstallation.
 _SKIP_BASE=1
-if [ "$SKIP_TORCH" = true ]; then
-    _SKIP_BASE=0
-fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
@@ -1178,9 +1176,15 @@ esac
 
 create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 
+echo ""
+printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
+printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+echo ""
+
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ]; then
+    step "launch" "starting Unsloth Studio..."
     "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
     _LAUNCH_EXIT=$?
     if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
