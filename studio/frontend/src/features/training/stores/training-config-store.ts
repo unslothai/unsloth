@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
+import { DEFAULT_HYPERPARAMS, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS } from "@/config/training";
 import { authFetch } from "@/features/auth";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
@@ -205,7 +205,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   if (get().selectedModel !== modelName) return;
                   if (method) {
                     const lrPatch = !_learningRateManuallySet
-                      ? { learningRate: method === "full" ? 2e-5 : 2e-4 }
+                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
                       : {};
                     set({ trainingMethod: method, ...lrPatch });
                   }
@@ -379,7 +379,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setTrainingMethod: (trainingMethod) => {
           if (!_learningRateManuallySet) {
-            const learningRate = trainingMethod === "full" ? 2e-5 : 2e-4;
+            const learningRate = trainingMethod === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA;
             set({ trainingMethod, learningRate });
           } else {
             set({ trainingMethod });

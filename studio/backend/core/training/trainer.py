@@ -61,6 +61,7 @@ from utils.paths import (
     resolve_tensorboard_dir,
 )
 from trl import SFTTrainer, SFTConfig
+from core.training.constants import DEFAULT_WEIGHT_DECAY, DEFAULT_LEARNING_RATE
 
 logger = get_logger(__name__)
 
@@ -312,8 +313,8 @@ class UnslothTrainer:
         )
         warmup_steps_val = training_args.get("warmup_steps", 5)
         max_steps_val = training_args.get("max_steps", 0)
-        learning_rate = training_args.get("learning_rate", 2e-4)
-        weight_decay = training_args.get("weight_decay", 0.001)
+        learning_rate = training_args.get("learning_rate", DEFAULT_LEARNING_RATE)
+        weight_decay = training_args.get("weight_decay", DEFAULT_WEIGHT_DECAY)
         lr_scheduler_type = training_args.get("lr_scheduler_type", "linear")
         random_seed = training_args.get("random_seed", 3407)
         optim_value = training_args.get("optim", "adamw_8bit")
@@ -2634,14 +2635,14 @@ class UnslothTrainer:
         eval_steps: float = 0.00,
         output_dir: str | None = None,
         num_epochs: int = 3,
-        learning_rate: float = 2e-4,
+        learning_rate: float = DEFAULT_LEARNING_RATE,
         batch_size: int = 2,
         gradient_accumulation_steps: int = 4,
         warmup_steps: int = None,
         warmup_ratio: float = None,
         max_steps: int = 0,
         save_steps: int = 0,
-        weight_decay: float = 0.001,
+        weight_decay: float = DEFAULT_WEIGHT_DECAY,
         random_seed: int = 3407,
         packing: bool = False,
         train_on_completions: bool = False,
@@ -2993,7 +2994,7 @@ class UnslothTrainer:
             warmup_steps_val = training_args.get("warmup_steps", None)
             warmup_ratio_val = training_args.get("warmup_ratio", None)
 
-            lr_value = training_args.get("learning_rate", 2e-4)
+            lr_value = training_args.get("learning_rate", DEFAULT_LEARNING_RATE)
             logger.info(
                 f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n"
             )
@@ -3010,7 +3011,7 @@ class UnslothTrainer:
                 "fp16": not is_bfloat16_supported(),
                 "bf16": is_bfloat16_supported(),
                 "logging_steps": 1,
-                "weight_decay": training_args.get("weight_decay", 0.001),
+                "weight_decay": training_args.get("weight_decay", DEFAULT_WEIGHT_DECAY),
                 "seed": training_args.get("random_seed", 3407),
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
