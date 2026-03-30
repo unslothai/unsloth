@@ -4,6 +4,10 @@
 import subprocess
 from typing import Any, Optional
 
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
 
 def _parse_smi_value(raw: str):
     raw = raw.strip()
@@ -49,16 +53,24 @@ def _visible_ordinal_map(
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
 
-def get_physical_gpu_count() -> int:
-    result = subprocess.run(
-        ["nvidia-smi", "-L"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return len(result.stdout.strip().splitlines())
-    return 1
+def get_physical_gpu_count() -> Optional[int]:
+    """Return physical GPU count via nvidia-smi, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return len(result.stdout.strip().splitlines())
+        logger.warning(
+            "nvidia-smi -L returned code %d; caller should fall back to torch",
+            result.returncode,
+        )
+    except Exception as e:
+        logger.warning("nvidia-smi -L failed: %s; caller should fall back to torch", e)
+    return None
 
 
 def get_primary_gpu_utilization() -> dict[str, Any]:

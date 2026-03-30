@@ -268,7 +268,7 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
-            device_map = get_device_map(gpu_ids)
+            device_map = get_device_map(gpu_ids, for_inference=True)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -644,6 +644,7 @@ class InferenceBackend:
         dtype = None,
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Final Corrected Version:
@@ -668,7 +669,8 @@ class InferenceBackend:
                     base_model_name, None, is_lora = False
                 )
                 if not self.load_model(
-                    base_config, max_seq_length, dtype, load_in_4bit, hf_token
+                    base_config, max_seq_length, dtype, load_in_4bit, hf_token,
+                    gpu_ids=gpu_ids,
                 ):
                     return False, None, None
 
@@ -1066,12 +1068,12 @@ class InferenceBackend:
                 input_text,
                 add_special_tokens = False,
                 return_tensors = "pt",
-            ).to(self.device)
+            ).to(model.device)
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(
-                self.device
+                model.device
             )
 
         # Stream with TextIteratorStreamer + background thread
@@ -1211,7 +1213,7 @@ class InferenceBackend:
             return_dict = True,
             return_tensors = "pt",
             truncation = False,
-        ).to(self.device)
+        ).to(model.device)
 
         try:
             from transformers import TextIteratorStreamer

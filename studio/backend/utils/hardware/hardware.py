@@ -223,7 +223,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "utilization_pct": (allocated / total) * 100,
             }
         except Exception as e:
-            logger.error(f"Error getting XPU GPU info: {e}")
+            logger.error("Error getting XPU GPU info: %s", e)
             return {"available": False, "backend": device.value, "error": str(e)}
 
     # ---- MLX path (Apple Silicon) ----
@@ -786,7 +786,7 @@ def estimate_required_model_memory_gb(
 
     if training_type is None:
         if load_in_4bit:
-            base_4bit_gb = model_size_gb / 3.0
+            base_4bit_gb = model_size_gb / QUANT_4BIT_FACTOR
             required_gb = base_4bit_gb + max(base_4bit_gb * 0.3, min_buffer_gb)
         else:
             required_gb = model_size_gb * 1.3
@@ -809,7 +809,10 @@ def estimate_required_model_memory_gb(
         load_in_4bit = load_in_4bit,
     )
 
-    config = _load_config_for_gpu_estimate(model_name, hf_token = hf_token)
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(
+        model_name, hf_token = hf_token
+    )
+    config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:
@@ -818,18 +821,11 @@ def estimate_required_model_memory_gb(
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
-        metadata["vram_breakdown"]["min_per_gpu_1"] = round(
-            breakdown.min_gpu_vram(1) / (1024**3), 3
-        )
-        metadata["vram_breakdown"]["min_per_gpu_2"] = round(
-            breakdown.min_gpu_vram(2) / (1024**3), 3
-        )
-        metadata["vram_breakdown"]["min_per_gpu_4"] = round(
-            breakdown.min_gpu_vram(4) / (1024**3), 3
-        )
-        metadata["vram_breakdown"]["min_per_gpu_8"] = round(
-            breakdown.min_gpu_vram(8) / (1024**3), 3
-        )
+        max_gpus = max(1, get_visible_gpu_count())
+        for n_gpus in range(1, max_gpus + 1):
+            metadata["vram_breakdown"][f"min_per_gpu_{n_gpus}"] = round(
+                breakdown.min_gpu_vram(n_gpus) / (1024**3), 3
+            )
         return required_gb, metadata
 
     # Fallback when model config is unavailable
@@ -866,7 +862,7 @@ def auto_select_gpu_ids(
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
-    if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+    if get_device() != DeviceType.CUDA:
         metadata["selection_mode"] = "non_cuda"
         return None, metadata
 
@@ -1033,9 +1029,9 @@ def prepare_gpu_selection(
     in the worker subprocess which narrows ``CUDA_VISIBLE_DEVICES`` before any
     torch/CUDA initialisation.
     """
-    if gpu_ids and get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+    if gpu_ids and get_device() != DeviceType.CUDA:
         raise ValueError(
-            f"gpu_ids {list(gpu_ids)} is only supported on GPU devices (CUDA/XPU), "
+            f"gpu_ids {list(gpu_ids)} is only supported on CUDA devices, "
             f"but the current backend is '{get_device().value}'."
         )
 
@@ -1080,11 +1076,15 @@ def get_physical_gpu_count() -> int:
         try:
             from . import nvidia
 
-            _physical_gpu_count = nvidia.get_physical_gpu_count()
+            count = nvidia.get_physical_gpu_count()
+            if count is not None:
+                _physical_gpu_count = count
+                return _physical_gpu_count
         except Exception:
-            # nvidia-smi unavailable (AMD ROCm) — fall back to torch
-            count = _torch_get_physical_gpu_count()
-            _physical_gpu_count = count if count is not None else 1
+            pass
+        # nvidia-smi unavailable or failed — fall back to torch
+        count = _torch_get_physical_gpu_count()
+        _physical_gpu_count = count if count is not None else 1
         return _physical_gpu_count
 
     if device == DeviceType.XPU:
@@ -1243,6 +1243,8 @@ def apply_gpu_ids(gpu_ids) -> None:
 
 def get_device_map(
     gpu_ids: Optional[list[int]] = None,
+    *,
+    for_inference: bool = False,
 ) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
@@ -1260,7 +1262,7 @@ def get_device_map(
     minimum number of GPUs needed for a given model.
     """
     device = get_device()
-    if device in (DeviceType.CUDA, DeviceType.XPU):
+    if device == DeviceType.CUDA:
         multi_gpu = gpu_ids is not None and len(gpu_ids) > 1
 
         if not multi_gpu:
@@ -1274,7 +1276,7 @@ def get_device_map(
                 multi_gpu = True
 
         if multi_gpu:
-            return "balanced"
+            return "balanced_low_0" if for_inference else "balanced"
 
     return "sequential"
 

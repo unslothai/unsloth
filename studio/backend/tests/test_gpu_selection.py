@@ -268,13 +268,13 @@ class TestGpuAutoSelection(unittest.TestCase):
             self.assertAlmostEqual(required_gb, 10.4, places = 3)
             self.assertEqual(metadata["model_size_source"], "config")
 
-            # 4bit inference: base_4bit = 8/3 = 2.667GB
-            # required = 2.667 + max(2.667*0.3, 2.0) = 2.667 + 2.0 = 4.667GB
+            # 4bit inference: base_4bit = 8/3.2 = 2.5GB
+            # required = 2.5 + max(2.5*0.3, 2.0) = 2.5 + 2.0 = 4.5GB
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = True,
             )
-            self.assertAlmostEqual(required_gb, 4.667, places = 2)
+            self.assertAlmostEqual(required_gb, 4.5, places = 2)
 
             # Full FT fallback: model_size * 3.5 + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
@@ -687,7 +687,7 @@ class TestRouteErrors(unittest.TestCase):
             with self.assertRaises(ValueError) as exc_info:
                 prepare_gpu_selection([0], model_name = "unsloth/test")
 
-        self.assertIn("only supported on GPU devices", str(exc_info.exception))
+        self.assertIn("only supported on CUDA devices", str(exc_info.exception))
 
     def test_inference_route_rejects_gpu_ids_for_gguf(self):
         inference_route = _load_route_module(
@@ -918,3 +918,161 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("UUID/MIG", exc_info.exception.detail)
+
+
+class TestRaiseIfOffloaded(unittest.TestCase):
+    def test_no_offload_is_noop(self):
+        from utils.hardware import raise_if_offloaded
+
+        model = SimpleNamespace(hf_device_map = {"model.embed_tokens": 0, "lm_head": 1})
+        raise_if_offloaded(model, "balanced", "Test")
+
+    def test_cpu_offload_raises(self):
+        from utils.hardware import raise_if_offloaded
+
+        model = SimpleNamespace(
+            hf_device_map = {"model.layers.0": 0, "model.layers.1": "cpu"}
+        )
+        with self.assertRaisesRegex(ValueError, "offloaded"):
+            raise_if_offloaded(model, "balanced", "Test")
+
+    def test_no_device_map_attr_is_noop(self):
+        from utils.hardware import raise_if_offloaded
+
+        raise_if_offloaded(SimpleNamespace(), "sequential", "Test")
+
+
+class TestMinGpuVram(unittest.TestCase):
+    def test_min_gpu_vram_decreases_with_more_gpus(self):
+        from utils.hardware.vram_estimation import (
+            ModelArchConfig, TrainingVramConfig, estimate_training_vram,
+        )
+
+        arch = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 32,
+            num_attention_heads = 32, num_key_value_heads = 8,
+            intermediate_size = 14336, vocab_size = 128256,
+            tie_word_embeddings = False,
+        )
+        config = TrainingVramConfig(
+            training_method = "qlora", load_in_4bit = True,
+        )
+        breakdown = estimate_training_vram(arch, config)
+        v1 = breakdown.min_gpu_vram(1)
+        v2 = breakdown.min_gpu_vram(2)
+        v4 = breakdown.min_gpu_vram(4)
+        self.assertGreater(v1, v2)
+        self.assertGreater(v2, v4)
+        self.assertGreater(v4, 0)
+
+    def test_total_equals_min_gpu_vram_1(self):
+        from utils.hardware.vram_estimation import (
+            ModelArchConfig, TrainingVramConfig, estimate_training_vram,
+        )
+
+        arch = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 32,
+            num_attention_heads = 32, num_key_value_heads = 8,
+            intermediate_size = 14336, vocab_size = 128256,
+            tie_word_embeddings = False,
+        )
+        config = TrainingVramConfig(
+            training_method = "qlora", load_in_4bit = True,
+        )
+        breakdown = estimate_training_vram(arch, config)
+        self.assertEqual(breakdown.total, breakdown.min_gpu_vram(1))
+
+
+class TestPerGpuFitGuardAllCounts(unittest.TestCase):
+    def test_min_per_gpu_generated_for_all_visible_counts(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (8 * (1024**3), "config"),
+            ),
+            patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                return_value = "unsloth/test",
+            ),
+            patch(
+                "utils.hardware.hardware._load_config_for_gpu_estimate",
+                return_value = SimpleNamespace(
+                    hidden_size = 4096, num_hidden_layers = 32,
+                    num_attention_heads = 32, num_key_value_heads = 8,
+                    intermediate_size = 14336, vocab_size = 128256,
+                    tie_word_embeddings = False,
+                ),
+            ),
+            patch("utils.hardware.hardware.get_visible_gpu_count", return_value = 6),
+        ):
+            _, metadata = estimate_required_model_memory_gb(
+                "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                load_in_4bit = True,
+            )
+
+        self.assertEqual(metadata.get("estimation_mode"), "detailed")
+        breakdown = metadata["vram_breakdown"]
+        for n in range(1, 7):
+            self.assertIn(f"min_per_gpu_{n}", breakdown)
+
+
+class TestAutoSelectWithNoneRequired(unittest.TestCase):
+    def test_auto_select_falls_back_when_estimate_unavailable(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.estimate_required_model_memory_gb",
+                return_value = (None, {"model_size_source": "unavailable"}),
+            ),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {
+                    "raw": "0,1",
+                    "numeric_ids": [0, 1],
+                    "supports_explicit_gpu_ids": True,
+                },
+            ),
+            patch(
+                "utils.hardware.hardware.get_parent_visible_gpu_ids",
+                return_value = [0, 1],
+            ),
+        ):
+            selected, metadata = auto_select_gpu_ids("unsloth/test")
+
+        self.assertEqual(selected, [0, 1])
+        self.assertEqual(metadata["selection_mode"], "fallback_all")
+
+
+class TestXpuRejection(unittest.TestCase):
+    def test_auto_select_returns_non_cuda_for_xpu(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+            selected, metadata = auto_select_gpu_ids("unsloth/test")
+
+        self.assertIsNone(selected)
+        self.assertEqual(metadata["selection_mode"], "non_cuda")
+
+    def test_prepare_gpu_selection_rejects_explicit_ids_on_xpu(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+            with self.assertRaisesRegex(ValueError, "only supported on CUDA"):
+                prepare_gpu_selection([0], model_name = "unsloth/test")
+
+
+class TestDeviceMapForInference(unittest.TestCase):
+    def test_inference_uses_balanced_low_0(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(
+                get_device_map([0, 1], for_inference = True), "balanced_low_0"
+            )
+
+    def test_training_uses_balanced(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(
+                get_device_map([0, 1], for_inference = False), "balanced"
+            )
+
+    def test_single_gpu_always_sequential(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(get_device_map([0], for_inference = True), "sequential")
+            self.assertEqual(get_device_map([0], for_inference = False), "sequential")

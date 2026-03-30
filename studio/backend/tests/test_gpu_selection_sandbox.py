@@ -149,8 +149,8 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
                 load_in_4bit = True,
             )
             self.assertIsNotNone(required)
-            # 4bit base = 30/3 = 10GB, required = 10 + max(10*0.3, 2) = 13GB
-            self.assertAlmostEqual(required, 13.0, places = 0)
+            # 4bit base = 30/3.2 = 9.375GB, required = 9.375 + max(9.375*0.3, 2) = 12.19GB
+            self.assertAlmostEqual(required, 12.2, places = 0)
 
     def test_4bit_training_reduces_base(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
