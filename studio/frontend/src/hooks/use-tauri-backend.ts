@@ -34,8 +34,10 @@ export function useTauriBackend() {
   // True when we attached to a server we didn't spawn (can't stop it)
   const [isExternalServer, setIsExternalServer] = useState(false);
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const externalPollAbortedRef = useRef(false);
 
   function stopExternalServerPoll() {
+    externalPollAbortedRef.current = true;
     if (externalPollRef.current) {
       clearInterval(externalPollRef.current);
       externalPollRef.current = null;
@@ -44,17 +46,21 @@ export function useTauriBackend() {
 
   function startExternalServerPoll(port: number) {
     stopExternalServerPoll();
+    externalPollAbortedRef.current = false;
     let failures = 0;
     externalPollRef.current = setInterval(async () => {
+      if (externalPollAbortedRef.current) return;
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const healthy = await invoke<boolean>("check_health", { port });
+        if (externalPollAbortedRef.current) return;
         if (healthy) {
           failures = 0;
         } else {
           failures++;
         }
       } catch {
+        if (externalPollAbortedRef.current) return;
         failures++;
       }
       if (failures >= 3) {
@@ -72,26 +78,31 @@ export function useTauriBackend() {
   }, [status]);
 
   async function checkInstallAndStart() {
-    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
 
-    // Check for existing running server first
-    const existingPort = await invoke<number | null>("find_existing_server");
-    if (existingPort) {
-      setApiBase(existingPort);
-      setIsExternalServer(true);
-      setStatus("running");
-      // Monitor external server — we can't get Rust-side crash events for it
-      startExternalServerPoll(existingPort);
-      return;
-    }
+      // Check for existing running server first
+      const existingPort = await invoke<number | null>("find_existing_server");
+      if (existingPort) {
+        setApiBase(existingPort);
+        setIsExternalServer(true);
+        setStatus("running");
+        // Monitor external server — we can't get Rust-side crash events for it
+        startExternalServerPoll(existingPort);
+        return;
+      }
 
-    const installed = await invoke<boolean>("check_install_status");
-    if (!installed) {
-      setStatus("not-installed");
-      return;
+      const installed = await invoke<boolean>("check_install_status");
+      if (!installed) {
+        setStatus("not-installed");
+        return;
+      }
+      setStatus("starting");
+      await startServer();
+    } catch (e) {
+      setStatus("error");
+      setError(String(e));
     }
-    setStatus("starting");
-    await startServer();
   }
 
   async function startServer() {
@@ -146,14 +157,12 @@ export function useTauriBackend() {
     } catch (e) {
       const msg = String(e);
       if (msg.includes("already running")) {
-        // Already started by another path (tray toggle, retry, etc.).
-        // Don't bail — fall through to let startingRef reset so the
-        // next retry can re-enter. The health watchdog or a manual
-        // retry will pick up the running backend.
+        // Backend exists but start_server rejected. Give Rust time to reap
+        // the old process (stdout reader sets child=None), then retry via
+        // find_existing_server which will attach to the running backend.
         startingRef.current = false;
         setStatus("starting");
-        // Kick off a fresh checkInstallAndStart which will find the
-        // existing server via find_existing_server and transition to running.
+        await new Promise((r) => setTimeout(r, 2000));
         checkInstallAndStart();
         return;
       }

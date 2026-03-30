@@ -595,6 +595,7 @@ shell.Run cmd, 0, False
         Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment ($VenvDir)..."
         uv venv $VenvDir --python "$($DetectedPython.Path)"
         if ($LASTEXITCODE -ne 0) {
+            Write-TauriLog "ERROR" "Failed to create virtual environment (exit code $LASTEXITCODE)"
             Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
             return
         }
@@ -722,6 +723,7 @@ shell.Run cmd, 0, False
             Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
             uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
             if ($LASTEXITCODE -ne 0) {
+                Write-TauriLog "ERROR" "Failed to install PyTorch (exit code $LASTEXITCODE)"
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
                 return
             }
@@ -761,6 +763,7 @@ shell.Run cmd, 0, False
         }
     }
     if ($LASTEXITCODE -ne 0) {
+        Write-TauriLog "ERROR" "Failed to install unsloth (exit code $LASTEXITCODE)"
         Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
@@ -772,6 +775,7 @@ shell.Run cmd, 0, False
     Write-Host "==> Running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
+        Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
         Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
@@ -791,6 +795,7 @@ shell.Run cmd, 0, False
     }
     & $UnslothExe studio setup
     if ($LASTEXITCODE -ne 0) {
+        Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $LASTEXITCODE)"
         Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
         return
     }
