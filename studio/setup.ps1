@@ -1522,8 +1522,14 @@ if ($CuTag -eq "cpu") {
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
+$stackExit = $LASTEXITCODE
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
+if ($stackExit -ne 0) {
+    Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
+    Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
+    exit 1
+}
 
 # ── Pre-install transformers 5.x into .venv_t5/ ──
 # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
