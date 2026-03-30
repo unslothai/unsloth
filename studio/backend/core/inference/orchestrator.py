@@ -572,7 +572,7 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
-        gpu_ids = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load a model for inference.
 
