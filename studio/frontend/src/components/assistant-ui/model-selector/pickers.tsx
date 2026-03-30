@@ -521,11 +521,6 @@ export function HubModelPicker({
 
   const hasMoreRecommended = visibleRecommendedIds.length < recommendedIds.length;
 
-  // Only fetch VRAM info for visible models. The cache in hf-cache.ts
-  // means previously fetched models resolve instantly on scroll.
-  const { paramCountById: recommendedParamCountById } =
-    useRecommendedModelVram(visibleRecommendedIds);
-
   const showHfSection = debouncedQuery.trim().length > 0;
 
   // Recommended models that match the current search query
@@ -534,6 +529,18 @@ export function HubModelPicker({
     const q = normalizeForSearch(debouncedQuery.trim());
     return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
   }, [showHfSection, debouncedQuery, recommendedIds]);
+
+  // Fetch VRAM info for visible models, plus any models surfaced by a search
+  // query so that filtered recommended models also show VRAM badges.
+  // The cache in hf-cache.ts means previously fetched models resolve instantly.
+  const idsForVram = useMemo(() => {
+    if (!showHfSection) return visibleRecommendedIds;
+    const set = new Set(visibleRecommendedIds);
+    for (const id of filteredRecommendedIds) set.add(id);
+    return [...set];
+  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
+  const { paramCountById: recommendedParamCountById } =
+    useRecommendedModelVram(idsForVram);
 
   const recommendedSet = useMemo(
     () => new Set(showHfSection ? filteredRecommendedIds : visibleRecommendedIds),
