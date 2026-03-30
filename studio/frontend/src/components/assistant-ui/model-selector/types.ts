@@ -17,8 +17,13 @@ export interface LoraModelOption extends ModelOption {
   exportType?: "lora" | "merged" | "gguf";
 }
 
+export interface ExternalModelOption extends ModelOption {
+  providerId: string;
+  providerName: string;
+}
+
 export interface ModelSelectorChangeMeta {
-  source: "hub" | "lora" | "exported" | "local";
+  source: "hub" | "lora" | "exported" | "local" | "external";
   isLora: boolean;
   ggufVariant?: string;
   isDownloaded?: boolean;

@@ -14,21 +14,30 @@ import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   Logout01Icon,
+  Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import type {
+  ExternalModelOption,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { Input } from "../ui/input";
 
-export type { LoraModelOption, ModelOption, ModelSelectorChangeMeta } from "./model-selector/types";
+export type {
+  ExternalModelOption,
+  LoraModelOption,
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "./model-selector/types";
 
 interface ModelSelectorProps {
   models: ModelOption[];
   loraModels?: LoraModelOption[];
+  externalModels?: ExternalModelOption[];
   value?: string;
   defaultValue?: string;
   activeGgufVariant?: string | null;
@@ -97,6 +106,7 @@ function ModelSelectorTrigger({
 function ModelSelectorContent({
   models,
   loraModels,
+  externalModels,
   value,
   onSelect,
   onEject,
@@ -105,6 +115,7 @@ function ModelSelectorContent({
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
@@ -113,6 +124,7 @@ function ModelSelectorContent({
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const hasExternal = externalModels.length > 0;
 
   return (
     <PopoverContent
@@ -130,6 +142,7 @@ function ModelSelectorContent({
           <TabsList className="mb-2 w-full">
             <TabsTrigger value="hub">Hub models</TabsTrigger>
             <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
+            {hasExternal ? <TabsTrigger value="external">External</TabsTrigger> : null}
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
@@ -143,6 +156,16 @@ function ModelSelectorContent({
               onSelect={onSelect}
             />
           </TabsContent>
+
+          {hasExternal ? (
+            <TabsContent value="external" className="m-0">
+              <ExternalModelPicker
+                externalModels={externalModels}
+                value={value}
+                onSelect={onSelect}
+              />
+            </TabsContent>
+          ) : null}
         </Tabs>
       )}
 
@@ -166,6 +189,7 @@ function ModelSelectorContent({
 export function ModelSelector({
   models,
   loraModels = [],
+  externalModels = [],
   value,
   defaultValue,
   activeGgufVariant,
@@ -210,8 +234,14 @@ export function ModelSelector({
         description: tag,
       });
     }
+    for (const externalModel of externalModels) {
+      all.set(externalModel.id, {
+        ...externalModel,
+        description: `External · ${externalModel.providerName}`,
+      });
+    }
     return all;
-  }, [loraModels, models]);
+  }, [externalModels, loraModels, models]);
 
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
@@ -250,6 +280,7 @@ export function ModelSelector({
       <ModelSelectorContent
         models={models}
         loraModels={loraModels}
+        externalModels={externalModels}
         value={selected}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
@@ -262,3 +293,92 @@ export function ModelSelector({
 
 ModelSelector.Trigger = ModelSelectorTrigger;
 ModelSelector.Content = ModelSelectorContent;
+
+function normalizeForSearch(value: string): string {
+  return value.toLowerCase().replace(/[\s\-_\.]/g, "");
+}
+
+function ExternalModelPicker({
+  externalModels,
+  value,
+  onSelect,
+}: {
+  externalModels: ExternalModelOption[];
+  value?: string;
+  onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const grouped = useMemo(() => {
+    const needle = normalizeForSearch(query.trim());
+    const byProvider = new Map<string, { providerName: string; models: ExternalModelOption[] }>();
+    for (const model of externalModels) {
+      const searchText = normalizeForSearch(
+        `${model.name} ${model.providerName} ${model.id}`,
+      );
+      if (needle && !searchText.includes(needle)) continue;
+      const prev = byProvider.get(model.providerId);
+      if (prev) {
+        prev.models.push(model);
+      } else {
+        byProvider.set(model.providerId, {
+          providerName: model.providerName,
+          models: [model],
+        });
+      }
+    }
+    return [...byProvider.entries()]
+      .map(([providerId, group]) => ({
+        providerId,
+        providerName: group.providerName,
+        models: group.models.sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => a.providerName.localeCompare(b.providerName));
+  }, [externalModels, query]);
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <HugeiconsIcon
+          icon={Search01Icon}
+          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+        />
+        <Input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search external models"
+          className="h-9 pl-8"
+        />
+      </div>
+      <div className="max-h-64 overflow-y-auto">
+        <div className="space-y-2 p-1">
+          {grouped.length === 0 ? (
+            <div className="px-2.5 py-2 text-xs text-muted-foreground">
+              No external models configured.
+            </div>
+          ) : (
+            grouped.map((group) => (
+              <div key={group.providerId}>
+                <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {group.providerName}
+                </div>
+                {group.models.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    onClick={() => onSelect(model.id, { source: "external", isLora: false })}
+                    className={cn(
+                      "flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+                      value === model.id && "bg-accent/60",
+                    )}
+                  >
+                    <span className="min-w-0 truncate">{model.name}</span>
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

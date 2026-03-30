@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
@@ -19,6 +20,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
+  CloudIcon,
   ColumnInsertIcon,
   PencilEdit02Icon,
   Settings04Icon,
@@ -38,10 +40,18 @@ import {
 import { toast } from "sonner";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { listLocalModels } from "./api/chat-api";
+import { ChatProvidersDialog } from "./chat-providers-dialog";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
+import {
+  buildExternalModelId,
+  isExternalModelId,
+  loadExternalProviders,
+  saveExternalProviders,
+  type ExternalProviderConfig,
+} from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
   clearTrainingCompareHandoff,
@@ -416,9 +426,13 @@ export function ChatPage(): ReactElement {
     newThreadNonce: crypto.randomUUID(),
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [externalProviders, setExternalProviders] = useState<ExternalProviderConfig[]>(() =>
+    loadExternalProviders(),
+  );
   const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
     null,
   );
@@ -450,16 +464,28 @@ export function ChatPage(): ReactElement {
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  const isExternalModel = useMemo(
+    () => isExternalModelId(inferenceParams.checkpoint),
+    [inferenceParams.checkpoint],
+  );
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint);
-  }, [inferenceParams.checkpoint]);
+    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
+  }, [inferenceParams.checkpoint, isExternalModel]);
 
   const handleCheckpointChange = useCallback(
-    (value: string, meta?: { isLora: boolean; ggufVariant?: string; isDownloaded?: boolean; expectedBytes?: number }) => {
+    (value: string, meta?: { source?: string; isLora: boolean; ggufVariant?: string; isDownloaded?: boolean; expectedBytes?: number }) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       if (!value || (value === currentCheckpoint && (meta?.ggufVariant ?? null) === (currentVariant ?? null))) return;
+      if (meta?.source === "external" || isExternalModelId(value)) {
+        setInferenceParams({
+          ...store.params,
+          checkpoint: value,
+        });
+        toast.info("External model selected in UI draft mode.");
+        return;
+      }
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -494,7 +520,7 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [activeThreadId, modelsFromStore, selectModel, view],
+    [activeThreadId, modelsFromStore, selectModel, setInferenceParams, view],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
@@ -578,6 +604,18 @@ export function ChatPage(): ReactElement {
       })),
     [modelsFromStore],
   );
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      externalProviders.flatMap((provider) =>
+        provider.models.map((model) => ({
+          id: buildExternalModelId(provider.id, model),
+          name: model,
+          providerId: provider.id,
+          providerName: provider.name,
+        })),
+      ),
+    [externalProviders],
+  );
 
   const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
 
@@ -610,6 +648,10 @@ export function ChatPage(): ReactElement {
       );
     }).catch(() => {});
   }, [refresh]);
+
+  useEffect(() => {
+    saveExternalProviders(externalProviders);
+  }, [externalProviders]);
 
   useEffect(() => {
     const handoff = getTrainingCompareHandoff();
@@ -747,6 +789,7 @@ export function ChatPage(): ReactElement {
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
+                externalModels={externalModels}
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
@@ -793,6 +836,14 @@ export function ChatPage(): ReactElement {
             ) : null}
             <button
               type="button"
+              onClick={() => setProvidersOpen(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="API Providers"
+            >
+              <HugeiconsIcon icon={CloudIcon} className="size-5" strokeWidth={2} />
+            </button>
+            <button
+              type="button"
               onClick={() => setSettingsOpen((o) => !o)}
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               title="Inference settings"
@@ -818,6 +869,7 @@ export function ChatPage(): ReactElement {
           onOpenChange={setSettingsOpen}
           params={inferenceParams}
           onParamsChange={setInferenceParams}
+          isExternalModel={isExternalModel}
           autoTitle={autoTitle}
           onAutoTitleChange={setAutoTitle}
           onReloadModel={() => {
@@ -832,6 +884,12 @@ export function ChatPage(): ReactElement {
               });
             }
           }}
+        />
+        <ChatProvidersDialog
+          open={providersOpen}
+          onOpenChange={setProvidersOpen}
+          providers={externalProviders}
+          onProvidersChange={setExternalProviders}
         />
       </SidebarProvider>
     </div>
