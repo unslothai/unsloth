@@ -512,7 +512,7 @@ class TestVisionInference:
                 ],
             }],
             "stream": True,
-            "max_tokens": 64,
+            "max_tokens": 215,
             "provider_type": provider_type,
             "external_model": model,
             "encrypted_api_key": encrypted,
