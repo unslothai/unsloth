@@ -117,13 +117,22 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_iter = response.aiter_lines()
+                lines_gen = response.aiter_lines().__aiter__()
                 try:
-                    async for line in lines_iter:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
                         if line.strip():
                             yield line
+                except GeneratorExit:
+                    await response.aclose()   # set PoolByteStream._closed=True FIRST
+                    await lines_gen.aclose()  # now safe — aclose() is a no-op
+                    raise
                 finally:
-                    await lines_iter.aclose()
+                    await response.aclose()
+                    await lines_gen.aclose()
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
@@ -242,9 +251,13 @@ class ExternalProviderClient:
                     yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
-                lines_iter = response.aiter_lines()
+                lines_gen = response.aiter_lines().__aiter__()
                 try:
-                    async for line in lines_iter:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
                         if not line or line.startswith("event:"):
                             continue
                         if not line.startswith("data:"):
@@ -291,9 +304,15 @@ class ExternalProviderClient:
 
                         elif event_type == "message_stop":
                             yield "data: [DONE]"
-                            return
+                            await response.aclose()   # set PoolByteStream._closed=True FIRST
+                            break
+                except GeneratorExit:
+                    await response.aclose()   # set PoolByteStream._closed=True FIRST
+                    await lines_gen.aclose()  # now safe — aclose() is a no-op
+                    raise
                 finally:
-                    await lines_iter.aclose()
+                    await response.aclose()
+                    await lines_gen.aclose()
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
