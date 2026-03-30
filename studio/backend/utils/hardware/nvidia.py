@@ -123,7 +123,11 @@ def get_visible_gpu_utilization(
         if len(parts) < 7:
             continue
 
-        idx = int(parts[0])
+        try:
+            idx = int(parts[0])
+        except (ValueError, TypeError):
+            continue
+
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
 
@@ -205,10 +209,19 @@ def get_backend_visible_gpu_info(
     devices = []
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 3:
+        if len(parts) < 3:
             continue
-        idx = int(parts[0])
+        try:
+            idx = int(parts[0])
+        except (ValueError, TypeError):
+            continue
         if visible_ordinals is not None and idx not in visible_ordinals:
+            continue
+        # Use split with limit to handle GPU names containing commas
+        name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
+        try:
+            mem_total_mb = int(parts[-1])
+        except (ValueError, TypeError):
             continue
         devices.append(
             {
@@ -219,8 +232,8 @@ def get_backend_visible_gpu_info(
                     if visible_ordinals is not None
                     else len(devices)
                 ),
-                "name": parts[1],
-                "memory_total_gb": round(int(parts[2]) / 1024, 2),
+                "name": name,
+                "memory_total_gb": round(mem_total_mb / 1024, 2),
             }
         )
 
