@@ -229,8 +229,10 @@ fn stream_output(
 // ── Wait & Finalize ──
 
 /// Waits for the install process to exit. Returns (exit_status, was_intentional_stop).
+/// Times out after 2 hours to prevent infinite loops if the child hangs.
 fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
-    loop {
+    const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
+    for _ in 0..MAX_WAIT_ITERATIONS {
         let mut install = state.lock().map_err(|e| e.to_string())?;
         let intentional = install.intentional_stop;
 
@@ -253,6 +255,9 @@ fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
         drop(install);
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    // Timed out — kill and report
+    let _ = stop_install(state);
+    Err("Installation timed out after 2 hours".to_string())
 }
 
 // ── Public API ──
@@ -308,8 +313,9 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
     }
 }
 
-/// Stop a running install process.
-/// Kills the entire process group (bash/powershell + all subprocesses like uv, cmake, pip).
+/// Stop a running install process gracefully.
+/// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL
+/// Windows: kill job object (no graceful equivalent)
 pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let mut child = {
         let mut install = state.lock().map_err(|e| e.to_string())?;
@@ -323,11 +329,31 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
 
     let pid = child.id();
     info!("Stopping installer process group (pid {})", pid);
-    // process-wrap kill() sends SIGKILL to the entire process group on Unix
-    // and terminates all processes in the job object on Windows.
+
+    // Try graceful SIGTERM first so pip/cmake can clean up temp files
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+        // Wait up to 5s for graceful exit
+        for _ in 0..50 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    info!("Installer exited gracefully with status: {:?}", status);
+                    return Ok(());
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                Err(_) => break,
+            }
+        }
+        warn!("Installer did not exit gracefully, force killing");
+    }
+
+    // Force kill (SIGKILL on Unix, terminate job object on Windows)
     let _ = child.kill();
     let _ = child.wait();
-    info!("Installer process group stopped");
+    info!("Installer process group force stopped");
     Ok(())
 }
 

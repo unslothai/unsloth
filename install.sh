@@ -1083,6 +1083,7 @@ if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
 fi
 
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
+    tauri_log "ERROR" "Could not find studio/setup.sh in the installed package"
     echo "❌ ERROR: Could not find studio/setup.sh in the installed package."
     exit 1
 fi
