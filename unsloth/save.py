@@ -1,16 +1,17 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
@@ -1897,6 +1898,63 @@ def unsloth_save_pretrained_gguf(
     "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
     """
+    is_sentence_transformer = self.__class__.__name__ == "SentenceTransformer"
+    if is_sentence_transformer:
+        if tokenizer is None:
+            tokenizer = self.tokenizer
+
+        self.save_pretrained(save_directory)
+
+        inner_model = self[0].auto_model
+        if hasattr(inner_model, "_orig_mod"):
+            inner_model = inner_model._orig_mod
+
+        transformer_path = "0_Transformer"
+        modules_path = os.path.join(save_directory, "modules.json")
+        if os.path.exists(modules_path):
+            try:
+                import json
+
+                with open(modules_path, "r") as f:
+                    modules = json.load(f)
+                for m in modules:
+                    if m.get("type", "").endswith("Transformer"):
+                        transformer_path = m.get("path", "")
+                        break
+            except:
+                pass
+
+        transformer_dir = os.path.abspath(
+            os.path.join(save_directory, transformer_path)
+        )
+
+        result = unsloth_save_pretrained_gguf(
+            inner_model,
+            save_directory = transformer_dir,
+            tokenizer = tokenizer,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            push_to_hub = False,
+            token = token,
+            max_shard_size = max_shard_size,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+        )
+
+        gguf_files = result.get("gguf_files", [])
+        new_gguf_locations = []
+        for gguf_file in gguf_files:
+            if not os.path.exists(gguf_file):
+                continue
+            filename = os.path.basename(gguf_file)
+            dest_path = os.path.join(save_directory, filename)
+            abs_gguf = os.path.abspath(gguf_file)
+            if os.path.abspath(dest_path) != abs_gguf:
+                shutil.move(gguf_file, dest_path)
+            new_gguf_locations.append(dest_path)
+        result["gguf_files"] = new_gguf_locations
+        return result
+
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
@@ -1968,6 +2026,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["model_name"]
     del arguments["base_model_name"]
     del arguments["is_processor"]
+    del arguments["is_sentence_transformer"]
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
@@ -2214,6 +2273,14 @@ def unsloth_push_to_hub_gguf(
     "q5_k_s"  : "Uses Q5_K for all tensors",
     "q6_k"    : "Uses Q8_K for all tensors",
     """
+    is_sentence_transformer = self.__class__.__name__ == "SentenceTransformer"
+    if is_sentence_transformer:
+        if tokenizer is None:
+            tokenizer = self.tokenizer
+        if tags is None:
+            tags = []
+        tags.append("sentence-transformers")
+
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
@@ -2354,12 +2421,13 @@ tags:
 - gguf
 - llama.cpp
 - unsloth
+{"- sentence-transformers" if is_sentence_transformer else ""}
 {"- vision-language-model" if is_vlm else ""}
 ---
 
 # {repo_id.split("/")[-1]} : GGUF
 
-This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+This {"sentence-transformers model" if is_sentence_transformer else "model"} was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
 - For text only LLMs:    `llama-cli -hf {repo_id} --jinja`
