@@ -104,7 +104,7 @@ class LlamaCppBackend:
     @property
     def max_context_length(self) -> Optional[int]:
         """Return the maximum context currently available on this hardware."""
-        return self._max_context_length or self.context_length
+        return self._max_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
