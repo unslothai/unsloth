@@ -9,6 +9,6 @@ The frontend mirrors these in studio/frontend/src/config/training.ts.
 """
 
 DEFAULT_WEIGHT_DECAY = 0.001
-DEFAULT_LEARNING_RATE = 2e-4          # LoRA / QLoRA
-DEFAULT_LEARNING_RATE_FULL = 2e-5     # Full fine-tuning
-DEFAULT_LEARNING_RATE_STR = "2e-4"    # String form used by the API model / config dicts
+DEFAULT_LEARNING_RATE = 2e-4  # LoRA / QLoRA
+DEFAULT_LEARNING_RATE_FULL = 2e-5  # Full fine-tuning
+DEFAULT_LEARNING_RATE_STR = "2e-4"  # String form used by the API model / config dicts
