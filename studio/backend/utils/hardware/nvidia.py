@@ -120,17 +120,27 @@ def get_visible_gpu_utilization(
             "index_kind": "unresolved",
         }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
-    result = subprocess.run(
-        [
-            "nvidia-smi",
-            "--query-gpu=index,utilization.gpu,temperature.gpu,"
-            "memory.used,memory.total,power.draw,power.limit",
-            "--format=csv,noheader,nounits",
-        ],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,temperature.gpu,"
+                "memory.used,memory.total,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)
+        return {
+            "available": False,
+            "backend_cuda_visible_devices": parent_cuda_visible_devices,
+            "parent_visible_gpu_ids": parent_visible_ids or [],
+            "devices": [],
+            "index_kind": "physical",
+        }
     if result.returncode != 0 or not result.stdout.strip():
         return {
             "available": False,
@@ -196,16 +206,26 @@ def get_backend_visible_gpu_info(
             "index_kind": "unresolved",
         }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
-    result = subprocess.run(
-        [
-            "nvidia-smi",
-            "--query-gpu=index,name,memory.total",
-            "--format=csv,noheader,nounits",
-        ],
-        capture_output = True,
-        text = True,
-        timeout = 10,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed in get_backend_visible_gpu_info: %s", e)
+        return {
+            "available": False,
+            "backend_cuda_visible_devices": backend_cuda_visible_devices,
+            "parent_visible_gpu_ids": parent_visible_ids or [],
+            "devices": [],
+            "index_kind": "physical",
+        }
     if result.returncode != 0:
         return {
             "available": False,
