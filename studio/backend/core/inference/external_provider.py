@@ -187,6 +187,15 @@ class ExternalProviderClient:
                                     "data": b64data,
                                 },
                             })
+                        else:
+                            # Remote URL — Anthropic supports url source type natively
+                            anthropic_parts.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "url",
+                                    "url": url,
+                                },
+                            })
                 filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
                 filtered.append(msg)

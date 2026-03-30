@@ -450,11 +450,8 @@ class TestProviderInference:
 
 # ── TestVisionInference ─────────────────────────────────────────────
 
-# 1×1 white PNG — minimal valid image to test vision routing
-_WHITE_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQ"
-    "DwADhQGAWjR9awAAAABJRU5ErkJggg=="
-)
+# Sloth photo — used to test vision routing across providers
+_VISION_IMAGE_URL = "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
 
 _VISION_PARAMS = [
     pytest.param(
@@ -487,14 +484,14 @@ class TestVisionInference:
         model: str,
         api_key: str,
     ):
-        """Image + text message → non-empty streamed reply."""
+        """Image URL + text message → non-empty streamed reply."""
         encrypted = encrypt_key(api_key)
         payload = {
             "messages": [{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What colour is this image? Reply in one word."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_WHITE_PNG_B64}"}},
+                    {"type": "text", "text": "Which animal is in this image? Reply in one word."},
+                    {"type": "image_url", "image_url": {"url": _VISION_IMAGE_URL}},
                 ],
             }],
             "stream": True,
