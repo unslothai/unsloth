@@ -45,9 +45,6 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "mistral":    ("MISTRAL_API_KEY",   "mistral-small-latest"),
     "gemini":     ("GEMINI_API_KEY",     "gemini-2.5-flash"),
     "cohere":     ("COHERE_API_KEY",    "command-a-03-2025"),
-    "together":   ("TOGETHER_API_KEY",  "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
-    "fireworks":  ("FIREWORKS_API_KEY", "accounts/fireworks/models/llama4-maverick-instruct-basic"),
-    "perplexity": ("PERPLEXITY_API_KEY", "sonar"),
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
     "anthropic":  ("ANTHROPIC_API_KEY",  "claude-haiku-4-5"),
     "deepseek":   ("DEEPSEEK_API_KEY",   "deepseek-chat"),
@@ -242,7 +239,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 10, f"Expected 10 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 7, f"Expected 7 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
