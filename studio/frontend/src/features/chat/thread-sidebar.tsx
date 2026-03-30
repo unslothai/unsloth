@@ -21,6 +21,7 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { syncDeleteThread } from "./api/chat-sync-api";
 import { db, useLiveQuery } from "./db";
 import type { ChatView, ThreadRecord } from "./types";
 
@@ -93,11 +94,13 @@ export function ThreadSidebar({
     if (item.type === "single") {
       await db.messages.where("threadId").equals(item.id).delete();
       await db.threads.delete(item.id);
+      syncDeleteThread(item.id);
     } else {
       const paired = await db.threads.where("pairId").equals(item.id).toArray();
       for (const t of paired) {
         await db.messages.where("threadId").equals(t.id).delete();
         await db.threads.delete(t.id);
+        syncDeleteThread(t.id);
       }
     }
     if (activeId === item.id) {
