@@ -171,6 +171,22 @@ def public_key_pem(auth_headers: dict[str, str]) -> str:
 
 
 @pytest.fixture(scope="session")
+def vision_image_data_url() -> str:
+    """
+    Download the sloth image once per session and return it as a base64 data URI.
+
+    Using a data URI instead of a remote URL ensures every provider receives
+    the image inline — Gemini's OpenAI-compatible layer does not fetch external
+    HTTP URLs, so raw image_url links silently produce empty replies for Gemini.
+    """
+    resp = requests.get(_VISION_IMAGE_URL, timeout=30)
+    resp.raise_for_status()
+    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+    b64 = base64.b64encode(resp.content).decode("utf-8")
+    return f"data:{content_type};base64,{b64}"
+
+
+@pytest.fixture(scope="session")
 def encrypt_key(public_key_pem: str):
     """
     Return a callable encrypt_key(plaintext: str) -> str (base64 RSA-OAEP ciphertext).
@@ -480,6 +496,7 @@ class TestVisionInference:
         self,
         auth_headers: dict[str, str],
         encrypt_key,
+        vision_image_data_url: str,
         provider_type: str,
         model: str,
         api_key: str,
@@ -491,7 +508,7 @@ class TestVisionInference:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Which animal is in this image? Reply in one word."},
-                    {"type": "image_url", "image_url": {"url": _VISION_IMAGE_URL}},
+                    {"type": "image_url", "image_url": {"url": vision_image_data_url}},
                 ],
             }],
             "stream": True,
