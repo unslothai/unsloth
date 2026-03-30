@@ -2504,7 +2504,9 @@ class LlamaCppBackend:
                         # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
-                            yield {"type": "content", "text": content_accum}
+                            _safe = _strip_tool_markup(content_accum, final = True)
+                            if _safe.strip():
+                                yield {"type": "content", "text": _safe}
                         _fu = _iter_usage or {}
                         _fc = _fu.get("completion_tokens", 0)
                         _fp = _fu.get("prompt_tokens", 0)
