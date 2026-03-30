@@ -1180,13 +1180,12 @@ esac
 
 create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 
-# If setup.sh failed (e.g. llama.cpp build failed), report and exit now.
+# If setup.sh failed, report and exit now.
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
-    step "error" "unsloth studio update failed (exit code $_SETUP_EXIT)" "$C_ERR"
-    substep "GGUF inference requires a working llama.cpp build."
-    substep "Install cmake, git, and build dependencies, then re-run:"
+    step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    substep "Check the output above for details, then re-run:"
     substep "  unsloth studio update"
     echo ""
     exit "$_SETUP_EXIT"

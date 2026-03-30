@@ -818,9 +818,11 @@ else
 fi
 echo ""
 
-# Exit non-zero when GGUF support is unavailable so callers (install.sh,
-# automation) can detect the failure.  install.sh catches this and still
-# finishes PATH/shortcut setup before propagating the error.
-if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+# When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
+# installer can report the GGUF failure after finishing PATH/shortcut setup.
+# When called directly via 'unsloth studio update', keep the install
+# successful -- the footer above already reports the limitation and Studio
+# is still usable for non-GGUF workflows.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     exit 1
 fi

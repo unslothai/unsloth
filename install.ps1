@@ -907,7 +907,7 @@ shell.Run cmd, 0, False
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
-    step "setup" "running unsloth studio update..."
+    step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
@@ -920,9 +920,14 @@ shell.Run cmd, 0, False
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+    # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
+    # a previous --local run in the same PowerShell session.
     if ($StudioLocalInstall) {
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
+    } else {
+        $env:STUDIO_LOCAL_INSTALL = "0"
+        Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
     }
     # Use 'studio setup' (not 'studio update') because 'update' pops
     # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
@@ -932,7 +937,7 @@ shell.Run cmd, 0, False
     & $UnslothExe @studioArgs
     $setupExit = $LASTEXITCODE
     if ($setupExit -ne 0) {
-        Write-Host "[ERROR] unsloth studio update failed (exit code $setupExit)" -ForegroundColor Red
+        Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
         return
     }
 
