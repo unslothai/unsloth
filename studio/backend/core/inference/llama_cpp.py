@@ -293,7 +293,8 @@ class LlamaCppBackend:
                         continue
                     gpus.append((idx, free_mib))
             return gpus
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
             return []
 
     @staticmethod
@@ -334,6 +335,11 @@ class LlamaCppBackend:
                 return sorted(selected), False
 
         # Model is too large even for all GPUs, let --fit handle it
+        logger.debug(
+            "Model does not fit in available GPU memory, falling back to --fit",
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
+        )
         return None, True
 
     # ── KV cache VRAM estimation ─────────────────────────────────────
@@ -392,6 +398,11 @@ class LlamaCppBackend:
         If the model weights alone don't fit, returns min_ctx unchanged.
         """
         if not self._can_estimate_kv():
+            logger.debug(
+                "Skipping context fit because KV cache metadata is unavailable",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+            )
             return requested_ctx
 
         budget_bytes = available_mib * 1024 * 1024 * 0.70
@@ -405,6 +416,12 @@ class LlamaCppBackend:
         # Model weights alone exceed budget -- can't help by reducing ctx.
         # Return requested_ctx unchanged; --fit will handle VRAM management.
         if model_footprint >= budget_bytes:
+            logger.debug(
+                "Model footprint exceeds GPU budget before KV cache",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
+            )
             return requested_ctx
 
         # Binary search for max context that fits
@@ -1082,6 +1099,10 @@ class LlamaCppBackend:
                     # Can't estimate KV -- fall back to file-size-only check.
                     # Without KV estimation we cannot prove a hardware cap, so
                     # keep the ceiling at the native context (already the default).
+                    logger.debug(
+                        "Falling back to file-size-only GPU selection",
+                        model_size_gb = round(model_size / (1024**3), 2),
+                    )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
 
                 if effective_ctx < original_ctx:
