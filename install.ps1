@@ -188,7 +188,10 @@ function Install-UnslothStudio {
                 # stderr records as errors that set $? = $false even on exit code 0).
                 & $Command 2>&1 | Out-Host
             } else {
-                & $Command *> $null
+                $output = & $Command 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host $output -ForegroundColor Red
+                }
             }
             return [int]$LASTEXITCODE
         } finally {
