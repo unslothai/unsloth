@@ -188,6 +188,13 @@ def MistralForCausalLM_fast_forward(
 
             # If attention_mask exists, it will be handled in the attention forward
 
+        elif self.training:
+            # During training LlamaModel_fast_forward sets attention_mask=None
+            # before the attention layers and handles padding via the DPO
+            # embed-masking block (which expects a 2D mask).  Converting to 4D
+            # here would crash that block, so leave the mask as-is.
+            pass
+
         else:
             # Not using xformers - need to create attention masks
             if (
