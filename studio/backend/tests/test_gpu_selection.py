@@ -184,18 +184,27 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["devices"][0]["name"], "GPU One")
         self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places = 1)
 
-    def test_uuid_parent_visibility_returns_unresolved(self):
+    def test_uuid_parent_visibility_falls_back_to_torch(self):
+        """UUID/MIG masks should fall through nvidia to torch fallback and
+        still report visible devices using relative ordinals."""
+        fake_torch_devices = [
+            {"index": 0, "visible_ordinal": 0, "name": "GPU-A", "total_gb": 24.0, "used_gb": 2.0},
+            {"index": 1, "visible_ordinal": 1, "name": "GPU-B", "total_gb": 24.0, "used_gb": 3.0},
+        ]
         with (
             patch.dict(
                 os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
             ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
+            patch("utils.hardware.hardware._torch_get_per_device_info", return_value = fake_torch_devices),
         ):
             result = get_backend_visible_gpu_info()
 
-        self.assertFalse(result["available"])
+        self.assertTrue(result["available"])
         self.assertEqual(result["parent_visible_gpu_ids"], [])
-        self.assertEqual(result["devices"], [])
+        self.assertEqual(len(result["devices"]), 2)
+        self.assertEqual(result["index_kind"], "relative")
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (

@@ -441,7 +441,16 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_ids = get_parent_visible_gpu_ids()
-        torch_devices = _torch_get_per_device_info(parent_ids)
+        # When parent_visible_ids is empty (UUID/MIG mask or no CVD set),
+        # enumerate torch-visible ordinals so the UI still shows devices.
+        if parent_ids:
+            torch_indices = parent_ids
+            index_kind = "physical"
+        else:
+            visible_count = _torch_get_physical_gpu_count() or 0
+            torch_indices = list(range(visible_count))
+            index_kind = "relative"
+        torch_devices = _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
             for td in torch_devices:
@@ -450,7 +459,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 devices.append(
                     {
                         "index": td["index"],
-                        "index_kind": "physical" if parent_ids else "relative",
+                        "index_kind": index_kind,
                         "visible_ordinal": td["visible_ordinal"],
                         "gpu_utilization_pct": None,
                         "temperature_c": None,
@@ -469,7 +478,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 "backend": device.value,
                 "parent_visible_gpu_ids": parent_ids,
                 "devices": devices,
-                "index_kind": "physical" if parent_ids else "relative",
+                "index_kind": index_kind,
             }
 
     if device == DeviceType.MLX:
@@ -1148,12 +1157,21 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 logger.warning("Backend GPU visibility query failed: %s", e)
 
         # Torch fallback (AMD ROCm, Intel XPU, nvidia-smi missing/failed)
-        torch_devices = _torch_get_per_device_info(parent_visible_ids)
+        # When parent_visible_ids is empty (UUID/MIG mask), enumerate by
+        # torch ordinal so the UI still shows devices.
+        if parent_visible_ids:
+            torch_indices = parent_visible_ids
+            index_kind = "physical"
+        else:
+            visible_count = _torch_get_physical_gpu_count() or 0
+            torch_indices = list(range(visible_count))
+            index_kind = "relative"
+        torch_devices = _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = [
                 {
                     "index": td["index"],
-                    "index_kind": "physical" if parent_visible_ids else "relative",
+                    "index_kind": index_kind,
                     "visible_ordinal": td["visible_ordinal"],
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
@@ -1166,7 +1184,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                 "parent_visible_gpu_ids": parent_visible_ids,
                 "devices": devices,
-                "index_kind": "physical" if parent_visible_ids else "relative",
+                "index_kind": index_kind,
             }
 
         return {
