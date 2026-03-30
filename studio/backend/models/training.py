@@ -17,7 +17,8 @@ class TrainingStartRequest(BaseModel):
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
     training_type: str = Field(
-        ..., description = "Training type: 'LoRA/QLoRA' or 'Full Finetuning'"
+        ...,
+        description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
