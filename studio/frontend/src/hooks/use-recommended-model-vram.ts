@@ -10,9 +10,9 @@ import { useEffect, useState } from "react";
  * models in the chat model dropdown.
  */
 export function useRecommendedModelVram(ids: string[]) {
-  const [paramCountById, setParamCountById] = useState<
-    Map<string, number>
-  >(new Map());
+  const [paramCountById, setParamCountById] = useState<Map<string, number>>(
+    new Map(),
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   const stableKey = [...ids].filter(Boolean).sort().join(",");
@@ -30,7 +30,9 @@ export function useRecommendedModelVram(ids: string[]) {
       const next = new Map<string, number>();
       await Promise.all(
         stableIds.map(async (id) => {
-          if (canceled) return;
+          if (canceled) {
+            return;
+          }
           try {
             const info = await cachedModelInfo({
               name: id,
@@ -50,7 +52,9 @@ export function useRecommendedModelVram(ids: string[]) {
         // models are preserved while newly-visible models are still loading.
         setParamCountById((prev) => {
           const merged = new Map(prev);
-          for (const [id, count] of next) merged.set(id, count);
+          for (const [id, count] of next) {
+            merged.set(id, count);
+          }
           return merged;
         });
         setIsLoading(false);

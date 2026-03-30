@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { modelInfo, type ModelEntry } from "@huggingface/hub";
+import { type ModelEntry, modelInfo } from "@huggingface/hub";
 
 /**
  * Thin caching + throttling layer over `modelInfo()` from @huggingface/hub.
@@ -42,13 +42,20 @@ function acquire(): Promise<void> {
     active++;
     return Promise.resolve();
   }
-  return new Promise<void>((resolve) => waiting.push(() => { active++; resolve(); }));
+  return new Promise<void>((resolve) =>
+    waiting.push(() => {
+      active++;
+      resolve();
+    }),
+  );
 }
 
 function release() {
   active--;
   const next = waiting.shift();
-  if (next) next();
+  if (next) {
+    next();
+  }
 }
 
 // ── Public API ──────────────────────────────────────────────────
@@ -58,7 +65,9 @@ function release() {
 const ALL_FIELDS: ("safetensors" | "tags")[] = ["safetensors", "tags"];
 
 function cacheKey(name: string, token: string | undefined): string {
-  if (!token) return `${name}::anon`;
+  if (!token) {
+    return `${name}::anon`;
+  }
   // Use last 8 chars as a lightweight fingerprint so different tokens get
   // separate cache entries without storing the full secret in memory.
   return `${name}::${token.slice(-8)}`;
@@ -67,9 +76,7 @@ function cacheKey(name: string, token: string | undefined): string {
 function extractToken(
   params: Parameters<typeof modelInfo>[0],
 ): string | undefined {
-  const creds = params.credentials as
-    | { accessToken?: string }
-    | undefined;
+  const creds = params.credentials as { accessToken?: string } | undefined;
   return creds?.accessToken;
 }
 
@@ -81,17 +88,24 @@ export async function cachedModelInfo(
 
   // 1. Return from cache if fresh
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.data;
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
+    return hit.data;
+  }
 
   // 2. Share in-flight request if one exists
   const flying = inflight.get(key);
-  if (flying) return flying;
+  if (flying) {
+    return flying;
+  }
 
   // 3. New request, gated by concurrency semaphore
   const promise = (async () => {
     await acquire();
     try {
-      const result = await modelInfo({ ...params, additionalFields: ALL_FIELDS });
+      const result = await modelInfo({
+        ...params,
+        additionalFields: ALL_FIELDS,
+      });
       cache.set(key, { data: result as CachedResult, ts: Date.now() });
       return result as CachedResult;
     } finally {
