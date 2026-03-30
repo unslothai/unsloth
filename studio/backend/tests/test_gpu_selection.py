@@ -188,16 +188,33 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         """UUID/MIG masks should fall through nvidia to torch fallback and
         still report visible devices using relative ordinals."""
         fake_torch_devices = [
-            {"index": 0, "visible_ordinal": 0, "name": "GPU-A", "total_gb": 24.0, "used_gb": 2.0},
-            {"index": 1, "visible_ordinal": 1, "name": "GPU-B", "total_gb": 24.0, "used_gb": 3.0},
+            {
+                "index": 0,
+                "visible_ordinal": 0,
+                "name": "GPU-A",
+                "total_gb": 24.0,
+                "used_gb": 2.0,
+            },
+            {
+                "index": 1,
+                "visible_ordinal": 1,
+                "name": "GPU-B",
+                "total_gb": 24.0,
+                "used_gb": 3.0,
+            },
         ]
         with (
             patch.dict(
                 os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
             ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
-            patch("utils.hardware.hardware._torch_get_per_device_info", return_value = fake_torch_devices),
+            patch(
+                "utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2
+            ),
+            patch(
+                "utils.hardware.hardware._torch_get_per_device_info",
+                return_value = fake_torch_devices,
+            ),
         ):
             result = get_backend_visible_gpu_info()
 
