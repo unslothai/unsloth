@@ -137,7 +137,12 @@ async function* mergedModelIterator(
     const m = model as { name?: string };
     if (m.name) {
       seen.add(m.name);
-      primeCacheFromListing(m.name, accessToken, model as Parameters<typeof primeCacheFromListing>[2]);
+      // Prime both the token-specific and anonymous cache slots. Public model
+      // metadata (safetensors, tags) is identical regardless of auth, and the
+      // VRAM hook reads from the anonymous slot (no credentials passed).
+      const data = model as Parameters<typeof primeCacheFromListing>[2];
+      primeCacheFromListing(m.name, accessToken, data);
+      if (accessToken) primeCacheFromListing(m.name, undefined, data);
     }
     yield model;
     count++;
@@ -149,7 +154,12 @@ async function* mergedModelIterator(
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
-      primeCacheFromListing(m.name, accessToken, model as Parameters<typeof primeCacheFromListing>[2]);
+      // Prime both the token-specific and anonymous cache slots. Public model
+      // metadata (safetensors, tags) is identical regardless of auth, and the
+      // VRAM hook reads from the anonymous slot (no credentials passed).
+      const data = model as Parameters<typeof primeCacheFromListing>[2];
+      primeCacheFromListing(m.name, accessToken, data);
+      if (accessToken) primeCacheFromListing(m.name, undefined, data);
     }
     yield model;
   }
@@ -200,7 +210,12 @@ async function* priorityThenListingIterator(
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
-      primeCacheFromListing(m.name, accessToken, model as Parameters<typeof primeCacheFromListing>[2]);
+      // Prime both the token-specific and anonymous cache slots. Public model
+      // metadata (safetensors, tags) is identical regardless of auth, and the
+      // VRAM hook reads from the anonymous slot (no credentials passed).
+      const data = model as Parameters<typeof primeCacheFromListing>[2];
+      primeCacheFromListing(m.name, accessToken, data);
+      if (accessToken) primeCacheFromListing(m.name, undefined, data);
     }
     yield model;
   }

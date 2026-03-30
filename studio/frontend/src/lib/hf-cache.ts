@@ -101,6 +101,7 @@ export function primeCacheFromListing(
   token: string | undefined,
   data: CachedResult,
 ): void {
+  if (!name) return;
   const key = cacheKey(name, token);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
