@@ -924,11 +924,10 @@ shell.Run cmd, 0, False
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
     }
-    if ($script:UnslothVerbose) {
-        & $UnslothExe studio update --verbose
-    } else {
-        & $UnslothExe studio update
-    }
+    $studioArgs = @('studio', 'update')
+    if ($StudioLocalInstall) { $studioArgs += '--local' }
+    if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+    & $UnslothExe @studioArgs
     $setupExit = $LASTEXITCODE
     if ($setupExit -ne 0) {
         Write-Host "[ERROR] unsloth studio update failed (exit code $setupExit)" -ForegroundColor Red

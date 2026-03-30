@@ -54,11 +54,9 @@ _run_quiet() {
     shift 2
 
     if _is_verbose; then
-        if "$@"; then
-            return 0
-        fi
-
-        local exit_code=$?
+        local exit_code
+        "$@" && return 0
+        exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         if [ "$on_fail" = "exit" ]; then
             exit "$exit_code"
@@ -376,10 +374,13 @@ install_python_stack() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
-elif _is_verbose && curl -LsSf https://astral.sh/uv/install.sh | sh; then
-    export PATH="$HOME/.local/bin:$PATH"
-    command -v uv &>/dev/null && USE_UV=true
-elif curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1; then
+elif {
+    if _is_verbose; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    else
+        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    fi
+}; then
     export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
 fi
