@@ -159,7 +159,7 @@ class TrainingBackend:
             "warmup_ratio": kwargs.get("warmup_ratio"),
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", 0.01),
+            "weight_decay": kwargs.get("weight_decay", 0.001),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),

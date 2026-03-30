@@ -102,7 +102,7 @@ export const DEFAULT_HYPERPARAMS = {
   loraVariant: "lora" as const,
   batchSize: 4,
   gradientAccumulation: 8,
-  weightDecay: 0.01,
+  weightDecay: 0.001,
   warmupSteps: 5,
   maxSteps: 60,
   saveSteps: 0,

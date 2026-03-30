@@ -81,7 +81,7 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.01, description = "Weight decay")
+    weight_decay: float = Field(0.001, description = "Weight decay")
     random_seed: int = Field(42, description = "Random seed")
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
