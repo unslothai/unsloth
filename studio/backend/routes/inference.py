@@ -955,23 +955,23 @@ async def _proxy_to_external_provider(
     )
 
     async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            stream = payload.stream,
+        )
         try:
-            async for line in client.stream_chat_completion(
-                messages = chat_messages,
-                model = model,
-                temperature = payload.temperature,
-                top_p = payload.top_p,
-                max_tokens = payload.max_tokens,
-                presence_penalty = payload.presence_penalty,
-                stream = payload.stream,
-            ):
+            async for line in gen:
                 yield f"{line}\n\n"
             yield "data: [DONE]\n\n"
-        except GeneratorExit:
-            pass
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
         finally:
+            await gen.aclose()
             await client.close()
 
     return StreamingResponse(
