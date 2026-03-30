@@ -967,6 +967,8 @@ async def _proxy_to_external_provider(
             ):
                 yield f"{line}\n\n"
             yield "data: [DONE]\n\n"
+        except GeneratorExit:
+            pass
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
         finally:
