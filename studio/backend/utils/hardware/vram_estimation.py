@@ -62,7 +62,6 @@ class ModelArchConfig:
     moe_intermediate_size: Optional[int] = None
     n_shared_experts: int = 0
     num_dense_layers: int = 0
-    # MLA attention fields (DeepSeek V2/V3)
     q_lora_rank: Optional[int] = None
     kv_lora_rank: Optional[int] = None
     qk_nope_head_dim: Optional[int] = None
@@ -136,12 +135,10 @@ class VramBreakdown:
 
 def _compute_num_dense_layers(text_config, total_layers: int) -> int:
     """Count how many layers use dense MLP instead of MoE."""
-    # DeepSeek V2/V3, GLM4-MoE: first K layers are dense
     first_k = getattr(text_config, "first_k_dense_replace", None)
     if first_k is not None:
         return min(int(first_k), total_layers)
 
-    # Qwen3-MoE: layer i is MoE if (i+1) % step == 0 and not in mlp_only
     sparse_step = getattr(text_config, "decoder_sparse_step", None)
     mlp_only = getattr(text_config, "mlp_only_layers", None) or []
     if sparse_step is not None and sparse_step > 0:
@@ -152,7 +149,7 @@ def _compute_num_dense_layers(text_config, total_layers: int) -> int:
         )
         return total_layers - moe_count
 
-    return 0  # GPT-OSS and others: all layers are MoE
+    return 0
 
 
 def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
@@ -192,7 +189,6 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     if num_experts is not None and num_experts > 1:
         num_dense_layers = _compute_num_dense_layers(text_config, num_layers)
 
-    # MLA attention (DeepSeek V2/V3)
     q_lora_rank = getattr(text_config, "q_lora_rank", None)
     kv_lora_rank = getattr(text_config, "kv_lora_rank", None)
     qk_nope_head_dim = getattr(text_config, "qk_nope_head_dim", None)
@@ -234,10 +230,9 @@ def _get_num_experts(arch: ModelArchConfig) -> int:
 
 
 def _compute_attn_elements(arch: ModelArchConfig) -> int:
-    """Attention weight elements per layer (standard QKVO or MLA)."""
+    """Attention weight elements per layer."""
     hd = arch.hidden_size
     if arch.q_lora_rank is not None:
-        # MLA: q_a, q_b, kv_a, kv_b, o + layernorms
         nh = arch.num_attention_heads
         qk_head = arch.qk_nope_head_dim + arch.qk_rope_head_dim
         q_a = hd * arch.q_lora_rank
@@ -252,25 +247,18 @@ def _compute_attn_elements(arch: ModelArchConfig) -> int:
 
 
 def _compute_dense_mlp_elements(arch: ModelArchConfig) -> int:
-    """MLP weight elements for one dense (non-MoE) layer."""
     return arch.hidden_size * arch.intermediate_size * 3
 
 
 def _compute_moe_mlp_elements(arch: ModelArchConfig) -> int:
-    """MLP weight elements for one MoE layer (routed + shared + router)."""
     hd = arch.hidden_size
     mlp_size = _get_mlp_size(arch)
     n_experts = _get_num_experts(arch)
-    routed = hd * mlp_size * 3 * n_experts
-    router = n_experts * hd
-    shared = 0
-    if arch.n_shared_experts > 0:
-        shared = hd * (mlp_size * arch.n_shared_experts) * 3
-    return routed + router + shared
+    return hd * mlp_size * 3 * (n_experts + arch.n_shared_experts) + n_experts * hd
 
 
 def _compute_layer_elements(arch: ModelArchConfig):
-    """Return (total_quantizable, layernorms_per_layer, embed, lm_head).
+    """Return (total_quantizable, layernorms_per_layer, embed, lm_head) element counts.
 
     total_quantizable is summed across ALL layers (not per-layer).
     """
@@ -283,9 +271,8 @@ def _compute_layer_elements(arch: ModelArchConfig):
     if n_experts > 1:
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
-        mlp_total = _compute_moe_mlp_elements(arch) * n_moe
-        if n_dense > 0:
-            mlp_total += _compute_dense_mlp_elements(arch) * n_dense
+        mlp_total = (_compute_moe_mlp_elements(arch) * n_moe
+                     + _compute_dense_mlp_elements(arch) * n_dense)
     else:
         mlp_total = _compute_dense_mlp_elements(arch) * n_layers
 
@@ -321,11 +308,9 @@ def compute_total_params(arch: ModelArchConfig) -> int:
 def _lora_attn_elements(
     arch: ModelArchConfig, r: int, target_modules: list,
 ) -> int:
-    """LoRA adapter elements for attention modules in one layer."""
     hd = arch.hidden_size
     if arch.q_lora_rank is not None:
-        # MLA: map standard target names to MLA projection dimensions.
-        # TODO(human): implement MLA LoRA dimension mapping
+        # MLA: q_proj->q_b, k_proj->kv_a, v_proj->kv_b, o_proj->o
         nh = arch.num_attention_heads
         qk_head = arch.qk_nope_head_dim + arch.qk_rope_head_dim
         kv_out = nh * (arch.qk_nope_head_dim + arch.v_head_dim)
@@ -354,7 +339,6 @@ def _lora_attn_elements(
 def _lora_mlp_elements(
     hd: int, mlp_size: int, r: int, target_modules: list, expert_mult: int,
 ) -> int:
-    """LoRA adapter elements for MLP modules in one layer."""
     module_ab = {
         "gate_proj": (hd * r, r * mlp_size),
         "up_proj": (hd * r, r * mlp_size),

@@ -55,6 +55,67 @@ MOE_CONFIG = ModelArchConfig(
     num_experts = 8,
 )
 
+DEEPSEEK_V3 = ModelArchConfig(
+    hidden_size = 7168,
+    num_hidden_layers = 61,
+    num_attention_heads = 128,
+    num_key_value_heads = 128,
+    intermediate_size = 18432,
+    vocab_size = 129280,
+    tie_word_embeddings = False,
+    num_experts = 256,
+    moe_intermediate_size = 2048,
+    n_shared_experts = 1,
+    num_dense_layers = 3,
+    q_lora_rank = 1536,
+    kv_lora_rank = 512,
+    qk_nope_head_dim = 128,
+    qk_rope_head_dim = 64,
+    v_head_dim = 128,
+)
+
+QWEN3_MOE_30B = ModelArchConfig(
+    hidden_size = 2048,
+    num_hidden_layers = 48,
+    num_attention_heads = 32,
+    num_key_value_heads = 4,
+    intermediate_size = 8192,
+    vocab_size = 151936,
+    tie_word_embeddings = True,
+    num_experts = 128,
+    moe_intermediate_size = 768,
+    n_shared_experts = 0,
+    num_dense_layers = 0,
+)
+
+GLM4_MOE = ModelArchConfig(
+    hidden_size = 4096,
+    num_hidden_layers = 46,
+    num_attention_heads = 96,
+    num_key_value_heads = 8,
+    intermediate_size = 10944,
+    vocab_size = 151552,
+    tie_word_embeddings = False,
+    num_experts = 128,
+    moe_intermediate_size = 1408,
+    n_shared_experts = 1,
+    num_dense_layers = 1,
+)
+
+GPT_OSS = ModelArchConfig(
+    hidden_size = 6144,
+    num_hidden_layers = 64,
+    num_attention_heads = 64,
+    num_key_value_heads = 8,
+    intermediate_size = 2880,
+    vocab_size = 200064,
+    tie_word_embeddings = False,
+    num_experts = 128,
+    moe_intermediate_size = None,
+    n_shared_experts = 0,
+    num_dense_layers = 0,
+)
+
 
 class TestExtractArchConfig(unittest.TestCase):
     def test_basic_config(self):
@@ -368,6 +429,228 @@ class TestEstimateTrainingVram(unittest.TestCase):
         self.assertAlmostEqual(
             v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1
         )
+
+
+class TestExtractArchConfigMoE(unittest.TestCase):
+    def test_deepseek_v3_shared_experts(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 7168,
+            num_hidden_layers = 61,
+            num_attention_heads = 128,
+            num_key_value_heads = 128,
+            intermediate_size = 18432,
+            vocab_size = 129280,
+            tie_word_embeddings = False,
+            n_routed_experts = 256,
+            moe_intermediate_size = 2048,
+            n_shared_experts = 1,
+            first_k_dense_replace = 3,
+            q_lora_rank = 1536,
+            kv_lora_rank = 512,
+            qk_nope_head_dim = 128,
+            qk_rope_head_dim = 64,
+            v_head_dim = 128,
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.num_experts, 256)
+        self.assertEqual(arch.n_shared_experts, 1)
+        self.assertEqual(arch.num_dense_layers, 3)
+        self.assertEqual(arch.q_lora_rank, 1536)
+        self.assertEqual(arch.kv_lora_rank, 512)
+
+    def test_qwen3_moe_decoder_sparse_step(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 2048,
+            num_hidden_layers = 48,
+            num_attention_heads = 32,
+            num_key_value_heads = 4,
+            intermediate_size = 8192,
+            vocab_size = 151936,
+            tie_word_embeddings = True,
+            num_local_experts = 128,
+            moe_intermediate_size = 768,
+            decoder_sparse_step = 1,
+            mlp_only_layers = [],
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.num_experts, 128)
+        self.assertEqual(arch.num_dense_layers, 0)
+        self.assertIsNone(arch.q_lora_rank)
+
+    def test_qwen3_moe_with_mlp_only_layers(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 2048,
+            num_hidden_layers = 24,
+            num_attention_heads = 16,
+            num_key_value_heads = 4,
+            intermediate_size = 8192,
+            vocab_size = 151936,
+            tie_word_embeddings = True,
+            num_local_experts = 60,
+            moe_intermediate_size = 1408,
+            decoder_sparse_step = 1,
+            mlp_only_layers = [0, 1, 2, 3],
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.num_dense_layers, 4)
+
+    def test_glm4_moe_first_k_dense(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 4096,
+            num_hidden_layers = 46,
+            num_attention_heads = 96,
+            num_key_value_heads = 8,
+            intermediate_size = 10944,
+            vocab_size = 151552,
+            tie_word_embeddings = False,
+            n_routed_experts = 128,
+            moe_intermediate_size = 1408,
+            n_shared_experts = 1,
+            first_k_dense_replace = 1,
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.num_dense_layers, 1)
+        self.assertEqual(arch.n_shared_experts, 1)
+
+    def test_gpt_oss_no_moe_intermediate(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 6144,
+            num_hidden_layers = 64,
+            num_attention_heads = 64,
+            num_key_value_heads = 8,
+            intermediate_size = 2880,
+            vocab_size = 200064,
+            tie_word_embeddings = False,
+            num_local_experts = 128,
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.num_experts, 128)
+        self.assertIsNone(arch.moe_intermediate_size)
+        self.assertEqual(arch.num_dense_layers, 0)
+
+    def test_backward_compat_no_new_fields(self):
+        hf_config = SimpleNamespace(
+            hidden_size = 4096,
+            num_hidden_layers = 32,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 128256,
+            tie_word_embeddings = False,
+        )
+        arch = extract_arch_config(hf_config)
+        self.assertEqual(arch.n_shared_experts, 0)
+        self.assertEqual(arch.num_dense_layers, 0)
+        self.assertIsNone(arch.q_lora_rank)
+
+
+class TestSharedExperts(unittest.TestCase):
+    def test_shared_experts_increase_weight_bytes(self):
+        no_shared = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 32,
+            num_attention_heads = 32, num_key_value_heads = 8,
+            intermediate_size = 14336, vocab_size = 32000,
+            tie_word_embeddings = False, num_experts = 64,
+            moe_intermediate_size = 1407, n_shared_experts = 0,
+        )
+        with_shared = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 32,
+            num_attention_heads = 32, num_key_value_heads = 8,
+            intermediate_size = 14336, vocab_size = 32000,
+            tie_word_embeddings = False, num_experts = 64,
+            moe_intermediate_size = 1407, n_shared_experts = 2,
+        )
+        w_no = compute_model_weights_bytes(no_shared, "full", False)
+        w_yes = compute_model_weights_bytes(with_shared, "full", False)
+        self.assertGreater(w_yes, w_no)
+        delta_per_layer = 4096 * 1407 * 3 * 2
+        expected_delta = delta_per_layer * 32 * 2
+        actual_delta = w_yes - w_no
+        self.assertAlmostEqual(actual_delta, expected_delta, delta = expected_delta * 0.01)
+
+    def test_deepseek_v3_params_in_range(self):
+        total = compute_total_params(DEEPSEEK_V3)
+        total_b = total / 1e9
+        self.assertGreater(total_b, 600)
+        self.assertLess(total_b, 750)
+
+
+class TestMLA(unittest.TestCase):
+    def test_mla_different_from_standard(self):
+        from utils.hardware.vram_estimation import _compute_attn_elements
+        mla_arch = DEEPSEEK_V3
+        std_arch = ModelArchConfig(
+            hidden_size = 7168, num_hidden_layers = 61,
+            num_attention_heads = 128, num_key_value_heads = 128,
+            intermediate_size = 18432, vocab_size = 129280,
+        )
+        mla_attn = _compute_attn_elements(mla_arch)
+        std_attn = _compute_attn_elements(std_arch)
+        self.assertNotEqual(mla_attn, std_attn)
+
+    def test_mla_lora_produces_values(self):
+        lora_p = compute_lora_params(DEEPSEEK_V3, 16, ["q_proj", "v_proj", "o_proj"])
+        self.assertGreater(lora_p, 0)
+
+
+class TestDenseMoEMix(unittest.TestCase):
+    def test_dense_layers_change_total(self):
+        all_moe = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 46,
+            num_attention_heads = 96, num_key_value_heads = 8,
+            intermediate_size = 10944, vocab_size = 151552,
+            tie_word_embeddings = False, num_experts = 128,
+            moe_intermediate_size = 1408, n_shared_experts = 1,
+            num_dense_layers = 0,
+        )
+        mixed = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 46,
+            num_attention_heads = 96, num_key_value_heads = 8,
+            intermediate_size = 10944, vocab_size = 151552,
+            tie_word_embeddings = False, num_experts = 128,
+            moe_intermediate_size = 1408, n_shared_experts = 1,
+            num_dense_layers = 1,
+        )
+        w_all = compute_model_weights_bytes(all_moe, "full", False)
+        w_mixed = compute_model_weights_bytes(mixed, "full", False)
+        self.assertNotEqual(w_all, w_mixed)
+
+    def test_glm4_moe_params_reasonable(self):
+        total = compute_total_params(GLM4_MOE)
+        total_b = total / 1e9
+        self.assertGreater(total_b, 80)
+        self.assertLess(total_b, 120)
+
+    def test_qwen3_moe_30b_params_reasonable(self):
+        total = compute_total_params(QWEN3_MOE_30B)
+        total_b = total / 1e9
+        self.assertGreater(total_b, 20)
+        self.assertLess(total_b, 50)
+
+    def test_gpt_oss_uses_intermediate_size(self):
+        total = compute_total_params(GPT_OSS)
+        total_b = total / 1e9
+        self.assertGreater(total_b, 350)
+        self.assertLess(total_b, 500)
+
+    def test_lora_dense_vs_moe_layers_differ(self):
+        all_moe = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 10,
+            num_attention_heads = 32, num_key_value_heads = 8,
+            intermediate_size = 14336, vocab_size = 32000,
+            tie_word_embeddings = False, num_experts = 8,
+            moe_intermediate_size = 1024, num_dense_layers = 0,
+        )
+        mixed = ModelArchConfig(
+            hidden_size = 4096, num_hidden_layers = 10,
+            num_attention_heads = 32, num_key_value_heads = 8,
+            intermediate_size = 14336, vocab_size = 32000,
+            tie_word_embeddings = False, num_experts = 8,
+            moe_intermediate_size = 1024, num_dense_layers = 5,
+        )
+        lora_all = compute_lora_params(all_moe, 16, ["gate_proj", "up_proj", "down_proj"])
+        lora_mix = compute_lora_params(mixed, 16, ["gate_proj", "up_proj", "down_proj"])
+        self.assertNotEqual(lora_all, lora_mix)
 
 
 if __name__ == "__main__":
