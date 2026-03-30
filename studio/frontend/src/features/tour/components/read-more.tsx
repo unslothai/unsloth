@@ -5,6 +5,8 @@ export function ReadMore({ href = "#" }: { href?: string }) {
   return (
     <a
       href={href}
+      target="_blank"
+      rel="noopener noreferrer"
       onClick={(e) => {
         if (href === "#") e.preventDefault();
       }}
