@@ -924,8 +924,10 @@ shell.Run cmd, 0, False
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
     }
-    $studioArgs = @('studio', 'update')
-    if ($StudioLocalInstall) { $studioArgs += '--local' }
+    # Use 'studio setup' (not 'studio update') because 'update' pops
+    # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
+    # and bypass the fast-path version check from PR #4667.
+    $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     & $UnslothExe @studioArgs
     $setupExit = $LASTEXITCODE
