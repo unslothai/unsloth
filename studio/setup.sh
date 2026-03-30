@@ -818,7 +818,9 @@ else
 fi
 echo ""
 
-# Keep degraded installs successful; the footer above already reports the limitation.
-# Do not exit non-zero here -- install.sh runs setup.sh under set -e, so a non-zero
-# exit would abort the entire installer (PATH setup, shortcuts, first-run launch)
-# even though Studio itself is fully usable without llama.cpp / GGUF support.
+# Exit non-zero when GGUF support is unavailable so callers (install.sh,
+# automation) can detect the failure.  install.sh catches this and still
+# finishes PATH/shortcut setup before propagating the error.
+if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    exit 1
+fi

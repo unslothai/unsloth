@@ -1131,18 +1131,22 @@ step "setup" "running unsloth studio update..."
 # no-torch-runtime.txt above, so tell install_python_stack.py to skip
 # the base step to avoid redundant reinstallation.
 _SKIP_BASE=1
+# Run setup.sh outside set -e so that a llama.cpp build failure (exit 1)
+# does not skip PATH setup, shortcuts, and launch below.  We capture the
+# exit code and propagate it after post-install steps finish.
+_SETUP_EXIT=0
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
-    bash "$SETUP_SH" </dev/null
+    bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
-    bash "$SETUP_SH" </dev/null
+    bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
 # ── Make 'unsloth' available globally via ~/.local/bin ──
@@ -1175,6 +1179,18 @@ case ":$PATH:" in
 esac
 
 create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
+
+# If setup.sh failed (e.g. llama.cpp build failed), report and exit now.
+# PATH and shortcuts are already set up so the user can fix and retry.
+if [ "$_SETUP_EXIT" -ne 0 ]; then
+    echo ""
+    step "error" "unsloth studio update failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    substep "GGUF inference requires a working llama.cpp build."
+    substep "Install cmake, git, and build dependencies, then re-run:"
+    substep "  unsloth studio update"
+    echo ""
+    exit "$_SETUP_EXIT"
+fi
 
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
