@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+from utils.hardware import apply_gpu_ids
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -178,6 +179,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             load_in_4bit = load_in_4bit,
             hf_token = hf_token,
             trust_remote_code = trust_remote_code,
+            gpu_ids = config.get("resolved_gpu_ids"),
         )
 
         if success:
@@ -500,6 +502,8 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+
+    apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     model_name = config["model_name"]
 
