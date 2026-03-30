@@ -6,12 +6,12 @@ pydantic
 matplotlib
 pandas
 nest_asyncio
-datasets==4.3.0
+datasets==4.8.4
 pyjwt
 easydict
 addict
 # gradio>=4.0.0                  # 148 MB - Studio uses React + FastAPI, not Gradio
-huggingface-hub==0.36.2
+huggingface-hub==1.8.0
 structlog>=24.1.0
 diceware
 ddgs
