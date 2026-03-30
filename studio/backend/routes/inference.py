@@ -965,13 +965,20 @@ async def _proxy_to_external_provider(
             stream = payload.stream,
         )
         try:
+            sent_done = False
             async for line in gen:
                 yield f"{line}\n\n"
-            yield "data: [DONE]\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
         finally:
-            await gen.aclose()
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
             await client.close()
 
     return StreamingResponse(
