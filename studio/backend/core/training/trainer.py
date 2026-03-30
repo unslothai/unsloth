@@ -33,7 +33,14 @@ if sys.platform in ("win32", "darwin"):
         sys.path.insert(0, _compile_cache)
 
 import torch
-from utils.hardware import clear_gpu_cache, safe_num_proc, dataset_map_num_proc
+from utils.hardware import (
+    clear_gpu_cache,
+    safe_num_proc,
+    dataset_map_num_proc,
+    get_device_map,
+    raise_if_offloaded,
+    get_visible_gpu_count,
+)
 
 torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
@@ -488,6 +495,7 @@ class UnslothTrainer:
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
         full_finetuning: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
@@ -625,6 +633,11 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
+            device_map = get_device_map(gpu_ids)
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
+
             # Branch based on model type
             if self._audio_type == "csm":
                 # CSM: FastModel + auto_model=CsmForConditionalGeneration + load_in_4bit=False
@@ -637,6 +650,7 @@ class UnslothTrainer:
                     dtype = None,
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
@@ -652,6 +666,7 @@ class UnslothTrainer:
                     model_name = model_name,
                     dtype = None,
                     load_in_4bit = False,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     auto_model = WhisperForConditionalGeneration,
                     whisper_language = "English",
@@ -673,6 +688,7 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
@@ -712,6 +728,7 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = torch.float32,  # Spark-TTS requires float32
                     load_in_4bit = False,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
@@ -726,6 +743,7 @@ class UnslothTrainer:
                     model_name,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
@@ -742,6 +760,7 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
@@ -755,6 +774,7 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,  # Auto-detect
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
@@ -787,11 +807,14 @@ class UnslothTrainer:
                     max_seq_length = max_seq_length,
                     dtype = None,  # Auto-detect
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                 )
                 logger.info("Loaded text model")
+
+            raise_if_offloaded(self.model, device_map, "Studio training")
 
             if self.should_stop:
                 return False
@@ -825,6 +848,7 @@ class UnslothTrainer:
                     is_dataset_audio = is_dataset_audio,
                     trust_remote_code = trust_remote_code,
                     full_finetuning = full_finetuning,
+                    gpu_ids = gpu_ids,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
