@@ -363,14 +363,20 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             # torch uses 0-based ordinals relative to CUDA_VISIBLE_DEVICES
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            allocated_bytes = mod.memory_allocated(ordinal)
+            # Prefer mem_get_info (reports system-wide usage, not just this
+            # process) so auto-selection accounts for other GPU consumers.
+            if hasattr(mod, "mem_get_info"):
+                free_bytes, total_bytes = mod.mem_get_info(ordinal)
+                used_bytes = total_bytes - free_bytes
+            else:
+                used_bytes = mod.memory_allocated(ordinal)
             devices.append(
                 {
                     "index": phys_idx,
                     "visible_ordinal": ordinal,
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
-                    "used_gb": round(allocated_bytes / (1024**3), 2),
+                    "used_gb": round(used_bytes / (1024**3), 2),
                 }
             )
         except Exception as e:
@@ -988,8 +994,8 @@ def auto_select_gpu_ids(
         fallback_usable = 0.0
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
-    logger.debug(
-        "Falling back to all visible GPUs",
+    logger.warning(
+        "Falling back to all visible GPUs -- model may not fit",
         model_name = model_name,
         selected_gpu_ids = fallback_all,
         usable_gb = metadata["usable_gb"],
@@ -1227,6 +1233,12 @@ def get_visible_gpu_count() -> int:
 
 def apply_gpu_ids(gpu_ids) -> None:
     if gpu_ids is None:
+        return
+
+    # Empty list means "no GPUs visible" -- treat the same as None
+    # (inherit parent) to avoid setting CUDA_VISIBLE_DEVICES="" which
+    # disables CUDA entirely and crashes downstream torch calls.
+    if isinstance(gpu_ids, (list, tuple)) and len(gpu_ids) == 0:
         return
 
     global _visible_gpu_count

@@ -373,12 +373,14 @@ def compute_lora_params(
     if n_experts > 1:
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
+        # Include shared experts alongside routed experts
+        moe_expert_mult = n_experts + arch.n_shared_experts
         moe_mlp = _lora_mlp_elements(
             hd,
             _get_mlp_size(arch),
             r,
             target_modules,
-            n_experts,
+            moe_expert_mult,
         )
         dense_mlp = _lora_mlp_elements(
             hd,
