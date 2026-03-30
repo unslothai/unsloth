@@ -252,11 +252,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(get_device_map([0]), "sequential")
             self.assertEqual(get_device_map([0, 1]), "balanced")
 
-    def test_get_device_map_multi_gpu_uses_balanced(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
-            self.assertEqual(get_device_map([0, 1]), "balanced")
-            self.assertEqual(get_device_map([0]), "sequential")
-
     def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
         with (
             patch.dict(
