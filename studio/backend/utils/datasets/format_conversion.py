@@ -554,12 +554,8 @@ def convert_to_vlm_format(
                     except Exception as e:
                         failed_count += 1
                         if failed_count == 1:
-                            print(
-                                f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
-                            )
-                        if failed_count == 1:
                             logger.info(
-                                f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                                f"First VLM conversion failure: {type(e).__name__}: {e}"
                             )
 
             converted_list.extend(r for r in batch_results if r is not None)
