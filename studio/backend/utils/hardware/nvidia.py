@@ -74,17 +74,21 @@ def get_physical_gpu_count() -> Optional[int]:
 
 
 def get_primary_gpu_utilization() -> dict[str, Any]:
-    result = subprocess.run(
-        [
-            "nvidia-smi",
-            "--query-gpu=utilization.gpu,temperature.gpu,"
-            "memory.used,memory.total,power.draw,power.limit",
-            "--format=csv,noheader,nounits",
-        ],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,temperature.gpu,"
+                "memory.used,memory.total,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed in get_primary_gpu_utilization: %s", e)
+        return {"available": False}
     if result.returncode != 0 or not result.stdout.strip():
         return {"available": False}
 

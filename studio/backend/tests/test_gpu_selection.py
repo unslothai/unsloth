@@ -40,7 +40,15 @@ def _load_route_module(name: str, relative_path: str):
     return module
 
 
-class TestResolveRequestedGpuIds(unittest.TestCase):
+class _GpuCacheResetMixin:
+    """Reset module-level GPU caches between tests to prevent state leaks."""
+
+    def tearDown(self):
+        _hw_module._physical_gpu_count = None
+        _hw_module._visible_gpu_count = None
+
+
+class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
     def test_parent_visibility_defaults_to_physical_enumeration(self):
         with (
             patch.dict(os.environ, {}, clear = True),
@@ -117,7 +125,7 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
             self.assertEqual(os.environ["TEST_PARENT_ENV"], "keep-me")
 
 
-class TestVisibleGpuUtilization(unittest.TestCase):
+class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
     def test_visible_gpu_utilization_filters_to_parent_visible_ids(self):
         smi_output = "\n".join(
             [
@@ -211,7 +219,7 @@ class TestVisibleGpuUtilization(unittest.TestCase):
         self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
 
 
-class TestGpuAutoSelection(unittest.TestCase):
+class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_get_device_map_uses_explicit_gpu_selection(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertEqual(get_device_map(None), "sequential")
@@ -467,7 +475,7 @@ class TestGpuAutoSelection(unittest.TestCase):
         self.assertIsNone(metadata["selected_gpu_ids"])
 
 
-class TestPreSpawnGpuResolution(unittest.TestCase):
+class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
         backend = TrainingBackend()
 
@@ -1033,7 +1041,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
             self.assertIn(f"min_per_gpu_{n}", breakdown)
 
 
-class TestAutoSelectWithNoneRequired(unittest.TestCase):
+class TestAutoSelectWithNoneRequired(_GpuCacheResetMixin, unittest.TestCase):
     def test_auto_select_falls_back_when_estimate_unavailable(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
@@ -1060,7 +1068,7 @@ class TestAutoSelectWithNoneRequired(unittest.TestCase):
         self.assertEqual(metadata["selection_mode"], "fallback_all")
 
 
-class TestXpuRejection(unittest.TestCase):
+class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
     def test_auto_select_returns_non_cuda_for_xpu(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
             selected, metadata = auto_select_gpu_ids("unsloth/test")
@@ -1074,7 +1082,7 @@ class TestXpuRejection(unittest.TestCase):
                 prepare_gpu_selection([0], model_name = "unsloth/test")
 
 
-class TestDeviceMapForInference(unittest.TestCase):
+class TestDeviceMapForInference(_GpuCacheResetMixin, unittest.TestCase):
     def test_inference_uses_balanced_low_0(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertEqual(
