@@ -1020,7 +1020,9 @@ def auto_select_gpu_ids(
             return selected, metadata
 
     # Use only GPUs with verified VRAM data (from gpu_candidates, not raw devices)
-    fallback_all = [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
+    fallback_all = (
+        [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
+    )
     metadata["selection_mode"] = "fallback_all"
     if ranked:
         fallback_usable = ranked[0]["free_gb"] + sum(
