@@ -46,6 +46,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Google Gemini",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "default_models": [
+            "gemini-3-flash-preview",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",

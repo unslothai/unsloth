@@ -43,7 +43,7 @@ PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "openai":     ("OPENAI_API_KEY",    "gpt-4o-mini"),
     "mistral":    ("MISTRAL_API_KEY",   "mistral-small-2506"),
-    "gemini":     ("GEMINI_API_KEY",     "gemini-2.5-flash"),
+    "gemini":     ("GEMINI_API_KEY",     "gemini-3-flash-preview"),
     "cohere":     ("COHERE_API_KEY",    "command-a-03-2025"),
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
     "anthropic":  ("ANTHROPIC_API_KEY",  "claude-haiku-4-5"),
