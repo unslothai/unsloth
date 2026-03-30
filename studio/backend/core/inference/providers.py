@@ -32,7 +32,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Mistral AI",
         "base_url": "https://api.mistral.ai/v1",
         "default_models": [
-            "mistral-large-latest",
+            "mistral-large-2512",
             "mistral-small-2506",
             "codestral-latest",
         ],
