@@ -80,11 +80,13 @@ function extractToken(
   //   { accessToken: "hf_..." }              -- current preferred form
   //   { credentials: { accessToken: "..." }} -- deprecated form
   // Check both so the cache key is correct regardless of which form callers use.
-  if ("accessToken" in params && params.accessToken) {
-    return params.accessToken as string;
+  if (params.accessToken) {
+    return params.accessToken;
   }
-  const creds = params.credentials as { accessToken?: string } | undefined;
-  return creds?.accessToken;
+  if (params.credentials && "accessToken" in params.credentials) {
+    return params.credentials.accessToken;
+  }
+  return undefined;
 }
 
 export async function cachedModelInfo(

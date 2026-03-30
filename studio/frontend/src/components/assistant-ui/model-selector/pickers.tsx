@@ -535,9 +535,7 @@ export function HubModelPicker({
   // The cache in hf-cache.ts means previously fetched models resolve instantly.
   const idsForVram = useMemo(() => {
     if (!showHfSection) return visibleRecommendedIds;
-    const set = new Set(visibleRecommendedIds);
-    for (const id of filteredRecommendedIds) set.add(id);
-    return [...set];
+    return [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])];
   }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);

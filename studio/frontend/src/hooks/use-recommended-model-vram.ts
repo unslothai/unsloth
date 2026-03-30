@@ -50,13 +50,7 @@ export function useRecommendedModelVram(ids: string[]) {
       if (!canceled) {
         // Merge with previous state so that VRAM badges for already-visible
         // models are preserved while newly-visible models are still loading.
-        setParamCountById((prev) => {
-          const merged = new Map(prev);
-          for (const [id, count] of next) {
-            merged.set(id, count);
-          }
-          return merged;
-        });
+        setParamCountById((prev) => new Map([...prev, ...next]));
         setIsLoading(false);
       }
     })();
