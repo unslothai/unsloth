@@ -448,6 +448,78 @@ class TestProviderInference:
         print(f'\n  [{provider_type}/{model}] reply: "{reply.strip()}"')
 
 
+# ── TestVisionInference ─────────────────────────────────────────────
+
+# 1×1 white PNG — minimal valid image to test vision routing
+_WHITE_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQ"
+    "DwADhQGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+_VISION_PARAMS = [
+    pytest.param(
+        ptype,
+        model,
+        PROVIDER_KEYS.get(ptype, ""),
+        id=ptype,
+        marks=pytest.mark.skipif(
+            not PROVIDER_KEYS.get(ptype, ""),
+            reason=f"no key for {ptype}",
+        ),
+    )
+    for ptype, (_, model) in _PROVIDER_CONFIGS.items()
+    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter"}
+]
+
+
+class TestVisionInference:
+    """
+    Send a 1×1 white PNG alongside a text question to each vision-capable provider.
+    Verifies that image content parts survive the proxy and the provider replies.
+    """
+
+    @pytest.mark.parametrize("provider_type,model,api_key", _VISION_PARAMS)
+    def test_vision_chat_inference(
+        self,
+        auth_headers: dict[str, str],
+        encrypt_key,
+        provider_type: str,
+        model: str,
+        api_key: str,
+    ):
+        """Image + text message → non-empty streamed reply."""
+        encrypted = encrypt_key(api_key)
+        payload = {
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What colour is this image? Reply in one word."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_WHITE_PNG_B64}"}},
+                ],
+            }],
+            "stream": True,
+            "max_tokens": 16,
+            "provider_type": provider_type,
+            "external_model": model,
+            "encrypted_api_key": encrypted,
+        }
+        with requests.post(
+            _url("/v1/chat/completions"),
+            headers={**auth_headers, "Content-Type": "application/json"},
+            json=payload,
+            stream=True,
+            timeout=60,
+        ) as resp:
+            assert resp.status_code == 200, (
+                f"Vision request failed ({resp.status_code}): {resp.text[:300]}"
+            )
+            reply, saw_done = _parse_sse_stream(resp)
+
+        assert reply.strip(), f"Empty reply from {provider_type}/{model}"
+        assert saw_done, f"Stream did not end with [DONE] for {provider_type}/{model}"
+        print(f"\n  [{provider_type}/{model}] vision reply: {reply.strip()!r}")
+
+
 # ── TestLocalInferenceUnaffected ────────────────────────────────────
 
 

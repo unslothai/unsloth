@@ -848,6 +848,39 @@ def _extract_content_parts(
 # ── External provider proxy ──────────────────────────────────────
 
 
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """
+    Convert ChatMessage list to OpenAI-compatible dicts for external providers.
+
+    - Vision providers: preserve multimodal content arrays (image_url parts intact).
+    - Non-vision providers: flatten to text-only (images silently dropped).
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            result.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            if supports_vision:
+                parts = []
+                for part in msg.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": part.image_url.url},
+                        })
+                result.append({"role": msg.role, "content": parts})
+            else:
+                # Non-vision provider — strip images, keep text only
+                text = "\n".join(p.text for p in msg.content if p.type == "text")
+                result.append({"role": msg.role, "content": text})
+    return result
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
@@ -909,10 +942,11 @@ async def _proxy_to_external_provider(
             detail = "external_model is required when using an external provider.",
         )
 
-    # Extract messages into plain OpenAI format
-    system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
-    if system_prompt:
-        chat_messages.insert(0, {"role": "system", "content": system_prompt})
+    # Build messages preserving multimodal content for vision-capable providers
+    from core.inference.providers import get_provider_info as _get_provider_info
+    _pinfo = _get_provider_info(provider_type) or {}
+    _supports_vision = _pinfo.get("supports_vision", False)
+    chat_messages = _build_external_messages(payload.messages, _supports_vision)
 
     client = ExternalProviderClient(
         provider_type = provider_type,

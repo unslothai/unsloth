@@ -156,12 +156,38 @@ class ExternalProviderClient:
         """
         import json as _json
 
-        # Extract system prompt — Anthropic sends it as a top-level field, not in messages
+        # Extract system prompt and translate image_url parts to Anthropic format
         system: Optional[str] = None
         filtered: list[dict[str, Any]] = []
         for msg in messages:
             if msg.get("role") == "system":
-                system = msg.get("content", "")
+                content = msg.get("content", "")
+                system = content if isinstance(content, str) else \
+                    "\n".join(p["text"] for p in content if p.get("type") == "text")
+                continue
+
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Translate OpenAI image_url parts → Anthropic native image format
+                anthropic_parts: list[dict[str, Any]] = []
+                for part in content:
+                    if part.get("type") == "text":
+                        anthropic_parts.append({"type": "text", "text": part["text"]})
+                    elif part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:"):
+                            # data:image/png;base64,<DATA> → split header and data
+                            header, _, b64data = url.partition(",")
+                            media_type = header.split(";")[0].replace("data:", "") or "image/jpeg"
+                            anthropic_parts.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64data,
+                                },
+                            })
+                filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
                 filtered.append(msg)
 
