@@ -57,16 +57,23 @@ WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for current information, recent events, or facts you are uncertain about.",
+        "description": (
+            "Search the web and fetch page content. Returns snippets for all results. "
+            "Use the url parameter to fetch full page text from a specific URL."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
                     "description": "The search query",
-                }
+                },
+                "url": {
+                    "type": "string",
+                    "description": "A URL to fetch full page content from (instead of searching). Use this to read a page found in search results.",
+                },
             },
-            "required": ["query"],
+            "required": [],
         },
     },
 }
@@ -131,7 +138,11 @@ def execute_tool(
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
-        return _web_search(arguments.get("query", ""), timeout = effective_timeout)
+        return _web_search(
+            arguments.get("query", ""),
+            url = arguments.get("url"),
+            timeout = effective_timeout,
+        )
     if name == "python":
         return _python_exec(
             arguments.get("code", ""), cancel_event, effective_timeout, session_id
@@ -143,9 +154,71 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
-def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
-    """Search the web using DuckDuckGo and return formatted results."""
-    if not query.strip():
+_MAX_PAGE_CHARS = 16000  # limit fetched page text
+
+
+def _fetch_page_text(url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 30) -> str:
+    """Fetch a URL and return plain text content (HTML tags stripped).
+
+    Only http:// and https:// schemes are allowed (SSRF protection).
+    """
+    import re as _re
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r})."
+
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "UnslothStudio/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw_html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return f"Failed to fetch URL: {e}"
+
+    # Convert HTML to text -- prefer html2text for clean markdown output
+    try:
+        import html2text as _h2t
+
+        converter = _h2t.HTML2Text()
+        converter.ignore_links = False
+        converter.ignore_images = True
+        converter.body_width = 0  # no wrapping
+        text = converter.handle(raw_html).strip()
+    except ImportError:
+        # Fallback: regex-based stripping
+        text = _re.sub(r"<script[^>]*>.*?</script>", "", raw_html, flags=_re.DOTALL | _re.IGNORECASE)
+        text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+        text = _re.sub(r"<[^>]+>", " ", text)
+        text = _re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return "(page returned no readable text)"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
+    return text
+
+
+def _web_search(
+    query: str,
+    max_results: int = 5,
+    timeout: int = _EXEC_TIMEOUT,
+    url: str | None = None,
+) -> str:
+    """Search the web using DuckDuckGo and return formatted results.
+
+    If ``url`` is provided, fetches that page directly instead of searching.
+    """
+    # Direct URL fetch mode
+    if url and url.strip():
+        return _fetch_page_text(url.strip(), timeout=min(timeout, 60))
+
+    if not query or not query.strip():
         return "No query provided."
     try:
         from ddgs import DDGS
@@ -160,7 +233,13 @@ def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) 
                 f"URL: {r.get('href', '')}\n"
                 f"Snippet: {r.get('body', '')}"
             )
-        return "\n\n---\n\n".join(parts)
+        text = "\n\n---\n\n".join(parts)
+        text += (
+            "\n\n---\n\nIMPORTANT: These are only short snippets. "
+            "To get the full page content, call web_search with "
+            "the url parameter (e.g. {\"url\": \"<URL>\"})."
+        )
+        return text
     except Exception as e:
         return f"Search failed: {e}"
 
