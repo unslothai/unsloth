@@ -1326,7 +1326,8 @@ def get_device_map(
             ):
                 multi_gpu = True
 
-        if multi_gpu: return "balanced"
+        if multi_gpu:
+            return "balanced"
 
     return "sequential"
 
