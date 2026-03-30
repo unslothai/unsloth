@@ -2028,3 +2028,11 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
 }
 step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
 Write-Host ""
+
+# Match studio/setup.sh: exit non-zero for degraded llama.cpp when called
+# from install.ps1 (SKIP_STUDIO_BASE=1) so the installer can detect the
+# failure. Direct 'unsloth studio update' does not set SKIP_STUDIO_BASE,
+# so it keeps degraded installs successful.
+if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
+    exit 1
+}

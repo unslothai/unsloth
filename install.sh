@@ -1186,7 +1186,11 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
     substep "Check the output above for details, then re-run:"
-    substep "  unsloth studio update"
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        substep "  unsloth studio update --local"
+    else
+        substep "  unsloth studio update"
+    fi
     echo ""
     exit "$_SETUP_EXIT"
 fi
