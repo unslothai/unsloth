@@ -68,7 +68,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Update
-To update, use the same install commands as above. Or for MacOS, WSL and Linux, run:
+To update, use the same install commands as above. Or run (does not work on Windows):
 ```bash
 unsloth studio update
 ```
