@@ -585,11 +585,8 @@ def convert_to_vlm_format(
                 failed_count += 1
                 if failed_count == 1:
                     # Log the first failure to aid debugging
-                    print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
-                if failed_count == 1:
-                    # Log the first failure to aid debugging
                     logger.info(
-                        f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                        f"First VLM conversion failure: {type(e).__name__}: {e}"
                     )
             pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
         pbar.close()
