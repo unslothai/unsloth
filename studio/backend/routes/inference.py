@@ -155,6 +155,7 @@ async def load_model(
                     else False,
                     inference = inference_config,
                     context_length = llama_backend.context_length,
+                    max_context_length = llama_backend.max_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     chat_template = llama_backend.chat_template,
@@ -289,6 +290,7 @@ async def load_model(
                 has_audio_input = is_audio_input_type(_gguf_audio),
                 inference = inference_config,
                 context_length = llama_backend.context_length,
+                max_context_length = llama_backend.max_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
@@ -627,6 +629,7 @@ async def get_status(
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
+                max_context_length = llama_backend.max_context_length,
             )
 
         # Otherwise, report Unsloth backend status
