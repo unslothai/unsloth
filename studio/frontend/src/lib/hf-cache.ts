@@ -136,7 +136,18 @@ export async function cachedModelInfo(
         ...params,
         additionalFields: ALL_FIELDS,
       });
-      cache.set(key, { data: result as CachedResult, ts: Date.now() });
+      const entry = { data: result as CachedResult, ts: Date.now() };
+      cache.set(key, entry);
+      // Public model metadata (safetensors, tags) is identical regardless of
+      // auth, so also prime the anonymous slot when fetching with a token.
+      // This lets the VRAM hook (which reads without credentials) get a cache
+      // hit instead of re-fetching the same model.
+      if (token) {
+        const anonKey = cacheKey(params.name, undefined);
+        if (!cache.has(anonKey) || Date.now() - (cache.get(anonKey)?.ts ?? 0) >= CACHE_TTL_MS) {
+          cache.set(anonKey, entry);
+        }
+      }
       return result as CachedResult;
     } finally {
       release();
