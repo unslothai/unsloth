@@ -312,10 +312,10 @@ def run_server(
     if frontend_path:
         if setup_frontend(app, frontend_path):
             if not silent:
-                print(f"✅ Frontend loaded from {frontend_path}")
+                print(f"[OK] Frontend loaded from {frontend_path}")
         else:
             if not silent:
-                print(f"⚠️ Frontend not found at {frontend_path}")
+                print(f"[WARNING] Frontend not found at {frontend_path}")
 
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
