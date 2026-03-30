@@ -396,8 +396,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
             from . import nvidia
 
             result = nvidia.get_primary_gpu_utilization()
-            result["backend"] = device.value
-            return result
+            if result.get("available"):
+                result["backend"] = device.value
+                return result
         except Exception as e:
             logger.warning("nvidia-smi utilization query failed: %s", e)
 
@@ -431,12 +432,13 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 parent_visible_spec["numeric_ids"],
                 parent_cuda_visible_devices = parent_visible_spec["raw"],
             )
-            result["backend"] = device.value
-            return result
+            if result.get("available"):
+                result["backend"] = device.value
+                return result
         except Exception as e:
             logger.warning("nvidia-smi visible GPU utilization query failed: %s", e)
 
-    # Torch-based fallback for CUDA (AMD ROCm) and XPU (Intel)
+    # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_ids = get_parent_visible_gpu_ids()
         torch_devices = _torch_get_per_device_info(parent_ids)
@@ -583,15 +585,33 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
             f"Parent-visible GPUs: {parent_visible_ids}"
         )
 
-    invalid_ids = [
-        gpu_id for gpu_id in requested_ids if gpu_id < 0 or gpu_id >= physical_gpu_count
-    ]
-    if invalid_ids:
+    # Reject negative IDs unconditionally.
+    negative_ids = [gpu_id for gpu_id in requested_ids if gpu_id < 0]
+    if negative_ids:
         raise ValueError(
-            f"Invalid gpu_ids {requested_ids}: IDs must be unique physical GPU IDs "
-            f"between 0 and {max(physical_gpu_count - 1, 0)}. "
-            f"Rejected IDs: {invalid_ids}. Parent-visible GPUs: {parent_visible_ids}"
+            f"Invalid gpu_ids {requested_ids}: GPU IDs must be non-negative. "
+            f"Rejected IDs: {negative_ids}. Parent-visible GPUs: {parent_visible_ids}"
         )
+
+    # Only enforce the physical upper bound when we have a reliable count
+    # from nvidia-smi. When the count comes from torch, it reflects visible
+    # devices (filtered by CUDA_VISIBLE_DEVICES), not the physical total,
+    # so high physical indices like 3 would be falsely rejected on a
+    # CUDA_VISIBLE_DEVICES="2,3" machine that reports device_count()=2.
+    # The parent-visible check below is authoritative in all cases.
+    if physical_gpu_count > 0 and parent_visible_ids:
+        max_parent_id = max(parent_visible_ids)
+        if physical_gpu_count > max_parent_id:
+            # Count is plausibly physical (not just visible), so enforce it
+            out_of_range = [
+                gpu_id for gpu_id in requested_ids if gpu_id >= physical_gpu_count
+            ]
+            if out_of_range:
+                raise ValueError(
+                    f"Invalid gpu_ids {requested_ids}: IDs must be physical GPU IDs "
+                    f"between 0 and {physical_gpu_count - 1}. "
+                    f"Rejected IDs: {out_of_range}. Parent-visible GPUs: {parent_visible_ids}"
+                )
 
     disallowed_ids = [
         gpu_id for gpu_id in requested_ids if gpu_id not in parent_visible_ids
@@ -1121,12 +1141,13 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     parent_visible_spec["numeric_ids"],
                     parent_visible_spec["raw"],
                 )
-                result["backend"] = device.value
-                return result
+                if result.get("available"):
+                    result["backend"] = device.value
+                    return result
             except Exception as e:
                 logger.warning("Backend GPU visibility query failed: %s", e)
 
-        # Torch fallback (AMD ROCm, Intel XPU, or nvidia-smi missing)
+        # Torch fallback (AMD ROCm, Intel XPU, nvidia-smi missing/failed)
         torch_devices = _torch_get_per_device_info(parent_visible_ids)
         if torch_devices:
             devices = [
