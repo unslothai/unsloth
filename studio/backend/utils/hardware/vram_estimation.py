@@ -210,7 +210,9 @@ def compute_model_weights_bytes(
     training_method: str,
     load_in_4bit: bool,
 ) -> int:
-    quantizable_per_layer, layernorms, embed_tokens, lm_head = _compute_layer_elements(arch)
+    quantizable_per_layer, layernorms, embed_tokens, lm_head = _compute_layer_elements(
+        arch
+    )
     n_layers = arch.num_hidden_layers
 
     quantizable_elements = quantizable_per_layer * n_layers
@@ -226,7 +228,9 @@ def compute_model_weights_bytes(
 
 
 def compute_total_params(arch: ModelArchConfig) -> int:
-    quantizable_per_layer, layernorms, embed_tokens, lm_head = _compute_layer_elements(arch)
+    quantizable_per_layer, layernorms, embed_tokens, lm_head = _compute_layer_elements(
+        arch
+    )
     n_layers = arch.num_hidden_layers
     return (quantizable_per_layer + layernorms) * n_layers + embed_tokens + lm_head
 

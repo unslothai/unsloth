@@ -16,7 +16,11 @@ def _parse_smi_value(raw: str):
 
 
 def _build_gpu_metrics(
-    vram_used_mb, vram_total_mb, power_draw, power_limit, **extra,
+    vram_used_mb,
+    vram_total_mb,
+    power_draw,
+    power_limit,
+    **extra,
 ) -> dict[str, Any]:
     return {
         **extra,
@@ -138,21 +142,23 @@ def get_visible_gpu_utilization(
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
 
-        devices.append(_build_gpu_metrics(
-            vram_used_mb = _parse_smi_value(parts[3]),
-            vram_total_mb = _parse_smi_value(parts[4]),
-            power_draw = _parse_smi_value(parts[5]),
-            power_limit = _parse_smi_value(parts[6]),
-            index = idx,
-            index_kind = "physical",
-            visible_ordinal = (
-                visible_ordinals[idx]
-                if visible_ordinals is not None
-                else len(devices)
-            ),
-            gpu_utilization_pct = _parse_smi_value(parts[1]),
-            temperature_c = _parse_smi_value(parts[2]),
-        ))
+        devices.append(
+            _build_gpu_metrics(
+                vram_used_mb = _parse_smi_value(parts[3]),
+                vram_total_mb = _parse_smi_value(parts[4]),
+                power_draw = _parse_smi_value(parts[5]),
+                power_limit = _parse_smi_value(parts[6]),
+                index = idx,
+                index_kind = "physical",
+                visible_ordinal = (
+                    visible_ordinals[idx]
+                    if visible_ordinals is not None
+                    else len(devices)
+                ),
+                gpu_utilization_pct = _parse_smi_value(parts[1]),
+                temperature_c = _parse_smi_value(parts[2]),
+            )
+        )
 
     return {
         "available": len(devices) > 0,
