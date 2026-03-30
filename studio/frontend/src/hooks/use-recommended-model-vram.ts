@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { modelInfo } from "@huggingface/hub";
+import { cachedModelInfo } from "@/lib/hf-cache";
 import { useEffect, useState } from "react";
 
 /**
@@ -32,7 +32,7 @@ export function useRecommendedModelVram(ids: string[]) {
         stableIds.map(async (id) => {
           if (canceled) return;
           try {
-            const info = await modelInfo({
+            const info = await cachedModelInfo({
               name: id,
               additionalFields: ["safetensors"],
             });

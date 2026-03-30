@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PipelineType } from "@huggingface/hub";
-import { listModels, modelInfo } from "@huggingface/hub";
+import { listModels } from "@huggingface/hub";
+import { cachedModelInfo } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
@@ -167,7 +168,7 @@ async function* priorityThenListingIterator(
   const seen = new Set<string>();
   const settled = await Promise.allSettled(
     priorityIds.map((id) =>
-      modelInfo({
+      cachedModelInfo({
         name: id,
         additionalFields: ["safetensors", "tags"],
         ...(accessToken ? { credentials: { accessToken } } : {}),
