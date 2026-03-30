@@ -43,7 +43,7 @@ PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "openai":     ("OPENAI_API_KEY",    "gpt-4o-mini"),
     "mistral":    ("MISTRAL_API_KEY",   "mistral-small-latest"),
-    "google":     ("GOOGLE_API_KEY",    "gemini-2.5-flash"),
+    "gemini":     ("GEMINI_API_KEY",     "gemini-2.5-flash"),
     "cohere":     ("COHERE_API_KEY",    "command-a-03-2025"),
     "together":   ("TOGETHER_API_KEY",  "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
     "fireworks":  ("FIREWORKS_API_KEY", "accounts/fireworks/models/llama4-maverick-instruct-basic"),

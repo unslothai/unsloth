@@ -42,20 +42,21 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
     },
-    "google": {
+    "gemini": {
         "display_name": "Google Gemini",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "default_models": [
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "OpenAI compatibility layer (beta). Uses native Google API key as Bearer token.",
+        "notes": "OpenAI-compatible endpoint. API key from https://aistudio.google.com/apikey.",
     },
     "cohere": {
         "display_name": "Cohere",
