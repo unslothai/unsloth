@@ -91,6 +91,24 @@ function extractToken(
   return undefined;
 }
 
+/**
+ * Pre-populate the cache with data from a listModels result.
+ * Only writes if the key is not already fresh -- never overwrites a recent
+ * modelInfo response with a listing response.
+ */
+export function primeCacheFromListing(
+  name: string,
+  token: string | undefined,
+  data: CachedResult,
+): void {
+  const key = cacheKey(name, token);
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
+    return; // already fresh, don't overwrite
+  }
+  cache.set(key, { data, ts: Date.now() });
+}
+
 export async function cachedModelInfo(
   params: Parameters<typeof modelInfo>[0],
 ): Promise<CachedResult> {

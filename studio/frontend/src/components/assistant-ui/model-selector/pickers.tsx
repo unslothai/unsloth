@@ -532,10 +532,13 @@ export function HubModelPicker({
 
   // Fetch VRAM info for visible models, plus any models surfaced by a search
   // query so that filtered recommended models also show VRAM badges.
-  // The cache in hf-cache.ts means previously fetched models resolve instantly.
+  // Skip GGUF repos: they have no safetensors metadata and the render layer
+  // already shows a static "GGUF" badge instead of VRAM data.
   const idsForVram = useMemo(() => {
-    if (!showHfSection) return visibleRecommendedIds;
-    return [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])];
+    const ids = showHfSection
+      ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
+      : visibleRecommendedIds;
+    return ids.filter((id) => !isGgufRepo(id));
   }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);

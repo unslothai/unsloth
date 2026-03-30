@@ -3,7 +3,7 @@
 
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
-import { cachedModelInfo } from "@/lib/hf-cache";
+import { cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
@@ -135,7 +135,10 @@ async function* mergedModelIterator(
   let count = 0;
   for await (const model of unslothIter) {
     const m = model as { name?: string };
-    if (m.name) seen.add(m.name);
+    if (m.name) {
+      seen.add(m.name);
+      primeCacheFromListing(m.name, accessToken, model as Parameters<typeof primeCacheFromListing>[2]);
+    }
     yield model;
     count++;
     if (count >= UNSLOTH_PREFETCH) break;
@@ -145,6 +148,9 @@ async function* mergedModelIterator(
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
+    if (m.name) {
+      primeCacheFromListing(m.name, accessToken, model as Parameters<typeof primeCacheFromListing>[2]);
+    }
     yield model;
   }
 }
@@ -193,6 +199,9 @@ async function* priorityThenListingIterator(
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
+    if (m.name) {
+      primeCacheFromListing(m.name, accessToken, model as Parameters<typeof primeCacheFromListing>[2]);
+    }
     yield model;
   }
 }
