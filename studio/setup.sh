@@ -255,9 +255,12 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install >"$_log" 2>&1 || _exit_code=$?
+    bun install "$@" >"$_log" 2>&1 || _exit_code=$?
 
-    if [ "$_exit_code" -eq 0 ] && [ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/vite ]; then
+    # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
+    if [ "$_exit_code" -eq 0 ] \
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ]; }; then
         rm -f "$_log"
         return 0
     fi
