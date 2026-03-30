@@ -17,9 +17,12 @@ const MAX_CONCURRENT = 3;
 
 // ── Cache & in-flight maps ──────────────────────────────────────
 
-// All consumers cast the result to access extra fields (safetensors, tags),
-// so we just expose ModelEntry and let them cast as needed.
-type CachedResult = ModelEntry;
+// Extend ModelEntry with the additional fields we always request so callers
+// do not need unsafe casts to access safetensors/tags.
+type CachedResult = ModelEntry & {
+  safetensors?: { total?: number; parameters?: Record<string, number> };
+  tags?: string[];
+};
 
 interface CacheEntry {
   data: CachedResult;
@@ -54,15 +57,27 @@ function release() {
 // cache entry covers all callers (e.g. ["safetensors"] and ["safetensors","tags"]).
 const ALL_FIELDS: ("safetensors" | "tags")[] = ["safetensors", "tags"];
 
-function cacheKey(name: string, authed: boolean): string {
-  return `${name}::${authed ? "1" : "0"}`;
+function cacheKey(name: string, token: string | undefined): string {
+  if (!token) return `${name}::anon`;
+  // Use last 8 chars as a lightweight fingerprint so different tokens get
+  // separate cache entries without storing the full secret in memory.
+  return `${name}::${token.slice(-8)}`;
+}
+
+function extractToken(
+  params: Parameters<typeof modelInfo>[0],
+): string | undefined {
+  const creds = params.credentials as
+    | { accessToken?: string }
+    | undefined;
+  return creds?.accessToken;
 }
 
 export async function cachedModelInfo(
   params: Parameters<typeof modelInfo>[0],
 ): Promise<CachedResult> {
-  const authed = Boolean(params.credentials || ("accessToken" in params && params.accessToken));
-  const key = cacheKey(params.name, authed);
+  const token = extractToken(params);
+  const key = cacheKey(params.name, token);
 
   // 1. Return from cache if fresh
   const hit = cache.get(key);

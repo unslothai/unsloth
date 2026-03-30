@@ -36,8 +36,7 @@ export function useRecommendedModelVram(ids: string[]) {
               name: id,
               additionalFields: ["safetensors"],
             });
-            const raw = info as { safetensors?: { total?: number } };
-            const total = raw.safetensors?.total;
+            const total = info.safetensors?.total;
             if (typeof total === "number" && total > 0) {
               next.set(id, total);
             }
@@ -47,7 +46,13 @@ export function useRecommendedModelVram(ids: string[]) {
         }),
       );
       if (!canceled) {
-        setParamCountById(next);
+        // Merge with previous state so that VRAM badges for already-visible
+        // models are preserved while newly-visible models are still loading.
+        setParamCountById((prev) => {
+          const merged = new Map(prev);
+          for (const [id, count] of next) merged.set(id, count);
+          return merged;
+        });
         setIsLoading(false);
       }
     })();
