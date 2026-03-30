@@ -521,11 +521,6 @@ export function HubModelPicker({
 
   const hasMoreRecommended = visibleRecommendedIds.length < recommendedIds.length;
 
-  // Fetch VRAM info for the full pool once (recommendedIds is stable across
-  // page increments) so we don't re-fetch on every scroll.
-  const { paramCountById: recommendedParamCountById } =
-    useRecommendedModelVram(recommendedIds);
-
   const showHfSection = debouncedQuery.trim().length > 0;
 
   // Recommended models that match the current search query
@@ -534,6 +529,19 @@ export function HubModelPicker({
     const q = normalizeForSearch(debouncedQuery.trim());
     return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
   }, [showHfSection, debouncedQuery, recommendedIds]);
+
+  // Fetch VRAM info for visible models, plus any models surfaced by a search
+  // query so that filtered recommended models also show VRAM badges.
+  // Skip GGUF repos: they have no safetensors metadata and the render layer
+  // already shows a static "GGUF" badge instead of VRAM data.
+  const idsForVram = useMemo(() => {
+    const ids = showHfSection
+      ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
+      : visibleRecommendedIds;
+    return ids.filter((id) => !isGgufRepo(id));
+  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
+  const { paramCountById: recommendedParamCountById } =
+    useRecommendedModelVram(idsForVram);
 
   const recommendedSet = useMemo(
     () => new Set(showHfSection ? filteredRecommendedIds : visibleRecommendedIds),
