@@ -267,10 +267,7 @@ def setup(
         help = "Full pip/build output during setup for troubleshooting.",
     ),
 ):
-    """Deprecated: use 'unsloth studio update' or re-run install.sh."""
-    typer.echo(
-        "Note: 'unsloth studio setup' is deprecated. Use 'unsloth studio update' or re-run install.sh."
-    )
+    """Run Studio setup (called by install.ps1 / install.sh)."""
     _run_setup_script(verbose = verbose)
 
 
