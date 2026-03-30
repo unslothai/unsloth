@@ -34,6 +34,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
     _get_fp8_mode_and_check_settings,
+    _has_prequantized_fp8_config,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
@@ -65,6 +66,18 @@ from ..device_type import (
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.tiled_mlp import patch_tiled_mlp
+
+try:
+    from unsloth_zoo.temporary_patches.moe_utils_fp8 import (
+        maybe_patch_stacked_moe_expert_fp8_scales,
+    )
+except ImportError:
+
+    def maybe_patch_stacked_moe_expert_fp8_scales(
+        model, model_name = None, token = None, revision = None
+    ):
+        return False
+
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -375,9 +388,23 @@ class FastLanguageModel(FastLlamaModel):
                 model_name,
                 load_in_4bit = load_in_4bit,
                 load_in_fp8 = load_in_fp8,
+                fast_inference = fast_inference,
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
+            if (
+                load_in_fp8 != False
+                and not fast_inference
+                and new_model_name == old_model_name
+            ):
+                if _has_prequantized_fp8_config(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                ):
+                    load_in_fp8 = False
+                else:
+                    new_model_name = None
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
@@ -540,9 +567,31 @@ class FastLanguageModel(FastLlamaModel):
                     model_name,
                     load_in_4bit = load_in_4bit,
                     load_in_fp8 = load_in_fp8,
+                    fast_inference = fast_inference,
                     token = token,
                     trust_remote_code = trust_remote_code,
                 )
+                if (
+                    load_in_fp8 != False
+                    and not fast_inference
+                    and model_name == peft_config.base_model_name_or_path
+                ):
+                    if _has_prequantized_fp8_config(
+                        model_name,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                    ):
+                        load_in_fp8 = False
+                    else:
+                        fp8_mode = _get_fp8_mode_and_check_settings(
+                            load_in_fp8,
+                            fast_inference,
+                            full_finetuning,
+                            load_in_4bit,
+                            load_in_8bit,
+                            load_in_16bit,
+                        )
+                        model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -777,6 +826,15 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
+        if load_in_fp8 != False or _has_prequantized_fp8_config(
+            model_name, token = token, trust_remote_code = trust_remote_code
+        ):
+            maybe_patch_stacked_moe_expert_fp8_scales(
+                model,
+                model_name = model_name,
+                token = token,
+                revision = revision if not is_peft else None,
+            )
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
@@ -991,8 +1049,26 @@ class FastModel(FastBaseModel):
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
-                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+                model_name,
+                load_in_4bit = load_in_4bit,
+                load_in_fp8 = load_in_fp8,
+                fast_inference = fast_inference,
+                token = token,
+                trust_remote_code = trust_remote_code,
             )
+            if (
+                load_in_fp8 != False
+                and not fast_inference
+                and new_model_name == old_model_name
+            ):
+                if _has_prequantized_fp8_config(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                ):
+                    load_in_fp8 = False
+                else:
+                    new_model_name = None
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
                     load_in_fp8,
@@ -1300,7 +1376,14 @@ class FastModel(FastBaseModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                model_name = get_model_name(model_name, load_in_4bit)
+                model_name = get_model_name(
+                    model_name,
+                    load_in_4bit,
+                    load_in_fp8 = load_in_fp8,
+                    fast_inference = fast_inference,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -1509,6 +1592,15 @@ class FastModel(FastBaseModel):
 
         if load_in_fp8 != False:
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
+        if load_in_fp8 != False or _has_prequantized_fp8_config(
+            model_name, token = token, trust_remote_code = trust_remote_code
+        ):
+            maybe_patch_stacked_moe_expert_fp8_scales(
+                model,
+                model_name = model_name,
+                token = token,
+                revision = revision if not is_peft else None,
+            )
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184

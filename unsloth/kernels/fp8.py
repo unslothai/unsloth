@@ -60,6 +60,15 @@ except:
         "Unsloth: Could not find torchao.prototype.blockwise_fp8_inference.blockwise_quantization.blockwise_fp8_gemm"
     )
 
+try:
+    from compressed_tensors.linear.compressed_linear import CompressedLinear
+    from compressed_tensors.quantization.quant_args import QuantizationStrategy
+    from compressed_tensors.quantization.quant_config import QuantizationStatus
+except:
+    CompressedLinear = None
+    QuantizationStrategy = None
+    QuantizationStatus = None
+
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -432,7 +441,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             weight.shape[0] != weight_scale.shape[0]
             and weight.shape[1] == weight_scale.shape[0]
-        ) or (weight.shape[0] // 8 != 0 or weight.shape[1] // 8 != 0):
+        ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
             # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
             # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
             # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
@@ -596,6 +605,11 @@ except:
     pass
 
 
+HAS_FBGEMM_FP8_OPS = hasattr(torch.ops, "fbgemm") and hasattr(
+    torch.ops.fbgemm, "quantize_fp8_per_row"
+)
+
+
 @torch_compile
 def fp8_linear(X, weight, weight_scale, bias = None):
     # Per-tensor quantization: single scalar scale for entire weight
@@ -604,9 +618,18 @@ def fp8_linear(X, weight, weight_scale, bias = None):
         weight_scale.ndim == 2 and weight_scale.shape[1] > 1
     ):
         out = fp8_block_quant_linear(X, weight, weight_scale)
+        if bias is not None:
+            out = out + bias
     # Row/channel quantized FP8: 2D scale with shape (n, 1)
-    else:
+    elif HAS_FBGEMM_FP8_OPS:
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
+    else:
+        # Fallback: dequantize FP8 weight and use standard matmul
+        W_deq = weight_dequant(weight, weight_scale).T
+        out = torch_matmul(X, W_deq)
+        if bias is not None:
+            out = out + bias
+        del W_deq
     return out
 
 
@@ -617,8 +640,161 @@ def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     return patched_forward
 
 
+def _compressed_linear_supports_unsloth_fp8(self):
+    if (
+        CompressedLinear is None
+        or QuantizationStrategy is None
+        or QuantizationStatus is None
+    ):
+        return False
+
+    weight = getattr(self, "weight", None)
+    weight_scale = getattr(self, "weight_scale", None)
+    quantization_scheme = getattr(self, "quantization_scheme", None)
+    quantization_args = getattr(quantization_scheme, "weights", None)
+    if (
+        weight is None
+        or weight_scale is None
+        or quantization_args is None
+        or weight.dtype != torch.float8_e4m3fn
+    ):
+        return False
+
+    if getattr(quantization_args, "type", None) != "float":
+        return False
+    if getattr(quantization_args, "num_bits", None) != 8:
+        return False
+    if getattr(quantization_args, "symmetric", None) is not True:
+        return False
+    if getattr(self, "weight_zero_point", None) is not None:
+        return False
+
+    strategy = getattr(quantization_args, "strategy", None)
+    if strategy not in (
+        QuantizationStrategy.TENSOR,
+        QuantizationStrategy.CHANNEL,
+        QuantizationStrategy.BLOCK,
+        "tensor",
+        "channel",
+        "block",
+    ):
+        return False
+
+    if not torch.is_tensor(weight_scale):
+        return False
+    if weight_scale.numel() == 0:
+        return False
+
+    return True
+
+
+def _compressed_linear_forward_fallback(self, input):
+    if self.quantization_status == QuantizationStatus.COMPRESSED:
+        weight_data = self.compressor.decompress_module(self)
+        param = nn.Parameter(weight_data, requires_grad = False)
+        from compressed_tensors.utils import register_offload_parameter
+
+        register_offload_parameter(self, "weight", param)
+        self.quantization_status = QuantizationStatus.FROZEN
+
+    return F.linear(input, self.weight, self.bias)
+
+
+def compressed_linear_forward_patch(self, input):
+    if _compressed_linear_supports_unsloth_fp8(self):
+        return fp8_linear(input, self.weight, self.weight_scale, self.bias)
+    return _compressed_linear_forward_fallback(self, input)
+
+
+def _fp8_moe_lora_extractor(wrapper, weight_A, weight_B, scaling, num_experts):
+    total_rank = weight_A.shape[0]
+    if num_experts == 0 or total_rank % num_experts != 0:
+        raise ValueError(
+            f"LoRA total_rank ({total_rank}) must be divisible by num_experts ({num_experts})"
+        )
+    rank_per_expert = total_rank // num_experts
+
+    dim_A = weight_A.shape[1]
+    dim_B = weight_B.shape[0]
+
+    hidden_dim = None
+    intermediate_dim = None
+    current = wrapper
+    while hasattr(current, "base_layer"):
+        current = current.base_layer
+        if hasattr(current, "hidden_dim"):
+            hidden_dim = current.hidden_dim
+        if hasattr(current, "intermediate_dim"):
+            intermediate_dim = current.intermediate_dim
+        if hasattr(current, "gate_up_proj") and hasattr(current.gate_up_proj, "shape"):
+            shape = current.gate_up_proj.shape
+            if len(shape) == 3:
+                hidden_dim = shape[2]
+                intermediate_dim = shape[1] // 2
+
+    param_name = getattr(wrapper, "parameter_name", None)
+
+    if (
+        param_name == "down_proj"
+        and intermediate_dim is not None
+        and hidden_dim is not None
+    ):
+        first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+        first_weight = first_weight.permute(1, 0, 2).contiguous()
+        second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+        return first_weight, second_weight, scaling, num_experts
+
+    elif param_name == "gate_up_proj" and hidden_dim is not None:
+        first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+        first_weight = first_weight.permute(1, 0, 2).contiguous()
+        second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+        return first_weight, second_weight, scaling, num_experts
+
+    if hidden_dim is not None:
+        if dim_B == hidden_dim:
+            first_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+            first_weight = first_weight.permute(1, 0, 2).contiguous()
+            second_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+            return first_weight, second_weight, scaling, num_experts
+        elif dim_A == hidden_dim:
+            first_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+            first_weight = first_weight.permute(0, 2, 1).contiguous()
+            second_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+            second_weight = second_weight.permute(1, 2, 0).contiguous()
+            return first_weight, second_weight, scaling, num_experts
+
+    first_weight = weight_A.view(num_experts, rank_per_expert, dim_A)
+    first_weight = first_weight.permute(0, 2, 1).contiguous()
+    second_weight = weight_B.view(dim_B, num_experts, rank_per_expert)
+    second_weight = second_weight.permute(1, 2, 0).contiguous()
+    return first_weight, second_weight, scaling, num_experts
+
+
+def _patch_fp8_moe_experts():
+    try:
+        from transformers.integrations import finegrained_fp8
+        from unsloth_zoo.temporary_patches.moe_utils_fp8 import (
+            forward_moe_backend_fp8,
+        )
+    except Exception:
+        return
+
+    experts_interface = getattr(finegrained_fp8, "ALL_FP8_EXPERTS_FUNCTIONS", None)
+    if experts_interface is not None:
+        experts_interface["grouped_mm"] = forward_moe_backend_fp8
+        experts_interface["batched_mm"] = forward_moe_backend_fp8
+
+    if hasattr(finegrained_fp8, "FP8Experts"):
+        finegrained_fp8.FP8Experts._unsloth_lora_extractor_fn = staticmethod(
+            _fp8_moe_lora_extractor
+        )
+
+
 # Patch the forward functions of the layers (for compiled models)
 if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+if CompressedLinear is not None:
+    CompressedLinear.forward = compressed_linear_forward_patch
+_patch_fp8_moe_experts()
