@@ -811,6 +811,7 @@ from ..kernels import (
 from .vision import FastBaseModel
 from transformers import (
     AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
 )
 
 try:
@@ -1408,7 +1409,12 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
-            if is_vlm:
+            if (
+                AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None)
+                is not None
+            ):
+                auto_model = AutoModelForSeq2SeqLM
+            elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.
                 # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
                 # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
