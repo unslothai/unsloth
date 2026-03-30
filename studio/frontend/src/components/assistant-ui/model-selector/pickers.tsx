@@ -521,10 +521,10 @@ export function HubModelPicker({
 
   const hasMoreRecommended = visibleRecommendedIds.length < recommendedIds.length;
 
-  // Fetch VRAM info for the full pool once (recommendedIds is stable across
-  // page increments) so we don't re-fetch on every scroll.
+  // Only fetch VRAM info for visible models. The cache in hf-cache.ts
+  // means previously fetched models resolve instantly on scroll.
   const { paramCountById: recommendedParamCountById } =
-    useRecommendedModelVram(recommendedIds);
+    useRecommendedModelVram(visibleRecommendedIds);
 
   const showHfSection = debouncedQuery.trim().length > 0;
 
