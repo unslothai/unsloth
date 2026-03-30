@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import re
 import struct
 import structlog
 from loggers import get_logger
@@ -2120,7 +2121,7 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-        max_tool_iterations: int = 10,
+        max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
@@ -2569,6 +2570,14 @@ class LlamaCppBackend:
                         # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
+                            # Strip leaked tool-call XML before yielding
+                            content_accum = re.sub(
+                                r"<tool_call>.*?</tool_call>",
+                                "",
+                                content_accum,
+                                flags = re.DOTALL,
+                            ).strip()
+                        if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _fu = _iter_usage or {}
                         _fc = _fu.get("completion_tokens", 0)
@@ -2679,10 +2688,29 @@ class LlamaCppBackend:
                         "result": result,
                     }
 
+                    # Nudge model to try a different approach on errors
+                    _error_prefixes = (
+                        "Error",
+                        "Search failed",
+                        "Execution error",
+                        "Blocked",
+                        "No ",
+                        "Exit code",
+                        "Failed to fetch",
+                    )
+                    _result_content = result
+                    if isinstance(result, str) and result.lstrip().startswith(
+                        _error_prefixes
+                    ):
+                        _result_content = (
+                            result + "\n\nThe tool call encountered an issue. "
+                            "Please try a different approach or rephrase your request."
+                        )
+
                     tool_msg = {
                         "role": "tool",
                         "name": tool_name,
-                        "content": result,
+                        "content": _result_content,
                     }
                     tool_call_id = tc.get("id")
                     if tool_call_id:
