@@ -129,7 +129,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }
@@ -170,6 +170,34 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export interface ScanFolderInfo {
+  id: number;
+  path: string;
+  created_at: string;
+}
+
+export async function listScanFolders(): Promise<ScanFolderInfo[]> {
+  const response = await authFetch("/api/models/scan-folders");
+  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
+  return data.folders;
+}
+
+export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+  const response = await authFetch("/api/models/scan-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseJsonOrThrow<ScanFolderInfo>(response);
+}
+
+export async function removeScanFolder(id: number): Promise<void> {
+  const response = await authFetch(`/api/models/scan-folders/${id}`, {
+    method: "DELETE",
   });
   await parseJsonOrThrow<unknown>(response);
 }

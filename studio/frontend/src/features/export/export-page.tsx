@@ -909,7 +909,9 @@ export function ExportPage() {
                                     const source =
                                       model?.source === "hf_cache"
                                         ? "HF cache"
-                                        : "Local dir";
+                                        : model?.source === "custom"
+                                          ? "Custom Folders"
+                                          : "Local dir";
                                     return (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">
