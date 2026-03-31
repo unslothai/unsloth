@@ -25,6 +25,120 @@ IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 
+# ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
+# Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
+# download.pytorch.org.  Entries are checked newest-first (>=).
+# ROCm 7.2 only has torch 2.11.0 on download.pytorch.org, which exceeds the
+# current torch upper bound (<2.11.0).  Fall back to rocm7.1 (torch 2.10.0).
+# TODO: uncomment rocm7.2 when torch upper bound is bumped to >=2.11.0
+_ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
+    # (7, 2): "rocm7.2",  # torch 2.11.0 -- requires torch>=2.11
+    (7, 1): "rocm7.1",
+    (7, 0): "rocm7.0",
+    (6, 4): "rocm6.4",
+    (6, 3): "rocm6.3",
+    (6, 2): "rocm6.2",
+    (6, 1): "rocm6.1",
+    (6, 0): "rocm6.0",
+}
+_PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
+
+
+def _detect_rocm_version() -> tuple[int, int] | None:
+    """Return (major, minor) of the installed ROCm stack, or None."""
+    # Check /opt/rocm/.info/version or ROCM_PATH equivalent
+    rocm_root = os.environ.get("ROCM_PATH", "/opt/rocm")
+    for path in (
+        os.path.join(rocm_root, ".info", "version"),
+        os.path.join(rocm_root, "lib", "rocm_version"),
+    ):
+        try:
+            parts = open(path).read().strip().split("-")[0].split(".")
+            return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+
+    # Try hipconfig --version (outputs bare version like "6.3.21234.2")
+    hipconfig = shutil.which("hipconfig")
+    if hipconfig:
+        try:
+            result = subprocess.run(
+                [hipconfig, "--version"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                timeout = 5,
+            )
+            if result.returncode == 0:
+                raw = result.stdout.decode().strip().split("\n")[0]
+                parts = raw.split(".")
+                if len(parts) >= 2 and parts[0].isdigit():
+                    return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+
+    return None
+
+
+def _ensure_rocm_torch() -> None:
+    """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
+
+    Runs only on Linux hosts where ROCm is installed.  No-op when torch already
+    links against HIP (ROCm) or CUDA (NVIDIA).  Skips on Windows/macOS.
+    Uses pip_install() to respect uv, constraints, and --python targeting.
+    """
+    rocm_root = os.environ.get("ROCM_PATH", "/opt/rocm")
+    if not os.path.isdir(rocm_root) and not shutil.which("hipcc"):
+        return  # no ROCm toolchain
+
+    ver = _detect_rocm_version()
+    if ver is None:
+        print("   ROCm detected but version unreadable -- skipping torch reinstall")
+        return
+
+    # Skip if torch is already GPU-enabled (HIP or CUDA)
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import torch; print(torch.version.hip or torch.version.cuda or '')",
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        timeout = 30,
+    )
+    if probe.returncode == 0 and probe.stdout.decode().strip():
+        return  # torch already GPU-enabled
+
+    # Select best matching wheel tag (newest ROCm version <= installed)
+    tag = next(
+        (t for (maj, mn), t in _ROCM_TORCH_INDEX.items() if ver >= (maj, mn)),
+        None,
+    )
+    if tag is None:
+        print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping")
+        return
+
+    index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+    print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+    pip_install(
+        f"ROCm torch ({tag})",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "--index-url",
+        index_url,
+        constrain = False,
+    )
+    # Also install bitsandbytes for AMD
+    pip_install(
+        "bitsandbytes (AMD)",
+        "--no-cache-dir",
+        "bitsandbytes>=0.49.1",
+        constrain = False,
+    )
+
 
 def _infer_no_torch() -> bool:
     """Determine whether to run in no-torch (GGUF-only) mode.
@@ -414,6 +528,9 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
+    # ROCm torch check step (Linux only, non-macOS, non-no-torch)
+    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+        base_total += 1
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -536,6 +653,13 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
+
+    # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
+    #     venv received CPU-only torch (common when pip resolves torch from PyPI).
+    #     Must come immediately after base packages so torch is present for inspection.
+    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+        _progress("ROCm torch check")
+        _ensure_rocm_torch()
 
     # 3. Extra dependencies
     _progress("unsloth extras")
