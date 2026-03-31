@@ -2152,6 +2152,28 @@ class LlamaCppBackend:
         )
         _MAX_BUFFER_CHARS = 32
 
+        # ── Duplicate tool-call detection ────────────────────────
+        # Track recent (tool_name, arguments) hashes to detect loops
+        # where the model repeats the exact same call.
+        import hashlib as _hl
+        _tool_call_history: list[str] = []
+        _DEDUP_WINDOW = 2  # flag if same call appears this many times in a row
+
+        def _tool_call_key(name: str, args: dict) -> str:
+            raw = json.dumps({"t": name, "a": args}, sort_keys=True)
+            return _hl.md5(raw.encode()).hexdigest()
+
+        def _is_duplicate_call(name: str, args: dict) -> bool:
+            key = _tool_call_key(name, args)
+            _tool_call_history.append(key)
+            if len(_tool_call_history) >= _DEDUP_WINDOW:
+                tail = _tool_call_history[-_DEDUP_WINDOW:]
+                if len(set(tail)) == 1:
+                    return True
+            return False
+
+        _hit_tool_cap = False
+
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -2649,16 +2671,27 @@ class LlamaCppBackend:
                         "arguments": arguments,
                     }
 
-                    _effective_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
-                    result = execute_tool(
-                        tool_name,
-                        arguments,
-                        cancel_event = cancel_event,
-                        timeout = _effective_timeout,
-                        session_id = session_id,
-                    )
+                    # ── Duplicate call detection ──────────────
+                    if _is_duplicate_call(tool_name, arguments):
+                        result = (
+                            "You already made this exact call. "
+                            "Do not repeat the same tool call. "
+                            "Try a different approach: fetch a URL "
+                            "from previous results, use Python to "
+                            "process data you already have, or "
+                            "provide your final answer now."
+                        )
+                    else:
+                        _effective_timeout = (
+                            None if tool_call_timeout >= 9999 else tool_call_timeout
+                        )
+                        result = execute_tool(
+                            tool_name,
+                            arguments,
+                            cancel_event = cancel_event,
+                            timeout = _effective_timeout,
+                            session_id = session_id,
+                        )
 
                     yield {
                         "type": "tool_end",
@@ -2705,6 +2738,19 @@ class LlamaCppBackend:
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 raise
+
+        # ── Tool iteration cap reached -- synthesize final answer ──
+        # The model used all iterations without producing a final text
+        # response. Inject a nudge so the final streaming pass produces
+        # a useful answer instead of continuing to request tools.
+        conversation.append({
+            "role": "user",
+            "content": (
+                "You have used all available tool calls. Based on "
+                "everything you have found so far, provide your final "
+                "answer now. Do not call any more tools."
+            ),
+        })
 
         # Clear status
         yield {"type": "status", "text": ""}
