@@ -173,6 +173,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _learningRateManuallySet = false;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
+            // If the model config provides a specific learning rate, treat
+            // it as authoritative so the async auto-select does not overwrite it.
+            const modelConfigHasLR = patch.learningRate !== undefined;
+
             // If vision model + image dataset already known, override
             // trainOnCompletions to false regardless of backend default.
             if (modelDetails.is_vision && get().isDatasetImage === true) {
@@ -180,11 +184,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             const isAudio = !!modelDetails.is_audio;
-            // Pure audio model → always uncheck trainOnCompletions.
+            // Pure audio model -> always uncheck trainOnCompletions.
             if (isAudio && !modelDetails.is_vision) {
               patch.trainOnCompletions = false;
             }
-            // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
+            // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
             if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
               patch.trainOnCompletions = false;
             }
@@ -204,7 +208,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
                   if (method) {
-                    const lrPatch = !_learningRateManuallySet
+                    // Only auto-set LR when the model config did not provide
+                    // a specific learning rate and the user has not manually
+                    // edited it. This preserves curated per-model defaults.
+                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
                       ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
                       : {};
                     set({ trainingMethod: method, ...lrPatch });
@@ -569,7 +576,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
         canProceed: () => canProceedForStep(get()),
-        reset: () => set(initialState),
+        reset: () => {
+          _trainOnCompletionsManuallySet = false;
+          _learningRateManuallySet = false;
+          set(initialState);
+        },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
@@ -577,6 +588,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           loadAndApplyModelDefaults(selectedModel);
         },
         applyConfigPatch: (config: BackendModelConfig) => {
+          _learningRateManuallySet = false;
           const patch = mapBackendModelConfigToTrainingPatch(config);
           set(patch);
         },
@@ -584,7 +596,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 8,
+      version: 9,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -613,6 +625,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           s.datasetAssistantTemplate ??= "";
           s.datasetLabelMapping ??= {};
           s.datasetAdvisorNotification ??= null;
+        }
+        if (version < 9) {
+          // weight_decay default changed from 0.01 to 0.001.
+          if (s.weightDecay === 0.01) {
+            s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
+          }
         }
         return s as unknown as TrainingConfigStore;
       },
