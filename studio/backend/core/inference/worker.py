@@ -203,14 +203,17 @@ def _start_heartbeat(
                 continue
 
             if current_size != last_size:
-                saw_download_activity = True
+                # Only count as download activity if both measurements
+                # are valid (>= 0). A transition from -1 (error) to a
+                # real value is a measurement recovery, not download.
+                if last_size >= 0:
+                    saw_download_activity = True
+                    last_change = now
                 last_size = current_size
-                last_change = now
 
             # Only fire stall if we previously saw download activity
             # (cache size changed at least once). This avoids false
-            # stalls on already-cached models, local models, or during
-            # post-download initialization (quantization, GPU loading).
+            # stalls on already-cached models and local models.
             stalled_for = now - last_change
             if saw_download_activity and stalled_for >= stall_timeout:
                 _send_response(

@@ -17,6 +17,7 @@ Pattern follows core/training/training.py.
 
 import atexit
 import base64
+import os
 import structlog
 from loggers import get_logger
 import multiprocessing as mp
@@ -637,10 +638,8 @@ class InferenceOrchestrator:
                 # Dead subprocess — clean up
                 self._shutdown_subprocess(timeout = 2)
 
-            import os as _os
-
             disable_xet = sub_config.get("disable_xet", False) or (
-                _os.environ.get("HF_HUB_DISABLE_XET") == "1"
+                os.environ.get("HF_HUB_DISABLE_XET") == "1"
             )
 
             for attempt in range(2):
