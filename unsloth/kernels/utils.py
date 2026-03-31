@@ -94,6 +94,10 @@ def is_rdna():
         "gfx1030",
         "gfx1031",
         "gfx1032",
+        "gfx1033",
+        "gfx1034",
+        "gfx1035",
+        "gfx1036",
         # RDNA3 (Navi 31-33)
         "gfx1100",
         "gfx1101",

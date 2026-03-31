@@ -17,7 +17,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[dict]:
+def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
     """Run amd-smi with the given arguments and return parsed JSON, or None."""
     try:
         result = subprocess.run(
@@ -43,11 +43,17 @@ def _parse_numeric(value: Any) -> Optional[float]:
     """Extract a numeric value from amd-smi output (may be str, int, float, or dict)."""
     if value is None:
         return None
+    # Newer amd-smi versions emit {"value": 10, "unit": "W"}
+    if isinstance(value, dict):
+        return _parse_numeric(value.get("value"))
     if isinstance(value, (int, float)):
-        return float(value)
+        import math
+        f = float(value)
+        return f if math.isfinite(f) else None
     if isinstance(value, str):
-        # Strip units like "W", "C", "%", "MB" etc.
-        cleaned = value.strip().rstrip("WCMBGb% ").strip()
+        # Strip units like "W", "C", "%", "MB", "MiB", "GB", "GiB" etc.
+        import re
+        cleaned = re.sub(r'\s*[A-Za-z/%]+$', '', value.strip())
         if not cleaned or cleaned.lower() in ("n/a", "none", "unknown"):
             return None
         try:
@@ -112,16 +118,18 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
         vram_used_bytes = None
         vram_total_bytes = None
 
-    # Convert VRAM from bytes to MB if values are large (>10000 = likely bytes)
+    # Convert VRAM from bytes to MB if values are very large.
+    # amd-smi typically reports in MB, but some versions report bytes.
+    # Threshold: 10 million -- no GPU has <10 MB, and even 10 TB = 10M MB.
     vram_used_mb = None
     vram_total_mb = None
     if vram_used_bytes is not None:
-        if vram_used_bytes > 100000:  # Likely bytes
+        if vram_used_bytes > 10_000_000:  # Likely bytes (>10M)
             vram_used_mb = vram_used_bytes / (1024 * 1024)
         else:  # Likely already MB
             vram_used_mb = vram_used_bytes
     if vram_total_bytes is not None:
-        if vram_total_bytes > 100000:  # Likely bytes
+        if vram_total_bytes > 10_000_000:  # Likely bytes (>10M)
             vram_total_mb = vram_total_bytes / (1024 * 1024)
         else:  # Likely already MB
             vram_total_mb = vram_total_bytes
@@ -211,12 +219,18 @@ def get_visible_gpu_utilization(
             "index_kind": "physical",
         }
 
-    gpu_list = data if isinstance(data, list) else data.get("gpus", [data])
+    gpu_list = data if isinstance(data, list) else data.get("gpus", data.get("gpu", [data]))
     visible_set = set(parent_visible_ids)
     ordinal_map = {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
     devices = []
-    for idx, gpu_data in enumerate(gpu_list):
+    for fallback_idx, gpu_data in enumerate(gpu_list):
+        # Use AMD-reported GPU ID when available, fall back to enumeration index
+        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))) if isinstance(gpu_data, dict) else fallback_idx
+        try:
+            idx = int(raw_id)
+        except (TypeError, ValueError):
+            idx = fallback_idx
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)

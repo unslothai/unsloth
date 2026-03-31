@@ -1019,12 +1019,16 @@ get_torch_index_url() {
             *) _rocm_tag="" ;;        # reject malformed (empty, garbled, or major=0)
         esac
         if [ -n "$_rocm_tag" ]; then
+            # Minimum supported: ROCm 6.0 (no PyTorch wheels exist for older)
+            case "$_rocm_tag" in
+                rocm[1-5].*) echo "$_base/cpu"; return ;;
+            esac
             # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds (<2.11.0).
             # Fall back to rocm7.1 index which has torch 2.10.0.
             # TODO: uncomment the next line when torch upper bound is bumped to >=2.11.0
             # echo "$_base/$_rocm_tag"; return
             case "$_rocm_tag" in
-                rocm6.*|rocm7.0*|rocm7.1*)
+                rocm6.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*)
                     echo "$_base/$_rocm_tag" ;;
                 *)
                     # ROCm 7.2+ (including future 10.x+): cap to rocm7.1

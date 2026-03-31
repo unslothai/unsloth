@@ -284,8 +284,8 @@ def _install_package_wheel_first(
             f"{pypi_name}=={pypi_version}",
         ]
 
-    # Source compilation on ROCm can take 5-10 minutes; use a generous timeout
-    timeout = 600 if is_hip else 300
+    # Source compilation on ROCm can take 10-30 minutes; use a generous timeout
+    timeout = 1800 if is_hip else 300
 
     try:
         result = _sp.run(
@@ -331,7 +331,10 @@ def _install_package_wheel_first(
             )
         return
 
-    logger.info("Installed %s from PyPI", display_name)
+    if is_hip:
+        logger.info("Compiled and installed %s from source for ROCm", display_name)
+    else:
+        logger.info("Installed %s from PyPI", display_name)
 
 
 def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:

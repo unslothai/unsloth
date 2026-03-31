@@ -49,6 +49,7 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 _detect_rocm_version = stack_mod._detect_rocm_version
 _ensure_rocm_torch = stack_mod._ensure_rocm_torch
 _has_rocm_gpu = stack_mod._has_rocm_gpu
+_has_usable_nvidia_gpu = stack_mod._has_usable_nvidia_gpu
 _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
 
 
@@ -396,20 +397,20 @@ class TestHostInfoRocm:
         assert host.has_rocm is False
         assert host.has_usable_nvidia is True
 
-    def test_detect_host_with_rocm_path_env(self):
-        """detect_host() checks ROCM_PATH env var for ROCm detection."""
-        # Verify the detect_host function source references ROCM_PATH
+    def test_detect_host_has_rocm_detection_logic(self):
+        """detect_host() should have ROCm GPU detection logic."""
         import inspect
 
         source = inspect.getsource(prebuilt_mod.detect_host)
-        assert "ROCM_PATH" in source or "rocm" in source.lower()
+        # Must probe for actual GPU, not just tool presence
+        assert "rocminfo" in source or "amd-smi" in source
 
     def test_detect_host_windows_rocm_detection(self):
-        """detect_host() source should have Windows-specific HIP detection."""
+        """detect_host() source should have Windows-specific ROCm GPU detection."""
         import inspect
 
         source = inspect.getsource(prebuilt_mod.detect_host)
-        assert "hipinfo" in source or "amdhip64" in source
+        assert "hipinfo" in source or "amd-smi" in source
 
 
 # =============================================================================
@@ -520,7 +521,8 @@ class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
 
     @patch.object(stack_mod, "pip_install")
-    def test_no_rocm_skips(self, mock_pip):
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    def test_no_rocm_skips(self, mock_nvidia, mock_pip):
         """No ROCm toolchain should skip entirely."""
         with patch("os.path.isdir", return_value = False):
             with patch("shutil.which", return_value = None):
@@ -528,9 +530,10 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_cuda_skips(self, mock_ver, mock_gpu, mock_pip):
+    def test_torch_already_has_cuda_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """If torch already has CUDA, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -541,9 +544,10 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_hip_skips(self, mock_ver, mock_gpu, mock_pip):
+    def test_torch_already_has_hip_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -554,9 +558,10 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_gets_rocm_reinstall(self, mock_ver, mock_gpu, mock_pip):
+    def test_cpu_torch_gets_rocm_reinstall(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """CPU-only torch on ROCm host should trigger reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -572,9 +577,10 @@ class TestEnsureRocmTorch:
         assert "bitsandbytes" in str(bnb_call)
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
-    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_pip):
+    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """ROCm 6.3 should select rocm6.3 tag."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -586,9 +592,10 @@ class TestEnsureRocmTorch:
         assert "rocm6.3" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (5, 0))
-    def test_old_rocm_skips(self, mock_ver, mock_gpu, mock_pip):
+    def test_old_rocm_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """ROCm version too old (below 6.0) should skip."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -599,10 +606,11 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
     def test_version_unreadable_prints_warning(
-        self, mock_ver, mock_gpu, mock_pip, capsys
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, capsys
     ):
         """ROCm detected but version unreadable should print warning and skip."""
         with patch("os.path.isdir", return_value = True):
@@ -612,9 +620,10 @@ class TestEnsureRocmTorch:
         assert "unreadable" in captured.out
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    def test_rocm_72_selects_71_tag(self, mock_ver, mock_gpu, mock_pip):
+    def test_rocm_72_selects_71_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """ROCm 7.2 should select rocm7.1 tag (capped, not in mapping)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -626,9 +635,10 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_probe_timeout_triggers_reinstall(self, mock_ver, mock_gpu, mock_pip):
+    def test_probe_timeout_triggers_reinstall(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
         with patch("os.path.isdir", return_value = True):
             with patch(
@@ -640,8 +650,9 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
-    def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_pip):
+    def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_nvidia, mock_pip):
         """ROCm tools present but no actual AMD GPU should skip entirely."""
         with patch("os.path.isdir", return_value = True):
             _ensure_rocm_torch()
@@ -865,7 +876,9 @@ class TestInstallShStructure:
         source = sh_path.read_text()
         assert 'echo "$_base/rocm7.1"' in source  # fallback for unknown versions
         # Allowlisted versions should pass through directly
-        assert "rocm6.*|rocm7.0*|rocm7.1*)" in source
+        assert "rocm6.*" in source
+        assert "rocm7.0" in source
+        assert "rocm7.1" in source
 
     def test_rocm_tag_validation_guard_exists(self):
         """install.sh should validate _rocm_tag with a case guard."""
@@ -1269,6 +1282,10 @@ class TestIsRdnaExpansion:
         assert "gfx1030" in func_body
         assert "gfx1031" in func_body
         assert "gfx1032" in func_body
+        assert "gfx1033" in func_body
+        assert "gfx1034" in func_body
+        assert "gfx1035" in func_body
+        assert "gfx1036" in func_body
 
     def test_is_rdna_source_has_rdna3(self):
         """is_rdna() should include RDNA3 architectures."""

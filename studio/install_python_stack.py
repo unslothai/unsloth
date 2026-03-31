@@ -109,6 +109,24 @@ def _has_rocm_gpu() -> bool:
     return False
 
 
+def _has_usable_nvidia_gpu() -> bool:
+    """Return True only when nvidia-smi exists AND reports at least one GPU."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "-L"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "GPU " in result.stdout
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -118,8 +136,8 @@ def _ensure_rocm_torch() -> None:
     (NVIDIA takes precedence).
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
-    # NVIDIA takes precedence on mixed hosts
-    if shutil.which("nvidia-smi"):
+    # NVIDIA takes precedence on mixed hosts -- but only if an actual GPU is usable
+    if _has_usable_nvidia_gpu():
         return
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     if not os.path.isdir(rocm_root) and not shutil.which("hipcc"):
@@ -707,7 +725,7 @@ def install_python_stack() -> int:
 
     # Windows + AMD GPU: PyTorch does not publish ROCm wheels for Windows.
     # Detect and warn so users know manual steps are needed for GPU training.
-    if IS_WINDOWS and not NO_TORCH:
+    if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
         if shutil.which("hipinfo") or shutil.which("amd-smi"):
             _safe_print(
                 _dim("  Note:"),
