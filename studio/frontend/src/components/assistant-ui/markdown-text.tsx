@@ -373,18 +373,19 @@ function StreamdownBlock(props: BlockProps) {
   if (codeFence) {
     const svgSource = !props.isIncomplete && isSvgFence(codeFence) ? sanitizeSvg(codeFence.source) : null;
     const htmlSource = !props.isIncomplete && isHtmlFence(codeFence) ? codeFence.source : null;
+
     return (
       <>
-        <div className="relative isolate">
-          <Block {...props} />
-          <CodeBlockActions
-            disabled={props.isIncomplete}
-            language={codeFence.language}
-            source={codeFence.source}
-          />
-        </div>
-        {svgSource && <SvgPreview source={svgSource} />}
-        {htmlSource && <HtmlPreview source={htmlSource} />}
+      <div className="relative isolate">
+        <Block {...props} />
+        <CodeBlockActions
+          disabled={props.isIncomplete}
+          language={codeFence.language}
+          source={codeFence.source}
+        />
+      </div>
+      {svgSource && <SvgPreview source={svgSource} />}
+      {htmlSource && <HtmlPreview source={htmlSource} />}
       </>
     );
   }

@@ -56,9 +56,12 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
   XIcon,
 } from "lucide-react";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import { db } from "@/features/chat/db";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
@@ -615,6 +618,81 @@ const CopyButton: FC = () => {
   );
 };
 
+const FeedbackButtons: FC = () => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const [feedback, setFeedback] = useState<"thumbs_up" | "thumbs_down" | null>(
+    null,
+  );
+
+  // Load existing feedback from DB
+  useEffect(() => {
+    if (!messageId) return;
+    setFeedback(null);
+    let cancelled = false;
+    void db.messages.get(messageId).then((msg) => {
+      if (!cancelled && msg?.feedback) setFeedback(msg.feedback);
+    });
+    return () => { cancelled = true; };
+  }, [messageId]);
+
+  const handleFeedback = useCallback(
+    (value: "thumbs_up" | "thumbs_down") => {
+      setFeedback((prev) => {
+        const next = prev === value ? null : value;
+        if (messageId) {
+          if (next) {
+            void db.messages
+              .update(messageId, { feedback: next })
+              .catch((err) => console.error("Failed to save feedback:", err));
+          } else {
+            // Dexie ignores undefined values in update(), so use modify+delete
+            void db.messages
+              .where("id")
+              .equals(messageId)
+              .modify((msg) => { delete msg.feedback; })
+              .catch((err) => console.error("Failed to clear feedback:", err));
+          }
+        }
+        return next;
+      });
+    },
+    [messageId],
+  );
+
+  return (
+    <>
+      <TooltipIconButton
+        tooltip="Good response"
+        onClick={() => handleFeedback("thumbs_up")}
+        className={cn(
+          feedback === "thumbs_up" && "text-green-600 dark:text-green-400",
+        )}
+      >
+        <ThumbsUpIcon
+          className={cn(
+            "size-4",
+            feedback === "thumbs_up" && "fill-current",
+          )}
+        />
+      </TooltipIconButton>
+      <TooltipIconButton
+        tooltip="Bad response"
+        onClick={() => handleFeedback("thumbs_down")}
+        className={cn(
+          feedback === "thumbs_down" && "text-red-600 dark:text-red-400",
+        )}
+      >
+        <ThumbsDownIcon
+          className={cn(
+            "size-4",
+            feedback === "thumbs_down" && "fill-current",
+          )}
+        />
+      </TooltipIconButton>
+    </>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
@@ -624,6 +702,7 @@ const AssistantActionBar: FC = () => {
       className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-floating:absolute data-floating:rounded-md data-floating:border data-floating:bg-background data-floating:p-1 data-floating:shadow-sm"
     >
       <CopyButton />
+      <FeedbackButtons />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
           <RefreshCwIcon />

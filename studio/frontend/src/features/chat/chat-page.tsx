@@ -8,6 +8,15 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
   Sheet,
@@ -17,6 +26,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   ColumnInsertIcon,
@@ -24,6 +34,13 @@ import {
   Settings04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  BookOpenIcon,
+  BrainIcon,
+  ColumnsIcon,
+  PencilIcon,
+  SettingsIcon,
+} from "lucide-react";
 import {
   type CSSProperties,
   type ReactElement,
@@ -36,6 +53,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { PromptLibrarySheet } from "./components/prompt-library-sheet";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
@@ -422,6 +440,8 @@ export function ChatPage(): ReactElement {
   const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
     null,
   );
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore((state) => state.activeGgufVariant);
@@ -710,9 +730,64 @@ export function ChatPage(): ReactElement {
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
+  // Global keyboard shortcut: Cmd/Ctrl+K for command palette
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen((o) => !o);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
     <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
+      <PromptLibrarySheet
+        open={promptLibraryOpen}
+        onOpenChange={setPromptLibraryOpen}
+        onInsertPrompt={(content) => {
+          copyToClipboard(content);
+          toast.success("Prompt copied to clipboard");
+        }}
+      />
+      <CommandDialog open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
+        <Command>
+          <CommandInput placeholder="Type a command..." />
+          <CommandList>
+            <CommandEmpty>No results found.</CommandEmpty>
+            <CommandGroup heading="Navigation">
+              <CommandItem onSelect={() => { handleNewThread(); setCommandPaletteOpen(false); }}>
+                <PencilIcon className="mr-2 size-4" />
+                New Chat
+              </CommandItem>
+              {canCompare && (
+                <CommandItem onSelect={() => { handleNewCompare(); setCommandPaletteOpen(false); }}>
+                  <ColumnsIcon className="mr-2 size-4" />
+                  Compare Mode
+                </CommandItem>
+              )}
+              <CommandItem onSelect={() => { setSettingsOpen(true); setCommandPaletteOpen(false); }}>
+                <SettingsIcon className="mr-2 size-4" />
+                Settings
+              </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading="Actions">
+              <CommandItem onSelect={() => { setPromptLibraryOpen(true); setCommandPaletteOpen(false); }}>
+                <BookOpenIcon className="mr-2 size-4" />
+                Prompt Library
+              </CommandItem>
+              <CommandItem onSelect={() => { handleEject(); setCommandPaletteOpen(false); }}>
+                <BrainIcon className="mr-2 size-4" />
+                Eject Model
+              </CommandItem>
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </CommandDialog>
       <SidebarProvider
         defaultOpen={true}
         open={sidebarOpen}
@@ -802,15 +877,17 @@ export function ChatPage(): ReactElement {
             </button>
           </div>
 
-          {view.mode === "single" ? (
-            <SingleContent
-              key={view.threadId ?? view.newThreadNonce ?? "new"}
-              threadId={view.threadId}
-              newThreadNonce={view.newThreadNonce}
-            />
-          ) : (
-            <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
-          )}
+          <div className="min-h-0 flex-1">
+            {view.mode === "single" ? (
+              <SingleContent
+                key={view.threadId ?? view.newThreadNonce ?? "new"}
+                threadId={view.threadId}
+                newThreadNonce={view.newThreadNonce}
+              />
+            ) : (
+              <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
+            )}
+          </div>
         </div>
 
         <ChatSettingsPanel

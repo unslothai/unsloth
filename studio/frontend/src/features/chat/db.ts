@@ -3,11 +3,20 @@
 
 import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useRef, useState } from "react";
-import type { MessageRecord, ThreadRecord } from "./types";
+import type {
+  FolderRecord,
+  MemoryRecord,
+  MessageRecord,
+  PromptRecord,
+  ThreadRecord,
+} from "./types";
 
 const db = new Dexie("unsloth-chat") as Dexie & {
   threads: EntityTable<ThreadRecord, "id">;
   messages: EntityTable<MessageRecord, "id">;
+  folders: EntityTable<FolderRecord, "id">;
+  prompts: EntityTable<PromptRecord, "id">;
+  memory: EntityTable<MemoryRecord, "id">;
 };
 
 db.version(1).stores({
@@ -35,6 +44,43 @@ db.version(3)
         if (!thread.modelId) thread.modelId = "";
       }),
   );
+
+db.version(4)
+  .stores({
+    threads: "id, modelType, pairId, archived, createdAt, folderId, pinned",
+    messages: "id, threadId, createdAt",
+    folders: "id, createdAt",
+    prompts: "id, createdAt",
+    memory: "id, createdAt",
+  })
+  .upgrade(async (tx) => {
+    // Backfill searchText from first user message in each thread.
+    // Process sequentially to avoid IndexedDB transaction auto-commit.
+    const threads = await tx.table("threads").toArray();
+    for (const thread of threads) {
+      const msgs = await tx
+        .table("messages")
+        .where("threadId")
+        .equals(thread.id)
+        .toArray();
+      msgs.sort((a: MessageRecord, b: MessageRecord) => a.createdAt - b.createdAt);
+      const firstUser = msgs.find(
+        (m: MessageRecord) => m.role === "user",
+      );
+      if (!firstUser) continue;
+      const textParts = Array.isArray(firstUser.content)
+        ? firstUser.content
+            .filter((p: { type: string }) => p.type === "text")
+            .map((p: { text: string }) => p.text)
+            .join(" ")
+        : "";
+      if (textParts.trim()) {
+        await tx
+          .table("threads")
+          .update(thread.id, { searchText: textParts.slice(0, 500) });
+      }
+    }
+  });
 
 export { db };
 
