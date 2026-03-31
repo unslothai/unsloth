@@ -45,16 +45,31 @@ MOCK
     echo "$_dir"
 }
 
+# Helper: create a mock amd-smi that prints a given ROCm version string
+make_mock_amd_smi() {
+    _dir=$(mktemp -d)
+    cat > "$_dir/amd-smi" <<MOCK
+#!/bin/sh
+cat <<'AMD_OUT'
++------------------------------------------------------------------------------+
+| AMD-SMI 26.2.1+fc0010cf6a    amdgpu version: 6.16.13  ROCm version: $1    |
++-------------------------------------+----------------------------------------+
+AMD_OUT
+MOCK
+    chmod +x "$_dir/amd-smi"
+    echo "$_dir"
+}
+
 # Build a minimal tools directory with symlinks to essential commands
-# (uname, grep, head, etc.) but WITHOUT nvidia-smi.
+# (uname, grep, head, etc.) but WITHOUT nvidia-smi or amd-smi.
 _TOOLS_DIR=$(mktemp -d)
-for _cmd in uname grep sed head sh bash cat; do
+for _cmd in uname grep sed head sh bash cat awk; do
     _real=$(command -v "$_cmd" 2>/dev/null || true)
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS_DIR/$_cmd"
 done
 
 # Helper: run get_torch_index_url with a custom PATH
-# $1 = directory with mock nvidia-smi (prepended to PATH), or "none" for no-GPU test
+# $1 = directory with mock GPU tools (nvidia-smi/amd-smi, prepended to PATH), or "none" for no-GPU test
 run_func() {
     _mock_dir="$1"
     if [ "$_mock_dir" = "none" ]; then
@@ -68,9 +83,9 @@ run_func() {
 
 echo "=== test_get_torch_index_url ==="
 
-# 1) No nvidia-smi available -> cpu
+# 1) No nvidia-smi or amd-smi available -> cpu
 _result=$(run_func "none")
-assert_eq "no nvidia-smi -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+assert_eq "no GPU -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
 # 2) CUDA 12.6 -> cu126
 _dir=$(make_mock_smi "12.6")
@@ -118,6 +133,40 @@ chmod +x "$_dir/nvidia-smi"
 _result=$(run_func "$_dir")
 assert_eq "unparseable -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
+
+# 9) ROCm 6.2 (no nvidia-smi) -> rocm6.2
+_dir=$(make_mock_amd_smi "6.2")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 6.2 -> rocm6.2" "https://download.pytorch.org/whl/rocm6.2" "$_result"
+rm -rf "$_dir"
+
+# 10) ROCm 6.1 (no nvidia-smi) -> rocm6.1
+_dir=$(make_mock_amd_smi "6.1")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 6.1 -> rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# 11) ROCm 7.0 (no nvidia-smi) -> rocm7.0
+_dir=$(make_mock_amd_smi "7.0")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 7.0 -> rocm7.0" "https://download.pytorch.org/whl/rocm7.0" "$_result"
+rm -rf "$_dir"
+
+# 12) ROCm 7.2 (no nvidia-smi) -> rocm7.2
+_dir=$(make_mock_amd_smi "7.2")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 7.2 -> rocm7.2" "https://download.pytorch.org/whl/rocm7.2" "$_result"
+rm -rf "$_dir"
+
+# 13) Both nvidia-smi and amd-smi present -> CUDA takes precedence
+_cuda_dir=$(make_mock_smi "12.6")
+_amd_dir=$(make_mock_amd_smi "6.2")
+_combined_dir=$(mktemp -d)
+ln -sf "$_cuda_dir/nvidia-smi" "$_combined_dir/nvidia-smi"
+ln -sf "$_amd_dir/amd-smi" "$_combined_dir/amd-smi"
+_result=$(run_func "$_combined_dir")
+assert_eq "CUDA+ROCm -> CUDA precedence" "https://download.pytorch.org/whl/cu126" "$_result"
+rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"

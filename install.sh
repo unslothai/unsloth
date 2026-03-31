@@ -739,7 +739,21 @@ get_torch_index_url() {
     elif [ -x "/usr/bin/nvidia-smi" ]; then
         _smi="/usr/bin/nvidia-smi"
     fi
-    if [ -z "$_smi" ]; then echo "$_base/cpu"; return; fi
+    if [ -z "$_smi" ]; then
+        # No CUDA detected, check for ROCm (AMD GPUs)
+        ROCM_TAG=""
+        ROCM_TAG=$({ command -v amd-smi >/dev/null 2>&1 && amd-smi 2>/dev/null | awk -F'ROCm version: ' 'NF>1{gsub(/[^0-9.]/, "", $2); split($2,a,"."); print "rocm"a[1]"."a[2]; ok=1; exit} END{exit !ok}'; } || \
+            { [ -r /opt/rocm/.info/version ] && awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version; } || \
+            { command -v hipconfig >/dev/null 2>&1 && hipconfig --version 2>/dev/null | awk -F': *' '/HIP version/{split($2,a,"."); print "rocm"a[1]"."a[2]; ok=1; exit} END{exit !ok}'; } || \
+            { command -v dpkg-query >/dev/null 2>&1 && ver="$(dpkg-query -W -f="\${Version}\n" rocm-core 2>/dev/null)" && [ -n "$ver" ] && awk -F'[.-]' '{print "rocm"$1"."$2; exit}' <<<"$ver"; } || \
+            { command -v rpm >/dev/null 2>&1 && ver="$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null)" && [ -n "$ver" ] && awk -F'[.-]' '{print "rocm"$1"."$2; exit}' <<<"$ver"; })
+        if [ -n "$ROCM_TAG" ]; then
+            echo "$_base/$ROCM_TAG"
+        else
+            echo "$_base/cpu"
+        fi
+        return
+    fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
     _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
         | sed -n 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
