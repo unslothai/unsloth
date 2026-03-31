@@ -3,6 +3,7 @@
 
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -323,8 +324,6 @@ def rebuild(
     
     Useful for developers working on Studio code when incremental updates aren't sufficient.
     """
-    import shutil
-    
     typer.echo("\n=== Unsloth Studio Clean Rebuild ===\n")
     
     # Clean frontend artifacts
