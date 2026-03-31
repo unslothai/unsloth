@@ -469,19 +469,7 @@ export function HubModelPicker({
   const [customFolderModels, setCustomFolderModels] =
     useState<LocalModelInfo[]>(_customFolderCache);
 
-  const refreshCachedLists = useCallback(() => {
-    listCachedGguf()
-      .then((v) => {
-        _cachedGgufCache = v;
-        setCachedGguf(v);
-      })
-      .catch(() => {});
-    listCachedModels()
-      .then((v) => {
-        _cachedModelsCache = v;
-        setCachedModels(v);
-      })
-      .catch(() => {});
+  const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
       .then((res) => {
         const lm = sortLmStudio(
@@ -496,20 +484,25 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    // Always refresh LM Studio models (not gated by alreadyCached)
-    listLocalModels()
-      .then((res) => {
-        const lm = sortLmStudio(
-          res.models.filter((m) => m.source === "lmstudio"),
-        );
-        _lmStudioCache = lm;
-        setLmStudioModels(lm);
-        const cf = res.models.filter((m) => m.source === "custom");
-        _customFolderCache = cf;
-        setCustomFolderModels(cf);
+  const refreshCachedLists = useCallback(() => {
+    listCachedGguf()
+      .then((v) => {
+        _cachedGgufCache = v;
+        setCachedGguf(v);
       })
       .catch(() => {});
+    listCachedModels()
+      .then((v) => {
+        _cachedModelsCache = v;
+        setCachedModels(v);
+      })
+      .catch(() => {});
+    refreshLocalModelsList();
+  }, [refreshLocalModelsList]);
+
+  useEffect(() => {
+    // Always refresh LM Studio + custom folder models (not gated by alreadyCached)
+    refreshLocalModelsList();
 
     if (alreadyCached) return;
     let done = 0;
