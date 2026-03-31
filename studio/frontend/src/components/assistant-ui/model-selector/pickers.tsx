@@ -981,7 +981,7 @@ export function LoraModelPicker({
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
-                  const isLocalGgufDir = (isLocal || isGguf) && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+                  const isLocalGgufDir = isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
                   const tag = isLocal
                     ? isLocalGgufDir ? "GGUF" : "Local"
                     : isGguf
