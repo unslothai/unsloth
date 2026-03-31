@@ -1436,7 +1436,7 @@ def detect_host() -> HostInfo:
     if not is_macos:
         for _cmd, _marker in (
             (["rocminfo"], "gfx"),
-            (["amd-smi", "list"], None),
+            (["amd-smi", "list"], "gpu"),
         ):
             _exe = shutil.which(_cmd[0])
             if not _exe:
@@ -1446,7 +1446,7 @@ def detect_host() -> HostInfo:
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
-                if _marker is None or _marker in _result.stdout.lower():
+                if _marker in _result.stdout.lower():
                     has_rocm = True
                     break
 

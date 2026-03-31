@@ -88,7 +88,7 @@ def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
     for cmd, marker in (
         (["rocminfo"], "gfx"),
-        (["amd-smi", "list"], None),
+        (["amd-smi", "list"], "gpu"),
     ):
         exe = shutil.which(cmd[0])
         if not exe:
@@ -104,7 +104,7 @@ def _has_rocm_gpu() -> bool:
         except Exception:
             continue
         if result.returncode == 0 and result.stdout.strip():
-            if marker is None or marker in result.stdout.lower():
+            if marker in result.stdout.lower():
                 return True
     return False
 
@@ -114,9 +114,13 @@ def _ensure_rocm_torch() -> None:
 
     Runs only on Linux hosts where ROCm is installed and an AMD GPU is
     present.  No-op when torch already links against HIP (ROCm) or CUDA
-    (NVIDIA).  Skips on Windows/macOS.
+    (NVIDIA).  Skips on Windows/macOS and on mixed AMD+NVIDIA hosts
+    (NVIDIA takes precedence).
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
+    # NVIDIA takes precedence on mixed hosts
+    if shutil.which("nvidia-smi"):
+        return
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     if not os.path.isdir(rocm_root) and not shutil.which("hipcc"):
         return  # no ROCm toolchain
