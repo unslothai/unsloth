@@ -263,8 +263,11 @@ def _install_package_wheel_first(
     # Prefer uv for faster dependency resolution when available
     if shutil.which("uv"):
         pypi_cmd = [
-            "uv", "pip", "install",
-            "--python", sys.executable,
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
             "--no-build-isolation",
             "--no-deps",
             f"{pypi_name}=={pypi_version}",
@@ -294,7 +297,9 @@ def _install_package_wheel_first(
         )
     except _sp.TimeoutExpired:
         logger.error(
-            "%s installation timed out after %ds", display_name, timeout,
+            "%s installation timed out after %ds",
+            display_name,
+            timeout,
         )
         _send_status(
             event_queue,
@@ -308,7 +313,9 @@ def _install_package_wheel_first(
             error_lines = (result.stdout or "").strip().splitlines()
             snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
             logger.error(
-                "Failed to compile %s for ROCm:\n%s", display_name, result.stdout,
+                "Failed to compile %s for ROCm:\n%s",
+                display_name,
+                result.stdout,
             )
             _send_status(
                 event_queue,
@@ -318,7 +325,9 @@ def _install_package_wheel_first(
             )
         else:
             logger.error(
-                "Failed to install %s from PyPI:\n%s", display_name, result.stdout,
+                "Failed to install %s from PyPI:\n%s",
+                display_name,
+                result.stdout,
             )
         return
 

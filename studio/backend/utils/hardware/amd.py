@@ -22,9 +22,9 @@ def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[dict]:
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            capture_output = True,
+            text = True,
+            timeout = timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("amd-smi query failed: %s", e)
@@ -62,7 +62,9 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     # amd-smi metric output structure varies by version; try common paths
     usage = gpu_data.get("usage", gpu_data.get("gpu_activity", {}))
     if isinstance(usage, dict):
-        gpu_util = _parse_numeric(usage.get("gfx_activity", usage.get("gpu_use_percent")))
+        gpu_util = _parse_numeric(
+            usage.get("gfx_activity", usage.get("gpu_use_percent"))
+        )
     else:
         gpu_util = _parse_numeric(usage)
 
@@ -70,8 +72,13 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     temp_data = gpu_data.get("temperature", {})
     if isinstance(temp_data, dict):
         temp = _parse_numeric(
-            temp_data.get("edge", temp_data.get("temperature_edge",
-            temp_data.get("hotspot", temp_data.get("temperature_hotspot"))))
+            temp_data.get(
+                "edge",
+                temp_data.get(
+                    "temperature_edge",
+                    temp_data.get("hotspot", temp_data.get("temperature_hotspot")),
+                ),
+            )
         )
     else:
         temp = _parse_numeric(temp_data)
@@ -80,9 +87,10 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     power_data = gpu_data.get("power", {})
     if isinstance(power_data, dict):
         power_draw = _parse_numeric(
-            power_data.get("current_socket_power",
-            power_data.get("average_socket_power",
-            power_data.get("socket_power")))
+            power_data.get(
+                "current_socket_power",
+                power_data.get("average_socket_power", power_data.get("socket_power")),
+            )
         )
         power_limit = _parse_numeric(
             power_data.get("power_cap", power_data.get("max_power_limit"))
@@ -120,7 +128,9 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
 
     # Build the standardized dict (same shape as nvidia._build_gpu_metrics)
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
-    vram_total_gb = round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
+    vram_total_gb = (
+        round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
+    )
     vram_util = (
         round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb and vram_total_mb > 0
