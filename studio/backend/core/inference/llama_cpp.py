@@ -2163,7 +2163,7 @@ class LlamaCppBackend:
         _DEDUP_WINDOW = 2  # flag if same call appears this many times in a row
 
         def _tool_call_key(name: str, args: dict) -> str:
-            raw = json.dumps({"t": name, "a": args}, sort_keys=True)
+            raw = json.dumps({"t": name, "a": args}, sort_keys = True)
             return _hl.md5(raw.encode()).hexdigest()
 
         def _is_duplicate_call(name: str, args: dict) -> bool:
@@ -2687,7 +2687,7 @@ class LlamaCppBackend:
                             "process data you already have, or "
                             "provide your final answer now."
                         )
-                        _record_tool_call(tool_name, arguments, failed=False)
+                        _record_tool_call(tool_name, arguments, failed = False)
                     else:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
@@ -2720,7 +2720,7 @@ class LlamaCppBackend:
                     _is_error = isinstance(result, str) and result.lstrip().startswith(
                         _error_prefixes
                     )
-                    _record_tool_call(tool_name, arguments, failed=_is_error)
+                    _record_tool_call(tool_name, arguments, failed = _is_error)
                     _result_content = result
                     if _is_error:
                         _result_content = (

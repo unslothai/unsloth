@@ -164,7 +164,7 @@ def _is_public_host(hostname: str, port: int) -> tuple[bool, str]:
     import socket
 
     try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except OSError as e:
         return False, f"Failed to resolve host: {e}"
 
@@ -211,13 +211,13 @@ def _fetch_page_text(
 
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "UnslothStudio/1.0"},
+            headers = {"User-Agent": "UnslothStudio/1.0"},
         )
         max_bytes = max_chars * 4 + 1
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             # Cap download size to avoid unbounded memory usage
             raw_bytes = resp.read(max_bytes)
-        raw_html = raw_bytes.decode("utf-8", errors="replace")
+        raw_html = raw_bytes.decode("utf-8", errors = "replace")
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
@@ -236,10 +236,10 @@ def _fetch_page_text(
             r"<script[^>]*>.*?</script[^>]*>",
             "",
             raw_html,
-            flags=_re.DOTALL | _re.IGNORECASE,
+            flags = _re.DOTALL | _re.IGNORECASE,
         )
         text = _re.sub(
-            r"<style[^>]*>.*?</style[^>]*>", "", text, flags=_re.DOTALL | _re.IGNORECASE
+            r"<style[^>]*>.*?</style[^>]*>", "", text, flags = _re.DOTALL | _re.IGNORECASE
         )
         text = _re.sub(r"<[^>]+>", " ", text)
         text = _re.sub(r"\s+", " ", text).strip()
@@ -264,7 +264,7 @@ def _web_search(
     # Direct URL fetch mode
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
-        return _fetch_page_text(url.strip(), timeout=fetch_timeout)
+        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
 
     if not query or not query.strip():
         return "No query provided."
