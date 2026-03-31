@@ -54,6 +54,11 @@ apply_approved_hashes = INSTALL_LLAMA_PREBUILT.apply_approved_hashes
 linux_cuda_choice_from_release = INSTALL_LLAMA_PREBUILT.linux_cuda_choice_from_release
 windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.windows_cuda_attempts
 resolve_upstream_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_upstream_asset_choice
+resolve_requested_install_tag = INSTALL_LLAMA_PREBUILT.resolve_requested_install_tag
+resolve_install_attempts = INSTALL_LLAMA_PREBUILT.resolve_install_attempts
+resolve_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_install_release_plans
+resolve_published_release = INSTALL_LLAMA_PREBUILT.resolve_published_release
+source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +132,37 @@ def make_checksums(asset_names):
                 kind = "prebuilt",
             )
             for name in asset_names
+        },
+    )
+
+
+def make_checksums_with_source(
+    asset_names,
+    *,
+    release_tag = "v1.0",
+    upstream_tag = "b8508",
+):
+    return ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        source_commit = None,
+        artifacts = {
+            **{
+                name: ApprovedArtifactHash(
+                    asset_name = name,
+                    sha256 = "a" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "prebuilt",
+                )
+                for name in asset_names
+            },
+            source_archive_logical_name(upstream_tag): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name(upstream_tag),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
         },
     )
 
@@ -408,7 +444,96 @@ class TestApplyApprovedHashes:
 
 
 # ===========================================================================
-# J. linux_cuda_choice_from_release -- core selection
+# J. published release resolution
+# ===========================================================================
+
+
+class TestPublishedReleaseResolution:
+    def test_latest_skips_invalid_release_and_uses_next_valid(self, monkeypatch):
+        invalid = make_release([], release_tag = "v2.0", upstream_tag = "b9000")
+        valid = make_release([], release_tag = "v1.0", upstream_tag = "b8999")
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([invalid, valid]),
+        )
+
+        def fake_load(repo, release_tag):
+            if release_tag == "v2.0":
+                raise PrebuiltFallback("checksum asset missing")
+            return make_checksums_with_source([], release_tag = "v1.0", upstream_tag = "b8999")
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            fake_load,
+        )
+
+        resolved = resolve_published_release("latest", "unslothai/llama.cpp")
+        assert resolved.bundle.release_tag == "v1.0"
+        assert resolved.bundle.upstream_tag == "b8999"
+        assert resolved.checksums.release_tag == "v1.0"
+
+    def test_concrete_tag_matches_manifest_upstream_tag(self, monkeypatch):
+        release = make_release([], release_tag = "release-b8508", upstream_tag = "b8508")
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([release]),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: make_checksums_with_source(
+                [],
+                release_tag = release_tag,
+                upstream_tag = "b8508",
+            ),
+        )
+
+        assert (
+            resolve_requested_install_tag("b8508", "", "unslothai/llama.cpp") == "b8508"
+        )
+
+    def test_concrete_tag_without_matching_release_raises(self, monkeypatch):
+        release = make_release([], release_tag = "release-b9000", upstream_tag = "b9000")
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([release]),
+        )
+
+        with pytest.raises(PrebuiltFallback, match = "matched upstream tag b8508"):
+            resolve_requested_install_tag("b8508", "", "unslothai/llama.cpp")
+
+    def test_pinned_release_must_match_requested_upstream_tag(self, monkeypatch):
+        bundle = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "pinned_published_release_bundle",
+            lambda repo, release_tag: bundle,
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: make_checksums_with_source(
+                [],
+                release_tag = release_tag,
+                upstream_tag = "b9000",
+            ),
+        )
+
+        with pytest.raises(PrebuiltFallback, match = "but requested b8508"):
+            resolve_requested_install_tag(
+                "b8508",
+                "llama-prebuilt-latest",
+                "unslothai/llama.cpp",
+            )
+
+
+# ===========================================================================
+# K. linux_cuda_choice_from_release -- core selection
 # ===========================================================================
 
 
@@ -676,7 +801,509 @@ class TestLinuxCudaChoiceFromRelease:
 
 
 # ===========================================================================
-# K. windows_cuda_attempts
+# L. resolve_install_attempts
+# ===========================================================================
+
+
+class TestResolveInstallAttempts:
+    def test_windows_cuda_prefers_published_asset_from_selected_release(self, monkeypatch):
+        host = make_host(system = "Windows", machine = "AMD64")
+        host.driver_cuda_version = (12, 4)
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        asset_name = "llama-b9000-bin-win-cuda-12.4-x64.zip"
+        release = make_release(
+            [
+                make_artifact(
+                    asset_name,
+                    install_kind = "windows-cuda",
+                    runtime_line = "cuda12",
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
+        )
+        checksums = make_checksums_with_source(
+            [asset_name],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: (_ for _ in ()).throw(
+                AssertionError("published Windows CUDA choice should not query upstream")
+            ),
+        )
+
+        requested_tag, resolved_tag, attempts, approved = resolve_install_attempts(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+        )
+
+        assert requested_tag == "latest"
+        assert resolved_tag == "b9000"
+        assert attempts[0].name == asset_name
+        assert attempts[0].source_label == "published"
+        assert attempts[0].expected_sha256 == "a" * 64
+        assert approved.release_tag == "llama-prebuilt-latest"
+
+    def test_windows_cuda_uses_selected_release_upstream_tag(self, monkeypatch):
+        host = make_host(system = "Windows", machine = "AMD64")
+        host.driver_cuda_version = (12, 4)
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        checksums = make_checksums_with_source(
+            ["llama-b9000-bin-win-cuda-12.4-x64.zip"],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: {
+                f"llama-{tag}-bin-win-cuda-12.4-x64.zip": f"https://example.com/llama-{tag}-bin-win-cuda-12.4-x64.zip"
+            },
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "resolve_windows_cuda_choices",
+            lambda host, tag, assets: [
+                AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = tag,
+                    name = f"llama-{tag}-bin-win-cuda-12.4-x64.zip",
+                    url = assets[f"llama-{tag}-bin-win-cuda-12.4-x64.zip"],
+                    source_label = "upstream",
+                    install_kind = "windows-cuda",
+                    runtime_line = "cuda12",
+                )
+            ],
+        )
+
+        requested_tag, resolved_tag, attempts, approved = resolve_install_attempts(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+        )
+
+        assert requested_tag == "latest"
+        assert resolved_tag == "b9000"
+        assert attempts[0].name == "llama-b9000-bin-win-cuda-12.4-x64.zip"
+        assert attempts[0].expected_sha256 == "a" * 64
+        assert approved.release_tag == "llama-prebuilt-latest"
+
+    def test_linux_cpu_uses_same_tag_upstream_asset(self, monkeypatch):
+        host = make_host(
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        checksums = make_checksums_with_source(
+            ["llama-b9000-bin-ubuntu-x64.tar.gz"],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: {
+                f"llama-{tag}-bin-ubuntu-x64.tar.gz": f"https://example.com/llama-{tag}-bin-ubuntu-x64.tar.gz"
+            },
+        )
+
+        _requested_tag, resolved_tag, attempts, _approved = resolve_install_attempts(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+        )
+
+        assert resolved_tag == "b9000"
+        assert attempts[0].name == "llama-b9000-bin-ubuntu-x64.tar.gz"
+        assert attempts[0].source_label == "upstream"
+        assert attempts[0].expected_sha256 == "a" * 64
+
+    def test_linux_cuda_does_not_fall_back_to_upstream_cpu(self, monkeypatch):
+        host = make_host(system = "Linux", machine = "x86_64", compute_caps = ["86"])
+        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        checksums = make_checksums_with_source(
+            [],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        mock_linux_runtime(monkeypatch, ["cuda12"])
+
+        with pytest.raises(PrebuiltFallback, match = "no compatible published Linux CUDA bundle"):
+            resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
+
+    def test_windows_cpu_prefers_published_asset(self, monkeypatch):
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        asset_name = "llama-b9000-bin-win-cpu-x64.zip"
+        release = make_release(
+            [
+                make_artifact(
+                    asset_name,
+                    install_kind = "windows-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
+        )
+        checksums = make_checksums_with_source(
+            [asset_name],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: (_ for _ in ()).throw(
+                AssertionError("published Windows CPU choice should not query upstream")
+            ),
+        )
+
+        _requested_tag, resolved_tag, attempts, _approved = resolve_install_attempts(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+        )
+
+        assert resolved_tag == "b9000"
+        assert attempts[0].name == asset_name
+        assert attempts[0].source_label == "published"
+
+    def test_macos_prefers_published_asset(self, monkeypatch):
+        host = make_host(
+            system = "Darwin",
+            machine = "arm64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        asset_name = "llama-b9000-bin-macos-arm64.tar.gz"
+        release = make_release(
+            [
+                make_artifact(
+                    asset_name,
+                    install_kind = "macos-arm64",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
+        )
+        checksums = make_checksums_with_source(
+            [asset_name],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: (_ for _ in ()).throw(
+                AssertionError("published macOS choice should not query upstream")
+            ),
+        )
+
+        _requested_tag, resolved_tag, attempts, _approved = resolve_install_attempts(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+        )
+
+        assert resolved_tag == "b9000"
+        assert attempts[0].name == asset_name
+        assert attempts[0].source_label == "published"
+
+    def test_windows_cpu_missing_checksum_rejects_install(self, monkeypatch):
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        published_name = "llama-b9000-bin-win-cpu-x64.zip"
+        release = make_release(
+            [
+                make_artifact(
+                    published_name,
+                    install_kind = "windows-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {published_name: f"https://published.example/{published_name}"},
+        )
+        checksums = make_checksums_with_source(
+            [],
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: {
+                f"llama-{tag}-bin-win-cpu-x64.zip": f"https://upstream.example/llama-{tag}-bin-win-cpu-x64.zip"
+            },
+        )
+
+        with pytest.raises(
+            PrebuiltFallback,
+            match = "approved checksum asset did not contain the selected prebuilt archive",
+        ):
+            resolve_install_attempts(
+                "latest",
+                host,
+                "unslothai/llama.cpp",
+                "",
+            )
+
+
+class TestResolveInstallReleasePlans:
+    def test_latest_collects_multiple_older_release_plans_up_to_limit(self, monkeypatch):
+        host = make_host(
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        releases = [
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                bundle = make_release([], release_tag = "r3", upstream_tag = "b9003"),
+                checksums = make_checksums_with_source(
+                    ["llama-b9003-bin-ubuntu-x64.tar.gz"],
+                    release_tag = "r3",
+                    upstream_tag = "b9003",
+                ),
+            ),
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                bundle = make_release([], release_tag = "r2", upstream_tag = "b9002"),
+                checksums = make_checksums_with_source(
+                    ["llama-b9002-bin-ubuntu-x64.tar.gz"],
+                    release_tag = "r2",
+                    upstream_tag = "b9002",
+                ),
+            ),
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                bundle = make_release([], release_tag = "r1", upstream_tag = "b9001"),
+                checksums = make_checksums_with_source(
+                    ["llama-b9001-bin-ubuntu-x64.tar.gz"],
+                    release_tag = "r1",
+                    upstream_tag = "b9001",
+                ),
+            ),
+        ]
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: {
+                f"llama-{tag}-bin-ubuntu-x64.tar.gz": f"https://example.com/llama-{tag}-bin-ubuntu-x64.tar.gz"
+            },
+        )
+
+        requested_tag, plans = resolve_install_release_plans(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+            max_release_fallbacks = 2,
+        )
+
+        assert requested_tag == "latest"
+        assert [plan.release_tag for plan in plans] == ["r3", "r2"]
+        assert [plan.llama_tag for plan in plans] == ["b9003", "b9002"]
+
+    def test_latest_skips_non_installable_release_and_keeps_searching(self, monkeypatch):
+        host = make_host(
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        releases = [
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                bundle = make_release([], release_tag = "r2", upstream_tag = "b9002"),
+                checksums = make_checksums_with_source(
+                    [],
+                    release_tag = "r2",
+                    upstream_tag = "b9002",
+                ),
+            ),
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                bundle = make_release([], release_tag = "r1", upstream_tag = "b9001"),
+                checksums = make_checksums_with_source(
+                    ["llama-b9001-bin-ubuntu-x64.tar.gz"],
+                    release_tag = "r1",
+                    upstream_tag = "b9001",
+                ),
+            ),
+        ]
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: (
+                {}
+                if tag == "b9002"
+                else {f"llama-{tag}-bin-ubuntu-x64.tar.gz": f"https://example.com/llama-{tag}-bin-ubuntu-x64.tar.gz"}
+            ),
+        )
+
+        _requested_tag, plans = resolve_install_release_plans(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+            max_release_fallbacks = 2,
+        )
+
+        assert len(plans) == 1
+        assert plans[0].release_tag == "r1"
+        assert plans[0].llama_tag == "b9001"
+
+
+# ===========================================================================
+# N. windows_cuda_attempts
 # ===========================================================================
 
 
@@ -753,7 +1380,7 @@ class TestWindowsCudaAttempts:
 
 
 # ===========================================================================
-# L. resolve_upstream_asset_choice -- platform routing
+# O. resolve_upstream_asset_choice -- platform routing
 # ===========================================================================
 
 

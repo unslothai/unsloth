@@ -108,6 +108,10 @@ echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 verbose_substep "verbose diagnostics enabled"
+_LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
+if [ "$_LLAMA_ONLY" = "1" ]; then
+    substep "llama.cpp only mode"
+fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
@@ -120,6 +124,7 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
 
+if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Frontend ──
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
@@ -453,6 +458,7 @@ else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
+fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 UNSLOTH_HOME="$HOME/.unsloth"
@@ -477,12 +483,12 @@ else
     _RESOLVED_LLAMA_TAG=""
 fi
 if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-    step "llama.cpp" "failed to resolve prebuilt tag via $_HELPER_RELEASE_REPO" "$C_WARN"
+    step "llama.cpp" "failed to resolve a published llama.cpp release via $_HELPER_RELEASE_REPO" "$C_WARN"
     print_llama_error_log "$_RESOLVE_LLAMA_LOG"
     set +e
     # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
-    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
+    # so the resolver prefers the latest usable Unsloth-published upstream tag
+    # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
     _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
     _RESOLVE_UPSTREAM_STATUS=$?
     set -e
@@ -538,9 +544,22 @@ else
         set -e
 
         if [ "$_PREBUILT_STATUS" -eq 0 ]; then
-            step "llama.cpp" "prebuilt installed and validated"
+            if grep -Fq "already matches selected release" "$_PREBUILT_LOG"; then
+                step "llama.cpp" "prebuilt up to date and validated"
+            else
+                step "llama.cpp" "prebuilt installed and validated"
+            fi
             verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
             rm -f "$_PREBUILT_LOG"
+        elif [ "$_PREBUILT_STATUS" -eq 3 ]; then
+            step "llama.cpp" "install blocked by active llama.cpp process" "$C_WARN"
+            print_llama_error_log "$_PREBUILT_LOG"
+            rm -f "$_PREBUILT_LOG"
+            if [ -d "$LLAMA_CPP_DIR" ]; then
+                substep "existing install was restored"
+            fi
+            substep "close Studio or other llama.cpp users and retry"
+            exit 3
         else
             step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
             print_llama_error_log "$_PREBUILT_LOG"
@@ -794,7 +813,16 @@ else
 fi  # end _SKIP_GGUF_BUILD check
 
 # ── Footer ──
-if [ "$IS_COLAB" = true ]; then
+if [ "$_LLAMA_ONLY" = "1" ]; then
+    echo ""
+    printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+        printf "  ${C_WARN}%s${C_RST}\n" "llama.cpp update finished (limited: llama.cpp unavailable)"
+    else
+        printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
+    fi
+    printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then

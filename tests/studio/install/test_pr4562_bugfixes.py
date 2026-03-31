@@ -40,6 +40,10 @@ SPEC.loader.exec_module(MOD)
 binary_env = MOD.binary_env
 HostInfo = MOD.HostInfo
 resolve_requested_llama_tag = MOD.resolve_requested_llama_tag
+PublishedReleaseBundle = MOD.PublishedReleaseBundle
+ApprovedArtifactHash = MOD.ApprovedArtifactHash
+ApprovedReleaseChecksums = MOD.ApprovedReleaseChecksums
+source_archive_logical_name = MOD.source_archive_logical_name
 
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -239,6 +243,57 @@ class TestResolveRequestedLlamaTag:
     def test_empty_string_resolves_to_latest(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(MOD, "latest_upstream_release_tag", lambda: "b5555")
         assert resolve_requested_llama_tag("") == "b5555"
+
+    def test_latest_with_published_repo_uses_latest_valid_published_release(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        invalid = PublishedReleaseBundle(
+            repo = "unslothai/llama.cpp",
+            release_tag = "v2.0",
+            upstream_tag = "b9000",
+            assets = {},
+            manifest_asset_name = "llama-prebuilt-manifest.json",
+            artifacts = [],
+            selection_log = [],
+        )
+        valid = PublishedReleaseBundle(
+            repo = "unslothai/llama.cpp",
+            release_tag = "v1.0",
+            upstream_tag = "b8999",
+            assets = {},
+            manifest_asset_name = "llama-prebuilt-manifest.json",
+            artifacts = [],
+            selection_log = [],
+        )
+
+        monkeypatch.setattr(
+            MOD,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([invalid, valid]),
+        )
+
+        def fake_load(repo, release_tag):
+            if release_tag == "v2.0":
+                raise MOD.PrebuiltFallback("checksum asset missing")
+            return ApprovedReleaseChecksums(
+                repo = repo,
+                release_tag = release_tag,
+                upstream_tag = "b8999",
+                source_commit = None,
+                artifacts = {
+                    source_archive_logical_name("b8999"): ApprovedArtifactHash(
+                        asset_name = source_archive_logical_name("b8999"),
+                        sha256 = "a" * 64,
+                        repo = "ggml-org/llama.cpp",
+                        kind = "upstream-source",
+                    )
+                },
+            )
+
+        monkeypatch.setattr(MOD, "load_approved_release_checksums", fake_load)
+        monkeypatch.setattr(MOD, "latest_upstream_release_tag", lambda: "b7777")
+
+        assert resolve_requested_llama_tag("latest", "unslothai/llama.cpp") == "b8999"
 
 
 # =========================================================================
@@ -593,10 +648,10 @@ class TestSourceCodePatterns:
     def test_setup_sh_no_rm_before_prereq_check(self):
         """rm -rf must appear AFTER cmake/git checks, not before."""
         content = SETUP_SH.read_text()
-        # Find the source-build block
-        idx_else = content.find("# Check prerequisites")
-        assert idx_else != -1
-        block = content[idx_else:]
+        # Anchor on the source-build cmake check block.
+        idx_block = content.find("command -v cmake")
+        assert idx_block != -1
+        block = content[idx_block:]
         # rm -rf should appear after the cmake/git checks
         idx_cmake = block.find("command -v cmake")
         idx_git = block.find("command -v git")
