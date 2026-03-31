@@ -316,58 +316,58 @@ def rebuild(
     ),
 ):
     """Clean rebuild: remove venv, frontend artifacts, and reinstall.
-    
+
     This performs a complete clean rebuild by:
     1. Removing frontend dist/ and node_modules/
     2. Removing the Python virtual environment
     3. Running a fresh install
-    
+
     Useful for developers working on Studio code when incremental updates aren't sufficient.
     """
     typer.echo("\n=== Unsloth Studio Clean Rebuild ===\n")
-    
+
     # Clean frontend artifacts
     typer.echo("[1/3] Cleaning frontend build artifacts...")
     frontend_dir = _PACKAGE_ROOT / "studio" / "frontend"
-    
+
     if frontend_dir.exists():
         dist_dir = frontend_dir / "dist"
         node_modules = frontend_dir / "node_modules"
-        
+
         if dist_dir.exists():
             typer.echo(f"  → Removing {dist_dir}")
-            shutil.rmtree(dist_dir, ignore_errors=True)
-            typer.echo("  ✓ Deleted frontend dist", fg=typer.colors.GREEN)
+            shutil.rmtree(dist_dir, ignore_errors = True)
+            typer.echo("  ✓ Deleted frontend dist", fg = typer.colors.GREEN)
         else:
             typer.echo(f"  → {dist_dir} not found (already clean)")
-        
+
         if node_modules.exists():
             typer.echo(f"  → Removing {node_modules} (this may take a moment...)")
-            shutil.rmtree(node_modules, ignore_errors=True)
-            typer.echo("  ✓ Deleted node_modules", fg=typer.colors.GREEN)
+            shutil.rmtree(node_modules, ignore_errors = True)
+            typer.echo("  ✓ Deleted node_modules", fg = typer.colors.GREEN)
         else:
             typer.echo("  → node_modules not found (already clean)")
     else:
         typer.echo("  → Frontend directory not found (pip install?)")
-    
+
     # Clean Python virtual environment
     typer.echo("\n[2/3] Cleaning Python virtual environment...")
     venv_path = STUDIO_HOME / "unsloth_studio"
-    
+
     if venv_path.exists():
         typer.echo(f"  → Removing {venv_path}")
-        shutil.rmtree(venv_path, ignore_errors=True)
-        typer.echo("  ✓ Deleted venv successfully", fg=typer.colors.GREEN)
+        shutil.rmtree(venv_path, ignore_errors = True)
+        typer.echo("  ✓ Deleted venv successfully", fg = typer.colors.GREEN)
     else:
         typer.echo("  → Venv not found (already clean)")
-    
+
     # Run fresh install
     typer.echo("\n[3/3] Running fresh install...\n")
-    
+
     # Set up environment like update does
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = "unsloth"
-    
+
     if local:
         os.environ["STUDIO_LOCAL_INSTALL"] = "1"
         repo_root = Path(__file__).resolve().parents[2]
@@ -375,12 +375,12 @@ def rebuild(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    
+
     try:
-        _run_setup_script(verbose=verbose)
-        typer.echo("\n=== Rebuild Complete! ===", fg=typer.colors.GREEN)
+        _run_setup_script(verbose = verbose)
+        typer.echo("\n=== Rebuild Complete! ===", fg = typer.colors.GREEN)
     except typer.Exit as e:
-        typer.echo("\n=== Rebuild Failed ===", fg=typer.colors.RED)
+        typer.echo("\n=== Rebuild Failed ===", fg = typer.colors.RED)
         raise
 
 
