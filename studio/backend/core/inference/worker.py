@@ -163,7 +163,8 @@ def _get_hf_download_state(
                     pass
 
         return (total, has_incomplete)
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to determine HF download state: %s", e)
         return None
 
 
