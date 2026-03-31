@@ -2675,11 +2675,10 @@ class LlamaCppBackend:
                     }
 
                     # ── Duplicate call detection ──────────────
-                    _tc_key = tool_name + json.dumps(
-                        arguments,
-                        sort_keys = True,
-                        separators = (",", ":"),
-                    )
+                    # str(dict) is stable here: arguments always comes from
+                    # json.loads on the same model output within one request,
+                    # so insertion order is deterministic (Python 3.7+).
+                    _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
                     if _prev and _prev[0] == _tc_key and not _prev[1]:
                         result = (
