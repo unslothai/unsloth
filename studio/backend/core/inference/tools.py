@@ -195,13 +195,13 @@ def _fetch_page_text(
     except ImportError:
         # Fallback: regex-based stripping
         text = _re.sub(
-            r"<script[^>]*>.*?</script>",
+            r"<script[^>]*>.*?</script\s*>",
             "",
             raw_html,
             flags = _re.DOTALL | _re.IGNORECASE,
         )
         text = _re.sub(
-            r"<style[^>]*>.*?</style>", "", text, flags = _re.DOTALL | _re.IGNORECASE
+            r"<style[^>]*>.*?</style\s*>", "", text, flags = _re.DOTALL | _re.IGNORECASE
         )
         text = _re.sub(r"<[^>]+>", " ", text)
         text = _re.sub(r"\s+", " ", text).strip()
