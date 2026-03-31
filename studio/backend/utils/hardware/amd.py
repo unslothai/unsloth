@@ -65,6 +65,40 @@ def _parse_numeric(value: Any) -> Optional[float]:
     return None
 
 
+def _parse_memory_mb(value: Any) -> Optional[float]:
+    """Parse a memory value from amd-smi output and return MB.
+
+    Handles bare numbers (assumed MB), dict-shaped values with units
+    ({"value": 192, "unit": "GiB"}), and byte-scale heuristic fallback.
+    """
+    unit = ""
+    raw_value = value
+
+    if isinstance(value, dict):
+        unit = str(value.get("unit", "")).strip().lower()
+        raw_value = value.get("value")
+
+    num = _parse_numeric(raw_value if isinstance(value, dict) else value)
+    if num is None:
+        return None
+
+    # Explicit unit conversion
+    if "gib" in unit or "gb" in unit:
+        return num * 1024
+    if "mib" in unit or "mb" in unit:
+        return num
+    if "kib" in unit or "kb" in unit:
+        return num / 1024
+    if unit and ("b" in unit and "g" not in unit and "m" not in unit and "k" not in unit):
+        # Plain bytes
+        return num / (1024 * 1024)
+
+    # No explicit unit -- heuristic: values > 10M are likely bytes
+    if num > 10_000_000:
+        return num / (1024 * 1024)
+    return num  # Assume MB
+
+
 def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     """Extract standardized metrics from a single GPU's amd-smi data."""
     # amd-smi metric output structure varies by version; try common paths
@@ -107,34 +141,19 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
         power_draw = None
         power_limit = None
 
-    # VRAM
+    # VRAM -- unit-aware parsing to handle varying amd-smi output formats.
+    # Newer amd-smi versions may return {"value": 192, "unit": "GiB"}.
     vram_data = gpu_data.get("vram", gpu_data.get("fb_memory_usage", {}))
     if isinstance(vram_data, dict):
-        vram_used_bytes = _parse_numeric(
+        vram_used_mb = _parse_memory_mb(
             vram_data.get("vram_used", vram_data.get("used"))
         )
-        vram_total_bytes = _parse_numeric(
+        vram_total_mb = _parse_memory_mb(
             vram_data.get("vram_total", vram_data.get("total"))
         )
     else:
-        vram_used_bytes = None
-        vram_total_bytes = None
-
-    # Convert VRAM from bytes to MB if values are very large.
-    # amd-smi typically reports in MB, but some versions report bytes.
-    # Threshold: 10 million -- no GPU has <10 MB, and even 10 TB = 10M MB.
-    vram_used_mb = None
-    vram_total_mb = None
-    if vram_used_bytes is not None:
-        if vram_used_bytes > 10_000_000:  # Likely bytes (>10M)
-            vram_used_mb = vram_used_bytes / (1024 * 1024)
-        else:  # Likely already MB
-            vram_used_mb = vram_used_bytes
-    if vram_total_bytes is not None:
-        if vram_total_bytes > 10_000_000:  # Likely bytes (>10M)
-            vram_total_mb = vram_total_bytes / (1024 * 1024)
-        else:  # Likely already MB
-            vram_total_mb = vram_total_bytes
+        vram_used_mb = None
+        vram_total_mb = None
 
     # Build the standardized dict (same shape as nvidia._build_gpu_metrics)
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None

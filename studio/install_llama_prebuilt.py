@@ -1450,7 +1450,7 @@ def detect_host() -> HostInfo:
                     has_rocm = True
                     break
     elif is_windows:
-        # Windows: validate actual AMD GPU presence (not just tool/DLL existence)
+        # Windows: prefer active probes that validate GPU presence
         for _cmd, _marker in (
             (["hipinfo"], "gcnarchname"),
             (["amd-smi", "list"], "gpu"),
@@ -1466,6 +1466,13 @@ def detect_host() -> HostInfo:
                 if _marker in _result.stdout.lower():
                     has_rocm = True
                     break
+        # Fallback: HIP runtime DLL indicates a working HIP installation
+        if not has_rocm and any(
+            Path(d).joinpath("amdhip64.dll").exists()
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d
+        ):
+            has_rocm = True
 
     return HostInfo(
         system = system,

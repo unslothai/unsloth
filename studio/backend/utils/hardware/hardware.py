@@ -43,7 +43,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- display/logging only
+IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 
 # ========== Detection ==========
@@ -567,7 +567,17 @@ _visible_gpu_count: Optional[int] = None
 
 
 def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    # ROCm uses HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES in addition to
+    # CUDA_VISIBLE_DEVICES (which HIP also respects).  Check ROCm-specific
+    # env vars first so multi-GPU AMD setups are handled correctly.
+    cuda_visible = None
+    if IS_ROCM:
+        cuda_visible = (
+            os.environ.get("HIP_VISIBLE_DEVICES")
+            or os.environ.get("ROCR_VISIBLE_DEVICES")
+        )
+    if cuda_visible is None:
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
 
     if cuda_visible is None:
         return {

@@ -726,7 +726,29 @@ def install_python_stack() -> int:
     # Windows + AMD GPU: PyTorch does not publish ROCm wheels for Windows.
     # Detect and warn so users know manual steps are needed for GPU training.
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
-        if shutil.which("hipinfo") or shutil.which("amd-smi"):
+        # Validate actual AMD GPU presence (not just tool existence)
+        _win_amd_gpu = False
+        for _wcmd, _wmarker in (
+            (["hipinfo"], "gcnarchname"),
+            (["amd-smi", "list"], "gpu"),
+        ):
+            _wexe = shutil.which(_wcmd[0])
+            if not _wexe:
+                continue
+            try:
+                _wr = subprocess.run(
+                    [_wexe, *_wcmd[1:]],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=10,
+                )
+            except Exception:
+                continue
+            if _wr.returncode == 0 and _wmarker in _wr.stdout.lower():
+                _win_amd_gpu = True
+                break
+        if _win_amd_gpu:
             _safe_print(
                 _dim("  Note:"),
                 "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
