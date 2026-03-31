@@ -596,8 +596,14 @@ export function ChatPage(): ReactElement {
 
   const handleThreadSelect = useCallback(
     (nextView: ChatView) => {
-      useArtifactStore.getState().clearArtifacts();
-      setView(nextView);
+      setView((prev) => {
+        const prevId = prev.mode === "single" ? prev.threadId : prev.pairId;
+        const nextId = nextView.mode === "single" ? nextView.threadId : nextView.pairId;
+        if (prevId !== nextId) {
+          useArtifactStore.getState().clearArtifacts();
+        }
+        return nextView;
+      });
     },
     [],
   );
