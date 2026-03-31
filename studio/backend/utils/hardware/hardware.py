@@ -572,11 +572,16 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # ROCm uses HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES in addition to
     # CUDA_VISIBLE_DEVICES (which HIP also respects).  Check ROCm-specific
     # env vars first so multi-GPU AMD setups are handled correctly.
+    # Use explicit None checks (not `or`) so empty string "" is honoured
+    # as "no visible GPUs" rather than falling through to CUDA_VISIBLE_DEVICES.
     cuda_visible = None
     if IS_ROCM:
-        cuda_visible = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get(
-            "ROCR_VISIBLE_DEVICES"
-        )
+        hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
+        rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
+        if hip_vis is not None:
+            cuda_visible = hip_vis
+        elif rocr_vis is not None:
+            cuda_visible = rocr_vis
     if cuda_visible is None:
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
 
