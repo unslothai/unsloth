@@ -18,10 +18,24 @@ from html.parser import HTMLParser
 __all__ = ["html_to_markdown"]
 
 _SKIP_TAGS = frozenset({"script", "style", "head", "noscript", "svg", "math"})
-_BLOCK_TAGS = frozenset({
-    "p", "div", "section", "article", "header", "footer", "main", "aside",
-    "nav", "figure", "figcaption", "details", "summary", "hr",
-})
+_BLOCK_TAGS = frozenset(
+    {
+        "p",
+        "div",
+        "section",
+        "article",
+        "header",
+        "footer",
+        "main",
+        "aside",
+        "nav",
+        "figure",
+        "figcaption",
+        "details",
+        "summary",
+        "hr",
+    }
+)
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
@@ -30,7 +44,7 @@ class _MarkdownRenderer(HTMLParser):
     """HTMLParser subclass that emits Markdown tokens into a list."""
 
     def __init__(self):
-        super().__init__(convert_charrefs=False)
+        super().__init__(convert_charrefs = False)
         self._out: list[str] = []
         self._skip_depth: int = 0
 
@@ -255,7 +269,7 @@ def _cleanup(text: str) -> str:
     # Collapse runs of 3+ newlines into 2
     text = re.sub(r"\n{3,}", "\n\n", text)
     # Remove trailing spaces on each line
-    text = re.sub(r" +$", "", text, flags=re.MULTILINE)
+    text = re.sub(r" +$", "", text, flags = re.MULTILINE)
     return text.strip()
 
 
