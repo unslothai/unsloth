@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export function ReadMore({ href = "#" }: { href?: string }) {
-  const isExternal = href.startsWith("http");
+  const isExternal = /^https?:\/\//.test(href);
   return (
     <a
       href={href}
