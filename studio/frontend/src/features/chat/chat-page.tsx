@@ -16,7 +16,6 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandShortcut,
 } from "@/components/ui/command";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import {
@@ -39,8 +38,6 @@ import {
   BookOpenIcon,
   BrainIcon,
   ColumnsIcon,
-  KeyboardIcon,
-  PanelRightIcon,
   PencilIcon,
   SettingsIcon,
 } from "lucide-react";
@@ -56,9 +53,6 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import { KeyboardShortcutHelp } from "./components/keyboard-shortcut-help";
-import { ArtifactPanel } from "./components/artifact-panel";
-import { useArtifactStore } from "./stores/artifact-store";
 import { PromptLibrarySheet } from "./components/prompt-library-sheet";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { listLocalModels } from "./api/chat-api";
@@ -447,9 +441,7 @@ export function ChatPage(): ReactElement {
     null,
   );
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
-  const artifactPanelOpen = useArtifactStore((s) => s.panelOpen);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore((state) => state.activeGgufVariant);
@@ -530,14 +522,12 @@ export function ChatPage(): ReactElement {
   const handleNewThread = useCallback(
     () => {
       useChatRuntimeStore.getState().setActiveThreadId(null);
-      useArtifactStore.getState().clearArtifacts();
       setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
     },
     [],
   );
   const handleNewCompare = useCallback(
     () => {
-      useArtifactStore.getState().clearArtifacts();
       setView({ mode: "compare", pairId: crypto.randomUUID() });
       useChatRuntimeStore.getState().setContextUsage(null);
     },
@@ -566,7 +556,6 @@ export function ChatPage(): ReactElement {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
 
   const enterCompare = useCallback(() => {
-    useArtifactStore.getState().clearArtifacts();
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
     useChatRuntimeStore.getState().setContextUsage(null);
@@ -574,7 +563,6 @@ export function ChatPage(): ReactElement {
 
   const exitCompare = useCallback(() => {
     if (!viewBeforeCompare) return;
-    useArtifactStore.getState().clearArtifacts();
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
     // Restore context usage from the active thread's last assistant message
@@ -596,14 +584,7 @@ export function ChatPage(): ReactElement {
 
   const handleThreadSelect = useCallback(
     (nextView: ChatView) => {
-      setView((prev) => {
-        const prevId = prev.mode === "single" ? prev.threadId : prev.pairId;
-        const nextId = nextView.mode === "single" ? nextView.threadId : nextView.pairId;
-        if (prevId !== nextId) {
-          useArtifactStore.getState().clearArtifacts();
-        }
-        return nextView;
-      });
+      setView(nextView);
     },
     [],
   );
@@ -749,55 +730,22 @@ export function ChatPage(): ReactElement {
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcut: Cmd/Ctrl+K for command palette
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
-      const target = e.target as HTMLElement;
-      const isInput =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable;
-
       if (mod && e.key === "k") {
         e.preventDefault();
         setCommandPaletteOpen((o) => !o);
-        return;
-      }
-      if (mod && e.shiftKey && e.key === "N") {
-        e.preventDefault();
-        handleNewThread();
-        return;
-      }
-      if (mod && e.shiftKey && e.key === "C") {
-        e.preventDefault();
-        if (canCompare) handleNewCompare();
-        return;
-      }
-      if (mod && e.shiftKey && e.key === "S") {
-        e.preventDefault();
-        setSettingsOpen((o) => !o);
-        return;
-      }
-      if (e.key === "Escape") {
-        setCommandPaletteOpen(false);
-        setShortcutHelpOpen(false);
-        return;
-      }
-      if (e.key === "?" && !isInput) {
-        e.preventDefault();
-        setShortcutHelpOpen((o) => !o);
-        return;
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [canCompare, handleNewThread, handleNewCompare]);
+  }, []);
 
   return (
     <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
-      <KeyboardShortcutHelp open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
       <PromptLibrarySheet
         open={promptLibraryOpen}
         onOpenChange={setPromptLibraryOpen}
@@ -815,19 +763,16 @@ export function ChatPage(): ReactElement {
               <CommandItem onSelect={() => { handleNewThread(); setCommandPaletteOpen(false); }}>
                 <PencilIcon className="mr-2 size-4" />
                 New Chat
-                <CommandShortcut>Shift+N</CommandShortcut>
               </CommandItem>
               {canCompare && (
                 <CommandItem onSelect={() => { handleNewCompare(); setCommandPaletteOpen(false); }}>
                   <ColumnsIcon className="mr-2 size-4" />
                   Compare Mode
-                  <CommandShortcut>Shift+C</CommandShortcut>
                 </CommandItem>
               )}
               <CommandItem onSelect={() => { setSettingsOpen(true); setCommandPaletteOpen(false); }}>
                 <SettingsIcon className="mr-2 size-4" />
                 Settings
-                <CommandShortcut>Shift+S</CommandShortcut>
               </CommandItem>
             </CommandGroup>
             <CommandGroup heading="Actions">
@@ -835,20 +780,9 @@ export function ChatPage(): ReactElement {
                 <BookOpenIcon className="mr-2 size-4" />
                 Prompt Library
               </CommandItem>
-              <CommandItem onSelect={() => { const s = useArtifactStore.getState(); s.setPanelOpen(!s.panelOpen); setCommandPaletteOpen(false); }}>
-                <PanelRightIcon className="mr-2 size-4" />
-                Toggle Artifacts Panel
-              </CommandItem>
               <CommandItem onSelect={() => { handleEject(); setCommandPaletteOpen(false); }}>
                 <BrainIcon className="mr-2 size-4" />
                 Eject Model
-              </CommandItem>
-            </CommandGroup>
-            <CommandGroup heading="Help">
-              <CommandItem onSelect={() => { setShortcutHelpOpen(true); setCommandPaletteOpen(false); }}>
-                <KeyboardIcon className="mr-2 size-4" />
-                Keyboard Shortcuts
-                <CommandShortcut>?</CommandShortcut>
               </CommandItem>
             </CommandGroup>
           </CommandList>
@@ -943,22 +877,15 @@ export function ChatPage(): ReactElement {
             </button>
           </div>
 
-          <div className="flex min-h-0 flex-1">
-            <div className="min-h-0 min-w-0 flex-1">
-              {view.mode === "single" ? (
-                <SingleContent
-                  key={view.threadId ?? view.newThreadNonce ?? "new"}
-                  threadId={view.threadId}
-                  newThreadNonce={view.newThreadNonce}
-                />
-              ) : (
-                <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
-              )}
-            </div>
-            {artifactPanelOpen && (
-              <div className="hidden w-[24rem] shrink-0 md:block">
-                <ArtifactPanel />
-              </div>
+          <div className="min-h-0 flex-1">
+            {view.mode === "single" ? (
+              <SingleContent
+                key={view.threadId ?? view.newThreadNonce ?? "new"}
+                threadId={view.threadId}
+                newThreadNonce={view.newThreadNonce}
+              />
+            ) : (
+              <CompareContent key={view.pairId} pairId={view.pairId} models={models} loraModels={loraModels} />
             )}
           </div>
         </div>

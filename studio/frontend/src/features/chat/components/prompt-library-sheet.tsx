@@ -81,15 +81,7 @@ export const PromptLibrarySheet: FC<{
 
   const handleInsert = useCallback(
     (p: PromptRecord) => {
-      let result = p.content;
-      if (p.variables.length > 0) {
-        for (const v of p.variables) {
-          const value = window.prompt(`Value for {{${v}}}:`);
-          if (value === null) return; // user cancelled
-          result = result.split(`{{${v}}}`).join(value);
-        }
-      }
-      onInsertPrompt?.(result);
+      onInsertPrompt?.(p.content);
       onOpenChange(false);
     },
     [onInsertPrompt, onOpenChange],

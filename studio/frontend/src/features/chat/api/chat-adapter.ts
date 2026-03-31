@@ -546,16 +546,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         return;
       }
 
-      // Screen wake lock: keep screen on during long generations
-      let wakeLock: WakeLockSentinel | null = null;
-      try {
-        if ("wakeLock" in navigator) {
-          wakeLock = await navigator.wakeLock.request("screen");
-        }
-      } catch {
-        // Wake lock not available or denied -- continue without it
-      }
-
       const threadKey = unstable_threadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
@@ -809,11 +799,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
         }
         runtime.setThreadRunning(threadKey, false);
-        // Release screen wake lock
-        if (wakeLock) {
-          void wakeLock.release().catch(() => {});
-          wakeLock = null;
-        }
       }
     },
   };

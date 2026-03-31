@@ -16,7 +16,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
-import { useArtifactStore } from "@/features/chat/stores/artifact-store";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 const { withSmoothContextProvider } = INTERNAL;
@@ -337,23 +336,6 @@ function CodeBlockActions({
   );
 }
 
-/** Emits an artifact to the store via useEffect (avoids side-effects in render). */
-function ArtifactEmitter({ language, source }: { language: string | null; source: string }) {
-  useEffect(() => {
-    const artifactId = `artifact-${hashCode(source)}`;
-    const store = useArtifactStore.getState();
-    if (store.artifacts.some((a) => a.id === artifactId)) return;
-    store.addArtifact({
-      id: artifactId,
-      title: language ? `${language} snippet` : "Code snippet",
-      language,
-      content: source,
-      createdAt: Date.now(),
-    });
-  }, [language, source]);
-  return null;
-}
-
 function StreamdownBlock(props: BlockProps) {
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
@@ -401,18 +383,8 @@ function StreamdownBlock(props: BlockProps) {
     const svgSource = !props.isIncomplete && isSvgFence(codeFence) ? sanitizeSvg(codeFence.source) : null;
     const htmlSource = !props.isIncomplete && isHtmlFence(codeFence) ? codeFence.source : null;
 
-    // Emit artifact for large code blocks or HTML/SVG/Mermaid
-    const lineCount = codeFence.source.split("\n").length;
-    const isArtifactWorthy =
-      !props.isIncomplete &&
-      (lineCount >= 20 || svgSource !== null || htmlSource !== null);
-
     return (
       <>
-      {isArtifactWorthy && (
-        <ArtifactEmitter language={codeFence.language} source={codeFence.source} />
-      )}
-
       <div className="relative isolate">
         <Block {...props} />
         <CodeBlockActions
