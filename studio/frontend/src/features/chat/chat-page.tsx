@@ -832,6 +832,21 @@ export function ChatPage(): ReactElement {
               });
             }
           }}
+          onFoldersChange={() => {
+            void listLocalModels().then((res) => {
+              setLocalModels(
+                res.models
+                  .filter((m) => m.source === "lmstudio" || m.source === "models_dir" || m.source === "custom")
+                  .map((m) => ({
+                    id: m.id,
+                    name: m.source === "lmstudio" && m.model_id ? m.model_id : m.display_name,
+                    baseModel: m.source === "lmstudio" ? "LM Studio" : m.source === "custom" ? "Custom Folders" : "Local models",
+                    updatedAt: m.updated_at ?? undefined,
+                    source: "local" as const,
+                  })),
+              );
+            }).catch(() => {});
+          }}
         />
       </SidebarProvider>
     </div>
