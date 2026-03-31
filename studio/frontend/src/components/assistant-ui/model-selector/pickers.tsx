@@ -123,7 +123,6 @@ function ModelRow({
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
         selected && "bg-accent/60",
-        exceeds && "opacity-50",
       )}
     >
       <span

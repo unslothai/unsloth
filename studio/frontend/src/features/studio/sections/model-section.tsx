@@ -489,7 +489,7 @@ export function ModelSection() {
                           <ComboboxItem
                             key={id}
                             value={id}
-                            className={`gap-2 ${exceeds ? "opacity-50" : ""}`}
+                            className="gap-2"
                           >
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
