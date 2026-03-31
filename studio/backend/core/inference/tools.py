@@ -158,9 +158,7 @@ _MAX_PAGE_CHARS = 16000  # limit fetched page text
 _MAX_FETCH_BYTES = _MAX_PAGE_CHARS * 4 + 1  # cap raw download size
 
 
-def _validate_and_resolve_host(
-    hostname: str, port: int
-) -> tuple[bool, str, str]:
+def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
 
     Returns ``(ok, reason_or_empty, resolved_ip)``.  The caller should
@@ -171,7 +169,7 @@ def _validate_and_resolve_host(
     import socket
 
     try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except OSError as e:
         return False, f"Failed to resolve host: {e}", ""
 
@@ -239,20 +237,22 @@ def _fetch_page_text(
             # Rewrite the URL to use the IP and set the Host header.
             cp = urlparse(current_url)
             ip_netloc = f"{pinned_ip}:{cp.port}" if cp.port else pinned_ip
-            pinned_url = urlunparse(cp._replace(netloc=ip_netloc))
+            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             req = urllib.request.Request(
                 pinned_url,
-                headers={
+                headers = {
                     "User-Agent": "UnslothStudio/1.0",
                     "Host": current_host,
                 },
             )
             try:
-                resp = opener.open(req, timeout=timeout)
+                resp = opener.open(req, timeout = timeout)
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    return (
+                        f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    )
                 location = e.headers.get("Location")
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header."
@@ -262,7 +262,8 @@ def _fetch_page_text(
                     return "Blocked: redirect target is not a valid http/https URL."
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
                 ok2, reason2, pinned_ip = _validate_and_resolve_host(
-                    rp.hostname, rp_port,
+                    rp.hostname,
+                    rp_port,
                 )
                 if not ok2:
                     return reason2
@@ -275,7 +276,7 @@ def _fetch_page_text(
             return "Failed to fetch URL: too many redirects."
 
         charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors="replace")
+        raw_html = raw_bytes.decode(charset, errors = "replace")
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:
