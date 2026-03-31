@@ -982,7 +982,44 @@ get_torch_index_url() {
     elif [ -x "/usr/bin/nvidia-smi" ]; then
         _smi="/usr/bin/nvidia-smi"
     fi
-    if [ -z "$_smi" ]; then echo "$_base/cpu"; return; fi
+    if [ -z "$_smi" ]; then
+        # No NVIDIA GPU -- check for AMD ROCm
+        _rocm_tag=""
+        _rocm_tag=$({ command -v amd-smi >/dev/null 2>&1 && \
+            amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+                'NF>1{gsub(/[^0-9.]/, "", $2); split($2,a,"."); print "rocm"a[1]"."a[2]; ok=1; exit} END{exit !ok}'; } || \
+            { [ -r /opt/rocm/.info/version ] && \
+                awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version; } || \
+            { command -v hipconfig >/dev/null 2>&1 && \
+                hipconfig --version 2>/dev/null | awk 'NR==1{split($1,a,"."); if(a[1]+0>0) print "rocm"a[1]"."a[2]}'; } || \
+            { command -v dpkg-query >/dev/null 2>&1 && \
+                ver="$(dpkg-query -W -f='${Version}\n' rocm-core 2>/dev/null)" && \
+                [ -n "$ver" ] && \
+                printf '%s\n' "$ver" | sed 's/^[0-9]*://' | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; } || \
+            { command -v rpm >/dev/null 2>&1 && \
+                ver="$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null)" && \
+                [ -n "$ver" ] && \
+                printf '%s\n' "$ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; }) 2>/dev/null
+        # Validate _rocm_tag: must match "rocmX.Y" with leading digits
+        case "$_rocm_tag" in
+            rocm[0-9]*.[0-9]*) : ;;  # valid
+            *) _rocm_tag="" ;;        # reject malformed (empty version, garbled output)
+        esac
+        if [ -n "$_rocm_tag" ]; then
+            # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds (<2.11.0).
+            # Fall back to rocm7.1 index which has torch 2.10.0.
+            # TODO: uncomment the next line when torch upper bound is bumped to >=2.11.0
+            # echo "$_base/$_rocm_tag"; return
+            case "$_rocm_tag" in
+                rocm7.2*|rocm7.3*|rocm7.4*|rocm7.5*|rocm8*|rocm9*)
+                    echo "$_base/rocm7.1" ;;
+                *)
+                    echo "$_base/$_rocm_tag" ;;
+            esac
+            return
+        fi
+        echo "$_base/cpu"; return
+    fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
     _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
         | sed -n 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
@@ -1007,12 +1044,18 @@ case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
             echo ""
-            echo "  NOTE: No NVIDIA GPU detected (nvidia-smi not found)."
+            echo "  NOTE: No GPU detected (nvidia-smi and ROCm not found)."
             echo "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
             echo "  re-run with --no-torch for a faster, lighter install:"
             echo "    curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
+            echo "  AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
             echo ""
         fi
+        ;;
+    */rocm*)
+        echo ""
+        echo "  AMD ROCm detected -- installing ROCm-enabled PyTorch ($TORCH_INDEX_URL)"
+        echo ""
         ;;
 esac
 
@@ -1051,6 +1094,13 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
         run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
+        # AMD ROCm: install bitsandbytes with AMD support
+        case "$TORCH_INDEX_URL" in
+            */rocm*)
+                substep "installing bitsandbytes for AMD ROCm..."
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
+                ;;
+        esac
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     substep "installing unsloth (this may take a few minutes)..."

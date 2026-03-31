@@ -1103,7 +1103,7 @@ def patch_sft_trainer_tokenizer():
             "    a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"
             "except:\n"
             "    if not torch.cuda.is_available():\n"
-            "        raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"
+            "        raise RuntimeError('Unsloth: No GPU detected. AMD ROCm users: install ROCm-enabled PyTorch -- see https://docs.unsloth.ai/get-started/install-and-update/amd')\n"
             "if ((a - PRE_CHECK) >= 1).sum() > 1:\n"
             "    raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')\n"
             "for _ in range(3):\n"

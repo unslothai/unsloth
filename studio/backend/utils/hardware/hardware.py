@@ -43,6 +43,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
+IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- display/logging only
 
 
 # ========== Detection ==========
@@ -85,10 +86,11 @@ def detect_hardware() -> DeviceType:
       2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
-    global DEVICE, CHAT_ONLY
-    CHAT_ONLY = True  # reset -- only CUDA sets it to False
+    global DEVICE, CHAT_ONLY, IS_ROCM
+    CHAT_ONLY = True  # reset -- only CUDA/ROCm sets it to False
+    IS_ROCM = False
 
-    # --- CUDA: try PyTorch ---
+    # --- CUDA / ROCm: try PyTorch ---
     if _has_torch():
         import torch
 
@@ -96,7 +98,14 @@ def detect_hardware() -> DeviceType:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
             device_name = torch.cuda.get_device_properties(0).name
-            print(f"Hardware detected: CUDA — {device_name}")
+
+            # Distinguish AMD ROCm (HIP) from NVIDIA CUDA for display purposes.
+            # DeviceType stays CUDA since torch.cuda.* works on ROCm via HIP.
+            if getattr(torch.version, "hip", None) is not None:
+                IS_ROCM = True
+                print(f"Hardware detected: ROCm (HIP {torch.version.hip}) -- {device_name}")
+            else:
+                print(f"Hardware detected: CUDA -- {device_name}")
             return DEVICE
 
     # --- XPU: Intel GPU ---
@@ -315,13 +324,15 @@ def get_package_versions() -> Dict[str, Optional[str]]:
         except PackageNotFoundError:
             versions[name] = None
 
-    # CUDA toolkit version bundled with torch
+    # GPU runtime version bundled with torch
     try:
         import torch
 
         versions["cuda"] = getattr(torch.version, "cuda", None)
+        versions["rocm"] = getattr(torch.version, "hip", None)
     except Exception:
         versions["cuda"] = None
+        versions["rocm"] = None
 
     return versions
 
