@@ -119,6 +119,7 @@ def _get_hf_cache_size() -> int:
     """Return total bytes of blobs in the HF Hub cache directory."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
+
         cache = Path(HF_HUB_CACHE)
         if not cache.exists():
             return 0
