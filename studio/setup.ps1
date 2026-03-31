@@ -1112,9 +1112,11 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
         $bunExit = Invoke-SetupCommand { bun install }
-        # On Windows, .bin/ entries can be tsc, tsc.cmd, or tsc.ps1
-        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
-        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
+        # On Windows, .bin/ entries vary by package manager:
+        #   npm  → tsc, tsc.cmd, tsc.ps1
+        #   bun  → tsc.exe, tsc.bunx
+        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
         if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
             # bun install succeeded and critical binaries are present
         } elseif ($bunExit -eq 0) {
@@ -1124,8 +1126,8 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
             $bunExit = Invoke-SetupCommand { bun install }
-            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd")
-            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd")
+            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
                 Write-Host "   bun retry failed, falling back to npm" -ForegroundColor Yellow
                 if (Test-Path "node_modules") {
@@ -1522,8 +1524,14 @@ if ($CuTag -eq "cpu") {
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
+$stackExit = $LASTEXITCODE
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
+if ($stackExit -ne 0) {
+    Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
+    Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
+    exit 1
+}
 
 # ── Pre-install transformers 5.x into .venv_t5/ ──
 # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing

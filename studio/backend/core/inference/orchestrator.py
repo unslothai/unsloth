@@ -27,6 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
+from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
 
@@ -262,12 +263,17 @@ class InferenceOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 120.0) -> dict:
+    def _wait_response(self, expected_type: str, timeout: float = 300.0) -> dict:
         """Block until a response of the expected type arrives.
 
         Also handles 'status' and 'error' events during the wait.
         Returns the matching response dict.
         Raises RuntimeError on timeout or subprocess crash.
+
+        The *timeout* is an **inactivity** timeout: it resets whenever the
+        subprocess sends a status message, so long-running operations (large
+        downloads, slow model loads) won't be killed as long as the subprocess
+        keeps reporting progress.
         """
         deadline = time.monotonic() + timeout
 
@@ -292,6 +298,8 @@ class InferenceOrchestrator:
 
             if rtype == "status":
                 logger.info("Subprocess status: %s", resp.get("message", ""))
+                # Reset deadline — subprocess is still alive and working
+                deadline = time.monotonic() + timeout
                 continue
 
             # Other response types during wait — skip
@@ -302,7 +310,8 @@ class InferenceOrchestrator:
             )
 
         raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
+            f"Timeout waiting for '{expected_type}' response "
+            f"(no activity for {timeout}s)"
         )
 
     def _drain_queue(self) -> list:
@@ -571,6 +580,7 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -594,7 +604,16 @@ class InferenceOrchestrator:
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
+                "gpu_ids": gpu_ids,
             }
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                gpu_ids,
+                model_name = model_name,
+                hf_token = hf_token,
+                load_in_4bit = load_in_4bit,
+            )
+            sub_config["resolved_gpu_ids"] = resolved_gpu_ids
+            sub_config["gpu_selection"] = gpu_selection
 
             # Always kill existing subprocess and spawn fresh.
             # Reusing a subprocess after unsloth patches torch internals
@@ -614,7 +633,7 @@ class InferenceOrchestrator:
                 needed_major,
             )
             self._spawn_subprocess(sub_config)
-            resp = self._wait_response("loaded", timeout = 180)
+            resp = self._wait_response("loaded")
 
             # Update local state from response
             if resp.get("success"):
@@ -661,7 +680,7 @@ class InferenceOrchestrator:
                     "model_name": model_name,
                 }
             )
-            resp = self._wait_response("unloaded", timeout = 30)
+            resp = self._wait_response("unloaded")
 
             # Update local state
             self.models.pop(model_name, None)

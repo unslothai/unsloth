@@ -44,6 +44,10 @@ class LoadRequest(BaseModel):
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+    )
 
 
 class UnloadRequest(BaseModel):
