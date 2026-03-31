@@ -347,7 +347,9 @@ export function ModelSection() {
                         ? "HF cache"
                         : model?.source === "lmstudio"
                           ? "LM Studio"
-                          : "Local dir";
+                          : model?.source === "custom"
+                            ? "Custom folder"
+                            : "Local dir";
                     return (
                       <ComboboxItem key={id} value={id} className="gap-2">
                         <Tooltip>

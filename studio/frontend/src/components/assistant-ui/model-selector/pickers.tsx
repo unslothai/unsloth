@@ -430,23 +430,26 @@ export function HubModelPicker({
   // LM Studio local models -- module-level cache so re-mounting the
   // popover does not flash an empty section (same pattern as GGUF/models).
   const [lmStudioModels, setLmStudioModels] = useState<LocalModelInfo[]>(_lmStudioCache);
+  const [customFolderModels, setCustomFolderModels] = useState<LocalModelInfo[]>([]);
 
   const refreshCachedLists = useCallback(() => {
     listCachedGguf().then((v) => { _cachedGgufCache = v; setCachedGguf(v); }).catch(() => {});
     listCachedModels().then((v) => { _cachedModelsCache = v; setCachedModels(v); }).catch(() => {});
     listLocalModels().then((res) => {
-      const next = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
-      _lmStudioCache = next;
-      setLmStudioModels(next);
+      const lm = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
+      _lmStudioCache = lm;
+      setLmStudioModels(lm);
+      setCustomFolderModels(res.models.filter((m) => m.source === "custom"));
     }).catch(() => {});
   }, []);
 
   useEffect(() => {
     // Always refresh LM Studio models (not gated by alreadyCached)
     listLocalModels().then((res) => {
-      const next = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
-      _lmStudioCache = next;
-      setLmStudioModels(next);
+      const lm = sortLmStudio(res.models.filter((m) => m.source === "lmstudio"));
+      _lmStudioCache = lm;
+      setLmStudioModels(lm);
+      setCustomFolderModels(res.models.filter((m) => m.source === "custom"));
     }).catch(() => {});
 
     if (alreadyCached) return;
@@ -734,6 +737,40 @@ export function HubModelPicker({
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"}
+                      selected={value === m.id}
+                      onClick={() => {
+                        if (isGguf) {
+                          setExpandedGguf((prev) => (prev === m.id ? null : m.id));
+                        } else {
+                          onSelect(m.id, { source: "local", isLora: false, isDownloaded: true });
+                        }
+                      }}
+                      vramStatus={null}
+                    />
+                    {expandedGguf === m.id && (
+                      <GgufVariantExpander
+                        repoId={m.id}
+                        onSelect={onSelect}
+                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+
+          {!showHfSection && chatOnly && customFolderModels.length > 0 ? (
+            <>
+              <ListLabel>Custom Folders</ListLabel>
+              {customFolderModels.map((m) => {
+                const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name) || m.path.endsWith(".gguf");
+                return (
+                  <div key={m.id}>
+                    <ModelRow
+                      label={m.model_id ?? m.display_name}
+                      meta={isGguf ? "GGUF" : "Local"}
                       selected={value === m.id}
                       onClick={() => {
                         if (isGguf) {
