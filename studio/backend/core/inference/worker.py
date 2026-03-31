@@ -116,19 +116,19 @@ def _build_model_config(config: dict):
 
 
 def _get_hf_download_state(
-    model_name: str | None = None,
+    model_names: list[str] | None = None,
 ) -> tuple[int, bool] | None:
     """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
 
-    When *model_name* is provided (e.g. ``"unsloth/Qwen2.5-7B"``), only
-    the specific model's ``blobs/`` directory is checked instead of
-    scanning every cached model -- much faster on systems with many models.
+    When *model_names* is provided, only those models' ``blobs/``
+    directories are checked instead of scanning every cached model --
+    much faster on systems with many models. Accepts multiple names so
+    that LoRA loads can watch both the adapter repo and the base model
+    repo simultaneously.
 
     *has_incomplete* is True when any ``*.incomplete`` files exist in the
-    blobs directory, indicating that ``huggingface_hub`` is actively
-    downloading. This is a more reliable indicator than cache size alone
-    because it distinguishes "download in progress" from "download
-    finished but model init still running".
+    watched blobs directories, indicating that ``huggingface_hub`` is
+    actively downloading.
 
     Returns None if the state cannot be determined (import error,
     permission error, etc.) so callers can skip stall logic.
@@ -142,13 +142,17 @@ def _get_hf_download_state(
 
         total = 0
         has_incomplete = False
+        blobs_dirs: list[Path] = []
 
-        # Scope to specific model if possible
-        if model_name:
-            # HF cache dir format: models--org--name (slashes -> --)
-            cache_dir_name = "models--" + model_name.replace("/", "--")
-            blobs_dir = cache / cache_dir_name / "blobs"
-            blobs_dirs = [blobs_dir] if blobs_dir.exists() else []
+        if model_names:
+            for name in model_names:
+                if not name or "/" not in name:
+                    continue
+                # HF cache dir format: models--org--name (slashes -> --)
+                cache_dir_name = "models--" + name.replace("/", "--")
+                blobs_dir = cache / cache_dir_name / "blobs"
+                if blobs_dir.exists():
+                    blobs_dirs.append(blobs_dir)
         else:
             blobs_dirs = list(cache.glob("models--*/blobs"))
 
@@ -173,7 +177,7 @@ def _start_heartbeat(
     interval: float = 30.0,
     stall_timeout: float = 180.0,
     xet_disabled: bool = False,
-    model_name: str | None = None,
+    model_names: list[str] | None = None,
 ) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
 
@@ -192,12 +196,12 @@ def _start_heartbeat(
     transport = "https" if xet_disabled else "xet"
 
     def _beat():
-        state = _get_hf_download_state(model_name)
+        state = _get_hf_download_state(model_names)
         last_size = state[0] if state is not None else 0
         last_change = time.monotonic()
 
         while not stop.wait(interval):
-            state = _get_hf_download_state(model_name)
+            state = _get_hf_download_state(model_names)
             now = time.monotonic()
 
             # Skip stall logic if we cannot measure the cache
@@ -315,11 +319,19 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # Send heartbeats every 30s so the orchestrator knows we're still alive
         # (download / weight loading can take a long time on slow connections)
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
+
+        # Watch both the model repo and base model repo (for LoRA loads
+        # where the base model download is the actual bottleneck)
+        watch_repos = [mc.identifier]
+        base = getattr(mc, "base_model", None)
+        if base and "/" in str(base) and str(base) != mc.identifier:
+            watch_repos.append(str(base))
+
         heartbeat_stop = _start_heartbeat(
             resp_queue,
             interval = 30.0,
             xet_disabled = xet_disabled,
-            model_name = mc.identifier,
+            model_names = watch_repos,
         )
         try:
             success = backend.load_model(
