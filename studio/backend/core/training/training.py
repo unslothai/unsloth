@@ -26,7 +26,6 @@ from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, Any
-from core.training.constants import DEFAULT_WEIGHT_DECAY, DEFAULT_LEARNING_RATE_STR
 
 import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
@@ -154,14 +153,14 @@ class TrainingBackend:
             "is_dataset_audio": kwargs.get("is_dataset_audio", False),
             "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
-            "learning_rate": kwargs.get("learning_rate", DEFAULT_LEARNING_RATE_STR),
+            "learning_rate": kwargs.get("learning_rate", "2e-4"),
             "batch_size": kwargs.get("batch_size", 2),
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
             "warmup_ratio": kwargs.get("warmup_ratio"),
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", DEFAULT_WEIGHT_DECAY),
+            "weight_decay": kwargs.get("weight_decay", 0.001),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),

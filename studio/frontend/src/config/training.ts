@@ -92,7 +92,7 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string 
 
 /**
  * Method-aware learning rate defaults.
- * Backend mirrors these in studio/backend/core/training/constants.py.
+ * Backend mirrors these in the YAML configs under studio/backend/assets/configs/.
  */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
