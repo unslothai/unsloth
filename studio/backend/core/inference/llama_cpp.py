@@ -10,7 +10,9 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
+import hashlib
 import json
+import re
 import struct
 import structlog
 from loggers import get_logger
@@ -2120,7 +2122,7 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-        max_tool_iterations: int = 10,
+        max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
@@ -2171,6 +2173,29 @@ class LlamaCppBackend:
             ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
         )
         _MAX_BUFFER_CHARS = 32
+
+        # ── Duplicate tool-call detection ────────────────────────
+        # Track recent (tool_name, arguments) hashes to detect loops
+        # where the model repeats the exact same call.  Retries after
+        # a transient failure are allowed (only block when the previous
+        # identical call succeeded).
+        _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
+
+        def _tool_call_key(name: str, args: dict) -> str:
+            raw = json.dumps({"t": name, "a": args}, sort_keys = True)
+            return hashlib.md5(raw.encode()).hexdigest()
+
+        def _is_duplicate_call(name: str, args: dict) -> bool:
+            """Block if the immediately previous call was identical and succeeded."""
+            if not _tool_call_history:
+                return False
+            key = _tool_call_key(name, args)
+            last_key, last_failed = _tool_call_history[-1]
+            return last_key == key and not last_failed
+
+        def _record_tool_call(name: str, args: dict, failed: bool) -> None:
+            key = _tool_call_key(name, args)
+            _tool_call_history.append((key, failed))
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -2569,6 +2594,11 @@ class LlamaCppBackend:
                         # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
+                            # Strip leaked tool-call XML before yielding
+                            content_accum = _strip_tool_markup(
+                                content_accum, final = True
+                            )
+                        if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _fu = _iter_usage or {}
                         _fc = _fu.get("completion_tokens", 0)
@@ -2661,16 +2691,27 @@ class LlamaCppBackend:
                         "arguments": arguments,
                     }
 
-                    _effective_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
-                    result = execute_tool(
-                        tool_name,
-                        arguments,
-                        cancel_event = cancel_event,
-                        timeout = _effective_timeout,
-                        session_id = session_id,
-                    )
+                    # ── Duplicate call detection ──────────────
+                    if _is_duplicate_call(tool_name, arguments):
+                        result = (
+                            "You already made this exact call. "
+                            "Do not repeat the same tool call. "
+                            "Try a different approach: fetch a URL "
+                            "from previous results, use Python to "
+                            "process data you already have, or "
+                            "provide your final answer now."
+                        )
+                    else:
+                        _effective_timeout = (
+                            None if tool_call_timeout >= 9999 else tool_call_timeout
+                        )
+                        result = execute_tool(
+                            tool_name,
+                            arguments,
+                            cancel_event = cancel_event,
+                            timeout = _effective_timeout,
+                            session_id = session_id,
+                        )
 
                     yield {
                         "type": "tool_end",
@@ -2679,10 +2720,32 @@ class LlamaCppBackend:
                         "result": result,
                     }
 
+                    # Nudge model to try a different approach on errors
+                    _error_prefixes = (
+                        "Error",
+                        "Search failed",
+                        "Execution error",
+                        "Blocked:",
+                        "Exit code",
+                        "Failed to fetch",
+                        "Failed to resolve",
+                        "No query provided",
+                    )
+                    _is_error = isinstance(result, str) and result.lstrip().startswith(
+                        _error_prefixes
+                    )
+                    _record_tool_call(tool_name, arguments, failed = _is_error)
+                    _result_content = result
+                    if _is_error:
+                        _result_content = (
+                            result + "\n\nThe tool call encountered an issue. "
+                            "Please try a different approach or rephrase your request."
+                        )
+
                     tool_msg = {
                         "role": "tool",
                         "name": tool_name,
-                        "content": result,
+                        "content": _result_content,
                     }
                     tool_call_id = tc.get("id")
                     if tool_call_id:
@@ -2698,6 +2761,22 @@ class LlamaCppBackend:
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 raise
+
+        # ── Tool iteration cap reached -- synthesize final answer ──
+        # The model used all iterations without producing a final text
+        # response. Inject a nudge so the final streaming pass produces
+        # a useful answer instead of continuing to request tools.
+        if max_tool_iterations > 0:
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You have used all available tool calls. Based on "
+                        "everything you have found so far, provide your final "
+                        "answer now. Do not call any more tools."
+                    ),
+                }
+            )
 
         # Clear status
         yield {"type": "status", "text": ""}

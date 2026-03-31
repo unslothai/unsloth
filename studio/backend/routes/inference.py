@@ -86,8 +86,15 @@ import io
 import wave
 import base64
 import numpy as np
+from datetime import date as _date
 
 router = APIRouter()
+
+# Regex for stripping leaked tool-call XML from assistant messages/stream
+_TOOL_XML_RE = _re.compile(
+    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    _re.DOTALL,
+)
 logger = get_logger(__name__)
 
 
@@ -1078,6 +1085,68 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            # ── Tool-use system prompt nudge ──────────────────────
+            _tool_names = {t["function"]["name"] for t in tools_to_use}
+            _has_web = "web_search" in _tool_names
+            _has_code = "python" in _tool_names or "terminal" in _tool_names
+
+            _date_line = f"The current date is {_date.today().isoformat()}."
+
+            _web_tips = (
+                "When you search and find a relevant URL in the results, "
+                "fetch its full content by calling web_search with the url parameter. "
+                "Do not repeat the same search query. If a search returns "
+                "no useful results, try rephrasing or fetching a result URL directly."
+            )
+            _code_tips = (
+                "Use code execution for math, calculations, data processing, "
+                "or to parse and analyze information from tool results."
+            )
+
+            if _has_web and _has_code:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "tools rather than answering from memory. "
+                    + _web_tips
+                    + " "
+                    + _code_tips
+                )
+            elif _has_code:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "code execution rather than answering from memory. " + _code_tips
+                )
+            elif _has_web:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "web search for up-to-date or uncertain factual "
+                    "information rather than answering from memory. " + _web_tips
+                )
+            else:
+                _nudge = ""
+
+            if _nudge:
+                # Append nudge to system prompt (preserve user's prompt)
+                if system_prompt:
+                    system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
+                else:
+                    system_prompt = _nudge
+                # Rebuild gguf_messages with updated system prompt
+                gguf_messages = []
+                if system_prompt:
+                    gguf_messages.append({"role": "system", "content": system_prompt})
+                gguf_messages.extend(chat_messages)
+
+            # ── Strip stale tool-call XML from conversation history ─
+            for _msg in gguf_messages:
+                if _msg.get("role") == "assistant" and isinstance(
+                    _msg.get("content"), str
+                ):
+                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
@@ -1096,7 +1165,7 @@ async def openai_chat_completions(
                     else True,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
-                    else 10,
+                    else 25,
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
@@ -1158,9 +1227,13 @@ async def openai_chat_completions(
                             continue
 
                         # "content" type -- cumulative text
-                        cumulative = event.get("text", "")
-                        new_text = cumulative[len(prev_text) :]
-                        prev_text = cumulative
+                        # Sanitize the full cumulative then diff against
+                        # the last sanitized snapshot so cross-chunk XML
+                        # tags are handled correctly.
+                        raw_cumulative = event.get("text", "")
+                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        new_text = clean_cumulative[len(prev_text) :]
+                        prev_text = clean_cumulative
                         if not new_text:
                             continue
                         chunk = ChatCompletionChunk(
