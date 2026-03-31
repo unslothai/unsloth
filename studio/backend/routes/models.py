@@ -375,7 +375,8 @@ async def list_local_models(
             folder_path = Path(folder["path"])
             try:
                 custom_models = _scan_models_dir(
-                    folder_path, limit = _MAX_MODELS_PER_FOLDER,
+                    folder_path,
+                    limit = _MAX_MODELS_PER_FOLDER,
                 )
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)

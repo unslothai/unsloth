@@ -34,10 +34,15 @@ def _denied_path_prefixes() -> list[str]:
         # realpath() resolves /etc -> /private/etc, /tmp -> /private/tmp on macOS,
         # so include the /private variants to avoid bypasses.
         return [
-            "/System", "/Library", "/dev",
-            "/etc", "/private/etc",
-            "/tmp", "/private/tmp",
-            "/var", "/private/var",
+            "/System",
+            "/Library",
+            "/dev",
+            "/etc",
+            "/private/etc",
+            "/tmp",
+            "/private/tmp",
+            "/var",
+            "/private/var",
         ]
     if system == "Windows":
         win = os.environ.get("SystemRoot", r"C:\Windows")
