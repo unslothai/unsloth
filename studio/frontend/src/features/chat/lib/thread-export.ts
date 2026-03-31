@@ -76,7 +76,7 @@ export async function exportAsJSONL(threadId: string): Promise<void> {
 
   // OpenAI chat format -- standard SFT structure, skip empty turns
   const chatMessages = messages.flatMap((m) => {
-    const content = extractText(m.content);
+    const content = extractText(m.content).trim();
     if (!content) return [];
     return [{ role: m.role === "user" ? "user" : "assistant", content }];
   });
