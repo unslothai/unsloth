@@ -88,6 +88,7 @@ class HostInfo:
     visible_cuda_devices: str | None
     has_physical_nvidia: bool
     has_usable_nvidia: bool
+    has_rocm: bool = False
 
 
 @dataclass
@@ -1430,6 +1431,18 @@ def detect_host() -> HostInfo:
         except Exception:
             pass
 
+    # Detect AMD ROCm (HIP)
+    has_rocm = False
+    if not is_macos:
+        rocm_hints = [
+            shutil.which("hipcc"),
+            shutil.which("amd-smi"),
+            shutil.which("rocm-smi"),
+        ]
+        rocm_paths = ["/opt/rocm", os.environ.get("ROCM_PATH", "")]
+        if any(rocm_hints) or any(os.path.isdir(p) for p in rocm_paths if p):
+            has_rocm = True
+
     return HostInfo(
         system = system,
         machine = machine,
@@ -1444,6 +1457,7 @@ def detect_host() -> HostInfo:
         visible_cuda_devices = visible_cuda_devices,
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
+        has_rocm = has_rocm,
     )
 
 
@@ -1724,6 +1738,30 @@ def resolve_linux_cuda_choice(
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
+        # AMD ROCm: try upstream ROCm prebuilt first, then fall back to source build.
+        # Source build (via setup.sh) compiles with -DGGML_HIP=ON and auto-detects
+        # the exact GPU target via rocminfo, which is more reliable for consumer
+        # GPUs (e.g. gfx1151) that may not be in the prebuilt.
+        if host.has_rocm and not host.has_usable_nvidia:
+            rocm_name = f"llama-{llama_tag}-bin-ubuntu-rocm-7.2-x64.tar.gz"
+            if rocm_name in upstream_assets:
+                log(f"AMD ROCm detected -- trying upstream prebuilt {rocm_name}")
+                log("Note: prebuilt is compiled for ROCm 7.2; if your ROCm version differs, "
+                    "this may fail preflight and fall back to a source build (safe)")
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = rocm_name,
+                    url = upstream_assets[rocm_name],
+                    source_label = "upstream",
+                    install_kind = "linux-rocm",
+                )
+            # No ROCm prebuilt available -- fall back to source build
+            raise PrebuiltFallback(
+                "AMD ROCm detected but no upstream ROCm prebuilt found; "
+                "falling back to source build with HIP support"
+            )
+
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
@@ -1742,6 +1780,21 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if attempts:
                 return attempts[0]
             raise PrebuiltFallback("no compatible Windows CUDA asset was found")
+
+        # AMD ROCm on Windows: try HIP prebuilt
+        if host.has_rocm:
+            hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
+            if hip_name in upstream_assets:
+                log(f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}")
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = hip_name,
+                    url = upstream_assets[hip_name],
+                    source_label = "upstream",
+                    install_kind = "windows-hip",
+                )
+            log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -2121,7 +2174,7 @@ def overlay_directory_for_choice(
 
 
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
-    if choice.install_kind in {"linux-cpu", "linux-cuda"}:
+    if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
         return [
             "llama-server",
             "llama-quantize",
@@ -2131,11 +2184,12 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "libmtmd.so*",
             "libggml-cpu-*.so*",
             "libggml-cuda.so*",
+            "libggml-hip.so*",
             "libggml-rpc.so*",
         ]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
-    if choice.install_kind in {"windows-cpu", "windows-cuda"}:
+    if choice.install_kind in {"windows-cpu", "windows-cuda", "windows-hip"}:
         return ["*.exe", "*.dll"]
     raise PrebuiltFallback(
         f"unsupported install kind for runtime overlay: {choice.install_kind}"
