@@ -1746,8 +1746,10 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             rocm_name = f"llama-{llama_tag}-bin-ubuntu-rocm-7.2-x64.tar.gz"
             if rocm_name in upstream_assets:
                 log(f"AMD ROCm detected -- trying upstream prebuilt {rocm_name}")
-                log("Note: prebuilt is compiled for ROCm 7.2; if your ROCm version differs, "
-                    "this may fail preflight and fall back to a source build (safe)")
+                log(
+                    "Note: prebuilt is compiled for ROCm 7.2; if your ROCm version differs, "
+                    "this may fail preflight and fall back to a source build (safe)"
+                )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -1785,7 +1787,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_rocm:
             hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
             if hip_name in upstream_assets:
-                log(f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}")
+                log(
+                    f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}"
+                )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -1794,7 +1798,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-hip",
                 )
-            log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
+            log(
+                "AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU"
+            )
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
