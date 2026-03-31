@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { redirect } from "@tanstack/react-router";
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
   refreshSession,
+  tauriAutoAuth,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -33,6 +34,9 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
 }
 
 export async function requireAuth(): Promise<void> {
+  // Tauri desktop: silently authenticate, skip login/change-password entirely
+  if (isTauri && (await tauriAutoAuth())) return;
+
   if (await hasActiveSession()) {
     const { requires_password_change } = await fetchAuthStatus();
     if (requires_password_change || mustChangePassword()) {
@@ -48,18 +52,24 @@ export async function requireAuth(): Promise<void> {
 }
 
 export async function requireGuest(): Promise<void> {
+  // Tauri: user should never land on /login, redirect to app
+  if (isTauri && (await tauriAutoAuth())) {
+    throw redirect({ to: getPostAuthRoute() });
+  }
   if (!(await hasActiveSession())) return;
   throw redirect({ to: getPostAuthRoute() });
 }
 
 export async function requirePasswordChangeFlow(): Promise<void> {
-  const status = await fetchAuthStatus();
-
-  if (status.requires_password_change || mustChangePassword()) return;
-
-  if (await hasActiveSession()) {
+  // Tauri: auto-auth handles password change silently
+  if (isTauri && (await tauriAutoAuth())) {
     throw redirect({ to: getPostAuthRoute() });
   }
 
+  const status = await fetchAuthStatus();
+  if (status.requires_password_change || mustChangePassword()) return;
+  if (await hasActiveSession()) {
+    throw redirect({ to: getPostAuthRoute() });
+  }
   throw redirect({ to: status.initialized ? "/login" : "/change-password" });
 }
