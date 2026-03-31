@@ -92,6 +92,7 @@ export function ModelSelectionStep() {
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
@@ -101,7 +102,7 @@ export function ModelSelectionStep() {
     error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
-    accessToken: hfToken || undefined,
+    accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
   });
