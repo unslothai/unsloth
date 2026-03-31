@@ -21,12 +21,26 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { CloudIcon, Delete02Icon, TestTubeIcon } from "@hugeicons/core-free-icons";
+import { CloudIcon, Delete02Icon, Wifi02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { API_PROVIDER_PRESETS, getApiProviderPreset } from "./api-provider-presets";
+import {
+  createProviderConfig,
+  deleteProviderConfig,
+  listProviderConfigs,
+  listProviderModels,
+  listProviderRegistry,
+  testProviderConnection,
+  updateProviderConfig,
+  type ProviderRegistryEntry,
+} from "./api/providers-api";
 import type { ExternalProviderConfig } from "./external-providers";
+import {
+  getExternalProviderApiKey,
+  removeExternalProviderApiKey,
+  setExternalProviderApiKey,
+} from "./external-providers";
 
 interface ChatProvidersDialogProps {
   open: boolean;
@@ -35,42 +49,95 @@ interface ChatProvidersDialogProps {
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
 }
 
-/** UI-only stand-in until the proxy exposes GET …/models. */
-function stubFetchModelsForPreset(presetId: string): Promise<string[]> {
-  return new Promise((resolve) => {
-    window.setTimeout(() => {
-      const tables: Record<string, string[]> = {
-        openai: ["gpt-4o", "gpt-4o-mini", "o3-mini", "gpt-4-turbo"],
-        anthropic: ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229"],
-        google: ["gemini-2.0-flash", "gemini-1.5-pro"],
-        groq: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"],
-        together: ["meta-llama/Llama-3.3-70B-Instruct-Turbo"],
-      };
-      resolve(tables[presetId] ?? ["default-model"]);
-    }, 400);
-  });
-}
-
 export function ChatProvidersDialog({
   open,
   onOpenChange,
   providers,
   onProvidersChange,
 }: ChatProvidersDialogProps) {
-  const [presetId, setPresetId] = useState<string>("openai");
+  const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
+  const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [syncingProviders, setSyncingProviders] = useState(false);
+  const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [mutatingProvider, setMutatingProvider] = useState(false);
+
+  const registryByType = useMemo(
+    () => new Map(registry.map((entry) => [entry.provider_type, entry])),
+    [registry],
+  );
 
   const totalModels = useMemo(
     () => providers.reduce((count, provider) => count + provider.models.length, 0),
     [providers],
   );
 
+  useEffect(() => {
+    if (!open) return;
+    let isMounted = true;
+    const syncFromBackend = async () => {
+      setRegistryLoading(true);
+      setSyncingProviders(true);
+      try {
+        const [registryRows, configRows] = await Promise.all([
+          listProviderRegistry(),
+          listProviderConfigs(),
+        ]);
+        if (!isMounted) return;
+        setRegistry(registryRows);
+        setProviderType((current) => {
+          if (current && registryRows.some((entry) => entry.provider_type === current)) {
+            return current;
+          }
+          return registryRows[0]?.provider_type ?? "";
+        });
+        const existingById = new Map(providers.map((provider) => [provider.id, provider]));
+        const syncedProviders: ExternalProviderConfig[] = configRows
+          .filter((config) => config.is_enabled)
+          .map((config) => {
+            const existing = existingById.get(config.id);
+            const createdAt = Number.isFinite(Date.parse(config.created_at))
+              ? Date.parse(config.created_at)
+              : Date.now();
+            const updatedAt = Number.isFinite(Date.parse(config.updated_at))
+              ? Date.parse(config.updated_at)
+              : Date.now();
+            return {
+              id: config.id,
+              providerType: config.provider_type,
+              name: config.display_name,
+              baseUrl: config.base_url ?? "",
+              models: existing?.models ?? [],
+              createdAt: existing?.createdAt ?? createdAt,
+              updatedAt,
+            };
+          });
+        onProvidersChange(syncedProviders);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        toast.error(`Failed to load providers: ${message}`);
+      } finally {
+        if (isMounted) {
+          setRegistryLoading(false);
+          setSyncingProviders(false);
+        }
+      }
+    };
+    void syncFromBackend();
+    return () => {
+      isMounted = false;
+    };
+  }, [open, onProvidersChange]);
+
   function resetForm() {
-    setPresetId("openai");
+    setEditingProviderId(null);
     setApiKey("");
+    setBaseUrlDraft("");
     setAvailableModels([]);
     setSelectedModelIds([]);
   }
@@ -89,27 +156,58 @@ export function ChatProvidersDialog({
     setSelectedModelIds([]);
   }
 
+  function parseOptionalBaseUrl(input: string): string | null {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      throw new Error("Base URL must be a valid URL.");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("Base URL must use http or https.");
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  }
+
   async function loadModels() {
+    if (!providerType) {
+      toast.error("Choose a provider first.");
+      return;
+    }
     if (!apiKey.trim()) {
       toast.error("Add an API key first.");
       return;
     }
     setModelsLoading(true);
     try {
-      // Replace with real proxy call: GET /v1/models (or studio route) using preset + key.
-      const models = await stubFetchModelsForPreset(presetId);
-      setAvailableModels(models);
-      setSelectedModelIds([...models]);
-    } catch {
-      toast.error("Could not load models.");
+      const baseUrl = parseOptionalBaseUrl(baseUrlDraft);
+      const models = await listProviderModels({
+        providerType,
+        apiKey: apiKey.trim(),
+        baseUrl,
+      });
+      const modelIds = [...new Set(models
+        .map((model) => model.id.trim())
+        .filter((id) => id.length > 0))];
+      setAvailableModels(modelIds);
+      setSelectedModelIds([...modelIds]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Could not load models: ${message}`);
     } finally {
       setModelsLoading(false);
     }
   }
 
-  function addProvider() {
-    const preset = getApiProviderPreset(presetId);
-    const name = preset?.label ?? presetId;
+  async function addProvider() {
+    if (!providerType) {
+      toast.error("Choose a provider first.");
+      return;
+    }
+    const selectedRegistryEntry = registryByType.get(providerType);
+    const displayName = selectedRegistryEntry?.display_name ?? providerType;
     if (!apiKey.trim()) {
       toast.error("API key is required.");
       return;
@@ -122,28 +220,138 @@ export function ChatProvidersDialog({
       toast.error("Select at least one model.");
       return;
     }
-    const now = Date.now();
-    const provider: ExternalProviderConfig = {
-      id: crypto.randomUUID(),
-      presetId,
-      name,
-      baseUrl: "",
-      apiKey: apiKey.trim(),
-      models: [...selectedModelIds],
-      createdAt: now,
-      updatedAt: now,
-    };
-    onProvidersChange([...providers, provider]);
-    resetForm();
-    toast.success("Provider added.");
+    setMutatingProvider(true);
+    try {
+      const baseUrl = parseOptionalBaseUrl(baseUrlDraft);
+      const created = await createProviderConfig({
+        providerType,
+        displayName,
+        baseUrl,
+      });
+      const createdAt = Number.isFinite(Date.parse(created.created_at))
+        ? Date.parse(created.created_at)
+        : Date.now();
+      const updatedAt = Number.isFinite(Date.parse(created.updated_at))
+        ? Date.parse(created.updated_at)
+        : Date.now();
+      const provider: ExternalProviderConfig = {
+        id: created.id,
+        providerType: created.provider_type,
+        name: created.display_name,
+        baseUrl: created.base_url ?? "",
+        models: [...selectedModelIds],
+        createdAt,
+        updatedAt,
+      };
+      setExternalProviderApiKey(created.id, apiKey.trim());
+      onProvidersChange([...providers.filter((p) => p.id !== created.id), provider]);
+      resetForm();
+      toast.success("Provider added.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to add provider: ${message}`);
+    } finally {
+      setMutatingProvider(false);
+    }
   }
 
-  function deleteProvider(providerId: string) {
-    onProvidersChange(providers.filter((provider) => provider.id !== providerId));
+  async function saveProviderEdits() {
+    if (!editingProviderId) return;
+    const existing = providers.find((provider) => provider.id === editingProviderId);
+    if (!existing) {
+      toast.error("Provider not found.");
+      return;
+    }
+    if (!apiKey.trim()) {
+      toast.error("API key is required.");
+      return;
+    }
+    if (availableModels.length === 0) {
+      toast.error('Load available models first, then choose which to enable.');
+      return;
+    }
+    if (selectedModelIds.length === 0) {
+      toast.error("Select at least one model.");
+      return;
+    }
+    setMutatingProvider(true);
+    try {
+      const baseUrl = parseOptionalBaseUrl(baseUrlDraft);
+      const updated = await updateProviderConfig(editingProviderId, {
+        displayName: existing.name,
+        baseUrl,
+      });
+      setExternalProviderApiKey(editingProviderId, apiKey.trim());
+      const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
+        ? Date.parse(updated.updated_at)
+        : Date.now();
+      onProvidersChange(
+        providers.map((provider) =>
+          provider.id === editingProviderId
+            ? {
+                ...provider,
+                baseUrl: updated.base_url ?? "",
+                models: [...selectedModelIds],
+                updatedAt,
+              }
+            : provider,
+        ),
+      );
+      toast.success("Provider updated.");
+      resetForm();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to update provider: ${message}`);
+    } finally {
+      setMutatingProvider(false);
+    }
   }
 
-  function testProvider(providerName: string) {
-    toast.info(`Test for ${providerName} will use the backend proxy when wired.`);
+  function editProvider(provider: ExternalProviderConfig) {
+    setEditingProviderId(provider.id);
+    setProviderType(provider.providerType);
+    setApiKey(getExternalProviderApiKey(provider.id));
+    setBaseUrlDraft(provider.baseUrl);
+    setAvailableModels([...provider.models]);
+    setSelectedModelIds([...provider.models]);
+  }
+
+  async function deleteProvider(providerId: string) {
+    setMutatingProvider(true);
+    try {
+      await deleteProviderConfig(providerId);
+      removeExternalProviderApiKey(providerId);
+      onProvidersChange(providers.filter((provider) => provider.id !== providerId));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to delete provider: ${message}`);
+    } finally {
+      setMutatingProvider(false);
+    }
+  }
+
+  async function testProvider(provider: ExternalProviderConfig) {
+    const savedKey = getExternalProviderApiKey(provider.id).trim();
+    if (!savedKey) {
+      editProvider(provider);
+      toast.info(`No API key found for ${provider.name}. Add one and save.`);
+      return;
+    }
+    try {
+      const result = await testProviderConnection({
+        providerType: provider.providerType,
+        apiKey: savedKey,
+        baseUrl: provider.baseUrl || null,
+      });
+      if (result.success) {
+        toast.success(result.message);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Test failed: ${message}`);
+    }
   }
 
   return (
@@ -161,8 +369,8 @@ export function ChatProvidersDialog({
             API Providers
           </DialogTitle>
           <DialogDescription className="text-pretty">
-            Choose a preset provider and your API key — we load models for you via the studio
-            proxy.
+            Choose a backend registry provider type, add your API key, then load models through
+            the studio proxy.
           </DialogDescription>
         </DialogHeader>
         <Separator />
@@ -181,16 +389,23 @@ export function ChatProvidersDialog({
                 </div>
               ) : (
                 providers.map((provider) => {
-                  const preset = getApiProviderPreset(provider.presetId);
-                  const detail = preset?.description ?? provider.baseUrl ?? "";
+                  const registryEntry = registryByType.get(provider.providerType);
+                  const detail = provider.baseUrl || registryEntry?.base_url || "";
+                  const visibleModels = provider.models.slice(0, 5);
+                  const hiddenModelsCount = Math.max(0, provider.models.length - visibleModels.length);
                   return (
                     <div key={provider.id} className="rounded-xl border p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="truncate text-sm font-medium">
-                            {preset?.label ?? provider.name}
+                            {provider.name}
                           </div>
-                          <div className="truncate text-xs text-muted-foreground">{detail}</div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            <span className="font-mono">{provider.providerType}</span>
+                            {" · "}
+                            {registryEntry?.display_name ?? provider.providerType}
+                            {detail ? ` · ${detail}` : ""}
+                          </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
                           <Button
@@ -198,17 +413,29 @@ export function ChatProvidersDialog({
                             size="sm"
                             variant="outline"
                             className="h-7"
-                            onClick={() => testProvider(provider.name)}
+                            disabled={mutatingProvider}
+                            onClick={() => editProvider(provider)}
                           >
-                            <HugeiconsIcon icon={TestTubeIcon} className="mr-1 size-3.5" />
-                            Test
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7"
+                            disabled={mutatingProvider}
+                            onClick={() => void testProvider(provider)}
+                          >
+                            <HugeiconsIcon icon={Wifi02Icon} className="mr-1 size-3.5" />
+                            Check
                           </Button>
                           <Button
                             type="button"
                             size="icon-sm"
                             variant="ghost"
                             className="text-muted-foreground hover:text-destructive"
-                            onClick={() => deleteProvider(provider.id)}
+                            disabled={mutatingProvider}
+                            onClick={() => void deleteProvider(provider.id)}
                             title="Delete provider"
                           >
                             <HugeiconsIcon icon={Delete02Icon} className="size-4" />
@@ -216,7 +443,7 @@ export function ChatProvidersDialog({
                         </div>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {provider.models.map((model) => (
+                        {visibleModels.map((model) => (
                           <span
                             key={`${provider.id}-${model}`}
                             className="rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground"
@@ -224,6 +451,14 @@ export function ChatProvidersDialog({
                             {model}
                           </span>
                         ))}
+                        {hiddenModelsCount > 0 ? (
+                          <span
+                            className="rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground"
+                            title={`${hiddenModelsCount} more model(s) hidden`}
+                          >
+                            +{hiddenModelsCount}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                   );
@@ -232,38 +467,46 @@ export function ChatProvidersDialog({
             </div>
           </div>
           <div className="min-w-0 border-t border-border/80 pt-8 md:border-l md:border-t-0 md:pl-10 md:pt-0 lg:pl-12">
-            <h3 className="mb-6 text-sm font-semibold tracking-tight">Add provider</h3>
+            <h3 className="mb-6 text-sm font-semibold tracking-tight">
+              {editingProviderId ? "Edit provider" : "Add provider"}
+            </h3>
             <div className="flex flex-col gap-6">
               <div className="space-y-2">
-                <Label htmlFor="provider-preset" className="text-xs font-medium">
+                <Label htmlFor="provider-preset" className="text-sm font-medium">
                   Provider
                 </Label>
                 <Select
-                  value={presetId}
+                  value={providerType}
                   onValueChange={(value) => {
-                    setPresetId(value);
+                    if (editingProviderId) return;
+                    setProviderType(value);
                     setAvailableModels([]);
                     setSelectedModelIds([]);
                   }}
                 >
-                  <SelectTrigger id="provider-preset" className="h-10 w-full text-sm">
+                  <SelectTrigger
+                    id="provider-preset"
+                    className="h-10 w-full text-sm"
+                    disabled={editingProviderId != null}
+                  >
                     <SelectValue placeholder="Choose a provider" />
                   </SelectTrigger>
                   <SelectContent>
-                    {API_PROVIDER_PRESETS.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.label}
+                    {registry.map((entry) => (
+                      <SelectItem key={entry.provider_type} value={entry.provider_type}>
+                        {entry.display_name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  Presets use the studio proxy — you do not need to enter a base URL.
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Choose a provider from Studio's supported list. Your API key stays on this
+                  device and is encrypted before each request.
                 </p>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="provider-api-key" className="text-xs font-medium">
+                <Label htmlFor="provider-api-key" className="text-sm font-medium">
                   API key
                 </Label>
                 <Input
@@ -276,15 +519,33 @@ export function ChatProvidersDialog({
                 />
               </div>
 
+              <div className="space-y-2">
+                <Label htmlFor="provider-base-url" className="text-sm font-medium">
+                  Base URL (optional)
+                </Label>
+                <Input
+                  id="provider-base-url"
+                  type="text"
+                  value={baseUrlDraft}
+                  onChange={(event) => setBaseUrlDraft(event.target.value)}
+                  placeholder="https://my-vllm-server.com/v1"
+                  className="h-10 text-sm"
+                />
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Leave blank to use the registry default for this provider type. Set this to
+                  target a custom OpenAI-compatible endpoint.
+                </p>
+              </div>
+
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <Label className="text-xs font-medium">Models</Label>
+                  <Label className="text-sm font-medium">Models</Label>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     className="h-8"
-                    disabled={modelsLoading}
+                    disabled={modelsLoading || mutatingProvider}
                     onClick={() => void loadModels()}
                   >
                     {modelsLoading ? (
@@ -298,10 +559,8 @@ export function ChatProvidersDialog({
                   </Button>
                 </div>
                 {availableModels.length === 0 ? (
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    After you add your API key, load models so you can pick which ones appear in
-                    chat. This will call the proxy <code className="rounded bg-muted px-1 text-[11px]">/models</code>{" "}
-                    route when wired.
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    Add your API key, then load models to choose which ones appear in chat.
                   </p>
                 ) : (
                   <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
@@ -347,13 +606,27 @@ export function ChatProvidersDialog({
               </div>
 
               <div className="flex flex-wrap gap-3 pt-2">
-                <Button type="button" onClick={addProvider}>
-                  Add provider
+                <Button
+                  type="button"
+                  disabled={registryLoading || syncingProviders || modelsLoading || mutatingProvider}
+                  onClick={() =>
+                    editingProviderId
+                      ? void saveProviderEdits()
+                      : void addProvider()
+                  }
+                >
+                  {editingProviderId ? "Save provider" : "Add provider"}
                 </Button>
                 <Button type="button" variant="outline" onClick={resetForm}>
-                  Clear
+                  {editingProviderId ? "Cancel edit" : "Clear"}
                 </Button>
               </div>
+              {registryLoading || syncingProviders ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Spinner className="size-3.5" />
+                  Syncing provider registry and saved configs...
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

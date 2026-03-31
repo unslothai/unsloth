@@ -3,21 +3,20 @@
 
 export interface ExternalProviderConfig {
   id: string;
-  /** Built-in preset id (e.g. openai) or `custom` for advanced base URL. */
-  presetId: string;
-  /** Display name in UI (usually preset label). */
+  /** Backend provider type (e.g. openai, mistral, gemini). */
+  providerType: string;
+  /** Display name in UI. */
   name: string;
-  /** Only for `custom`: user-supplied OpenAI-compatible base URL. Empty for presets. */
+  /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
-  /** Not persisted; session-only for now. */
-  apiKey: string;
-  /** Model ids the user enabled after loading from the proxy `/models` list. */
+  /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
   createdAt: number;
   updatedAt: number;
 }
 
 const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {
@@ -56,24 +55,24 @@ function isExternalProviderConfig(value: unknown): value is ExternalProviderConf
   const maybe = value as Partial<ExternalProviderConfig>;
   return (
     typeof maybe.id === "string" &&
+    typeof maybe.providerType === "string" &&
     typeof maybe.name === "string" &&
     typeof maybe.baseUrl === "string" &&
-    typeof maybe.apiKey === "string" &&
     Array.isArray(maybe.models)
   );
 }
 
+function mapLegacyPresetToProviderType(presetId: string): string {
+  if (presetId === "google") return "gemini";
+  return presetId;
+}
+
 function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
-  const presetId =
-    typeof raw.presetId === "string" && raw.presetId.length > 0
-      ? raw.presetId
-      : "custom";
   return {
     ...raw,
-    presetId,
+    providerType: raw.providerType.trim(),
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
-    apiKey: "",
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
@@ -81,10 +80,42 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
 }
 
 function isCompleteProvider(provider: ExternalProviderConfig): boolean {
-  if (!provider.id || !provider.name) return false;
-  if (provider.presetId === "custom") return false;
-  if (provider.models.length === 0) return false;
+  if (!provider.id || !provider.name || !provider.providerType) return false;
   return true;
+}
+
+type LegacyProviderConfig = {
+  id?: unknown;
+  presetId?: unknown;
+  name?: unknown;
+  baseUrl?: unknown;
+  models?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
+function fromUnknownProvider(value: unknown): ExternalProviderConfig | null {
+  if (!value || typeof value !== "object") return null;
+  if (isExternalProviderConfig(value)) {
+    return value;
+  }
+  const legacy = value as LegacyProviderConfig;
+  const id = typeof legacy.id === "string" ? legacy.id : "";
+  const presetId = typeof legacy.presetId === "string" ? legacy.presetId : "";
+  if (!id || !presetId || presetId === "custom") return null;
+  const providerType = mapLegacyPresetToProviderType(presetId);
+  if (!providerType) return null;
+  return {
+    id,
+    providerType,
+    name: typeof legacy.name === "string" ? legacy.name : providerType,
+    baseUrl: typeof legacy.baseUrl === "string" ? legacy.baseUrl : "",
+    models: Array.isArray(legacy.models)
+      ? legacy.models.filter((item): item is string => typeof item === "string")
+      : [],
+    createdAt: typeof legacy.createdAt === "number" ? legacy.createdAt : Date.now(),
+    updatedAt: typeof legacy.updatedAt === "number" ? legacy.updatedAt : Date.now(),
+  };
 }
 
 export function loadExternalProviders(): ExternalProviderConfig[] {
@@ -95,7 +126,8 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter(isExternalProviderConfig)
+      .map(fromUnknownProvider)
+      .filter((provider): provider is ExternalProviderConfig => provider !== null)
       .map(normalizeProvider)
       .filter(isCompleteProvider);
   } catch {
@@ -106,11 +138,62 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
 export function saveExternalProviders(providers: ExternalProviderConfig[]): void {
   if (!canUseStorage()) return;
   try {
-    const withoutKeys = providers.map((provider) => ({
-      ...provider,
-      apiKey: "",
-    }));
-    localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(withoutKeys));
+    localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
+    const allowedIds = new Set(providers.map((provider) => provider.id));
+    const keys = loadExternalProviderApiKeys();
+    const pruned: Record<string, string> = {};
+    for (const [providerId, apiKey] of Object.entries(keys)) {
+      if (allowedIds.has(providerId)) {
+        pruned[providerId] = apiKey;
+      }
+    }
+    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(pruned));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadExternalProviderApiKeys(): Record<string, string> {
+  if (!canUseStorage()) return {};
+  try {
+    const raw = localStorage.getItem(EXTERNAL_PROVIDER_KEYS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [providerId, apiKey] of Object.entries(parsed)) {
+      if (typeof providerId === "string" && typeof apiKey === "string") {
+        out[providerId] = apiKey;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function getExternalProviderApiKey(providerId: string): string {
+  const keys = loadExternalProviderApiKeys();
+  return keys[providerId] ?? "";
+}
+
+export function setExternalProviderApiKey(providerId: string, apiKey: string): void {
+  if (!canUseStorage()) return;
+  try {
+    const next = loadExternalProviderApiKeys();
+    next[providerId] = apiKey;
+    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+export function removeExternalProviderApiKey(providerId: string): void {
+  if (!canUseStorage()) return;
+  try {
+    const next = loadExternalProviderApiKeys();
+    delete next[providerId];
+    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(next));
   } catch {
     // ignore
   }

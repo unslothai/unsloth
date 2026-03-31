@@ -483,7 +483,6 @@ export function ChatPage(): ReactElement {
           ...store.params,
           checkpoint: value,
         });
-        toast.info("External model selected in UI draft mode.");
         return;
       }
       void (async () => {
