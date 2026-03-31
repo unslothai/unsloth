@@ -588,8 +588,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           loadAndApplyModelDefaults(selectedModel);
         },
         applyConfigPatch: (config: BackendModelConfig) => {
-          _learningRateManuallySet = false;
           const patch = mapBackendModelConfigToTrainingPatch(config);
+          // Only clear the manual-edit flag when the config provides a LR,
+          // so unrelated config patches don't silently disarm the guard.
+          if (patch.learningRate !== undefined) {
+            _learningRateManuallySet = false;
+          }
           set(patch);
         },
       };
