@@ -1433,7 +1433,7 @@ def detect_host() -> HostInfo:
 
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
     has_rocm = False
-    if not is_macos:
+    if is_linux:
         for _cmd, _marker in (
             (["rocminfo"], "gfx"),
             (["amd-smi", "list"], "gpu"),
@@ -1449,6 +1449,16 @@ def detect_host() -> HostInfo:
                 if _marker in _result.stdout.lower():
                     has_rocm = True
                     break
+    elif is_windows:
+        # Windows: check for HIP runtime DLL or hipinfo tool
+        if shutil.which("hipinfo") or shutil.which("amd-smi"):
+            has_rocm = True
+        elif any(
+            Path(d).joinpath("amdhip64.dll").exists()
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d
+        ):
+            has_rocm = True
 
     return HostInfo(
         system = system,

@@ -403,6 +403,13 @@ class TestHostInfoRocm:
         source = inspect.getsource(prebuilt_mod.detect_host)
         assert "ROCM_PATH" in source or "rocm" in source.lower()
 
+    def test_detect_host_windows_rocm_detection(self):
+        """detect_host() source should have Windows-specific HIP detection."""
+        import inspect
+
+        source = inspect.getsource(prebuilt_mod.detect_host)
+        assert "hipinfo" in source or "amdhip64" in source
+
 
 # =============================================================================
 # TEST: install_python_stack.py -- _detect_rocm_version
