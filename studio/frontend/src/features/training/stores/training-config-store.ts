@@ -3,6 +3,7 @@
 
 import { DEFAULT_HYPERPARAMS, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS } from "@/config/training";
 import { authFetch } from "@/features/auth";
+import { isAdapterMethod } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -103,6 +104,10 @@ let _trainOnCompletionsManuallySet = false;
 // auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
 
+// Stash the model-config-provided (YAML) learning rate so that
+// setTrainingMethod can restore it when switching back from full to adapter.
+let _yamlLearningRate: number | undefined = undefined;
+
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
@@ -171,11 +176,20 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             _trainOnCompletionsManuallySet = false;
             _learningRateManuallySet = false;
+            _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
             // If the model config provides a specific learning rate, treat
             // it as authoritative so the async auto-select does not overwrite it.
             const modelConfigHasLR = patch.learningRate !== undefined;
+            _yamlLearningRate = patch.learningRate;
+
+            // YAML learning rates are tuned for adapter methods (LoRA/QLoRA).
+            // If the user is currently on full fine-tune, override with the
+            // full-finetune default instead of applying the YAML adapter LR.
+            if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
+              patch.learningRate = LR_DEFAULT_FULL;
+            }
 
             // If vision model + image dataset already known, override
             // trainOnCompletions to false regardless of backend default.
@@ -208,9 +222,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
                   if (method) {
-                    // Only auto-set LR when the model config did not provide
-                    // a specific learning rate and the user has not manually
-                    // edited it. This preserves curated per-model defaults.
                     const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
                       ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
                       : {};
@@ -385,21 +396,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           void loadAndApplyModelDefaults(state.selectedModel);
         },
         setTrainingMethod: (trainingMethod) => {
-          if (!_learningRateManuallySet) {
-            // Only auto-switch LR when the adapter/full category changes.
-            // Switching between qlora and lora should keep the current LR
-            // since both methods share the same learning rate range.
-            const prev = get().trainingMethod;
-            const wasFullFT = prev === "full";
-            const isFullFT = trainingMethod === "full";
-            if (wasFullFT !== isFullFT) {
-              const learningRate = isFullFT ? LR_DEFAULT_FULL : LR_DEFAULT_LORA;
-              set({ trainingMethod, learningRate });
-            } else {
-              set({ trainingMethod });
-            }
-          } else {
+          if (_learningRateManuallySet) {
             set({ trainingMethod });
+            return;
+          }
+
+          const prev = get().trainingMethod;
+          const wasAdapter = isAdapterMethod(prev);
+          const nowAdapter = isAdapterMethod(trainingMethod);
+
+          // qlora <-> lora: same LR range, don't touch learning rate
+          if (wasAdapter && nowAdapter) {
+            set({ trainingMethod });
+            return;
+          }
+
+          // Category changed (adapter <-> full)
+          if (nowAdapter) {
+            // Switching TO adapter: restore YAML LR if available
+            set({ trainingMethod, learningRate: _yamlLearningRate ?? LR_DEFAULT_LORA });
+          } else {
+            // Switching TO full: no YAML full-LR exists, use constant
+            set({ trainingMethod, learningRate: LR_DEFAULT_FULL });
           }
         },
         setHfToken: (hfToken) =>
@@ -589,6 +607,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         reset: () => {
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
+          _yamlLearningRate = undefined;
           set(initialState);
         },
         resetToModelDefaults: () => {
