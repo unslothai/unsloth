@@ -202,7 +202,9 @@ class LocalModelListResponse(BaseModel):
 class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
-    path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+    path: str = Field(
+        ..., description = "Absolute or relative directory path to scan for models"
+    )
 
 
 class ScanFolderInfo(BaseModel):

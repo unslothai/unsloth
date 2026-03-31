@@ -94,7 +94,13 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
-from models.models import GgufVariantDetail, GgufVariantsResponse, ModelType, ScanFolderInfo, AddScanFolderRequest
+from models.models import (
+    GgufVariantDetail,
+    GgufVariantsResponse,
+    ModelType,
+    ScanFolderInfo,
+    AddScanFolderRequest,
+)
 from models.responses import (
     LoRABaseModelResponse,
     VisionCheckResponse,
@@ -353,12 +359,15 @@ async def list_local_models(
 
         # Scan user-added custom folders (cap per-folder to avoid unbounded scans)
         from storage.studio_db import list_scan_folders
+
         _MAX_MODELS_PER_FOLDER = 200
         custom_folders = list_scan_folders()
         for folder in custom_folders:
             folder_path = Path(folder["path"])
             custom_models = _scan_models_dir(folder_path)[:_MAX_MODELS_PER_FOLDER]
-            local_models += [m.model_copy(update={"source": "custom"}) for m in custom_models]
+            local_models += [
+                m.model_copy(update = {"source": "custom"}) for m in custom_models
+            ]
 
         deduped: dict[str, LocalModelInfo] = {}
         for model in local_models:
@@ -391,6 +400,7 @@ async def get_scan_folders(
 ):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
+
     return {"folders": list_scan_folders()}
 
 
@@ -401,6 +411,7 @@ async def add_scan_folder_endpoint(
 ):
     """Register a new directory to scan for local models."""
     from storage.studio_db import add_scan_folder
+
     try:
         folder = add_scan_folder(body.path)
     except ValueError as e:
@@ -417,6 +428,7 @@ async def remove_scan_folder_endpoint(
 ):
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
+
     remove_scan_folder(folder_id)
     logger.info("Scan folder removed: id=%s", folder_id)
     return {"ok": True}

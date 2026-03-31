@@ -39,6 +39,7 @@ def _denied_path_prefixes() -> list[str]:
         return [os.path.normcase(p) for p in [win, pf, pf86]]
     return []
 
+
 _schema_lock = threading.Lock()
 _schema_ready = False
 
@@ -404,7 +405,9 @@ def add_scan_folder(path: str) -> dict:
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
-    check = os.path.normcase(normalized) if platform.system() == "Windows" else normalized
+    check = (
+        os.path.normcase(normalized) if platform.system() == "Windows" else normalized
+    )
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
             raise ValueError(f"Path under {prefix} is not allowed")
