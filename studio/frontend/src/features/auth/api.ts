@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -96,6 +96,15 @@ export async function authFetch(
     throw err;
   }
   if (await isPasswordChangeRequiredResponse(response)) {
+    if (isTauri) {
+      const { tauriAutoAuth } = await import("./tauri-auto-auth");
+      if (await tauriAutoAuth()) {
+        const retryHeaders = new Headers(init?.headers);
+        const t = getAuthToken();
+        if (t) retryHeaders.set("Authorization", `Bearer ${t}`);
+        return fetch(resolvedInput, { ...init, headers: retryHeaders });
+      }
+    }
     void redirectToAuth();
     return response;
   }
@@ -104,6 +113,15 @@ export async function authFetch(
   const refreshed = await refreshSession();
   if (!refreshed) {
     clearAuthTokens();
+    if (isTauri) {
+      const { tauriAutoAuth } = await import("./tauri-auto-auth");
+      if (await tauriAutoAuth()) {
+        const retryHeaders = new Headers(init?.headers);
+        const t = getAuthToken();
+        if (t) retryHeaders.set("Authorization", `Bearer ${t}`);
+        return fetch(resolvedInput, { ...init, headers: retryHeaders });
+      }
+    }
     void redirectToAuth();
     return response;
   }
