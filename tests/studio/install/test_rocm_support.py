@@ -52,12 +52,17 @@ _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
 
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
 
+
 def nvidia_host(**overrides) -> HostInfo:
     """NVIDIA Linux x86_64 host."""
     defaults = dict(
-        system = "Linux", machine = "x86_64",
-        is_windows = False, is_linux = True, is_macos = False,
-        is_x86_64 = True, is_arm64 = False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
         nvidia_smi = "/usr/bin/nvidia-smi",
         driver_cuda_version = (12, 6),
         compute_caps = ["89"],
@@ -73,9 +78,13 @@ def nvidia_host(**overrides) -> HostInfo:
 def rocm_host(**overrides) -> HostInfo:
     """AMD ROCm Linux x86_64 host (no NVIDIA)."""
     defaults = dict(
-        system = "Linux", machine = "x86_64",
-        is_windows = False, is_linux = True, is_macos = False,
-        is_x86_64 = True, is_arm64 = False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
         nvidia_smi = None,
         driver_cuda_version = None,
         compute_caps = [],
@@ -91,9 +100,13 @@ def rocm_host(**overrides) -> HostInfo:
 def cpu_host(**overrides) -> HostInfo:
     """CPU-only Linux x86_64 host."""
     defaults = dict(
-        system = "Linux", machine = "x86_64",
-        is_windows = False, is_linux = True, is_macos = False,
-        is_x86_64 = True, is_arm64 = False,
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
         nvidia_smi = None,
         driver_cuda_version = None,
         compute_caps = [],
@@ -109,9 +122,13 @@ def cpu_host(**overrides) -> HostInfo:
 def macos_host(**overrides) -> HostInfo:
     """macOS arm64 host."""
     defaults = dict(
-        system = "Darwin", machine = "arm64",
-        is_windows = False, is_linux = False, is_macos = True,
-        is_x86_64 = False, is_arm64 = True,
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
         nvidia_smi = None,
         driver_cuda_version = None,
         compute_caps = [],
@@ -127,9 +144,13 @@ def macos_host(**overrides) -> HostInfo:
 def windows_host(**overrides) -> HostInfo:
     """Windows x86_64 host."""
     defaults = dict(
-        system = "Windows", machine = "amd64",
-        is_windows = True, is_linux = False, is_macos = False,
-        is_x86_64 = True, is_arm64 = False,
+        system = "Windows",
+        machine = "amd64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
         nvidia_smi = None,
         driver_cuda_version = None,
         compute_caps = [],
@@ -145,9 +166,13 @@ def windows_host(**overrides) -> HostInfo:
 def windows_rocm_host(**overrides) -> HostInfo:
     """Windows x86_64 host with ROCm."""
     defaults = dict(
-        system = "Windows", machine = "amd64",
-        is_windows = True, is_linux = False, is_macos = False,
-        is_x86_64 = True, is_arm64 = False,
+        system = "Windows",
+        machine = "amd64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
         nvidia_smi = None,
         driver_cuda_version = None,
         compute_caps = [],
@@ -178,6 +203,7 @@ UPSTREAM_ASSETS = {
 # =============================================================================
 # TEST: install_llama_prebuilt.py -- resolve_upstream_asset_choice
 # =============================================================================
+
 
 class TestResolveUpstreamAssetChoice:
     """Verify that the asset selection logic picks the right binary for each platform."""
@@ -244,7 +270,9 @@ class TestResolveUpstreamAssetChoice:
     def test_rocm_linux_no_prebuilt_falls_back(self, mock_assets):
         """AMD ROCm host should fall back to source build when no ROCm prebuilt exists."""
         # Remove the ROCm asset from available assets
-        assets_without_rocm = {k: v for k, v in UPSTREAM_ASSETS.items() if "rocm" not in k}
+        assets_without_rocm = {
+            k: v for k, v in UPSTREAM_ASSETS.items() if "rocm" not in k
+        }
         mock_assets.return_value = assets_without_rocm
         host = rocm_host()
         with pytest.raises(PrebuiltFallback, match = "ROCm detected"):
@@ -278,39 +306,55 @@ class TestResolveUpstreamAssetChoice:
 # TEST: install_llama_prebuilt.py -- runtime_patterns_for_choice
 # =============================================================================
 
+
 class TestRuntimePatterns:
     """Verify runtime file patterns for all install kinds."""
 
     def test_linux_cpu_patterns(self):
-        choice = AssetChoice(repo = "", tag = "", name = "", url = "",
-                             source_label = "", install_kind = "linux-cpu")
+        choice = AssetChoice(
+            repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-cpu"
+        )
         patterns = runtime_patterns_for_choice(choice)
         assert "llama-server" in patterns
         assert "llama-quantize" in patterns
 
     def test_linux_cuda_patterns(self):
-        choice = AssetChoice(repo = "", tag = "", name = "", url = "",
-                             source_label = "", install_kind = "linux-cuda")
+        choice = AssetChoice(
+            repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-cuda"
+        )
         patterns = runtime_patterns_for_choice(choice)
         assert "libggml-cuda.so*" in patterns
 
     def test_linux_rocm_patterns(self):
-        choice = AssetChoice(repo = "", tag = "", name = "", url = "",
-                             source_label = "", install_kind = "linux-rocm")
+        choice = AssetChoice(
+            repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-rocm"
+        )
         patterns = runtime_patterns_for_choice(choice)
         assert "libggml-hip.so*" in patterns
         assert "llama-server" in patterns
 
     def test_windows_hip_patterns(self):
-        choice = AssetChoice(repo = "", tag = "", name = "", url = "",
-                             source_label = "", install_kind = "windows-hip")
+        choice = AssetChoice(
+            repo = "",
+            tag = "",
+            name = "",
+            url = "",
+            source_label = "",
+            install_kind = "windows-hip",
+        )
         patterns = runtime_patterns_for_choice(choice)
         assert "*.exe" in patterns
         assert "*.dll" in patterns
 
     def test_macos_patterns(self):
-        choice = AssetChoice(repo = "", tag = "", name = "", url = "",
-                             source_label = "", install_kind = "macos-arm64")
+        choice = AssetChoice(
+            repo = "",
+            tag = "",
+            name = "",
+            url = "",
+            source_label = "",
+            install_kind = "macos-arm64",
+        )
         patterns = runtime_patterns_for_choice(choice)
         assert "lib*.dylib" in patterns
 
@@ -319,17 +363,25 @@ class TestRuntimePatterns:
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
 # =============================================================================
 
+
 class TestHostInfoRocm:
     """Verify has_rocm field does not affect other HostInfo behavior."""
 
     def test_has_rocm_default_false(self):
         host = HostInfo(
-            system = "Linux", machine = "x86_64",
-            is_windows = False, is_linux = True, is_macos = False,
-            is_x86_64 = True, is_arm64 = False,
-            nvidia_smi = None, driver_cuda_version = None,
-            compute_caps = [], visible_cuda_devices = None,
-            has_physical_nvidia = False, has_usable_nvidia = False,
+            system = "Linux",
+            machine = "x86_64",
+            is_windows = False,
+            is_linux = True,
+            is_macos = False,
+            is_x86_64 = True,
+            is_arm64 = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            visible_cuda_devices = None,
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         assert host.has_rocm is False
 
@@ -346,6 +398,7 @@ class TestHostInfoRocm:
         """detect_host() checks ROCM_PATH env var for ROCm detection."""
         # Verify the detect_host function source references ROCM_PATH
         import inspect
+
         source = inspect.getsource(prebuilt_mod.detect_host)
         assert "ROCM_PATH" in source or "rocm" in source.lower()
 
@@ -353,6 +406,7 @@ class TestHostInfoRocm:
 # =============================================================================
 # TEST: install_python_stack.py -- _detect_rocm_version
 # =============================================================================
+
 
 class TestDetectRocmVersion:
     """Verify ROCm version detection from various sources."""
@@ -440,7 +494,10 @@ class TestDetectRocmVersion:
         """hipconfig that times out should return None."""
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
             with patch("shutil.which", return_value = "/usr/bin/hipconfig"):
-                with patch("subprocess.run", side_effect = subprocess.TimeoutExpired("hipconfig", 5)):
+                with patch(
+                    "subprocess.run",
+                    side_effect = subprocess.TimeoutExpired("hipconfig", 5),
+                ):
                     result = _detect_rocm_version()
                     assert result is None
 
@@ -448,6 +505,7 @@ class TestDetectRocmVersion:
 # =============================================================================
 # TEST: install_python_stack.py -- _ensure_rocm_torch
 # =============================================================================
+
 
 class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
@@ -554,7 +612,9 @@ class TestEnsureRocmTorch:
     def test_probe_timeout_handled(self, mock_ver, mock_pip):
         """Probe subprocess timeout should be handled gracefully."""
         with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)):
+            with patch(
+                "subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)
+            ):
                 # Should not crash -- timeout on probe means torch not importable
                 # The function will get an exception from subprocess.run and
                 # proceed to reinstall
@@ -567,6 +627,7 @@ class TestEnsureRocmTorch:
 # =============================================================================
 # TEST: install_python_stack.py -- _ROCM_TORCH_INDEX mapping
 # =============================================================================
+
 
 class TestRocmTorchIndex:
     """Verify the ROCm version -> torch index tag mapping."""
@@ -617,24 +678,31 @@ class TestRocmTorchIndex:
 # TEST: hardware.py -- IS_ROCM flag and detect_hardware
 # =============================================================================
 
+
 class TestHardwareRocmFlag:
     """Verify IS_ROCM flag behavior without importing the full hardware module."""
 
     def test_hardware_py_has_is_rocm(self):
         """hardware.py should define IS_ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text()
         assert "IS_ROCM: bool = False" in source
 
     def test_hardware_py_sets_is_rocm_on_hip(self):
         """detect_hardware() should set IS_ROCM when torch.version.hip is set."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text()
         assert 'torch.version, "hip"' in source or "torch.version.hip" in source
 
     def test_hardware_py_still_returns_cuda_for_rocm(self):
         """DeviceType should remain CUDA even on ROCm -- no DeviceType.ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text()
         # Ensure ROCM is NOT a DeviceType member
         enum_section = source.split("class DeviceType")[1].split("\n\n")[0]
@@ -642,13 +710,17 @@ class TestHardwareRocmFlag:
 
     def test_hardware_py_has_rocm_in_package_versions(self):
         """get_package_versions() should include 'rocm' key."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text()
         assert '"rocm"' in source
 
     def test_hardware_py_device_type_cuda_references_intact(self):
         """All existing DeviceType.CUDA references should still be present."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text()
         # Key functions that must still reference DeviceType.CUDA
         assert "DeviceType.CUDA" in source
@@ -656,24 +728,30 @@ class TestHardwareRocmFlag:
 
     def test_is_rocm_exported_from_init(self):
         """IS_ROCM should be exported from hardware __init__.py."""
-        init_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        init_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        )
         source = init_path.read_text()
         assert "IS_ROCM" in source
 
     def test_is_rocm_in_all_list(self):
         """IS_ROCM should be in __all__ list in __init__.py."""
-        init_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        init_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        )
         source = init_path.read_text()
         # Extract __all__ section
         assert '"IS_ROCM"' in source
 
     def test_get_package_versions_returns_rocm_key(self):
         """get_package_versions() source should return both 'cuda' and 'rocm' keys."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text()
         # Find the get_package_versions function body
         func_start = source.find("def get_package_versions")
-        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert '"cuda"' in func_body
         assert '"rocm"' in func_body
 
@@ -681,6 +759,7 @@ class TestHardwareRocmFlag:
 # =============================================================================
 # TEST: tokenizer_utils.py -- error message
 # =============================================================================
+
 
 class TestTokenizerErrorMessage:
     """Verify the AMD error message is updated."""
@@ -701,6 +780,7 @@ class TestTokenizerErrorMessage:
 # =============================================================================
 # TEST: install.sh -- structural checks
 # =============================================================================
+
 
 class TestInstallShStructure:
     """Verify install.sh structural properties without running it."""
@@ -730,8 +810,9 @@ class TestInstallShStructure:
         # The ROCm block should be inside the "if [ -z "$_smi" ]" branch
         smi_block_start = source.find('if [ -z "$_smi" ]')
         rocm_block_start = source.find("amd-smi")
-        assert smi_block_start < rocm_block_start, \
-            "ROCm detection should be inside the 'no nvidia-smi' branch"
+        assert (
+            smi_block_start < rocm_block_start
+        ), "ROCm detection should be inside the 'no nvidia-smi' branch"
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
@@ -757,7 +838,7 @@ class TestInstallShStructure:
         """install.sh should validate _rocm_tag with a case guard."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text()
-        assert 'rocm[0-9]*.[0-9]*)' in source
+        assert "rocm[0-9]*.[0-9]*)" in source
         assert '_rocm_tag=""' in source  # rejection path
 
     def test_dpkg_epoch_handling(self):
@@ -775,13 +856,16 @@ class TestInstallShStructure:
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
         import re
+
         for i, line in enumerate(func_body.splitlines(), 1):
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
             # Remove POSIX character classes [[:foo:]] before checking for [[ ]]
-            cleaned = re.sub(r'\[\[:[a-z]+:\]\]', '', line)
-            assert "[[" not in cleaned, f"get_torch_index_url line {i} uses non-POSIX [["
+            cleaned = re.sub(r"\[\[:[a-z]+:\]\]", "", line)
+            assert (
+                "[[" not in cleaned
+            ), f"get_torch_index_url line {i} uses non-POSIX [["
 
     def test_no_arithmetic_expansion_in_rocm_block(self):
         """ROCm detection block should not use (( )) (bash-only)."""
@@ -794,8 +878,9 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            assert "((" not in line or "))" not in line or "$(()" in line, \
-                f"get_torch_index_url line {i} may use non-POSIX (( ))"
+            assert (
+                "((" not in line or "))" not in line or "$(()" in line
+            ), f"get_torch_index_url line {i} may use non-POSIX (( ))"
 
     def test_macos_returns_cpu_before_rocm_check(self):
         """macOS should return CPU immediately (before any ROCm check)."""
@@ -812,21 +897,28 @@ class TestInstallShStructure:
 # TEST: Live regression on current host (NVIDIA B200 expected)
 # =============================================================================
 
+
 class TestLiveRegression:
     """Live checks that run on the actual host -- skip if no NVIDIA GPU."""
 
     def test_get_torch_index_url_returns_cuda_on_nvidia(self):
         """On an NVIDIA machine, get_torch_index_url should return a CUDA URL."""
         import shutil
+
         if not shutil.which("nvidia-smi"):
             pytest.skip("No nvidia-smi available")
         sh_path = PACKAGE_ROOT / "install.sh"
         # Extract just the function (don't source the whole installer)
         result = subprocess.run(
-            ["bash", "-c",
-             f"eval \"$(sed -n '/^get_torch_index_url()/,/^}}/p' '{sh_path}')\"; "
-             "get_torch_index_url"],
-            capture_output = True, text = True, timeout = 30,
+            [
+                "bash",
+                "-c",
+                f"eval \"$(sed -n '/^get_torch_index_url()/,/^}}/p' '{sh_path}')\"; "
+                "get_torch_index_url",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 30,
         )
         if result.returncode != 0:
             pytest.skip("Could not extract get_torch_index_url for live test")
