@@ -29,9 +29,16 @@ def _denied_path_prefixes() -> list[str]:
     """Platform-aware denylist of system directories."""
     system = platform.system()
     if system == "Linux":
-        return ["/proc", "/sys", "/dev", "/etc"]
+        return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        return ["/System", "/Library", "/private/var", "/dev", "/etc"]
+        # realpath() resolves /etc -> /private/etc, /tmp -> /private/tmp on macOS,
+        # so include the /private variants to avoid bypasses.
+        return [
+            "/System", "/Library", "/dev",
+            "/etc", "/private/etc",
+            "/tmp", "/private/tmp",
+            "/var", "/private/var",
+        ]
     if system == "Windows":
         win = os.environ.get("SystemRoot", r"C:\Windows")
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -405,9 +412,20 @@ def add_scan_folder(path: str) -> dict:
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
-    check = (
-        os.path.normcase(normalized) if platform.system() == "Windows" else normalized
-    )
+
+    # On Windows, normalize case so that C:\Models and c:\models dedup correctly.
+    if platform.system() == "Windows":
+        normalized = os.path.normcase(normalized)
+
+    # Validate the path is an existing, readable directory before persisting.
+    if not os.path.exists(normalized):
+        raise ValueError("Path does not exist")
+    if not os.path.isdir(normalized):
+        raise ValueError("Path must be a directory, not a file")
+    if not os.access(normalized, os.R_OK | os.X_OK):
+        raise ValueError("Path is not readable")
+
+    check = normalized  # already normcased on Windows above
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
             raise ValueError(f"Path under {prefix} is not allowed")
@@ -421,7 +439,7 @@ def add_scan_folder(path: str) -> dict:
             )
             conn.commit()
         except sqlite3.IntegrityError:
-            pass  # duplicate — fall through to SELECT
+            pass  # duplicate -- fall through to SELECT
         row = conn.execute(
             "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
             (normalized,),

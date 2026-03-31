@@ -134,12 +134,18 @@ def _resolve_hf_cache_dir() -> Path:
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
-def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
+def _scan_models_dir(
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
     found: List[LocalModelInfo] = []
     for child in models_dir.iterdir():
+        if limit is not None and len(found) >= limit:
+            break
         if not child.is_dir():
             continue
         has_model_files = (
@@ -165,21 +171,24 @@ def _scan_models_dir(models_dir: Path) -> List[LocalModelInfo]:
             ),
         )
     # Also scan for standalone .gguf files directly in the models directory
-    for gguf_file in models_dir.glob("*.gguf"):
-        if gguf_file.is_file():
-            try:
-                updated_at = gguf_file.stat().st_mtime
-            except OSError:
-                updated_at = None
-            found.append(
-                LocalModelInfo(
-                    id = str(gguf_file),
-                    display_name = gguf_file.stem,
-                    path = str(gguf_file),
-                    source = "models_dir",
-                    updated_at = updated_at,
-                ),
-            )
+    if limit is None or len(found) < limit:
+        for gguf_file in models_dir.glob("*.gguf"):
+            if limit is not None and len(found) >= limit:
+                break
+            if gguf_file.is_file():
+                try:
+                    updated_at = gguf_file.stat().st_mtime
+                except OSError:
+                    updated_at = None
+                found.append(
+                    LocalModelInfo(
+                        id = str(gguf_file),
+                        display_name = gguf_file.stem,
+                        path = str(gguf_file),
+                        source = "models_dir",
+                        updated_at = updated_at,
+                    ),
+                )
 
     return found
 
@@ -364,7 +373,13 @@ async def list_local_models(
         custom_folders = list_scan_folders()
         for folder in custom_folders:
             folder_path = Path(folder["path"])
-            custom_models = _scan_models_dir(folder_path)[:_MAX_MODELS_PER_FOLDER]
+            try:
+                custom_models = _scan_models_dir(
+                    folder_path, limit = _MAX_MODELS_PER_FOLDER,
+                )
+            except OSError as e:
+                logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+                continue
             local_models += [
                 m.model_copy(update = {"source": "custom"}) for m in custom_models
             ]
