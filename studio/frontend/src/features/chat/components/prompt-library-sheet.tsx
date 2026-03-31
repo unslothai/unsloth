@@ -37,13 +37,6 @@ export const PromptLibrarySheet: FC<{
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
 
-  const handleStartCreate = useCallback(() => {
-    setEditing(null);
-    setName("");
-    setContent("");
-    setTags("");
-  }, []);
-
   const handleStartEdit = useCallback((p: PromptRecord) => {
     setEditing(p);
     setName(p.name);
@@ -93,7 +86,7 @@ export const PromptLibrarySheet: FC<{
         for (const v of p.variables) {
           const value = window.prompt(`Value for {{${v}}}:`);
           if (value === null) return; // user cancelled
-          result = result.replaceAll(`{{${v}}}`, value);
+          result = result.split(`{{${v}}}`).join(value);
         }
       }
       onInsertPrompt?.(result);
@@ -184,7 +177,7 @@ export const PromptLibrarySheet: FC<{
                       type="button"
                       onClick={() => handleInsert(p)}
                       className="p-1 text-muted-foreground hover:text-primary"
-                      title="Insert into chat"
+                      title="Copy to clipboard"
                     >
                       <CopyIcon className="size-3" />
                     </button>

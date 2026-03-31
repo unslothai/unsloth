@@ -46,7 +46,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { db, useLiveQuery } from "./db";
-import type { ChatView, FolderRecord, ThreadRecord } from "./types";
+import type { ChatView, ThreadRecord } from "./types";
 import {
   exportAsJSON,
   exportAsJSONL,
@@ -410,7 +410,7 @@ export function ThreadSidebar({
               <Collapsible defaultOpen={true}>
                 <div className="flex items-center justify-between">
                   <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground/80 hover:text-foreground">
-                    <ChevronRightIcon className="size-3 transition-transform [[data-state=open]>&]:rotate-90" />
+                    <ChevronRightIcon className="size-3 transition-transform [[data-state=open]_&]:rotate-90" />
                     <FolderIcon className="size-3" />
                     {folder.name}
                     <span className="text-muted-foreground/50">({folderItems.length})</span>
