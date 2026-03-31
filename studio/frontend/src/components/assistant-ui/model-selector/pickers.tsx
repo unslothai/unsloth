@@ -885,7 +885,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && chatOnly && customFolderModels.length > 0 ? (
+          {!showHfSection && customFolderModels.length > 0 ? (
             <>
               <ListLabel>Custom Folders</ListLabel>
               {customFolderModels.map((m) => {
