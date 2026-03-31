@@ -593,7 +593,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
-    def test_version_unreadable_prints_warning(self, mock_ver, mock_gpu, mock_pip, capsys):
+    def test_version_unreadable_prints_warning(
+        self, mock_ver, mock_gpu, mock_pip, capsys
+    ):
         """ROCm detected but version unreadable should print warning and skip."""
         with patch("os.path.isdir", return_value = True):
             _ensure_rocm_torch()
