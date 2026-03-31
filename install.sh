@@ -800,18 +800,21 @@ if [ "$_MIGRATED" = true ]; then
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index
     echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
-    uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
+    uv pip install --python "$_VENV_PY" "torch>=2.4,<2.12.0" torchvision torchaudio \
         --index-url "$TORCH_INDEX_URL"
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     echo "==> Installing unsloth (this may take a few minutes)..."
+    # Use extra-index-url to include torch index while still checking PyPI for unsloth
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo \
+            --extra-index-url "$TORCH_INDEX_URL"
         echo "==> Overlaying local repo (editable)..."
         uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$PACKAGE_NAME"
+            --upgrade-package unsloth "$PACKAGE_NAME" \
+            --extra-index-url "$TORCH_INDEX_URL"
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
