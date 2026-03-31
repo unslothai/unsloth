@@ -490,8 +490,7 @@ if (-not $HasNvidiaSmi) {
 if (-not $HasNvidiaSmi) {
     Write-Host ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
-    Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
-    Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
+    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
     Write-Host ""
 } else {
     step "gpu" "NVIDIA GPU detected"
