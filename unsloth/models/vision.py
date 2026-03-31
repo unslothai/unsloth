@@ -609,7 +609,19 @@ class FastBaseModel:
         except Exception:
             model_class = None
 
-        attn_impl = determine_attention_implementation(model_class, auto_config)
+        model_type = str(getattr(auto_config, "model_type", "")).lower()
+        if model_type.startswith("gemma3n"):
+            # Gemma3N variants use timm-based vision towers which do not support
+            # flex_attention. The old code defaulted gemma3n to eager; preserve
+            # that behavior rather than letting the hierarchy pick sdpa.
+            attn_impl = "eager"
+        elif model_class is None and supports_sdpa:
+            # When model_class cannot be resolved (remote-code or unmapped
+            # configs), the old code defaulted to sdpa. Preserve that fallback
+            # instead of falling through to eager.
+            attn_impl = "sdpa"
+        else:
+            attn_impl = determine_attention_implementation(model_class, auto_config)
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
         # FP8 weights. We just need to update it here for sanity.
@@ -623,7 +635,7 @@ class FastBaseModel:
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = attn_impl
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
-            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
                 print(
                     f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
                 )
