@@ -224,7 +224,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
-  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 10),
+  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 25),
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,

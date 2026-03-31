@@ -344,7 +344,7 @@ class ChatCompletionRequest(BaseModel):
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
     max_tool_calls_per_message: Optional[int] = Field(
-        10,
+        25,
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
