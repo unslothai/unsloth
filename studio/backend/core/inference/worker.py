@@ -148,8 +148,11 @@ def _get_hf_download_state(
             for name in model_names:
                 if not name:
                     continue
-                # Skip local filesystem paths
-                if os.path.sep in name or name.startswith((".", "/")):
+                # Skip local filesystem paths -- HF model IDs use forward
+                # slashes (org/model) but never start with / . ~ or contain
+                # backslashes. This distinguishes them from absolute paths,
+                # relative paths, and Windows paths.
+                if name.startswith(("/", ".", "~")) or "\\" in name:
                     continue
                 # HF cache dir format: models--org--name (slashes -> --)
                 cache_dir_name = "models--" + name.replace("/", "--")
