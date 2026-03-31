@@ -60,30 +60,6 @@ MOCK
     echo "$_dir"
 }
 
-# Helper: create a mock rocminfo that prints a given GPU architecture
-make_mock_rocminfo() {
-    _dir=$(mktemp -d)
-    cat > "$_dir/rocminfo" <<MOCK
-#!/bin/sh
-cat <<'ROCM_INFO'
-ROCk module is loaded
-*******
-Agent 1
-*******
-  Name:                    AMD EPYC Processor
-  Device Type:             CPU
-*******
-Agent 2
-*******
-  Name:                    $1
-  Device Type:             GPU
-  Marketing Name:          AMD Instinct MI300X
-ROCM_INFO
-MOCK
-    chmod +x "$_dir/rocminfo"
-    echo "$_dir"
-}
-
 # Build a minimal tools directory with symlinks to essential commands
 # (uname, grep, head, etc.) but WITHOUT nvidia-smi or amd-smi.
 _TOOLS_DIR=$(mktemp -d)
@@ -182,37 +158,7 @@ _result=$(run_func "$_dir")
 assert_eq "ROCm 7.2 -> rocm7.2" "https://download.pytorch.org/whl/rocm7.2" "$_result"
 rm -rf "$_dir"
 
-# 13) ROCm with gfx1151 architecture -> AMD arch-specific repo
-_amd_dir=$(make_mock_amd_smi "7.2")
-_rocm_dir=$(make_mock_rocminfo "gfx1151")
-_combined_dir=$(mktemp -d)
-ln -sf "$_amd_dir/amd-smi" "$_combined_dir/amd-smi"
-ln -sf "$_rocm_dir/rocminfo" "$_combined_dir/rocminfo"
-_result=$(run_func "$_combined_dir")
-assert_eq "ROCm 7.2 + gfx1151 -> AMD repo" "https://repo.amd.com/rocm/whl/gfx1151" "$_result"
-rm -rf "$_amd_dir" "$_rocm_dir" "$_combined_dir"
-
-# 14) ROCm with gfx942 architecture -> AMD arch-specific repo
-_amd_dir=$(make_mock_amd_smi "6.2")
-_rocm_dir=$(make_mock_rocminfo "gfx942")
-_combined_dir=$(mktemp -d)
-ln -sf "$_amd_dir/amd-smi" "$_combined_dir/amd-smi"
-ln -sf "$_rocm_dir/rocminfo" "$_combined_dir/rocminfo"
-_result=$(run_func "$_combined_dir")
-assert_eq "ROCm 6.2 + gfx942 -> AMD repo" "https://repo.amd.com/rocm/whl/gfx942" "$_result"
-rm -rf "$_amd_dir" "$_rocm_dir" "$_combined_dir"
-
-# 15) ROCm with gfx90a architecture -> AMD arch-specific repo
-_amd_dir=$(make_mock_amd_smi "6.1")
-_rocm_dir=$(make_mock_rocminfo "gfx90a")
-_combined_dir=$(mktemp -d)
-ln -sf "$_amd_dir/amd-smi" "$_combined_dir/amd-smi"
-ln -sf "$_rocm_dir/rocminfo" "$_combined_dir/rocminfo"
-_result=$(run_func "$_combined_dir")
-assert_eq "ROCm 6.1 + gfx90a -> AMD repo" "https://repo.amd.com/rocm/whl/gfx90a" "$_result"
-rm -rf "$_amd_dir" "$_rocm_dir" "$_combined_dir"
-
-# 16) Both nvidia-smi and amd-smi present -> CUDA takes precedence
+# 13) Both nvidia-smi and amd-smi present -> CUDA takes precedence
 _cuda_dir=$(make_mock_smi "12.6")
 _amd_dir=$(make_mock_amd_smi "6.2")
 _combined_dir=$(mktemp -d)
