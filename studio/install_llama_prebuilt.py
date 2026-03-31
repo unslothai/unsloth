@@ -1439,8 +1439,8 @@ def detect_host() -> HostInfo:
             shutil.which("amd-smi"),
             shutil.which("rocm-smi"),
         ]
-        rocm_paths = ["/opt/rocm", os.environ.get("ROCM_PATH", "")]
-        if any(rocm_hints) or any(os.path.isdir(p) for p in rocm_paths if p):
+        rocm_paths = [p for p in ("/opt/rocm", os.environ.get("ROCM_PATH")) if p]
+        if any(rocm_hints) or any(os.path.isdir(p) for p in rocm_paths):
             has_rocm = True
 
     return HostInfo(
