@@ -68,6 +68,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 
 #### Update
+To update, use the same install commands as above. Or run (does not work on Windows):
 ```bash
 unsloth studio update
 ```
@@ -82,61 +83,8 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
   unsloth/unsloth
   ```
 
-#### Developer installs: macOS, Linux, WSL:
-```bash
-git clone https://github.com/unslothai/unsloth
-cd unsloth
-./install.sh --local
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to update :
-```bash
-unsloth studio update --local
-```
-
-#### Developer installs: Windows PowerShell:
-```powershell
-git clone https://github.com/unslothai/unsloth.git
-cd unsloth
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1 --local
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to update :
-```bash
-unsloth studio update --local
-```
-
-#### Nightly: MacOS, Linux, WSL:
-```bash
-git clone https://github.com/unslothai/unsloth
-cd unsloth
-git checkout nightly
-./install.sh --local
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to launch every time:
-```bash
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
-#### Nightly: Windows:
-Run in Windows Powershell:
-```bash
-git clone https://github.com/unslothai/unsloth.git
-cd unsloth
-git checkout nightly
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1 --local
-unsloth studio -H 0.0.0.0 -p 8888
-```
-Then to launch every time:
-```bash
-unsloth studio -H 0.0.0.0 -p 8888
-```
-
-#### Uninstall
-You can uninstall Unsloth Studio by deleting its folder. For example, run `rm -rf ~/.unsloth/studio`. Only use `rm -rf ~/.unsloth/` if you want to remove all Unsloth files, not just Studio.
+#### Developer, Nightly, Uninstall
+To see developer, nightly and uninstallation etc. instructions, see [advanced installation](#-advanced-installation).
 
 ### Unsloth Core (code-based)
 #### Linux, WSL:
@@ -193,6 +141,76 @@ Train for free with our notebooks. Read our [guide](https://unsloth.ai/docs/get-
 - **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning)
 - **FP8 & Vision RL**: You can now do FP8 & VLM GRPO on consumer GPUs. [FP8 Blog](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) • [Vision RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/vision-reinforcement-learning-vlm-rl)
 - **gpt-oss** by OpenAI: Read our [RL blog](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/gpt-oss-reinforcement-learning), [Flex Attention](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/long-context-gpt-oss-training) blog and [Guide](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune).
+
+## 📥 Advanced Installation
+The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
+#### Developer installs: macOS, Linux, WSL:
+```bash
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+./install.sh --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update
+```
+
+#### Developer installs: Windows PowerShell:
+```powershell
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to update :
+```bash
+unsloth studio update
+```
+
+#### Nightly: MacOS, Linux, WSL:
+```bash
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+git checkout nightly
+./install.sh --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch every time:
+```bash
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Nightly: Windows:
+Run in Windows Powershell:
+```bash
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+git checkout nightly
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
+unsloth studio -H 0.0.0.0 -p 8888
+```
+Then to launch every time:
+```bash
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+#### Uninstall
+You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
+
+* ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
+* ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
+
+For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
+
+#### Deleting model files
+
+You can delete old model files either from the bin icon in model search or by removing the relevant cached model folder from the default Hugging Face cache directory. By default, HF uses:
+
+* ​ **MacOS, Linux, WSL:** `~/.cache/huggingface/hub/`
+* ​ **Windows:** `%USERPROFILE%\.cache\huggingface\hub\`
 
 ## 💚 Community and Links
 | Type                                                                                                                                      | Links                                                                          |

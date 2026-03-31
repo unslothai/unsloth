@@ -150,7 +150,9 @@ type ChatRuntimeStore = {
   modelsError: string | null;
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
+  ggufMaxContextLength: number | null;
   supportsReasoning: boolean;
+  reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
   supportsTools: boolean;
   toolsEnabled: boolean;
@@ -212,7 +214,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   modelsError: null,
   activeGgufVariant: null,
   ggufContextLength: null,
+  ggufMaxContextLength: null,
   supportsReasoning: false,
+  reasoningAlwaysOn: false,
   reasoningEnabled: true,
   supportsTools: false,
   toolsEnabled: false,
@@ -285,6 +289,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: null,
       ggufContextLength: null,
+      ggufMaxContextLength: null,
       contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,
