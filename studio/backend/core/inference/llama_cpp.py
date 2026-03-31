@@ -10,7 +10,6 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
-import hashlib
 import json
 import re
 import struct
@@ -2181,22 +2180,6 @@ class LlamaCppBackend:
         # identical call succeeded).
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
 
-        def _tool_call_key(name: str, args: dict) -> str:
-            raw = json.dumps({"t": name, "a": args}, sort_keys = True)
-            return hashlib.md5(raw.encode()).hexdigest()
-
-        def _is_duplicate_call(name: str, args: dict) -> bool:
-            """Block if the immediately previous call was identical and succeeded."""
-            if not _tool_call_history:
-                return False
-            key = _tool_call_key(name, args)
-            last_key, last_failed = _tool_call_history[-1]
-            return last_key == key and not last_failed
-
-        def _record_tool_call(name: str, args: dict, failed: bool) -> None:
-            key = _tool_call_key(name, args)
-            _tool_call_history.append((key, failed))
-
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -2692,7 +2675,12 @@ class LlamaCppBackend:
                     }
 
                     # ── Duplicate call detection ──────────────
-                    if _is_duplicate_call(tool_name, arguments):
+                    # str(dict) is stable here: arguments always comes from
+                    # json.loads on the same model output within one request,
+                    # so insertion order is deterministic (Python 3.7+).
+                    _tc_key = tool_name + str(arguments)
+                    _prev = _tool_call_history[-1] if _tool_call_history else None
+                    if _prev and _prev[0] == _tc_key and not _prev[1]:
                         result = (
                             "You already made this exact call. "
                             "Do not repeat the same tool call. "
@@ -2734,7 +2722,7 @@ class LlamaCppBackend:
                     _is_error = isinstance(result, str) and result.lstrip().startswith(
                         _error_prefixes
                     )
-                    _record_tool_call(tool_name, arguments, failed = _is_error)
+                    _tool_call_history.append((_tc_key, _is_error))
                     _result_content = result
                     if _is_error:
                         _result_content = (
