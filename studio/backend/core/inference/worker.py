@@ -212,10 +212,7 @@ def _start_heartbeat(
             # stalls on already-cached models, local models, or during
             # post-download initialization (quantization, GPU loading).
             stalled_for = now - last_change
-            if (
-                saw_download_activity
-                and stalled_for >= stall_timeout
-            ):
+            if saw_download_activity and stalled_for >= stall_timeout:
                 _send_response(
                     resp_queue,
                     {
