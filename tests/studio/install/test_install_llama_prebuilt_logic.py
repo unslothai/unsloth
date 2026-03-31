@@ -36,6 +36,7 @@ source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
 install_prebuilt = INSTALL_LLAMA_PREBUILT.install_prebuilt
 write_prebuilt_metadata = INSTALL_LLAMA_PREBUILT.write_prebuilt_metadata
 existing_install_matches_plan = INSTALL_LLAMA_PREBUILT.existing_install_matches_plan
+existing_install_matches_choice = INSTALL_LLAMA_PREBUILT.existing_install_matches_choice
 
 
 def approved_checksums_for(
@@ -707,6 +708,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         release_tag,
         approved_checksums,
         initial_fallback_used = False,
+        existing_install_dir = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -1398,6 +1400,444 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
         AssertionError, match = "unhealthy install must continue into normal install flow"
     ):
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+
+def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    latest_choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-2",
+        name = "llama-b9002-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9002-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "c" * 64,
+    )
+    fallback_choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    latest_checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-2",
+        upstream_tag = "b9002",
+        source_commit = "beadfeed",
+        artifacts = {
+            source_archive_logical_name("b9002"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9002"),
+                sha256 = "d" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            latest_choice.name: ApprovedArtifactHash(
+                asset_name = latest_choice.name,
+                sha256 = latest_choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    fallback_checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            fallback_choice.name: ApprovedArtifactHash(
+                asset_name = fallback_choice.name,
+                sha256 = fallback_choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    latest_plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9002",
+        release_tag = "release-2",
+        attempts = [latest_choice],
+        approved_checksums = latest_checksums,
+    )
+    fallback_plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [fallback_choice],
+        approved_checksums = fallback_checksums,
+    )
+
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = fallback_choice,
+        approved_checksums = fallback_checksums,
+        prebuilt_fallback_used = True,
+    )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: (
+            "latest",
+            [latest_plan, fallback_plan],
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda probe_path, cache_path: probe_path.write_bytes(b"probe"),
+    )
+
+    call_log: list[str] = []
+
+    def fake_validate(
+        attempts,
+        host,
+        install_dir,
+        work_dir,
+        probe_path,
+        *,
+        requested_tag,
+        llama_tag,
+        release_tag,
+        approved_checksums,
+        initial_fallback_used = False,
+        existing_install_dir = None,
+    ):
+        call_log.append(llama_tag)
+        raise PrebuiltFallback("validation failed for latest release")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "activate_install_tree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("matching fallback install should not reactivate")
+        ),
+    )
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert call_log == ["b9002"]
+
+
+def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    first_choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64-bad.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64-bad.tar.gz",
+        source_label = "published",
+        install_kind = "linux-cpu",
+        expected_sha256 = "c" * 64,
+    )
+    fallback_choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64-good.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64-good.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            first_choice.name: ApprovedArtifactHash(
+                asset_name = first_choice.name,
+                sha256 = first_choice.expected_sha256,
+                repo = "unslothai/llama.cpp",
+                kind = "prebuilt",
+            ),
+            fallback_choice.name: ApprovedArtifactHash(
+                asset_name = fallback_choice.name,
+                sha256 = fallback_choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [first_choice, fallback_choice],
+        approved_checksums = checksums,
+    )
+
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = fallback_choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = True,
+    )
+    assert existing_install_matches_choice(
+        install_dir,
+        host,
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = fallback_choice,
+        approved_checksums = checksums,
+    ) is True
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: (
+            "latest",
+            [plan],
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda probe_path, cache_path: probe_path.write_bytes(b"probe"),
+    )
+
+    attempted_names: list[str] = []
+
+    def fake_validate_choice(
+        choice,
+        host,
+        staging_dir,
+        work_dir,
+        probe_path,
+        *,
+        requested_tag,
+        llama_tag,
+        release_tag,
+        approved_checksums,
+        prebuilt_fallback_used,
+        quantized_path,
+    ):
+        attempted_names.append(choice.name)
+        if choice.name == first_choice.name:
+            raise PrebuiltFallback("newest candidate failed")
+        raise AssertionError("installed fallback candidate should have been skipped")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_choice",
+        fake_validate_choice,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "activate_install_tree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("installed fallback candidate should not be activated")
+        ),
+    )
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert attempted_names == [first_choice.name]
+
+
+def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+
+    same_tag_upstream_choice = AssetChoice(
+        repo = "ggml-org/llama.cpp",
+        tag = "b9002",
+        name = "llama-b9002-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9002-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    older_release_choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "b" * 64,
+    )
+    latest_plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9002",
+        release_tag = "release-2",
+        attempts = [same_tag_upstream_choice],
+        approved_checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = "release-2",
+            upstream_tag = "b9002",
+            source_commit = None,
+            artifacts = {},
+        ),
+    )
+    older_plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [older_release_choice],
+        approved_checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = "release-1",
+            upstream_tag = "b9001",
+            source_commit = None,
+            artifacts = {},
+        ),
+    )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: (
+            "latest",
+            [latest_plan, older_plan],
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda probe_path, cache_path: probe_path.write_bytes(b"probe"),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "latest_upstream_release_tag",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("install fallback should not walk upstream releases")
+        ),
+    )
+
+    attempted = []
+
+    def fake_validate(
+        attempts,
+        host,
+        install_dir,
+        work_dir,
+        probe_path,
+        *,
+        requested_tag,
+        llama_tag,
+        release_tag,
+        approved_checksums,
+        initial_fallback_used = False,
+        existing_install_dir = None,
+    ):
+        attempted.append((llama_tag, release_tag, attempts[0].source_label))
+        if llama_tag == "b9002":
+            raise PrebuiltFallback("same-tag upstream asset failed validation")
+        staging_dir = create_install_staging_dir(install_dir)
+        (staging_dir / "marker.txt").write_text("ready\n")
+        return attempts[0], staging_dir, initial_fallback_used
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "validate_prebuilt_attempts", fake_validate)
+
+    activated = {}
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "activate_install_tree",
+        lambda staging_dir, install_dir, host: activated.update(
+            {"staging_dir": staging_dir, "install_dir": install_dir}
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "ensure_converter_scripts",
+        lambda install_dir, llama_tag: None,
+    )
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert attempted == [
+        ("b9002", "release-2", "upstream"),
+        ("b9001", "release-1", "upstream"),
+    ]
+    assert activated["install_dir"] == install_dir
 
 
 def io_bytes(data: bytes):

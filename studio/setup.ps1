@@ -1606,20 +1606,6 @@ if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
     $fallbackExit = $LASTEXITCODE
     $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
         ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
-    } elseif ($RequestedLlamaTag -eq "latest") {
-        # Try Unsloth release repo first, then fall back to ggml-org upstream
-        $resolvedLatest = $null
-        try {
-            $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$HelperReleaseRepo/releases/latest" -ErrorAction Stop
-            $resolvedLatest = $latestRelease.tag_name
-        } catch {}
-        if (-not $resolvedLatest) {
-            try {
-                $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -ErrorAction Stop
-                $resolvedLatest = $latestRelease.tag_name
-            } catch {}
-        }
-        if ($resolvedLatest) { $resolvedLatest } else { $RequestedLlamaTag }
     } else {
         $RequestedLlamaTag
     }

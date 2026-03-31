@@ -44,6 +44,20 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
+
+def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
 APPROVED_PREBUILT_LLAMA_TAG = "b8508"
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
 DEFAULT_PUBLISHED_REPO = os.environ.get(
@@ -73,8 +87,10 @@ HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 SERVER_PORT_BIND_ATTEMPTS = 3
 SERVER_BIND_RETRY_WINDOW_SECONDS = 5.0
 TTY_PROGRESS_START_DELAY_SECONDS = 0.5
-DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = max(
-    1, int(os.environ.get("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "3"))
+DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
+    "UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS",
+    2,
+    minimum = 1,
 )
 
 
@@ -196,6 +212,13 @@ class PrebuiltFallback(RuntimeError):
 
 class BusyInstallConflict(RuntimeError):
     pass
+
+
+class ExistingInstallSatisfied(RuntimeError):
+    def __init__(self, choice: AssetChoice, used_fallback: bool):
+        super().__init__(f"existing install already matches candidate {choice.name}")
+        self.choice = choice
+        self.used_fallback = used_fallback
 
 
 def _os_error_messages(exc: BaseException) -> list[str]:
@@ -3687,14 +3710,16 @@ def runtime_payload_is_healthy(
     return True
 
 
-def existing_install_matches_plan(
+def existing_install_matches_choice(
     install_dir: Path,
     host: HostInfo,
-    plan: InstallReleasePlan,
+    *,
+    llama_tag: str,
+    release_tag: str,
+    choice: AssetChoice,
+    approved_checksums: ApprovedReleaseChecksums,
 ) -> bool:
     if not install_dir.exists():
-        return False
-    if not plan.attempts:
         return False
     if not install_tree_is_healthy(install_dir, host):
         return False
@@ -3703,14 +3728,13 @@ def existing_install_matches_plan(
     if metadata is None:
         return False
 
-    choice = plan.attempts[0]
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
     expected_fingerprint = expected_install_fingerprint(
-        llama_tag = plan.llama_tag,
-        release_tag = plan.release_tag,
+        llama_tag = llama_tag,
+        release_tag = release_tag,
         choice = choice,
-        approved_checksums = plan.approved_checksums,
+        approved_checksums = approved_checksums,
     )
     if not expected_fingerprint:
         return False
@@ -3723,9 +3747,9 @@ def existing_install_matches_plan(
         return False
 
     expected_pairs = {
-        "release_tag": plan.release_tag,
-        "published_repo": plan.approved_checksums.repo,
-        "tag": plan.llama_tag,
+        "release_tag": release_tag,
+        "published_repo": approved_checksums.repo,
+        "tag": llama_tag,
         "asset": choice.name,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
@@ -3737,6 +3761,23 @@ def existing_install_matches_plan(
         if metadata.get(key) != expected:
             return False
     return True
+
+
+def existing_install_matches_plan(
+    install_dir: Path,
+    host: HostInfo,
+    plan: InstallReleasePlan,
+) -> bool:
+    if not plan.attempts:
+        return False
+    return existing_install_matches_choice(
+        install_dir,
+        host,
+        llama_tag = plan.llama_tag,
+        release_tag = plan.release_tag,
+        choice = plan.attempts[0],
+        approved_checksums = plan.approved_checksums,
+    )
 
 
 def validate_prebuilt_choice(
@@ -3813,6 +3854,7 @@ def validate_prebuilt_attempts(
     release_tag: str,
     approved_checksums: ApprovedReleaseChecksums,
     initial_fallback_used: bool = False,
+    existing_install_dir: Path | None = None,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -3827,6 +3869,20 @@ def validate_prebuilt_attempts(
                 f"{attempt.name} install_kind={attempt.install_kind} "
                 f"runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
             )
+
+        if existing_install_dir is not None and existing_install_matches_choice(
+            existing_install_dir,
+            host,
+            llama_tag = llama_tag,
+            release_tag = release_tag,
+            choice = attempt,
+            approved_checksums = approved_checksums,
+        ):
+            log(
+                "existing llama.cpp install already matches fallback candidate "
+                f"{attempt.name}; skipping reinstall"
+            )
+            raise ExistingInstallSatisfied(attempt, tried_fallback)
 
         staging_dir = create_install_staging_dir(install_dir)
         quantized_path = work_dir / f"stories260K-q4-{index}.gguf"
@@ -3907,6 +3963,12 @@ def install_prebuilt(
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
+                    if existing_install_matches_plan(install_dir, host, plan):
+                        log(
+                            "existing llama.cpp install already matches fallback release "
+                            f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
+                        )
+                        return
                     log(
                         "selected "
                         f"{choice.name} ({choice.source_label}) from published release "
@@ -3924,7 +3986,10 @@ def install_prebuilt(
                             release_tag = plan.release_tag,
                             approved_checksums = plan.approved_checksums,
                             initial_fallback_used = release_index > 0,
+                            existing_install_dir = install_dir,
                         )
+                    except ExistingInstallSatisfied:
+                        return
                     except PrebuiltFallback as exc:
                         if release_index == release_count - 1:
                             raise

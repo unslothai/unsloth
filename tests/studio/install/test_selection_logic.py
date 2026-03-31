@@ -59,6 +59,7 @@ resolve_install_attempts = INSTALL_LLAMA_PREBUILT.resolve_install_attempts
 resolve_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_install_release_plans
 resolve_published_release = INSTALL_LLAMA_PREBUILT.resolve_published_release
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
+env_int = INSTALL_LLAMA_PREBUILT.env_int
 
 
 # ---------------------------------------------------------------------------
@@ -1300,6 +1301,25 @@ class TestResolveInstallReleasePlans:
         assert len(plans) == 1
         assert plans[0].release_tag == "r1"
         assert plans[0].llama_tag == "b9001"
+
+    def test_malformed_release_fallback_env_uses_default(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "not-an-int")
+        assert env_int("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", 3, minimum = 1) == 3
+
+    def test_import_with_malformed_release_fallback_env_does_not_crash(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "bad-value")
+        spec = importlib.util.spec_from_file_location(
+            "studio_install_llama_prebuilt_env_reload",
+            MODULE_PATH,
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+            assert module.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS == 3
+        finally:
+            sys.modules.pop(spec.name, None)
 
 
 # ===========================================================================
