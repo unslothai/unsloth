@@ -105,6 +105,7 @@ export function ExportPage() {
   const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const debouncedModelQuery = useDebouncedValue(modelInput);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(null);
   const [quantLevels, setQuantLevels] = useState<string[]>([]);
@@ -205,7 +206,7 @@ export function ExportPage() {
     isLoading: isLoadingHfModels,
     error: hfSearchError,
   } = useHfModelSearch(debouncedModelQuery, {
-    accessToken: hfToken || undefined,
+    accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
