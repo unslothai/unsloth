@@ -33,6 +33,9 @@ _BLOCK_TAGS = frozenset(
         "figcaption",
         "details",
         "summary",
+        "dl",
+        "dt",
+        "dd",
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
@@ -91,6 +94,8 @@ class _MarkdownRenderer(HTMLParser):
     # ------------------------------------------------------------------
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
+        # Strip trailing whitespace first, then collapse blank lines
+        content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
         content = re.sub(r"\n{3,}", "\n\n", content).strip()
         if not content:
             return ""
@@ -187,7 +192,12 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "ol":
             self._list_stack.append("ol")
-            self._ol_counter.append(0)
+            start_attr = attr_dict.get("start")
+            try:
+                start = int(start_attr) if start_attr is not None else 1
+            except (ValueError, TypeError):
+                start = 1
+            self._ol_counter.append(start - 1)
             self._emit("\n")
 
         elif tag == "li":
@@ -340,6 +350,10 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_link:
             self._finish_link()
 
+        if self._in_inline_code:
+            self._in_inline_code = False
+            self._emit("`")
+
         self._finish_cell()
         self._finish_row()
 
@@ -365,12 +379,39 @@ class _MarkdownRenderer(HTMLParser):
 # Post-processing
 # ------------------------------------------------------------------
 def _cleanup(text: str) -> str:
-    """Normalize whitespace and blank lines in the final output."""
-    # Collapse runs of 3+ newlines into 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    # Remove trailing spaces/tabs on each line
-    text = re.sub(r"[ \t]+$", "", text, flags = re.MULTILINE)
-    return text.strip()
+    """Normalize whitespace and blank lines in the final output.
+
+    Preserves content inside fenced code blocks verbatim so that
+    intentional blank lines in ``<pre>`` content are not collapsed.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    in_fence = False
+    blank_run = 0
+
+    for line in lines:
+        stripped = line.rstrip(" \t")
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            blank_run = 0
+            out.append(stripped)
+            continue
+
+        if in_fence:
+            # Preserve code block content exactly as-is
+            out.append(line)
+            continue
+
+        if not stripped:
+            blank_run += 1
+            if blank_run <= 1:
+                out.append("")
+            continue
+
+        blank_run = 0
+        out.append(stripped)
+
+    return "\n".join(out).strip()
 
 
 # ------------------------------------------------------------------
