@@ -141,6 +141,7 @@ def _start_heartbeat(
     resp_queue: Any,
     interval: float = 30.0,
     stall_timeout: float = 180.0,
+    xet_disabled: bool = False,
 ) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
 
@@ -151,6 +152,7 @@ def _start_heartbeat(
     Returns a stop event — set it to terminate the heartbeat thread.
     """
     stop = threading.Event()
+    transport = "https" if xet_disabled else "xet"
 
     def _beat():
         last_size = _get_hf_cache_size()
@@ -171,8 +173,8 @@ def _start_heartbeat(
                     {
                         "type": "stall",
                         "message": (
-                            f"Download stalled — no progress for "
-                            f"{int(stalled_for)}s"
+                            f"Download appears stalled ({transport} transport) "
+                            f"— no progress for {int(stalled_for)}s"
                         ),
                         "ts": time.time(),
                     },
@@ -184,7 +186,7 @@ def _start_heartbeat(
                 resp_queue,
                 {
                     "type": "status",
-                    "message": "Still loading model...",
+                    "message": f"Loading model ({transport} transport)...",
                     "ts": time.time(),
                 },
             )
@@ -255,7 +257,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Send heartbeats every 30s so the orchestrator knows we're still alive
         # (download / weight loading can take a long time on slow connections)
-        heartbeat_stop = _start_heartbeat(resp_queue, interval = 30.0)
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
+        heartbeat_stop = _start_heartbeat(
+            resp_queue, interval = 30.0, xet_disabled = xet_disabled,
+        )
         try:
             success = backend.load_model(
                 config = mc,
