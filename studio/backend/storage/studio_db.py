@@ -464,10 +464,14 @@ def add_scan_folder(path: str) -> dict:
             conn.commit()
         except sqlite3.IntegrityError:
             pass  # duplicate -- fall through to SELECT
-        row = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
-            (normalized,),
-        ).fetchone()
+        # Use the same collation as the pre-check so we find the row even
+        # when a concurrent writer stored it with different casing (Windows).
+        fallback_sql = (
+            "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            if is_win
+            else "SELECT id, path, created_at FROM scan_folders WHERE path = ?"
+        )
+        row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
             raise ValueError("Folder was concurrently removed")
         return dict(row)
