@@ -21,7 +21,7 @@ const MAX_CONCURRENT = 3;
 
 // Extend ModelEntry with the additional fields we always request so callers
 // do not need unsafe casts to access safetensors/tags.
-type CachedResult = ModelEntry & {
+export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
   tags?: string[];
 };
@@ -66,6 +66,12 @@ function release() {
 // cache entry covers all callers (e.g. ["safetensors"] and ["safetensors","tags"]).
 const ALL_FIELDS: ("safetensors" | "tags")[] = ["safetensors", "tags"];
 
+function isStale(key: string): boolean {
+  const hit = cache.get(key);
+  if (!hit) return true;
+  return Date.now() - hit.ts >= CACHE_TTL_MS;
+}
+
 function cacheKey(name: string, token: string | undefined): string {
   if (!token) {
     return `${name}::anon`;
@@ -103,10 +109,7 @@ export function primeCacheFromListing(
 ): void {
   if (!name) return;
   const key = cacheKey(name, token);
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
-    return; // already fresh, don't overwrite
-  }
+  if (!isStale(key)) return; // already fresh, don't overwrite
   cache.set(key, { data, ts: Date.now() });
 }
 
@@ -117,9 +120,8 @@ export async function cachedModelInfo(
   const key = cacheKey(params.name, token);
 
   // 1. Return from cache if fresh
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
-    return hit.data;
+  if (!isStale(key)) {
+    return cache.get(key)!.data;
   }
 
   // 2. Share in-flight request if one exists
@@ -145,7 +147,7 @@ export async function cachedModelInfo(
       const r = result as CachedResult & { gated?: false | "auto" | "manual"; private?: boolean };
       if (token && !r.private && !r.gated) {
         const anonKey = cacheKey(params.name, undefined);
-        if (!cache.has(anonKey) || Date.now() - (cache.get(anonKey)?.ts ?? 0) >= CACHE_TTL_MS) {
+        if (isStale(anonKey)) {
           cache.set(anonKey, entry);
         }
       }

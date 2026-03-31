@@ -3,7 +3,7 @@
 
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
-import { cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
+import { type CachedResult, cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
@@ -116,10 +116,9 @@ function primeFromListing(
   accessToken: string | undefined,
   model: unknown,
 ): void {
-  const data = model as Parameters<typeof primeCacheFromListing>[2];
-  const r = model as { gated?: false | "auto" | "manual"; private?: boolean };
+  const data = model as CachedResult;
   primeCacheFromListing(name, accessToken, data);
-  if (accessToken && !r.private && !r.gated) {
+  if (accessToken && !data.private && !data.gated) {
     primeCacheFromListing(name, undefined, data);
   }
 }
