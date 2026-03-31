@@ -10,6 +10,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
+import hashlib
 import json
 import re
 import struct
@@ -2178,13 +2179,11 @@ class LlamaCppBackend:
         # where the model repeats the exact same call.  Retries after
         # a transient failure are allowed (only block when the previous
         # identical call succeeded).
-        import hashlib as _hl
-
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
 
         def _tool_call_key(name: str, args: dict) -> str:
             raw = json.dumps({"t": name, "a": args}, sort_keys = True)
-            return _hl.md5(raw.encode()).hexdigest()
+            return hashlib.md5(raw.encode()).hexdigest()
 
         def _is_duplicate_call(name: str, args: dict) -> bool:
             """Block if the immediately previous call was identical and succeeded."""
@@ -2197,8 +2196,6 @@ class LlamaCppBackend:
         def _record_tool_call(name: str, args: dict, failed: bool) -> None:
             key = _tool_call_key(name, args)
             _tool_call_history.append((key, failed))
-
-        _hit_tool_cap = False
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -2598,12 +2595,9 @@ class LlamaCppBackend:
                         yield {"type": "status", "text": ""}
                         if content_accum:
                             # Strip leaked tool-call XML before yielding
-                            content_accum = re.sub(
-                                r"<tool_call>.*?</tool_call>",
-                                "",
-                                content_accum,
-                                flags = re.DOTALL,
-                            ).strip()
+                            content_accum = _strip_tool_markup(
+                                content_accum, final = True
+                            )
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _fu = _iter_usage or {}

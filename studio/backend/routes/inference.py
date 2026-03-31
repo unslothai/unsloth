@@ -86,8 +86,15 @@ import io
 import wave
 import base64
 import numpy as np
+from datetime import date as _date
 
 router = APIRouter()
+
+# Regex for stripping leaked tool-call XML from assistant messages/stream
+_TOOL_XML_RE = _re.compile(
+    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    _re.DOTALL,
+)
 logger = get_logger(__name__)
 
 
@@ -1083,8 +1090,6 @@ async def openai_chat_completions(
             _has_web = "web_search" in _tool_names
             _has_code = "python" in _tool_names or "terminal" in _tool_names
 
-            from datetime import date as _date
-
             _date_line = f"The current date is {_date.today().isoformat()}."
 
             _web_tips = (
@@ -1136,10 +1141,6 @@ async def openai_chat_completions(
                 gguf_messages.extend(chat_messages)
 
             # ── Strip stale tool-call XML from conversation history ─
-            _TOOL_XML_RE = _re.compile(
-                r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
-                _re.DOTALL,
-            )
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(
                     _msg.get("content"), str
@@ -1226,11 +1227,13 @@ async def openai_chat_completions(
                             continue
 
                         # "content" type -- cumulative text
+                        # Sanitize the full cumulative then diff against
+                        # the last sanitized snapshot so cross-chunk XML
+                        # tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        raw_delta = raw_cumulative[len(prev_text) :]
-                        prev_text = raw_cumulative
-                        # Strip leaked tool-call XML from the delta only
-                        new_text = _TOOL_XML_RE.sub("", raw_delta)
+                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        new_text = clean_cumulative[len(prev_text) :]
+                        prev_text = clean_cumulative
                         if not new_text:
                             continue
                         chunk = ChatCompletionChunk(
