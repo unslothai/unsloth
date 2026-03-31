@@ -115,15 +115,70 @@ def _build_model_config(config: dict):
     return mc
 
 
-def _start_heartbeat(resp_queue: Any, interval: float = 30.0) -> threading.Event:
+def _get_hf_cache_size() -> int:
+    """Return total bytes of blobs in the HF Hub cache directory."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        cache = Path(HF_HUB_CACHE)
+        if not cache.exists():
+            return 0
+        # Blobs dir holds the actual downloaded files (symlinked from snapshots)
+        blobs_dirs = list(cache.glob("models--*/blobs"))
+        total = 0
+        for bdir in blobs_dirs:
+            for f in bdir.iterdir():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+
+def _start_heartbeat(
+    resp_queue: Any,
+    interval: float = 30.0,
+    stall_timeout: float = 180.0,
+) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
+
+    Monitors the HF Hub cache directory for growth. If the cache size
+    has not changed for *stall_timeout* seconds, sends a ``"stall"``
+    message so the orchestrator can retry with ``HF_HUB_DISABLE_XET=1``.
 
     Returns a stop event — set it to terminate the heartbeat thread.
     """
     stop = threading.Event()
 
     def _beat():
+        last_size = _get_hf_cache_size()
+        last_change = time.monotonic()
+
         while not stop.wait(interval):
+            current_size = _get_hf_cache_size()
+            now = time.monotonic()
+
+            if current_size != last_size:
+                last_size = current_size
+                last_change = now
+
+            stalled_for = now - last_change
+            if stalled_for >= stall_timeout:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "stall",
+                        "message": (
+                            f"Download stalled — no progress for "
+                            f"{int(stalled_for)}s"
+                        ),
+                        "ts": time.time(),
+                    },
+                )
+                # Only fire once — the orchestrator will kill us
+                return
+
             _send_response(
                 resp_queue,
                 {
@@ -521,6 +576,10 @@ def run_inference_process(
     os.environ["PYTHONWARNINGS"] = (
         "ignore"  # Suppress warnings at C-level before imports
     )
+
+    if config.get("disable_xet"):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
     import warnings
     from loggers.config import LogConfig

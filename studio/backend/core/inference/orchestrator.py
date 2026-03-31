@@ -33,6 +33,11 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
+
+class DownloadStallError(RuntimeError):
+    """Raised when the worker reports no download progress for too long."""
+    pass
+
 # Dispatcher timeout constants (seconds)
 _DISPATCH_READ_TIMEOUT = 30.0
 _DISPATCH_POLL_INTERVAL = 0.5
@@ -301,6 +306,11 @@ class InferenceOrchestrator:
                 # Reset deadline — subprocess is still alive and working
                 deadline = time.monotonic() + timeout
                 continue
+
+            if rtype == "stall":
+                msg = resp.get("message", "Download stalled")
+                logger.warning("Subprocess reported stall: %s", msg)
+                raise DownloadStallError(msg)
 
             # Other response types during wait — skip
             logger.debug(
@@ -627,36 +637,62 @@ class InferenceOrchestrator:
                 # Dead subprocess — clean up
                 self._shutdown_subprocess(timeout = 2)
 
-            logger.info(
-                "Spawning fresh inference subprocess for '%s' (transformers %s.x)",
-                model_name,
-                needed_major,
-            )
-            self._spawn_subprocess(sub_config)
-            resp = self._wait_response("loaded")
+            disable_xet = sub_config.get("disable_xet", False)
 
-            # Update local state from response
-            if resp.get("success"):
-                self._current_transformers_major = needed_major
-                model_info = resp.get("model_info", {})
-                self.active_model_name = model_info.get("identifier", model_name)
-                self.models[self.active_model_name] = {
-                    "is_vision": model_info.get("is_vision", False),
-                    "is_lora": model_info.get("is_lora", False),
-                    "display_name": model_info.get("display_name", model_name),
-                    "is_audio": model_info.get("is_audio", False),
-                    "audio_type": model_info.get("audio_type"),
-                    "has_audio_input": model_info.get("has_audio_input", False),
-                }
-                self.loading_models.discard(model_name)
-                logger.info("Model '%s' loaded successfully in subprocess", model_name)
-                return True
-            else:
-                error = resp.get("error", "Failed to load model")
-                self.loading_models.discard(model_name)
-                self.active_model_name = None
-                self.models.clear()
-                raise Exception(error)
+            for attempt in range(2):
+                logger.info(
+                    "Spawning fresh inference subprocess for '%s' "
+                    "(transformers %s.x, attempt %d/2%s)",
+                    model_name,
+                    needed_major,
+                    attempt + 1,
+                    ", xet disabled" if disable_xet else "",
+                )
+                if disable_xet:
+                    sub_config["disable_xet"] = True
+                self._spawn_subprocess(sub_config)
+
+                try:
+                    resp = self._wait_response("loaded")
+                except DownloadStallError:
+                    # First stall → retry with Xet disabled
+                    if attempt == 0 and not disable_xet:
+                        logger.warning(
+                            "Download stalled for '%s' — retrying with "
+                            "HF_HUB_DISABLE_XET=1",
+                            model_name,
+                        )
+                        self._shutdown_subprocess(timeout = 5)
+                        disable_xet = True
+                        continue
+                    # Second stall (or already had xet disabled) → give up
+                    raise RuntimeError(
+                        f"Download stalled for '{model_name}' even with "
+                        f"HF_HUB_DISABLE_XET=1 — check your network connection"
+                    )
+
+                # Got a response — check success
+                if resp.get("success"):
+                    self._current_transformers_major = needed_major
+                    model_info = resp.get("model_info", {})
+                    self.active_model_name = model_info.get("identifier", model_name)
+                    self.models[self.active_model_name] = {
+                        "is_vision": model_info.get("is_vision", False),
+                        "is_lora": model_info.get("is_lora", False),
+                        "display_name": model_info.get("display_name", model_name),
+                        "is_audio": model_info.get("is_audio", False),
+                        "audio_type": model_info.get("audio_type"),
+                        "has_audio_input": model_info.get("has_audio_input", False),
+                    }
+                    self.loading_models.discard(model_name)
+                    logger.info("Model '%s' loaded successfully in subprocess", model_name)
+                    return True
+                else:
+                    error = resp.get("error", "Failed to load model")
+                    self.loading_models.discard(model_name)
+                    self.active_model_name = None
+                    self.models.clear()
+                    raise Exception(error)
 
         except Exception:
             self.loading_models.discard(model_name)
