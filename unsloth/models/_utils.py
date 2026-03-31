@@ -232,9 +232,8 @@ _FLEX_EXCLUDED_PREFIXES = ("gemma3n",)
 
 
 def _is_flex_excluded(model_type):
-    return (
-        model_type in _FLEX_EXCLUDED_MODELS
-        or any(model_type.startswith(p) for p in _FLEX_EXCLUDED_PREFIXES)
+    return model_type in _FLEX_EXCLUDED_MODELS or any(
+        model_type.startswith(p) for p in _FLEX_EXCLUDED_PREFIXES
     )
 
 
@@ -251,9 +250,9 @@ def determine_attention_implementation(model_class, config):
 
     # Flash Attention 2
     if HAS_FLASH_ATTENTION and model_class is not None:
-        supports_fa2 = getattr(
-            model_class, "_supports_flash_attn_2", False
-        ) or getattr(model_class, "_supports_flash_attn", False)
+        supports_fa2 = getattr(model_class, "_supports_flash_attn_2", False) or getattr(
+            model_class, "_supports_flash_attn", False
+        )
         if supports_fa2:
             _set_attn_impl(config, "flash_attention_2")
             return "flash_attention_2"
