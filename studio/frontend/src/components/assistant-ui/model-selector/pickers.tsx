@@ -129,14 +129,14 @@ function ModelRow({
       <span
         className={cn(
           "block min-w-0 flex-1 truncate",
-          exceeds && "line-through decoration-muted-foreground/50",
+          exceeds && "text-[#BA7517]",
         )}
       >
         {label}
       </span>
       <span className="ml-auto flex items-center gap-1.5 shrink-0">
         {vramStatus === "exceeds" && (
-          <span className="text-[9px] font-medium text-red-400">OOM</span>
+          <span className="text-[9px] font-medium text-[#854F0B] bg-[#FAEEDA] px-1.5 py-0.5 rounded">OOM</span>
         )}
         {vramStatus === "tight" && (
           <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
@@ -349,7 +349,10 @@ function GgufVariantExpander({
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
               )}
             >
-              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+              <span className={cn(
+                "min-w-0 flex-1 truncate font-mono text-xs",
+                oom && "text-[#BA7517]"
+              )}>
                 {v.quant}
                 {v.downloaded ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
@@ -363,7 +366,7 @@ function GgufVariantExpander({
               </span>
               <span className="flex items-center gap-1.5 shrink-0">
                 {oom && (
-                  <span className="text-[9px] font-medium text-red-400">
+                  <span className="text-[9px] font-medium text-[#854F0B] bg-[#FAEEDA] px-1.5 py-0.5 rounded">
                     OOM
                   </span>
                 )}
