@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import re
 import struct
 import structlog
 from loggers import get_logger
@@ -48,6 +49,7 @@ class LlamaCppBackend:
         self._healthy = False
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
+        self._max_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
@@ -99,6 +101,11 @@ class LlamaCppBackend:
     def context_length(self) -> Optional[int]:
         """Return the effective context length the server is running at."""
         return self._effective_context_length or self._context_length
+
+    @property
+    def max_context_length(self) -> Optional[int]:
+        """Return the maximum context currently available on this hardware."""
+        return self._max_context_length or self._context_length
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -287,7 +294,8 @@ class LlamaCppBackend:
                         continue
                     gpus.append((idx, free_mib))
             return gpus
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
             return []
 
     @staticmethod
@@ -328,6 +336,11 @@ class LlamaCppBackend:
                 return sorted(selected), False
 
         # Model is too large even for all GPUs, let --fit handle it
+        logger.debug(
+            "Model does not fit in available GPU memory, falling back to --fit",
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
+        )
         return None, True
 
     # ── KV cache VRAM estimation ─────────────────────────────────────
@@ -386,6 +399,11 @@ class LlamaCppBackend:
         If the model weights alone don't fit, returns min_ctx unchanged.
         """
         if not self._can_estimate_kv():
+            logger.debug(
+                "Skipping context fit because KV cache metadata is unavailable",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+            )
             return requested_ctx
 
         budget_bytes = available_mib * 1024 * 1024 * 0.70
@@ -399,6 +417,12 @@ class LlamaCppBackend:
         # Model weights alone exceed budget -- can't help by reducing ctx.
         # Return requested_ctx unchanged; --fit will handle VRAM management.
         if model_footprint >= budget_bytes:
+            logger.debug(
+                "Model footprint exceeds GPU budget before KV cache",
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
+            )
             return requested_ctx
 
         # Binary search for max context that fits
@@ -960,7 +984,11 @@ class LlamaCppBackend:
 
             self._port = self._find_free_port()
 
-            # Select GPU(s) based on model size + estimated KV cache
+            # Select GPU(s) based on model size + estimated KV cache.
+            # Seed safe defaults before GPU probing so the except path
+            # still has valid state to publish.
+            effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+            max_available_ctx = self._context_length or effective_ctx
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
@@ -975,6 +1003,9 @@ class LlamaCppBackend:
                 else:
                     effective_ctx = 0
                 original_ctx = effective_ctx
+                # Default UI ceiling to the model's native context length.
+                # GPU/VRAM-fit logic below may shrink this if hardware is limited.
+                max_available_ctx = self._context_length or effective_ctx
 
                 # Auto-cap context to fit in GPU VRAM and select GPUs.
                 #
@@ -993,6 +1024,29 @@ class LlamaCppBackend:
                 explicit_ctx = n_ctx > 0
 
                 if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                    # Compute the largest hardware-aware cap from the model's
+                    # native context across all usable GPU subsets (for UI
+                    # bounds), independent of the currently requested context.
+                    native_ctx_for_cap = self._context_length or effective_ctx
+                    if native_ctx_for_cap > 0:
+                        ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        best_cap = 0
+                        for n_gpus in range(1, len(ranked_for_cap) + 1):
+                            subset = ranked_for_cap[:n_gpus]
+                            pool_mib = sum(free for _, free in subset)
+                            capped = self._fit_context_to_vram(
+                                native_ctx_for_cap,
+                                pool_mib,
+                                model_size,
+                                cache_type_kv,
+                            )
+                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            total_mib = (model_size + kv) / (1024 * 1024)
+                            if total_mib <= pool_mib * 0.70:
+                                best_cap = max(best_cap, capped)
+                        if best_cap > 0:
+                            max_available_ctx = best_cap
+
                     if explicit_ctx:
                         # Try to honor the user's requested context exactly.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
@@ -1043,7 +1097,13 @@ class LlamaCppBackend:
                                 break
 
                 elif gpus:
-                    # Can't estimate KV -- fall back to file-size-only check
+                    # Can't estimate KV -- fall back to file-size-only check.
+                    # Without KV estimation we cannot prove a hardware cap, so
+                    # keep the ceiling at the native context (already the default).
+                    logger.debug(
+                        "Falling back to file-size-only GPU selection",
+                        model_size_gb = round(model_size / (1024**3), 2),
+                    )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
 
                 if effective_ctx < original_ctx:
@@ -1313,6 +1373,11 @@ class LlamaCppBackend:
             self._effective_context_length = (
                 effective_ctx if effective_ctx > 0 else self._context_length
             )
+            self._max_context_length = (
+                max_available_ctx
+                if max_available_ctx > 0
+                else self._effective_context_length
+            )
 
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
@@ -1347,6 +1412,7 @@ class LlamaCppBackend:
             self._healthy = False
             self._context_length = None
             self._effective_context_length = None
+            self._max_context_length = None
             self._chat_template = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
@@ -2055,7 +2121,7 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
-        max_tool_iterations: int = 10,
+        max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
@@ -2106,6 +2172,13 @@ class LlamaCppBackend:
             ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
         )
         _MAX_BUFFER_CHARS = 32
+
+        # ── Duplicate tool-call detection ────────────────────────
+        # Track recent (tool_name, arguments) hashes to detect loops
+        # where the model repeats the exact same call.  Retries after
+        # a transient failure are allowed (only block when the previous
+        # identical call succeeded).
+        _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
 
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
@@ -2504,6 +2577,11 @@ class LlamaCppBackend:
                         # iterations so they are not silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
+                            # Strip leaked tool-call XML before yielding
+                            content_accum = _strip_tool_markup(
+                                content_accum, final = True
+                            )
+                        if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _fu = _iter_usage or {}
                         _fc = _fu.get("completion_tokens", 0)
@@ -2596,16 +2674,32 @@ class LlamaCppBackend:
                         "arguments": arguments,
                     }
 
-                    _effective_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
-                    result = execute_tool(
-                        tool_name,
-                        arguments,
-                        cancel_event = cancel_event,
-                        timeout = _effective_timeout,
-                        session_id = session_id,
-                    )
+                    # ── Duplicate call detection ──────────────
+                    # str(dict) is stable here: arguments always comes from
+                    # json.loads on the same model output within one request,
+                    # so insertion order is deterministic (Python 3.7+).
+                    _tc_key = tool_name + str(arguments)
+                    _prev = _tool_call_history[-1] if _tool_call_history else None
+                    if _prev and _prev[0] == _tc_key and not _prev[1]:
+                        result = (
+                            "You already made this exact call. "
+                            "Do not repeat the same tool call. "
+                            "Try a different approach: fetch a URL "
+                            "from previous results, use Python to "
+                            "process data you already have, or "
+                            "provide your final answer now."
+                        )
+                    else:
+                        _effective_timeout = (
+                            None if tool_call_timeout >= 9999 else tool_call_timeout
+                        )
+                        result = execute_tool(
+                            tool_name,
+                            arguments,
+                            cancel_event = cancel_event,
+                            timeout = _effective_timeout,
+                            session_id = session_id,
+                        )
 
                     yield {
                         "type": "tool_end",
@@ -2614,10 +2708,32 @@ class LlamaCppBackend:
                         "result": result,
                     }
 
+                    # Nudge model to try a different approach on errors
+                    _error_prefixes = (
+                        "Error",
+                        "Search failed",
+                        "Execution error",
+                        "Blocked:",
+                        "Exit code",
+                        "Failed to fetch",
+                        "Failed to resolve",
+                        "No query provided",
+                    )
+                    _is_error = isinstance(result, str) and result.lstrip().startswith(
+                        _error_prefixes
+                    )
+                    _tool_call_history.append((_tc_key, _is_error))
+                    _result_content = result
+                    if _is_error:
+                        _result_content = (
+                            result + "\n\nThe tool call encountered an issue. "
+                            "Please try a different approach or rephrase your request."
+                        )
+
                     tool_msg = {
                         "role": "tool",
                         "name": tool_name,
-                        "content": result,
+                        "content": _result_content,
                     }
                     tool_call_id = tc.get("id")
                     if tool_call_id:
@@ -2633,6 +2749,22 @@ class LlamaCppBackend:
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 raise
+
+        # ── Tool iteration cap reached -- synthesize final answer ──
+        # The model used all iterations without producing a final text
+        # response. Inject a nudge so the final streaming pass produces
+        # a useful answer instead of continuing to request tools.
+        if max_tool_iterations > 0:
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You have used all available tool calls. Based on "
+                        "everything you have found so far, provide your final "
+                        "answer now. Do not call any more tools."
+                    ),
+                }
+            )
 
         # Clear status
         yield {"type": "status", "text": ""}

@@ -6,13 +6,13 @@ training:
   max_seq_length: 2048
   # num_epochs: 4
   num_epochs: 0
-  learning_rate: 5e-5
+  learning_rate: 2e-4
   batch_size: 2
   gradient_accumulation_steps: 4
   warmup_ratio: 0.1
   max_steps: 30
   save_steps: 30
-  weight_decay: 0.01
+  weight_decay: 0.001
   random_seed: 3407
   packing: false
   train_on_completions: true
