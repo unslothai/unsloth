@@ -1420,11 +1420,17 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         return config
 
         # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
-        # adapter_config.json), try matching the last 1-2 path components against
-        # the registry (e.g. "Spark-TTS-0.5B/LLM").
-        if model_name not in _REVERSE_MODEL_MAPPING and (
-            model_name.startswith("/") or model_name.startswith(".")
-        ):
+        # adapter_config.json, or C:\Users\...\model on Windows), try matching
+        # the last 1-2 path components against the registry
+        # (e.g. "Spark-TTS-0.5B/LLM").
+        _is_local_path = (
+            model_name.startswith("/")
+            or model_name.startswith(".")
+            or model_name.startswith("\\\\")  # UNC path
+            or (len(model_name) >= 3 and model_name[1] == ":" and model_name[2] in "/\\")  # Drive letter
+            or "\\" in model_name
+        )
+        if model_name not in _REVERSE_MODEL_MAPPING and _is_local_path:
             parts = Path(model_name).parts
             for depth in [2, 1]:
                 if len(parts) >= depth:
@@ -1440,8 +1446,15 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                                     )
                                     return config
 
-        # Try exact model name match (for backward compatibility)
-        model_filename = model_name.replace("/", "_") + ".yaml"
+        # Try exact model name match (for backward compatibility).
+        # For local filesystem paths, use only the directory basename to
+        # avoid passing absolute paths (e.g. C:\...) into rglob which
+        # raises "Non-relative patterns are unsupported" on Windows.
+        if _is_local_path:
+            _lookup_name = Path(model_name).name
+        else:
+            _lookup_name = model_name
+        model_filename = _lookup_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
         for config_path in defaults_dir.rglob(model_filename):
             if config_path.is_file():
