@@ -165,7 +165,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -197,3 +197,12 @@ class LocalModelListResponse(BaseModel):
         default_factory = list,
         description = "Discovered local/cached models",
     )
+
+
+class AddScanFolderRequest(BaseModel):
+    path: str
+
+class ScanFolderInfo(BaseModel):
+    id: int
+    path: str
+    created_at: str

@@ -94,7 +94,7 @@ from models import (
     LoRAInfo,
     ModelListResponse,
 )
-from models.models import GgufVariantDetail, GgufVariantsResponse, ModelType
+from models.models import GgufVariantDetail, GgufVariantsResponse, ModelType, ScanFolderInfo, AddScanFolderRequest
 from models.responses import (
     LoRABaseModelResponse,
     VisionCheckResponse,
@@ -351,6 +351,14 @@ async def list_local_models(
         for lm_dir in lm_dirs:
             local_models += _scan_lmstudio_dir(lm_dir)
 
+        # Scan user-added custom folders
+        from storage.studio_db import list_scan_folders
+        custom_folders = list_scan_folders()
+        for folder in custom_folders:
+            folder_path = Path(folder["path"])
+            custom_models = _scan_models_dir(folder_path)
+            local_models += [m.model_copy(update={"source": "custom"}) for m in custom_models]
+
         deduped: dict[str, LocalModelInfo] = {}
         for model in local_models:
             if model.id not in deduped:
@@ -374,6 +382,37 @@ async def list_local_models(
             status_code = 500,
             detail = f"Failed to list local models: {str(e)}",
         )
+
+
+@router.get("/scan-folders")
+async def get_scan_folders(
+    current_subject: str = Depends(get_current_subject),
+):
+    from storage.studio_db import list_scan_folders
+    return {"folders": list_scan_folders()}
+
+
+@router.post("/scan-folders", status_code=201)
+async def add_scan_folder_endpoint(
+    body: AddScanFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    from storage.studio_db import add_scan_folder
+    try:
+        folder = add_scan_folder(body.path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return folder
+
+
+@router.delete("/scan-folders/{folder_id}")
+async def remove_scan_folder_endpoint(
+    folder_id: int,
+    current_subject: str = Depends(get_current_subject),
+):
+    from storage.studio_db import remove_scan_folder
+    remove_scan_folder(folder_id)
+    return {"ok": True}
 
 
 @router.get("/list")
