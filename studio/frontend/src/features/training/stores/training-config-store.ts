@@ -386,8 +386,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setTrainingMethod: (trainingMethod) => {
           if (!_learningRateManuallySet) {
-            const learningRate = trainingMethod === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA;
-            set({ trainingMethod, learningRate });
+            // Only auto-switch LR when the adapter/full category changes.
+            // Switching between qlora and lora should keep the current LR
+            // since both methods share the same learning rate range.
+            const prev = get().trainingMethod;
+            const wasFullFT = prev === "full";
+            const isFullFT = trainingMethod === "full";
+            if (wasFullFT !== isFullFT) {
+              const learningRate = isFullFT ? LR_DEFAULT_FULL : LR_DEFAULT_LORA;
+              set({ trainingMethod, learningRate });
+            } else {
+              set({ trainingMethod });
+            }
           } else {
             set({ trainingMethod });
           }
