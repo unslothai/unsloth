@@ -115,14 +115,16 @@ def _build_model_config(config: dict):
     return mc
 
 
-def _get_hf_cache_size() -> int:
+def _get_hf_cache_size(model_name: str | None = None) -> int:
     """Return total bytes of download-related files in the HF Hub cache.
 
-    Monitors both the final ``blobs/`` directories (completed shards) and
-    the ``.tmp/`` directory where ``huggingface_hub`` writes in-progress
-    downloads before atomically moving them to ``blobs/``.  Without the
-    ``.tmp/`` check, a large shard downloading for several minutes would
-    look like zero progress and trigger a false stall detection.
+    When *model_name* is provided (e.g. ``"unsloth/Qwen2.5-7B"``), only
+    the specific model's ``blobs/`` directory is checked instead of
+    scanning every cached model — much faster on systems with many models.
+
+    Always includes the global ``.tmp/`` directory where
+    ``huggingface_hub`` writes in-progress downloads before atomically
+    moving them to ``blobs/``.
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -133,8 +135,16 @@ def _get_hf_cache_size() -> int:
 
         total = 0
 
-        # Completed blobs
-        for bdir in cache.glob("models--*/blobs"):
+        # Completed blobs — scope to specific model if possible
+        if model_name:
+            # HF cache dir format: models--org--name (slashes → --)
+            cache_dir_name = "models--" + model_name.replace("/", "--")
+            blobs_dir = cache / cache_dir_name / "blobs"
+            blobs_dirs = [blobs_dir] if blobs_dir.exists() else []
+        else:
+            blobs_dirs = list(cache.glob("models--*/blobs"))
+
+        for bdir in blobs_dirs:
             for f in bdir.iterdir():
                 try:
                     total += f.stat().st_size
@@ -160,6 +170,7 @@ def _start_heartbeat(
     interval: float = 30.0,
     stall_timeout: float = 180.0,
     xet_disabled: bool = False,
+    model_name: str | None = None,
 ) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
 
@@ -173,11 +184,11 @@ def _start_heartbeat(
     transport = "https" if xet_disabled else "xet"
 
     def _beat():
-        last_size = _get_hf_cache_size()
+        last_size = _get_hf_cache_size(model_name)
         last_change = time.monotonic()
 
         while not stop.wait(interval):
-            current_size = _get_hf_cache_size()
+            current_size = _get_hf_cache_size(model_name)
             now = time.monotonic()
 
             if current_size != last_size:
@@ -280,6 +291,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             resp_queue,
             interval = 30.0,
             xet_disabled = xet_disabled,
+            model_name = mc.identifier,
         )
         try:
             success = backend.load_model(
