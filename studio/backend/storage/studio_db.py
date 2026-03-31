@@ -103,7 +103,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS scan_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            path TEXT NOT NULL UNIQUE,
+            path TEXT NOT NULL UNIQUE COLLATE NOCASE,
             created_at TEXT NOT NULL
         )
         """
@@ -426,27 +426,30 @@ def add_scan_folder(path: str) -> dict:
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
 
-    # On Windows, use normcase for denylist comparison and dedup key, but
-    # store the original-cased path so downstream consumers see the native
+    # On Windows, use normcase for denylist comparison but store the
+    # original-cased path so downstream consumers see the native
     # drive-letter casing the user expects (e.g. C:\Models, not c:\models).
-    check = (
-        os.path.normcase(normalized) if platform.system() == "Windows" else normalized
-    )
+    is_win = platform.system() == "Windows"
+    check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
             raise ValueError(f"Path under {prefix} is not allowed")
 
-    # Use the normcased form as the dedup key so C:\Models and c:\models
-    # collapse, but persist the original path for display.
-    dedup_key = check
     conn = get_connection()
     try:
         now = datetime.now(timezone.utc).isoformat()
-        # Check for existing row using the dedup key
-        existing = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ? OR path = ?",
-            (normalized, dedup_key),
-        ).fetchone()
+        # On Windows, use case-insensitive lookup so C:\Models and c:\models
+        # dedup correctly while preserving the originally-stored casing.
+        if is_win:
+            existing = conn.execute(
+                "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                (normalized,),
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                (normalized,),
+            ).fetchone()
         if existing is not None:
             return dict(existing)
         try:
