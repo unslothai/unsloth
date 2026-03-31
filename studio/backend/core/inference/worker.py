@@ -146,7 +146,10 @@ def _get_hf_download_state(
 
         if model_names:
             for name in model_names:
-                if not name or "/" not in name:
+                if not name:
+                    continue
+                # Skip local filesystem paths
+                if os.path.sep in name or name.startswith((".", "/")):
                     continue
                 # HF cache dir format: models--org--name (slashes -> --)
                 cache_dir_name = "models--" + name.replace("/", "--")
@@ -324,7 +327,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # where the base model download is the actual bottleneck)
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
-        if base and "/" in str(base) and str(base) != mc.identifier:
+        if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
 
         heartbeat_stop = _start_heartbeat(
