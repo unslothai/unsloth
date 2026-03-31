@@ -48,12 +48,14 @@ def _parse_numeric(value: Any) -> Optional[float]:
         return _parse_numeric(value.get("value"))
     if isinstance(value, (int, float)):
         import math
+
         f = float(value)
         return f if math.isfinite(f) else None
     if isinstance(value, str):
         # Strip units like "W", "C", "%", "MB", "MiB", "GB", "GiB" etc.
         import re
-        cleaned = re.sub(r'\s*[A-Za-z/%]+$', '', value.strip())
+
+        cleaned = re.sub(r"\s*[A-Za-z/%]+$", "", value.strip())
         if not cleaned or cleaned.lower() in ("n/a", "none", "unknown"):
             return None
         try:
@@ -219,14 +221,22 @@ def get_visible_gpu_utilization(
             "index_kind": "physical",
         }
 
-    gpu_list = data if isinstance(data, list) else data.get("gpus", data.get("gpu", [data]))
+    gpu_list = (
+        data if isinstance(data, list) else data.get("gpus", data.get("gpu", [data]))
+    )
     visible_set = set(parent_visible_ids)
     ordinal_map = {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
     devices = []
     for fallback_idx, gpu_data in enumerate(gpu_list):
         # Use AMD-reported GPU ID when available, fall back to enumeration index
-        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))) if isinstance(gpu_data, dict) else fallback_idx
+        raw_id = (
+            gpu_data.get(
+                "gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))
+            )
+            if isinstance(gpu_data, dict)
+            else fallback_idx
+        )
         try:
             idx = int(raw_id)
         except (TypeError, ValueError):

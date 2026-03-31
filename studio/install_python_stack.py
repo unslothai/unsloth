@@ -117,10 +117,10 @@ def _has_usable_nvidia_gpu() -> bool:
     try:
         result = subprocess.run(
             [exe, "-L"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=10,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
         )
     except Exception:
         return False

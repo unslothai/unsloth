@@ -533,7 +533,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_cuda_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_torch_already_has_cuda_skips(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """If torch already has CUDA, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -547,7 +549,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_hip_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_torch_already_has_hip_skips(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -561,7 +565,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_gets_rocm_reinstall(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_cpu_torch_gets_rocm_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """CPU-only torch on ROCm host should trigger reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -580,7 +586,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
-    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_rocm_63_selects_correct_tag(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """ROCm 6.3 should select rocm6.3 tag."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -638,7 +646,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_probe_timeout_triggers_reinstall(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_probe_timeout_triggers_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
         with patch("os.path.isdir", return_value = True):
             with patch(
