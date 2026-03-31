@@ -62,7 +62,8 @@ db.version(4)
         .table("messages")
         .where("threadId")
         .equals(thread.id)
-        .sortBy("createdAt");
+        .toArray();
+      msgs.sort((a: MessageRecord, b: MessageRecord) => a.createdAt - b.createdAt);
       const firstUser = msgs.find(
         (m: MessageRecord) => m.role === "user",
       );

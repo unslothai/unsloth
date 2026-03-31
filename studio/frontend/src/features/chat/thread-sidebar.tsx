@@ -245,7 +245,9 @@ export function ThreadSidebar({
 
   const handleDeleteFolder = useCallback(async (folderId: string) => {
     await db.transaction("rw", db.threads, db.folders, async () => {
-      await db.threads.where("folderId").equals(folderId).modify({ folderId: undefined });
+      await db.threads.where("folderId").equals(folderId).modify((thread) => {
+        delete thread.folderId;
+      });
       await db.folders.delete(folderId);
     });
   }, []);

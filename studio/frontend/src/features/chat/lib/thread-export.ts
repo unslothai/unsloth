@@ -102,7 +102,7 @@ function buildExportFilename(
 ): string {
   const base = sanitizeFilename(thread.title);
   const suffix = thread.pairId
-    ? `_${sanitizeFilename(thread.modelId || thread.modelType || "compare")}`
+    ? `_${sanitizeFilename(thread.modelType || thread.modelId || "compare")}`
     : "";
   return `${base}${suffix}.${ext}`;
 }

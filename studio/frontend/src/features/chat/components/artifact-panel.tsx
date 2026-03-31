@@ -74,8 +74,10 @@ export const ArtifactPanel: FC = () => {
 
   // Sync local editor value when switching artifacts or versions
   useEffect(() => {
-    if (active) setLocalValue(viewedContent);
-  }, [active?.id, active?.activeVersion, viewedContent]);
+    if (!active) return;
+    setLocalValue(active.history[active.activeVersion] ?? active.content);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id, active?.activeVersion]);
 
   // Cleanup copy timer on unmount
   useEffect(() => {

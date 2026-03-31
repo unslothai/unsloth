@@ -537,6 +537,7 @@ export function ChatPage(): ReactElement {
   );
   const handleNewCompare = useCallback(
     () => {
+      useArtifactStore.getState().clearArtifacts();
       setView({ mode: "compare", pairId: crypto.randomUUID() });
       useChatRuntimeStore.getState().setContextUsage(null);
     },
@@ -565,6 +566,7 @@ export function ChatPage(): ReactElement {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
 
   const enterCompare = useCallback(() => {
+    useArtifactStore.getState().clearArtifacts();
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
     useChatRuntimeStore.getState().setContextUsage(null);
@@ -572,6 +574,7 @@ export function ChatPage(): ReactElement {
 
   const exitCompare = useCallback(() => {
     if (!viewBeforeCompare) return;
+    useArtifactStore.getState().clearArtifacts();
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
     // Restore context usage from the active thread's last assistant message
