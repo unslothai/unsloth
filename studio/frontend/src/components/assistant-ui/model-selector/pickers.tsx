@@ -1003,7 +1003,7 @@ export function LoraModelPicker({
                             onSelect(adapter.id, {
                               source: isLocal ? "local" : isExported ? "exported" : "lora",
                               isLora: !isLocal && !isMerged && !isGguf,
-                              isDownloaded: isLocal || isGguf,
+                              isDownloaded: true,
                             });
                           }
                         }}
