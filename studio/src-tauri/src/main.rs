@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod desktop_auth;
 mod install;
 mod process;
 
@@ -134,6 +135,8 @@ fn main() {
             commands::get_bootstrap_password,
             commands::open_logs_dir,
             commands::install_system_packages,
+            desktop_auth::get_desktop_password,
+            desktop_auth::set_desktop_password,
         ])
         .setup(|app| {
             setup_tray(app)?;
