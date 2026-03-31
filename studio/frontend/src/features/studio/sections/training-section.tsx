@@ -162,10 +162,10 @@ export function TrainingSection() {
           data-tour="studio-start"
           className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
           onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible || store.isCheckingDataset || store.isLoadingModelDefaults || !configValidation.ok}
+          disabled={isStarting || isIncompatible || store.isCheckingDataset || store.isCheckingVision || store.isLoadingModelDefaults || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
-          {isStarting ? "Starting..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
+          {isStarting ? "Starting..." : store.isLoadingModelDefaults || store.isCheckingVision ? "Loading model..." : store.isCheckingDataset ? "Checking dataset..." : "Start Training"}
         </Button>
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
