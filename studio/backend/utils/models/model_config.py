@@ -1427,7 +1427,9 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
             model_name.startswith("/")
             or model_name.startswith(".")
             or model_name.startswith("\\\\")  # UNC path
-            or (len(model_name) >= 3 and model_name[1] == ":" and model_name[2] in "/\\")  # Drive letter
+            or (
+                len(model_name) >= 3 and model_name[1] == ":" and model_name[2] in "/\\"
+            )  # Drive letter
             or "\\" in model_name
         )
         if model_name not in _REVERSE_MODEL_MAPPING and _is_local_path:

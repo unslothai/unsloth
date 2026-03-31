@@ -101,7 +101,11 @@ def _has_specific_yaml(model_identifier: str) -> bool:
         model_identifier.startswith("/")
         or model_identifier.startswith(".")
         or model_identifier.startswith("\\\\")
-        or (len(model_identifier) >= 3 and model_identifier[1] == ":" and model_identifier[2] in "/\\")
+        or (
+            len(model_identifier) >= 3
+            and model_identifier[1] == ":"
+            and model_identifier[2] in "/\\"
+        )
         or "\\" in model_identifier
     )
     _lookup = Path(model_identifier).name if _is_local else model_identifier
