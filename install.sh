@@ -1110,7 +1110,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         substep "skipping PyTorch (--no-torch or Intel Mac x86_64)." "$C_WARN"
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
+        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" "torchvision<0.26.0" "torchaudio<2.11.0" \
             --index-url "$TORCH_INDEX_URL"
         # AMD ROCm: install bitsandbytes with AMD support
         case "$TORCH_INDEX_URL" in

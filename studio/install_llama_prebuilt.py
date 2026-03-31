@@ -1466,13 +1466,8 @@ def detect_host() -> HostInfo:
                 if _marker in _result.stdout.lower():
                     has_rocm = True
                     break
-        # Fallback: HIP runtime DLL indicates a working HIP installation
-        if not has_rocm and any(
-            Path(d).joinpath("amdhip64.dll").exists()
-            for d in os.environ.get("PATH", "").split(os.pathsep)
-            if d
-        ):
-            has_rocm = True
+        # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
+        # since the HIP SDK can be installed without an AMD GPU.
 
     return HostInfo(
         system = system,

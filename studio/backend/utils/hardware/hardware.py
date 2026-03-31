@@ -1311,17 +1311,20 @@ def get_visible_gpu_count() -> int:
     if _visible_gpu_count is not None:
         return _visible_gpu_count
 
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible is not None:
-        # "" means zero GPUs, "0" means 1, "0,1,2" means 3
-        cuda_visible = cuda_visible.strip()
-        if cuda_visible == "" or cuda_visible == "-1":
+    # Use _get_parent_visible_gpu_spec() which already handles
+    # HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES on ROCm.
+    visible_spec = _get_parent_visible_gpu_spec()
+    if visible_spec["raw"] is not None:
+        raw = visible_spec["raw"].strip()
+        if raw == "" or raw == "-1":
             _visible_gpu_count = 0
+        elif visible_spec["numeric_ids"] is not None:
+            _visible_gpu_count = len(visible_spec["numeric_ids"])
         else:
-            _visible_gpu_count = len([x for x in cuda_visible.split(",") if x.strip()])
+            _visible_gpu_count = len([x for x in raw.split(",") if x.strip()])
         return _visible_gpu_count
 
-    # CUDA_VISIBLE_DEVICES not set -- try torch, fall back to physical count
+    # No visibility env var set -- try torch, fall back to physical count
     try:
         import torch
 
