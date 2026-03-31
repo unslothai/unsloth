@@ -1227,7 +1227,7 @@ async def openai_chat_completions(
 
                         # "content" type -- cumulative text
                         raw_cumulative = event.get("text", "")
-                        raw_delta = raw_cumulative[len(prev_text):]
+                        raw_delta = raw_cumulative[len(prev_text) :]
                         prev_text = raw_cumulative
                         # Strip leaked tool-call XML from the delta only
                         new_text = _TOOL_XML_RE.sub("", raw_delta)
