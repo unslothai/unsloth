@@ -494,7 +494,7 @@ export function ModelSection() {
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <span
-                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "text-amber-400 hover:text-amber-400" : ""}`}
+                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "!text-amber-400" : ""}`}
                                 >
                                   {id}
                                 </span>
