@@ -2154,24 +2154,29 @@ class LlamaCppBackend:
 
         # ── Duplicate tool-call detection ────────────────────────
         # Track recent (tool_name, arguments) hashes to detect loops
-        # where the model repeats the exact same call.
+        # where the model repeats the exact same call.  Retries after
+        # a transient failure are allowed (only block when the previous
+        # identical call succeeded).
         import hashlib as _hl
 
-        _tool_call_history: list[str] = []
+        _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
         _DEDUP_WINDOW = 2  # flag if same call appears this many times in a row
 
         def _tool_call_key(name: str, args: dict) -> str:
-            raw = json.dumps({"t": name, "a": args}, sort_keys = True)
+            raw = json.dumps({"t": name, "a": args}, sort_keys=True)
             return _hl.md5(raw.encode()).hexdigest()
 
         def _is_duplicate_call(name: str, args: dict) -> bool:
             key = _tool_call_key(name, args)
-            _tool_call_history.append(key)
             if len(_tool_call_history) >= _DEDUP_WINDOW:
                 tail = _tool_call_history[-_DEDUP_WINDOW:]
-                if len(set(tail)) == 1:
+                if all(k == key and not failed for k, failed in tail):
                     return True
             return False
+
+        def _record_tool_call(name: str, args: dict, failed: bool) -> None:
+            key = _tool_call_key(name, args)
+            _tool_call_history.append((key, failed))
 
         _hit_tool_cap = False
 
@@ -2682,6 +2687,7 @@ class LlamaCppBackend:
                             "process data you already have, or "
                             "provide your final answer now."
                         )
+                        _record_tool_call(tool_name, arguments, failed=False)
                     else:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
@@ -2711,10 +2717,12 @@ class LlamaCppBackend:
                         "Exit code",
                         "Failed to fetch",
                     )
-                    _result_content = result
-                    if isinstance(result, str) and result.lstrip().startswith(
+                    _is_error = isinstance(result, str) and result.lstrip().startswith(
                         _error_prefixes
-                    ):
+                    )
+                    _record_tool_call(tool_name, arguments, failed=_is_error)
+                    _result_content = result
+                    if _is_error:
                         _result_content = (
                             result + "\n\nThe tool call encountered an issue. "
                             "Please try a different approach or rephrase your request."
@@ -2744,16 +2752,17 @@ class LlamaCppBackend:
         # The model used all iterations without producing a final text
         # response. Inject a nudge so the final streaming pass produces
         # a useful answer instead of continuing to request tools.
-        conversation.append(
-            {
-                "role": "user",
-                "content": (
-                    "You have used all available tool calls. Based on "
-                    "everything you have found so far, provide your final "
-                    "answer now. Do not call any more tools."
-                ),
-            }
-        )
+        if max_tool_iterations > 0:
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You have used all available tool calls. Based on "
+                        "everything you have found so far, provide your final "
+                        "answer now. Do not call any more tools."
+                    ),
+                }
+            )
 
         # Clear status
         yield {"type": "status", "text": ""}

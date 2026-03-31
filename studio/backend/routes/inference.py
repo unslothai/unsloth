@@ -1123,7 +1123,10 @@ async def openai_chat_completions(
                 gguf_messages.extend(chat_messages)
 
             # ── Strip stale tool-call XML from conversation history ─
-            _TOOL_XML_RE = _re.compile(r"<tool_call>.*?</tool_call>", _re.DOTALL)
+            _TOOL_XML_RE = _re.compile(
+                r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+                _re.DOTALL,
+            )
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(
                     _msg.get("content"), str

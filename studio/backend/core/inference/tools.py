@@ -155,6 +155,31 @@ def execute_tool(
 
 
 _MAX_PAGE_CHARS = 16000  # limit fetched page text
+_MAX_FETCH_BYTES = _MAX_PAGE_CHARS * 4 + 1  # cap raw download size
+
+
+def _is_public_host(hostname: str, port: int) -> tuple[bool, str]:
+    """Resolve *hostname* and reject private/loopback/link-local addresses."""
+    import ipaddress
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except OSError as e:
+        return False, f"Failed to resolve host: {e}"
+
+    for *_, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False, f"Blocked: refusing to fetch non-public address {ip}."
+    return True, ""
 
 
 def _fetch_page_text(
@@ -162,7 +187,8 @@ def _fetch_page_text(
 ) -> str:
     """Fetch a URL and return plain text content (HTML tags stripped).
 
-    Only http:// and https:// schemes are allowed (SSRF protection).
+    Blocks private/loopback/link-local targets (SSRF protection) and caps
+    the download size to avoid unbounded memory usage.
     """
     import re as _re
     from urllib.parse import urlparse
@@ -170,16 +196,28 @@ def _fetch_page_text(
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r})."
+    if not parsed.hostname:
+        return "Blocked: URL is missing a hostname."
+
+    ok, reason = _is_public_host(
+        parsed.hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+    if not ok:
+        return reason
 
     try:
         import urllib.request
 
         req = urllib.request.Request(
             url,
-            headers = {"User-Agent": "UnslothStudio/1.0"},
+            headers={"User-Agent": "UnslothStudio/1.0"},
         )
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors = "replace")
+        max_bytes = max_chars * 4 + 1
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # Cap download size to avoid unbounded memory usage
+            raw_bytes = resp.read(max_bytes)
+        raw_html = raw_bytes.decode("utf-8", errors="replace")
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
@@ -195,13 +233,13 @@ def _fetch_page_text(
     except ImportError:
         # Fallback: regex-based stripping
         text = _re.sub(
-            r"<script[^>]*>.*?</script\s*>",
+            r"<script[^>]*>.*?</script[^>]*>",
             "",
             raw_html,
-            flags = _re.DOTALL | _re.IGNORECASE,
+            flags=_re.DOTALL | _re.IGNORECASE,
         )
         text = _re.sub(
-            r"<style[^>]*>.*?</style\s*>", "", text, flags = _re.DOTALL | _re.IGNORECASE
+            r"<style[^>]*>.*?</style[^>]*>", "", text, flags=_re.DOTALL | _re.IGNORECASE
         )
         text = _re.sub(r"<[^>]+>", " ", text)
         text = _re.sub(r"\s+", " ", text).strip()
@@ -225,7 +263,8 @@ def _web_search(
     """
     # Direct URL fetch mode
     if url and url.strip():
-        return _fetch_page_text(url.strip(), timeout = min(timeout, 60))
+        fetch_timeout = 60 if timeout is None else min(timeout, 60)
+        return _fetch_page_text(url.strip(), timeout=fetch_timeout)
 
     if not query or not query.strip():
         return "No query provided."
