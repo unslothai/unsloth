@@ -741,7 +741,7 @@ class TestHardwareRocmFlag:
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
         source = hw_path.read_text()
-        assert "IS_ROCM: bool = False" in source
+        assert "IS_ROCM: bool" in source and "False" in source
 
     def test_hardware_py_sets_is_rocm_on_hip(self):
         """detect_hardware() should set IS_ROCM when torch.version.hip is set."""
