@@ -128,7 +128,7 @@ function ModelRow({
       <span
         className={cn(
           "block min-w-0 flex-1 truncate",
-          exceeds && "text-amber-400",
+          exceeds && "text-amber-400 hover:text-amber-400",
         )}
       >
         {label}
@@ -350,7 +350,7 @@ function GgufVariantExpander({
             >
               <span className={cn(
                 "min-w-0 flex-1 truncate font-mono text-xs",
-                oom && "text-amber-400"
+                oom && "text-amber-400 hover:text-amber-400"
               )}>
                 {v.quant}
                 {v.downloaded ? (
