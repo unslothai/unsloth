@@ -216,10 +216,3 @@ setup_leo.sh
 server.pid
 *.log
 package-lock.json
-
-# === Worker-local files (never push these) ===
-CHANGES.md
-WORKER_COMPLETE.txt
-copilot-session-*.md
-.investigations/
-*.worker-notes.md
