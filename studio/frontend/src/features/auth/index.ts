@@ -14,3 +14,4 @@ export {
   resetOnboardingDone,
   setMustChangePassword,
 } from "./session";
+export { tauriAutoAuth } from "./tauri-auto-auth";
