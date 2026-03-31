@@ -738,10 +738,10 @@ def install_python_stack() -> int:
             try:
                 _wr = subprocess.run(
                     [_wexe, *_wcmd[1:]],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    timeout=10,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 10,
                 )
             except Exception:
                 continue

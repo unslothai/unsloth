@@ -89,7 +89,9 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         return num
     if "kib" in unit or "kb" in unit:
         return num / 1024
-    if unit and ("b" in unit and "g" not in unit and "m" not in unit and "k" not in unit):
+    if unit and (
+        "b" in unit and "g" not in unit and "m" not in unit and "k" not in unit
+    ):
         # Plain bytes
         return num / (1024 * 1024)
 
