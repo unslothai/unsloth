@@ -38,7 +38,6 @@ class DownloadStallError(RuntimeError):
     """Raised when the worker reports no download progress for too long."""
 
 
-
 # Dispatcher timeout constants (seconds)
 _DISPATCH_READ_TIMEOUT = 30.0
 _DISPATCH_POLL_INTERVAL = 0.5

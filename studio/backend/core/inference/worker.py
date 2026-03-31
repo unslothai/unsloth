@@ -259,7 +259,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # (download / weight loading can take a long time on slow connections)
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
         heartbeat_stop = _start_heartbeat(
-            resp_queue, interval = 30.0, xet_disabled = xet_disabled,
+            resp_queue,
+            interval = 30.0,
+            xet_disabled = xet_disabled,
         )
         try:
             success = backend.load_model(
