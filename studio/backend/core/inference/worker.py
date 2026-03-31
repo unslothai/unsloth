@@ -115,27 +115,35 @@ def _build_model_config(config: dict):
     return mc
 
 
-def _get_hf_cache_size(model_name: str | None = None) -> int:
-    """Return total bytes of download-related files in the HF Hub cache.
+def _get_hf_download_state(
+    model_name: str | None = None,
+) -> tuple[int, bool] | None:
+    """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
 
     When *model_name* is provided (e.g. ``"unsloth/Qwen2.5-7B"``), only
     the specific model's ``blobs/`` directory is checked instead of
     scanning every cached model -- much faster on systems with many models.
 
-    Returns -1 if the cache size cannot be determined (import error,
-    permission error, etc.) so callers can distinguish "unable to
-    measure" from "genuinely zero bytes".
+    *has_incomplete* is True when any ``*.incomplete`` files exist in the
+    blobs directory, indicating that ``huggingface_hub`` is actively
+    downloading. This is a more reliable indicator than cache size alone
+    because it distinguishes "download in progress" from "download
+    finished but model init still running".
+
+    Returns None if the state cannot be determined (import error,
+    permission error, etc.) so callers can skip stall logic.
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         cache = Path(HF_HUB_CACHE)
         if not cache.exists():
-            return 0
+            return (0, False)
 
         total = 0
+        has_incomplete = False
 
-        # Completed blobs -- scope to specific model if possible
+        # Scope to specific model if possible
         if model_name:
             # HF cache dir format: models--org--name (slashes -> --)
             cache_dir_name = "models--" + model_name.replace("/", "--")
@@ -149,12 +157,14 @@ def _get_hf_cache_size(model_name: str | None = None) -> int:
                 try:
                     if f.is_file():
                         total += f.stat().st_size
+                        if f.name.endswith(".incomplete"):
+                            has_incomplete = True
                 except OSError:
                     pass
 
-        return total
+        return (total, has_incomplete)
     except Exception:
-        return -1
+        return None
 
 
 def _start_heartbeat(
@@ -166,15 +176,14 @@ def _start_heartbeat(
 ) -> threading.Event:
     """Start a daemon thread that sends periodic status heartbeats.
 
-    Monitors the HF Hub cache directory for growth. If the cache size
-    has not changed for *stall_timeout* seconds **and** we have
-    previously observed at least one size change (confirming a download
-    is actually in progress), sends a ``"stall"`` message so the
-    orchestrator can retry with ``HF_HUB_DISABLE_XET=1``.
+    Monitors the HF Hub cache directory for download activity. A stall
+    is only reported when ``*.incomplete`` files are present (indicating
+    ``huggingface_hub`` is actively downloading) **and** the total cache
+    size has not changed for *stall_timeout* seconds.
 
-    If the cache size never changes (model already cached, local model,
-    or post-download initialization), no stall is reported -- the
-    heartbeat just sends periodic status messages.
+    Once the download finishes (no more ``.incomplete`` files), the stall
+    timer resets, so post-download initialization (quantization, GPU
+    weight loading) is never misclassified as a stalled download.
 
     Returns a stop event -- set it to terminate the heartbeat thread.
     """
@@ -182,16 +191,16 @@ def _start_heartbeat(
     transport = "https" if xet_disabled else "xet"
 
     def _beat():
-        last_size = _get_hf_cache_size(model_name)
+        state = _get_hf_download_state(model_name)
+        last_size = state[0] if state is not None else 0
         last_change = time.monotonic()
-        saw_download_activity = False
 
         while not stop.wait(interval):
-            current_size = _get_hf_cache_size(model_name)
+            state = _get_hf_download_state(model_name)
             now = time.monotonic()
 
             # Skip stall logic if we cannot measure the cache
-            if current_size < 0:
+            if state is None:
                 _send_response(
                     resp_queue,
                     {
@@ -202,27 +211,26 @@ def _start_heartbeat(
                 )
                 continue
 
-            if current_size != last_size:
-                # Only count as download activity if both measurements
-                # are valid (>= 0). A transition from -1 (error) to a
-                # real value is a measurement recovery, not download.
-                if last_size >= 0:
-                    saw_download_activity = True
-                    last_change = now
-                last_size = current_size
+            current_size, has_incomplete = state
 
-            # Only fire stall if we previously saw download activity
-            # (cache size changed at least once). This avoids false
-            # stalls on already-cached models and local models.
-            stalled_for = now - last_change
-            if saw_download_activity and stalled_for >= stall_timeout:
+            if current_size != last_size:
+                last_size = current_size
+                last_change = now
+
+            # Only fire stall when .incomplete files are present,
+            # confirming a download is actively in progress.
+            # Once downloads finish (no .incomplete), reset the timer
+            # so model init time is not counted as a stall.
+            if not has_incomplete:
+                last_change = now
+            elif now - last_change >= stall_timeout:
                 _send_response(
                     resp_queue,
                     {
                         "type": "stall",
                         "message": (
                             f"Download appears stalled ({transport} transport) "
-                            f"-- no progress for {int(stalled_for)}s"
+                            f"-- no progress for {int(now - last_change)}s"
                         ),
                         "ts": time.time(),
                     },
