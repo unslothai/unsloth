@@ -50,15 +50,6 @@ type CodeFence = {
   source: string;
 };
 
-function hashCode(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
-  }
-  return Math.abs(hash).toString(36);
-}
-
 function getMermaidSource(blockContent: string): string | null {
   const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
   return source && source.length > 0 ? source : null;

@@ -448,7 +448,7 @@ export function ThreadSidebar({
             <SidebarMenu>
               {unfiledItems.map(renderItem)}
             </SidebarMenu>
-            {filteredItems.length === 0 && (
+            {unfiledItems.length === 0 && pinnedItems.length === 0 && folderedItems.size === 0 && (
               <p className="px-2 py-6 text-center text-xs text-muted-foreground">
                 {debouncedQuery.trim() ? "No matching threads" : "No threads yet"}
               </p>

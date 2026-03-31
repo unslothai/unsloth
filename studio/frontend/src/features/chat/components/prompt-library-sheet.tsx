@@ -88,7 +88,7 @@ export const PromptLibrarySheet: FC<{
   );
 
   const items = prompts ?? [];
-  const isEditing = name !== "" || content !== "";
+  const isEditing = editing !== null || name !== "" || content !== "";
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
