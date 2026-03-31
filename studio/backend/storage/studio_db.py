@@ -12,11 +12,29 @@ raw sqlite3, per-function connections. Enhancements over auth:
 
 import json
 import logging
+import os
+import platform
 import sqlite3
 import threading
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 from typing import Optional
+
+
+def _denied_path_prefixes() -> list[str]:
+    """Platform-aware denylist of system directories."""
+    system = platform.system()
+    if system == "Linux":
+        return ["/proc", "/sys", "/dev", "/etc"]
+    if system == "Darwin":
+        return ["/System", "/Library", "/private/var", "/dev", "/etc"]
+    if system == "Windows":
+        win = os.environ.get("SystemRoot", r"C:\Windows")
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        return [win, pf, pf86]
+    return []
 
 from utils.paths import studio_db_path, ensure_dir
 
@@ -66,6 +84,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scan_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )
+        """
     )
 
 
@@ -343,8 +370,6 @@ def delete_run(id: str) -> None:
 
 def cleanup_orphaned_runs() -> None:
     """Mark any 'running' rows as errored on startup (server restarted mid-training)."""
-    from datetime import datetime, timezone
-
     conn = get_connection()
     try:
         conn.execute(
@@ -357,6 +382,56 @@ def cleanup_orphaned_runs() -> None:
             """,
             (datetime.now(timezone.utc).isoformat(),),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_scan_folders() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def add_scan_folder(path: str) -> dict:
+    normalized = os.path.realpath(os.path.expanduser(path.strip()))
+    if not normalized:
+        raise ValueError("Path cannot be empty")
+    for prefix in _denied_path_prefixes():
+        if normalized == prefix or normalized.startswith(prefix + os.sep):
+            raise ValueError(f"Path under {prefix} is not allowed")
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            conn.execute(
+                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
+                (normalized, now),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                (normalized,),
+            ).fetchone()
+        except sqlite3.IntegrityError:
+            row = conn.execute(
+                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                (normalized,),
+            ).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def remove_scan_folder(id: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
         conn.commit()
     finally:
         conn.close()
