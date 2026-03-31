@@ -257,7 +257,10 @@ _try_bun_install() {
     _log=$(mktemp)
     bun install >"$_log" 2>&1 || _exit_code=$?
 
-    if [ "$_exit_code" -eq 0 ] && [ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/vite ]; then
+    # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
+    if [ "$_exit_code" -eq 0 ] \
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
         rm -f "$_log"
         return 0
     fi
