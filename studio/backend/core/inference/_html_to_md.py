@@ -33,7 +33,6 @@ _BLOCK_TAGS = frozenset(
         "figcaption",
         "details",
         "summary",
-        "hr",
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
@@ -63,7 +62,7 @@ class _MarkdownRenderer(HTMLParser):
         self._cell_parts: list[str] = []
         self._in_cell: bool = False
         self._header_row_done: bool = False
-        self._is_header_cell: bool = False
+        self._row_has_th: bool = False
 
         # Pre/code state
         self._in_pre: bool = False
@@ -81,6 +80,10 @@ class _MarkdownRenderer(HTMLParser):
         elif self._in_pre:
             self._pre_parts.append(text)
         else:
+            # Prefix newlines with blockquote markers when inside <blockquote>
+            if self._bq_depth and "\n" in text:
+                prefix = "> " * self._bq_depth
+                text = text.replace("\n", "\n" + prefix)
             self._out.append(text)
 
     # ------------------------------------------------------------------
@@ -158,12 +161,14 @@ class _MarkdownRenderer(HTMLParser):
         elif tag in ("th", "td"):
             self._cell_parts = []
             self._in_cell = True
-            self._is_header_cell = tag == "th"
+            if tag == "th":
+                self._row_has_th = True
 
         elif tag == "img":
             alt = attr_dict.get("alt", "")
-            if alt:
-                self._emit(alt)
+            src = attr_dict.get("src", "")
+            if alt or src:
+                self._emit(f"![{alt}]({src})")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -219,19 +224,19 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag in ("th", "td"):
             self._in_cell = False
-            cell_text = "".join(self._cell_parts).strip()
+            cell_text = "".join(self._cell_parts).strip().replace("\n", " ")
             self._current_row.append(cell_text)
 
         elif tag == "tr":
             if self._current_row:
                 line = "| " + " | ".join(self._current_row) + " |"
                 self._emit(line + "\n")
-                if self._is_header_cell and not self._header_row_done:
+                if self._row_has_th and not self._header_row_done:
                     sep = "| " + " | ".join("---" for _ in self._current_row) + " |"
                     self._emit(sep + "\n")
                     self._header_row_done = True
             self._current_row = []
-            self._is_header_cell = False
+            self._row_has_th = False
 
         elif tag == "table":
             self._in_table = False
@@ -269,7 +274,7 @@ def _cleanup(text: str) -> str:
     # Collapse runs of 3+ newlines into 2
     text = re.sub(r"\n{3,}", "\n\n", text)
     # Remove trailing spaces on each line
-    text = re.sub(r" +$", "", text, flags = re.MULTILINE)
+    text = re.sub(r"[ \t]+$", "", text, flags = re.MULTILINE)
     return text.strip()
 
 
