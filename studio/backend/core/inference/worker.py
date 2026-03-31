@@ -120,11 +120,11 @@ def _get_hf_cache_size(model_name: str | None = None) -> int:
 
     When *model_name* is provided (e.g. ``"unsloth/Qwen2.5-7B"``), only
     the specific model's ``blobs/`` directory is checked instead of
-    scanning every cached model — much faster on systems with many models.
+    scanning every cached model -- much faster on systems with many models.
 
-    Always includes the global ``.tmp/`` directory where
-    ``huggingface_hub`` writes in-progress downloads before atomically
-    moving them to ``blobs/``.
+    Returns -1 if the cache size cannot be determined (import error,
+    permission error, etc.) so callers can distinguish "unable to
+    measure" from "genuinely zero bytes".
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -135,9 +135,9 @@ def _get_hf_cache_size(model_name: str | None = None) -> int:
 
         total = 0
 
-        # Completed blobs — scope to specific model if possible
+        # Completed blobs -- scope to specific model if possible
         if model_name:
-            # HF cache dir format: models--org--name (slashes → --)
+            # HF cache dir format: models--org--name (slashes -> --)
             cache_dir_name = "models--" + model_name.replace("/", "--")
             blobs_dir = cache / cache_dir_name / "blobs"
             blobs_dirs = [blobs_dir] if blobs_dir.exists() else []
@@ -147,22 +147,14 @@ def _get_hf_cache_size(model_name: str | None = None) -> int:
         for bdir in blobs_dirs:
             for f in bdir.iterdir():
                 try:
-                    total += f.stat().st_size
-                except OSError:
-                    pass
-
-        # In-progress downloads (HF Hub writes here before moving to blobs)
-        tmp_dir = cache / ".tmp"
-        if tmp_dir.exists():
-            for f in tmp_dir.iterdir():
-                try:
-                    total += f.stat().st_size
+                    if f.is_file():
+                        total += f.stat().st_size
                 except OSError:
                     pass
 
         return total
     except Exception:
-        return 0
+        return -1
 
 
 def _start_heartbeat(
@@ -175,10 +167,16 @@ def _start_heartbeat(
     """Start a daemon thread that sends periodic status heartbeats.
 
     Monitors the HF Hub cache directory for growth. If the cache size
-    has not changed for *stall_timeout* seconds, sends a ``"stall"``
-    message so the orchestrator can retry with ``HF_HUB_DISABLE_XET=1``.
+    has not changed for *stall_timeout* seconds **and** we have
+    previously observed at least one size change (confirming a download
+    is actually in progress), sends a ``"stall"`` message so the
+    orchestrator can retry with ``HF_HUB_DISABLE_XET=1``.
 
-    Returns a stop event — set it to terminate the heartbeat thread.
+    If the cache size never changes (model already cached, local model,
+    or post-download initialization), no stall is reported -- the
+    heartbeat just sends periodic status messages.
+
+    Returns a stop event -- set it to terminate the heartbeat thread.
     """
     stop = threading.Event()
     transport = "https" if xet_disabled else "xet"
@@ -186,29 +184,50 @@ def _start_heartbeat(
     def _beat():
         last_size = _get_hf_cache_size(model_name)
         last_change = time.monotonic()
+        saw_download_activity = False
 
         while not stop.wait(interval):
             current_size = _get_hf_cache_size(model_name)
             now = time.monotonic()
 
+            # Skip stall logic if we cannot measure the cache
+            if current_size < 0:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "status",
+                        "message": f"Loading model ({transport} transport)...",
+                        "ts": time.time(),
+                    },
+                )
+                continue
+
             if current_size != last_size:
+                saw_download_activity = True
                 last_size = current_size
                 last_change = now
 
+            # Only fire stall if we previously saw download activity
+            # (cache size changed at least once). This avoids false
+            # stalls on already-cached models, local models, or during
+            # post-download initialization (quantization, GPU loading).
             stalled_for = now - last_change
-            if stalled_for >= stall_timeout:
+            if (
+                saw_download_activity
+                and stalled_for >= stall_timeout
+            ):
                 _send_response(
                     resp_queue,
                     {
                         "type": "stall",
                         "message": (
                             f"Download appears stalled ({transport} transport) "
-                            f"— no progress for {int(stalled_for)}s"
+                            f"-- no progress for {int(stalled_for)}s"
                         ),
                         "ts": time.time(),
                     },
                 )
-                # Only fire once — the orchestrator will kill us
+                # Only fire once -- the orchestrator will kill us
                 return
 
             _send_response(

@@ -637,7 +637,11 @@ class InferenceOrchestrator:
                 # Dead subprocess — clean up
                 self._shutdown_subprocess(timeout = 2)
 
-            disable_xet = sub_config.get("disable_xet", False)
+            import os as _os
+
+            disable_xet = sub_config.get("disable_xet", False) or (
+                _os.environ.get("HF_HUB_DISABLE_XET") == "1"
+            )
 
             for attempt in range(2):
                 logger.info(
@@ -648,27 +652,27 @@ class InferenceOrchestrator:
                     attempt + 1,
                     ", xet disabled" if disable_xet else "",
                 )
-                if disable_xet:
-                    sub_config["disable_xet"] = True
+                sub_config["disable_xet"] = disable_xet
                 self._spawn_subprocess(sub_config)
 
                 try:
                     resp = self._wait_response("loaded")
                 except DownloadStallError:
-                    # First stall → retry with Xet disabled
+                    # First stall and Xet was enabled -> retry with Xet disabled
                     if attempt == 0 and not disable_xet:
                         logger.warning(
-                            "Download stalled for '%s' — retrying with "
+                            "Download stalled for '%s' -- retrying with "
                             "HF_HUB_DISABLE_XET=1",
                             model_name,
                         )
                         self._shutdown_subprocess(timeout = 5)
                         disable_xet = True
                         continue
-                    # Second stall (or already had xet disabled) → give up
+                    # Second stall (or already had xet disabled) -> give up
+                    self._shutdown_subprocess(timeout = 5)
                     raise RuntimeError(
                         f"Download stalled for '{model_name}' even with "
-                        f"HF_HUB_DISABLE_XET=1 — check your network connection"
+                        f"HF_HUB_DISABLE_XET=1 -- check your network connection"
                     )
 
                 # Got a response — check success
