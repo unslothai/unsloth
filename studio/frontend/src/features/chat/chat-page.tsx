@@ -750,8 +750,11 @@ export function ChatPage(): ReactElement {
         open={promptLibraryOpen}
         onOpenChange={setPromptLibraryOpen}
         onInsertPrompt={(content) => {
-          copyToClipboard(content);
-          toast.success("Prompt copied to clipboard");
+          if (copyToClipboard(content)) {
+            toast.success("Prompt copied to clipboard");
+          } else {
+            toast.error("Failed to copy prompt");
+          }
         }}
       />
       <CommandDialog open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>

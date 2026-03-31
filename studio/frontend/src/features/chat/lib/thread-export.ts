@@ -74,12 +74,14 @@ export async function exportAsJSONL(threadId: string): Promise<void> {
   if (!data) return;
   const { thread, messages } = data;
 
-  // OpenAI chat format -- standard SFT structure, no extra fields
-  const chatMessages = messages.map((m) => ({
-    role: m.role === "user" ? "user" : "assistant",
-    content: extractText(m.content),
-  }));
+  // OpenAI chat format -- standard SFT structure, skip empty turns
+  const chatMessages = messages.flatMap((m) => {
+    const content = extractText(m.content);
+    if (!content) return [];
+    return [{ role: m.role === "user" ? "user" : "assistant", content }];
+  });
 
+  if (chatMessages.length === 0) return;
   const line = JSON.stringify({ messages: chatMessages });
   downloadTextFile(
     buildExportFilename(thread, "jsonl"),

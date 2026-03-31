@@ -16,13 +16,6 @@ import { type FC, useCallback, useState } from "react";
 import { db, useLiveQuery } from "../db";
 import type { PromptRecord } from "../types";
 
-const VAR_RE = /\{\{(\w+)\}\}/g;
-
-function extractVariables(content: string): string[] {
-  const matches = content.matchAll(VAR_RE);
-  return [...new Set([...matches].map((m) => m[1]))];
-}
-
 export const PromptLibrarySheet: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -46,7 +39,7 @@ export const PromptLibrarySheet: FC<{
 
   const handleSave = useCallback(async () => {
     if (!name.trim() || !content.trim()) return;
-    const variables = extractVariables(content);
+    const variables: string[] = [];
     const tagList = tags
       .split(",")
       .map((t) => t.trim())
@@ -96,7 +89,7 @@ export const PromptLibrarySheet: FC<{
         <SheetHeader>
           <SheetTitle>Prompt Library</SheetTitle>
           <SheetDescription>
-            Reusable prompt templates. Use {"{{variable}}"} for dynamic fields.
+            Reusable prompt templates. Copied to clipboard on select.
           </SheetDescription>
         </SheetHeader>
         <div className="mt-4 space-y-4">
@@ -109,25 +102,12 @@ export const PromptLibrarySheet: FC<{
               className="text-sm"
             />
             <Textarea
-              placeholder={"e.g., Evaluate {{model_name}} on {{task}}..."}
+              placeholder="e.g., Evaluate the current model on GSM8K..."
               value={content}
               onChange={(e) => setContent(e.target.value)}
               className="min-h-[6rem] text-sm"
               rows={4}
             />
-            {extractVariables(content).length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Variables:{" "}
-                {extractVariables(content).map((v) => (
-                  <code
-                    key={v}
-                    className="mx-0.5 rounded bg-muted px-1 py-0.5 text-xs"
-                  >
-                    {v}
-                  </code>
-                ))}
-              </p>
-            )}
             <Input
               placeholder="Tags (comma separated)"
               value={tags}

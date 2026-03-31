@@ -458,7 +458,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let systemContent =
         typeof params.systemPrompt === "string" ? params.systemPrompt.trim() : "";
       try {
-        const allMemories = await db.memory.toArray();
+        const allMemories = await db.memory.orderBy("createdAt").toArray();
         const enabledMemories = allMemories.filter(
           (m: { enabled: boolean }) => m.enabled,
         );
