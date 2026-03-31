@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
+from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
 
@@ -159,7 +160,7 @@ class TrainingBackend:
             "warmup_ratio": kwargs.get("warmup_ratio"),
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", 0.01),
+            "weight_decay": kwargs.get("weight_decay", 0.001),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
@@ -185,6 +186,7 @@ class TrainingBackend:
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
+            "gpu_ids": kwargs.get("gpu_ids"),
         }
 
         # Derive load_in_4bit from training_type
@@ -192,6 +194,22 @@ class TrainingBackend:
             config["load_in_4bit"] = False
 
         # Spawn subprocess — use locals so state is untouched on failure
+        resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+            kwargs.get("gpu_ids"),
+            model_name = config["model_name"],
+            hf_token = config["hf_token"] or None,
+            training_type = config["training_type"],
+            load_in_4bit = config["load_in_4bit"],
+            batch_size = config.get("batch_size", 4),
+            max_seq_length = config.get("max_seq_length", 2048),
+            lora_rank = config.get("lora_r", 16),
+            target_modules = config.get("target_modules"),
+            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+            optimizer = config.get("optim", "adamw_8bit"),
+        )
+        config["resolved_gpu_ids"] = resolved_gpu_ids
+        config["gpu_selection"] = gpu_selection
+
         from .worker import run_training_process
 
         event_queue = _CTX.Queue()

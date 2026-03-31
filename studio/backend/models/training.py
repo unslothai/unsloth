@@ -81,7 +81,7 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.01, description = "Weight decay")
+    weight_decay: float = Field(0.001, description = "Weight decay")
     random_seed: int = Field(42, description = "Random seed")
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
@@ -127,6 +127,12 @@ class TrainingStartRequest(BaseModel):
     wandb_project: Optional[str] = Field(None, description = "W&B project name")
     enable_tensorboard: bool = Field(False, description = "Enable TensorBoard logging")
     tensorboard_dir: Optional[str] = Field(None, description = "TensorBoard directory")
+
+    # GPU selection
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+    )
 
 
 class TrainingJobResponse(BaseModel):
