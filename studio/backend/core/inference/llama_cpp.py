@@ -2181,19 +2181,18 @@ class LlamaCppBackend:
         import hashlib as _hl
 
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
-        _DEDUP_WINDOW = 2  # flag if same call appears this many times in a row
 
         def _tool_call_key(name: str, args: dict) -> str:
             raw = json.dumps({"t": name, "a": args}, sort_keys = True)
             return _hl.md5(raw.encode()).hexdigest()
 
         def _is_duplicate_call(name: str, args: dict) -> bool:
+            """Block if the immediately previous call was identical and succeeded."""
+            if not _tool_call_history:
+                return False
             key = _tool_call_key(name, args)
-            if len(_tool_call_history) >= _DEDUP_WINDOW:
-                tail = _tool_call_history[-_DEDUP_WINDOW:]
-                if all(k == key and not failed for k, failed in tail):
-                    return True
-            return False
+            last_key, last_failed = _tool_call_history[-1]
+            return last_key == key and not last_failed
 
         def _record_tool_call(name: str, args: dict, failed: bool) -> None:
             key = _tool_call_key(name, args)

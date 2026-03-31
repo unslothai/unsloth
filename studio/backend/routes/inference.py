@@ -1226,11 +1226,11 @@ async def openai_chat_completions(
                             continue
 
                         # "content" type -- cumulative text
-                        cumulative = event.get("text", "")
-                        # Strip leaked tool-call XML from outgoing stream
-                        cumulative = _TOOL_XML_RE.sub("", cumulative)
-                        new_text = cumulative[len(prev_text) :]
-                        prev_text = cumulative
+                        raw_cumulative = event.get("text", "")
+                        raw_delta = raw_cumulative[len(prev_text):]
+                        prev_text = raw_cumulative
+                        # Strip leaked tool-call XML from the delta only
+                        new_text = _TOOL_XML_RE.sub("", raw_delta)
                         if not new_text:
                             continue
                         chunk = ChatCompletionChunk(

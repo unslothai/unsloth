@@ -208,15 +208,44 @@ def _fetch_page_text(
 
     try:
         import urllib.request
+        from urllib.parse import urljoin
 
-        req = urllib.request.Request(
-            url,
-            headers = {"User-Agent": "UnslothStudio/1.0"},
-        )
+        # Disable auto-redirect so we can validate each hop for SSRF
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
         max_bytes = max_chars * 4 + 1
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
-            # Cap download size to avoid unbounded memory usage
+        current_url = url
+
+        for _hop in range(5):
+            req = urllib.request.Request(
+                current_url,
+                headers = {"User-Agent": "UnslothStudio/1.0"},
+            )
+            resp = opener.open(req, timeout = timeout)
+            if resp.status in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location")
+                if not location:
+                    return "Failed to fetch URL: redirect missing Location header."
+                current_url = urljoin(current_url, location)
+                rp = urlparse(current_url)
+                if rp.scheme not in ("http", "https") or not rp.hostname:
+                    return "Blocked: redirect target is not a valid http/https URL."
+                ok2, reason2 = _is_public_host(
+                    rp.hostname,
+                    rp.port or (443 if rp.scheme == "https" else 80),
+                )
+                if not ok2:
+                    return reason2
+                continue
+            # Success -- read capped body
             raw_bytes = resp.read(max_bytes)
+            break
+        else:
+            return "Failed to fetch URL: too many redirects."
+
         raw_html = raw_bytes.decode("utf-8", errors = "replace")
     except Exception as e:
         return f"Failed to fetch URL: {e}"
