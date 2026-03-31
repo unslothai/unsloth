@@ -103,7 +103,9 @@ def detect_hardware() -> DeviceType:
             # DeviceType stays CUDA since torch.cuda.* works on ROCm via HIP.
             if getattr(torch.version, "hip", None) is not None:
                 IS_ROCM = True
-                print(f"Hardware detected: ROCm (HIP {torch.version.hip}) -- {device_name}")
+                print(
+                    f"Hardware detected: ROCm (HIP {torch.version.hip}) -- {device_name}"
+                )
             else:
                 print(f"Hardware detected: CUDA -- {device_name}")
             return DEVICE
