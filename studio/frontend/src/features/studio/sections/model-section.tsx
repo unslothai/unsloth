@@ -119,6 +119,7 @@ export function ModelSection() {
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
   function handleModelSelect(id: string | null) {
     selectingRef.current = true;
@@ -167,7 +168,7 @@ export function ModelSection() {
     error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
-    accessToken: hfToken || undefined,
+    accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
   });
