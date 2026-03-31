@@ -323,6 +323,11 @@ class _MarkdownRenderer(HTMLParser):
             return
         # Collapse all whitespace (including newlines) per HTML rules
         text = re.sub(r"\s+", " ", data)
+        # Suppress whitespace-only text nodes between table structural
+        # elements (indentation from source HTML) to prevent leading
+        # spaces from breaking Markdown table row alignment.
+        if self._in_table and not self._in_cell and not text.strip():
+            return
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
