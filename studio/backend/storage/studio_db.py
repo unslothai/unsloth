@@ -99,11 +99,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
     )
+    # Use COLLATE NOCASE on Windows so C:\Models and c:\models dedup via the
+    # UNIQUE constraint.  On Linux/macOS (case-sensitive FS) keep the default
+    # BINARY collation so /Models and /models remain distinct.
+    collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS scan_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            path TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            path TEXT NOT NULL UNIQUE {collation},
             created_at TEXT NOT NULL
         )
         """
