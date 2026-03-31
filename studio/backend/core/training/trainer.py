@@ -42,7 +42,13 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 
-torch._dynamo.config.recompile_limit = 64
+# Handle PyTorch version differences for dynamo recompile limit:
+# - PyTorch 2.1+: renamed to cache_size_limit
+# - PyTorch 2.6+: recompile_limit was completely removed
+if hasattr(torch._dynamo.config, 'cache_size_limit'):
+    torch._dynamo.config.cache_size_limit = 64
+elif hasattr(torch._dynamo.config, 'recompile_limit'):
+    torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
