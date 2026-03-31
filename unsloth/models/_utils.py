@@ -64,7 +64,7 @@ __all__ = [
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
-    "prefer_flex_attn_if_supported",
+    "determine_attention_implementation",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -222,44 +222,67 @@ def apply_unsloth_gradient_checkpointing(
     return use_gradient_checkpointing
 
 
-def prefer_flex_attn_if_supported(model_class, config):
-    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
-        return None
-    try:
-        from transformers.utils.import_utils import is_torch_flex_attn_available
+# Models that don't work with flex_attention:
+# GPT-OSS: left padding issues cause incorrect outputs.
+# Mllama: BlockMask Q_LEN!=KV_LEN ValueError on decode.
+# NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
+# Gemma3N: timm vision wrappers don't support flex_attention.
+_FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h")
+_FLEX_EXCLUDED_PREFIXES = ("gemma3n",)
 
-        if not is_torch_flex_attn_available():
-            return None
-        if model_class is None or not getattr(
-            model_class, "_supports_flex_attn", False
-        ):
-            return None
 
-        attention_dropout = getattr(config, "attention_dropout", 0) or 0
-        if attention_dropout > 0:
-            return None
-        # GPT-OSS, Mllama and Gemma3N use eager/sdpa attention during
-        # inference since flex attention returns incorrect results or errors out.
-        # GPT-OSS: left padding issues cause incorrect outputs.
-        # Mllama: _update_causal_mask uses make_flex_block_causal_mask which
-        # creates BlockMask with Q_LEN=KV_LEN=total_seq_len, but during
-        # decode q_len=1, causing ValueError. Needs transformers update.
-        # Gemma3N: timm vision wrappers (eg Gemma3nVisionConfig) do not
-        # support flex_attention.
-        # NemotronH: hybrid Mamba-2 + Transformer model that does not
-        # support flex_attention (raises NotImplementedError from transformers).
-        model_type = getattr(config, "model_type", "") if config else ""
-        if model_type in ("gpt_oss", "mllama", "nemotron_h") or str(
-            model_type
-        ).startswith("gemma3n"):
-            return None
-        if config is not None:
-            setattr(config, "_attn_implementation", "flex_attention")
-            if hasattr(config, "attn_implementation"):
-                setattr(config, "attn_implementation", "flex_attention")
-        return "flex_attention"
-    except Exception:
-        return None
+def _is_flex_excluded(model_type):
+    return (
+        model_type in _FLEX_EXCLUDED_MODELS
+        or any(model_type.startswith(p) for p in _FLEX_EXCLUDED_PREFIXES)
+    )
+
+
+def _set_attn_impl(config, impl):
+    """Helper function to set attention implementation on config."""
+    if config is not None:
+        setattr(config, "_attn_implementation", impl)
+        if hasattr(config, "attn_implementation"):
+            setattr(config, "attn_implementation", impl)
+
+
+def determine_attention_implementation(model_class, config):
+    model_type = getattr(config, "model_type", "").lower()
+
+    # Flash Attention 2
+    if HAS_FLASH_ATTENTION and model_class is not None:
+        supports_fa2 = getattr(
+            model_class, "_supports_flash_attn_2", False
+        ) or getattr(model_class, "_supports_flash_attn", False)
+        if supports_fa2:
+            _set_attn_impl(config, "flash_attention_2")
+            return "flash_attention_2"
+
+    # Flex Attention
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0":
+        try:
+            from transformers.utils.import_utils import is_torch_flex_attn_available
+
+            if (
+                is_torch_flex_attn_available()
+                and model_class is not None
+                and getattr(model_class, "_supports_flex_attn", False)
+                and not _is_flex_excluded(model_type)
+            ):
+                attention_dropout = getattr(config, "attention_dropout", 0) or 0
+                if attention_dropout == 0:
+                    _set_attn_impl(config, "flex_attention")
+                    return "flex_attention"
+        except Exception:
+            pass
+
+    # SDPA
+    if model_class is not None and getattr(model_class, "_supports_sdpa", False):
+        _set_attn_impl(config, "sdpa")
+        return "sdpa"
+
+    _set_attn_impl(config, "eager")
+    return "eager"
 
 
 def _run_temporary_patches(phase):

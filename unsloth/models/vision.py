@@ -597,8 +597,6 @@ class FastBaseModel:
                 custom_datatype = None
                 correct_dtype = None
 
-        # Stop SDPA for some archs like Pixtral / Mistral3
-        flex_attn_impl = None
         if auto_config is None:
             auto_config = AutoConfig.from_pretrained(
                 model_name,
@@ -609,7 +607,7 @@ class FastBaseModel:
             model_class = auto_model._model_mapping[auto_config.__class__]
         except Exception:
             model_class = None
-        flex_attn_impl = prefer_flex_attn_if_supported(model_class, auto_config)
+        attn_impl = determine_attention_implementation(model_class, auto_config)
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
         # FP8 weights. We just need to update it here for sanity.
@@ -620,20 +618,12 @@ class FastBaseModel:
         except Exception:
             model_class = None
 
-        model_type = str(getattr(auto_config, "model_type", "")).lower()
-        if model_type.startswith("gemma3n"):
-            # Gemma3N variants initialize timm-based vision towers which do
-            # not support flex_attention, so default to eager unless overridden.
-            default_attn_impl = "eager"
-        else:
-            default_attn_impl = "flex_attention" if flex_attn_impl else "sdpa"
         if not ("attn_implementation" in kwargs):
-            kwargs["attn_implementation"] = default_attn_impl
+            kwargs["attn_implementation"] = attn_impl
         if not supports_sdpa and kwargs.get("attn_implementation") == "sdpa":
-            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
-                print(
-                    f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
-                )
+            print(
+                f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
+            )
             del kwargs["attn_implementation"]
 
         bnb_config = None
