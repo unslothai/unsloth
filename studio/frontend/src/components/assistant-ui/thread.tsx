@@ -438,20 +438,27 @@ const CodeToolsToggle: FC = () => {
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const [elapsed, setElapsed] = useState(0);
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
     if (!toolStatus) {
       setElapsed(0);
+      setVisible(false);
       return;
     }
     setElapsed(0);
+    setVisible(false);
+    const showTimer = setTimeout(() => setVisible(true), 300);
     const interval = setInterval(() => {
       setElapsed((prev) => prev + 1);
     }, 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(showTimer);
+    };
   }, [toolStatus]);
 
-  if (!toolStatus) return null;
+  if (!toolStatus || !visible) return null;
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
