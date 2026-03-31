@@ -116,22 +116,40 @@ def _build_model_config(config: dict):
 
 
 def _get_hf_cache_size() -> int:
-    """Return total bytes of blobs in the HF Hub cache directory."""
+    """Return total bytes of download-related files in the HF Hub cache.
+
+    Monitors both the final ``blobs/`` directories (completed shards) and
+    the ``.tmp/`` directory where ``huggingface_hub`` writes in-progress
+    downloads before atomically moving them to ``blobs/``.  Without the
+    ``.tmp/`` check, a large shard downloading for several minutes would
+    look like zero progress and trigger a false stall detection.
+    """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         cache = Path(HF_HUB_CACHE)
         if not cache.exists():
             return 0
-        # Blobs dir holds the actual downloaded files (symlinked from snapshots)
-        blobs_dirs = list(cache.glob("models--*/blobs"))
+
         total = 0
-        for bdir in blobs_dirs:
+
+        # Completed blobs
+        for bdir in cache.glob("models--*/blobs"):
             for f in bdir.iterdir():
                 try:
                     total += f.stat().st_size
                 except OSError:
                     pass
+
+        # In-progress downloads (HF Hub writes here before moving to blobs)
+        tmp_dir = cache / ".tmp"
+        if tmp_dir.exists():
+            for f in tmp_dir.iterdir():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+
         return total
     except Exception:
         return 0
