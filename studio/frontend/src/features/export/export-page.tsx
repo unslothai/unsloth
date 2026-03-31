@@ -75,6 +75,8 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
 
+const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+
 export function ExportPage() {
   const { hfToken, setHfToken } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -122,6 +124,9 @@ export function ExportPage() {
 
   const hfComboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
+  const selectingHfModelRef = useRef(false);
+  const hfModelInputRef = useRef("");
+  const localModelInputRef = useRef("");
 
   const tour = useGuidedTourController({
     id: "export",
@@ -310,6 +315,14 @@ export function ExportPage() {
     setModelInput("");
   }, [modelSource]);
 
+  useEffect(() => {
+    hfModelInputRef.current = modelInput;
+  }, [modelInput]);
+
+  useEffect(() => {
+    localModelInputRef.current = localModelInput;
+  }, [localModelInput]);
+
   const handleMethodChange = (method: ExportMethod) => {
     setExportMethod(method);
     if (method !== "gguf") {
@@ -324,6 +337,58 @@ export function ExportPage() {
     selectedExportSource &&
     exportMethod &&
     (exportMethod !== "gguf" || quantLevels.length > 0)
+  );
+
+  const applyHfSourceModel = useCallback((value: string) => {
+    const next = value.trim();
+    setModelInput(next);
+    setSelectedSourceModel(next || null);
+  }, []);
+
+  const handleHfSourceModelSelect = useCallback((id: string | null) => {
+    selectingHfModelRef.current = true;
+    const next = id ?? "";
+    hfModelInputRef.current = next;
+    setModelInput(next);
+    setSelectedSourceModel(id);
+  }, []);
+
+  const handleHfSourceInputChange = useCallback(
+    (value: string, eventDetails?: { reason?: string }) => {
+      hfModelInputRef.current = value;
+      if (selectingHfModelRef.current) {
+        selectingHfModelRef.current = false;
+        return;
+      }
+      if (!SEARCH_INPUT_REASONS.has(eventDetails?.reason ?? "")) {
+        return;
+      }
+      setModelInput(value);
+      if (value.trim() === "") {
+        setSelectedSourceModel(null);
+      }
+    },
+    [],
+  );
+
+  const applyLocalSourceModel = useCallback((value: string) => {
+    const next = value.trim();
+    setLocalModelInput(next);
+    setSelectedSourceModel(next || null);
+  }, []);
+
+  const handleLocalSourceInputChange = useCallback(
+    (value: string, eventDetails?: { reason?: string }) => {
+      localModelInputRef.current = value;
+      if (!SEARCH_INPUT_REASONS.has(eventDetails?.reason ?? "")) {
+        return;
+      }
+      setLocalModelInput(value);
+      if (value.trim() === "") {
+        setSelectedSourceModel(null);
+      }
+    },
+    [],
   );
 
   // ---- Export handler ----
@@ -680,16 +745,24 @@ export function ExportPage() {
                                 items={hfResultIds}
                                 filteredItems={hfResultIds}
                                 filter={null}
-                                value={selectedSourceModel}
-                                onValueChange={setSelectedSourceModel}
-                                onInputValueChange={(val) => {
-                                  setModelInput(val);
-                                  setSelectedSourceModel(null);
-                                }}
+                                value={modelInput || selectedSourceModel || null}
+                                onValueChange={handleHfSourceModelSelect}
+                                onInputValueChange={handleHfSourceInputChange}
                                 itemToStringValue={(id) => id}
                                 autoHighlight={true}
                               >
-                                <ComboboxInput placeholder="Search models..." className="w-full">
+                                <ComboboxInput
+                                  placeholder="Search models..."
+                                  className="w-full"
+                                  onBlur={() =>
+                                    applyHfSourceModel(hfModelInputRef.current)
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (event.key !== "Enter") return;
+                                    event.preventDefault();
+                                    applyHfSourceModel(hfModelInputRef.current);
+                                  }}
+                                >
                                   <InputGroupAddon>
                                     <HugeiconsIcon icon={Search01Icon} className="size-4" />
                                   </InputGroupAddon>
@@ -792,10 +865,11 @@ export function ExportPage() {
                               value={localModelInput || null}
                               onValueChange={(id) => {
                                 const next = id ?? "";
+                                localModelInputRef.current = next;
                                 setLocalModelInput(next);
                                 setSelectedSourceModel(next || null);
                               }}
-                              onInputValueChange={setLocalModelInput}
+                              onInputValueChange={handleLocalSourceInputChange}
                               itemToStringValue={(id) => id}
                               autoHighlight={true}
                             >
@@ -806,13 +880,11 @@ export function ExportPage() {
                                     : "./models/my-model"
                                 }
                                 className="w-full"
-                                onBlur={() =>
-                                  setSelectedSourceModel(localModelInput.trim() || null)
-                                }
+                                onBlur={() => applyLocalSourceModel(localModelInputRef.current)}
                                 onKeyDown={(event) => {
                                   if (event.key !== "Enter") return;
                                   event.preventDefault();
-                                  setSelectedSourceModel(localModelInput.trim() || null);
+                                  applyLocalSourceModel(localModelInputRef.current);
                                 }}
                               >
                                 <InputGroupAddon>
@@ -837,7 +909,9 @@ export function ExportPage() {
                                     const source =
                                       model?.source === "hf_cache"
                                         ? "HF cache"
-                                        : "Local dir";
+                                        : model?.source === "custom"
+                                          ? "Custom Folders"
+                                          : "Local dir";
                                     return (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">
