@@ -22,6 +22,7 @@ from loggers import get_logger
 import os
 import queue as _queue
 import sys
+import threading
 import time
 import traceback
 from io import BytesIO
@@ -114,6 +115,29 @@ def _build_model_config(config: dict):
     return mc
 
 
+def _start_heartbeat(resp_queue: Any, interval: float = 30.0) -> threading.Event:
+    """Start a daemon thread that sends periodic status heartbeats.
+
+    Returns a stop event — set it to terminate the heartbeat thread.
+    """
+    stop = threading.Event()
+
+    def _beat():
+        while not stop.wait(interval):
+            _send_response(
+                resp_queue,
+                {
+                    "type": "status",
+                    "message": "Still loading model...",
+                    "ts": time.time(),
+                },
+            )
+
+    t = threading.Thread(target = _beat, daemon = True)
+    t.start()
+    return stop
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -173,14 +197,20 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_name,
                 )
 
-        success = backend.load_model(
-            config = mc,
-            max_seq_length = config.get("max_seq_length", 2048),
-            load_in_4bit = load_in_4bit,
-            hf_token = hf_token,
-            trust_remote_code = trust_remote_code,
-            gpu_ids = config.get("resolved_gpu_ids"),
-        )
+        # Send heartbeats every 30s so the orchestrator knows we're still alive
+        # (download / weight loading can take a long time on slow connections)
+        heartbeat_stop = _start_heartbeat(resp_queue, interval = 30.0)
+        try:
+            success = backend.load_model(
+                config = mc,
+                max_seq_length = config.get("max_seq_length", 2048),
+                load_in_4bit = load_in_4bit,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+                gpu_ids = config.get("resolved_gpu_ids"),
+            )
+        finally:
+            heartbeat_stop.set()
 
         if success:
             # Build model_info for the parent to mirror
