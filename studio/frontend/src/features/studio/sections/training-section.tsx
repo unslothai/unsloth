@@ -172,7 +172,9 @@ export function TrainingSection() {
         )}
         {isIncompatible && (
           <p className="text-xs text-red-500 leading-relaxed">
-            Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset.
+            {!store.isAudioModel && store.isDatasetAudio === true
+              ? "This model does not support audio. Switch to an audio-capable model or choose a non-audio dataset."
+              : "Text model is not compatible with a multimodal dataset. Switch to a vision model or choose a text-only dataset."}
           </p>
         )}
         {!configValidation.ok && configValidation.message && !isIncompatible && (
