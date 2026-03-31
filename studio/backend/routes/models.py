@@ -401,9 +401,7 @@ async def list_local_models(
         # (id, source) key for custom entries to avoid collisions.
         deduped: dict[str, LocalModelInfo] = {}
         for model in local_models:
-            key = (
-                f"{model.id}\x00custom" if model.source == "custom" else model.id
-            )
+            key = f"{model.id}\x00custom" if model.source == "custom" else model.id
             if key not in deduped:
                 deduped[key] = model
 
