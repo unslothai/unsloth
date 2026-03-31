@@ -18,7 +18,14 @@ from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
-from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
+from utils.hardware import (
+    get_device,
+    clear_gpu_cache,
+    log_gpu_memory,
+    get_device_map,
+    raise_if_offloaded,
+    get_visible_gpu_count,
+)
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -241,6 +248,7 @@ class InferenceBackend:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """
         Load any model: base, LoRA adapter, text, or vision.
@@ -260,6 +268,10 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
+            device_map = get_device_map(gpu_ids)
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
 
             self.models[model_name] = {
                 "is_vision": config.is_vision,
@@ -290,6 +302,7 @@ class InferenceBackend:
                         config.path,
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -325,6 +338,7 @@ class InferenceBackend:
                             config.path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -345,6 +359,7 @@ class InferenceBackend:
                             llm_path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -361,6 +376,7 @@ class InferenceBackend:
                         config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -378,6 +394,7 @@ class InferenceBackend:
                         whisper_language = "English",
                         whisper_task = "transcribe",
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -405,6 +422,7 @@ class InferenceBackend:
                         model_name = config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -419,6 +437,11 @@ class InferenceBackend:
                     self._audio_codec_manager.load_codec(
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
+
+                # Reject CPU/disk offload for audio models too
+                raise_if_offloaded(
+                    self.models[model_name]["model"], device_map, "Inference"
+                )
 
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
@@ -441,6 +464,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -497,6 +521,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -506,6 +531,10 @@ class InferenceBackend:
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+
+            raise_if_offloaded(
+                self.models[model_name]["model"], device_map, "Inference"
+            )
 
             # Load chat template info
             self._load_chat_template_info(model_name)
@@ -615,6 +644,7 @@ class InferenceBackend:
         dtype = None,
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Final Corrected Version:
@@ -639,7 +669,12 @@ class InferenceBackend:
                     base_model_name, None, is_lora = False
                 )
                 if not self.load_model(
-                    base_config, max_seq_length, dtype, load_in_4bit, hf_token
+                    base_config,
+                    max_seq_length,
+                    dtype,
+                    load_in_4bit,
+                    hf_token,
+                    gpu_ids = gpu_ids,
                 ):
                     return False, None, None
 
@@ -1037,12 +1072,12 @@ class InferenceBackend:
                 input_text,
                 add_special_tokens = False,
                 return_tensors = "pt",
-            ).to(self.device)
+            ).to(model.device)
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(
-                self.device
+                model.device
             )
 
         # Stream with TextIteratorStreamer + background thread
@@ -1182,7 +1217,7 @@ class InferenceBackend:
             return_dict = True,
             return_tensors = "pt",
             truncation = False,
-        ).to(self.device)
+        ).to(model.device)
 
         try:
             from transformers import TextIteratorStreamer
