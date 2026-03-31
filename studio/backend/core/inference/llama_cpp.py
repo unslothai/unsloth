@@ -2701,7 +2701,6 @@ class LlamaCppBackend:
                             "process data you already have, or "
                             "provide your final answer now."
                         )
-                        _record_tool_call(tool_name, arguments, failed = False)
                     else:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout

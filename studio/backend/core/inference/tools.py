@@ -158,15 +158,25 @@ _MAX_PAGE_CHARS = 16000  # limit fetched page text
 _MAX_FETCH_BYTES = _MAX_PAGE_CHARS * 4 + 1  # cap raw download size
 
 
-def _is_public_host(hostname: str, port: int) -> tuple[bool, str]:
-    """Resolve *hostname* and reject private/loopback/link-local addresses."""
+def _validate_and_resolve_host(
+    hostname: str, port: int
+) -> tuple[bool, str, str]:
+    """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
+
+    Returns ``(ok, reason_or_empty, resolved_ip)``.  The caller should
+    connect to *resolved_ip* (with a ``Host`` header) to prevent DNS
+    rebinding between validation and the actual fetch.
+    """
     import ipaddress
     import socket
 
     try:
-        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except OSError as e:
-        return False, f"Failed to resolve host: {e}"
+        return False, f"Failed to resolve host: {e}", ""
+
+    if not infos:
+        return False, f"Failed to resolve host: no addresses for {hostname!r}", ""
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
@@ -178,8 +188,11 @@ def _is_public_host(hostname: str, port: int) -> tuple[bool, str]:
             or ip.is_reserved
             or ip.is_unspecified
         ):
-            return False, f"Blocked: refusing to fetch non-public address {ip}."
-    return True, ""
+            return False, f"Blocked: refusing to fetch non-public address {ip}.", ""
+
+    # Return the first resolved address for pinning
+    first_ip = infos[0][4][0]
+    return True, "", first_ip
 
 
 def _fetch_page_text(
@@ -199,17 +212,15 @@ def _fetch_page_text(
     if not parsed.hostname:
         return "Blocked: URL is missing a hostname."
 
-    ok, reason = _is_public_host(
-        parsed.hostname,
-        parsed.port or (443 if parsed.scheme == "https" else 80),
-    )
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ok, reason, pinned_ip = _validate_and_resolve_host(parsed.hostname, port)
     if not ok:
         return reason
 
     try:
         import urllib.request
         from urllib.error import HTTPError as _HTTPError
-        from urllib.parse import urljoin
+        from urllib.parse import urljoin, urlunparse
 
         # Disable auto-redirect so we can validate each hop for SSRF.
         # urllib raises HTTPError for 3xx when the handler returns None,
@@ -221,17 +232,27 @@ def _fetch_page_text(
         opener = urllib.request.build_opener(_NoRedirect)
         max_bytes = max_chars * 4 + 1
         current_url = url
+        current_host = parsed.hostname
 
         for _hop in range(5):
+            # Pin to the validated IP to prevent DNS rebinding.
+            # Rewrite the URL to use the IP and set the Host header.
+            cp = urlparse(current_url)
+            ip_netloc = f"{pinned_ip}:{cp.port}" if cp.port else pinned_ip
+            pinned_url = urlunparse(cp._replace(netloc=ip_netloc))
+
             req = urllib.request.Request(
-                current_url,
-                headers = {"User-Agent": "UnslothStudio/1.0"},
+                pinned_url,
+                headers={
+                    "User-Agent": "UnslothStudio/1.0",
+                    "Host": current_host,
+                },
             )
             try:
-                resp = opener.open(req, timeout = timeout)
+                resp = opener.open(req, timeout=timeout)
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code}"
+                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
                 location = e.headers.get("Location")
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header."
@@ -239,12 +260,13 @@ def _fetch_page_text(
                 rp = urlparse(current_url)
                 if rp.scheme not in ("http", "https") or not rp.hostname:
                     return "Blocked: redirect target is not a valid http/https URL."
-                ok2, reason2 = _is_public_host(
-                    rp.hostname,
-                    rp.port or (443 if rp.scheme == "https" else 80),
+                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
+                ok2, reason2, pinned_ip = _validate_and_resolve_host(
+                    rp.hostname, rp_port,
                 )
                 if not ok2:
                     return reason2
+                current_host = rp.hostname
                 continue
             # Success -- read capped body
             raw_bytes = resp.read(max_bytes)
@@ -252,9 +274,10 @@ def _fetch_page_text(
         else:
             return "Failed to fetch URL: too many redirects."
 
-        raw_html = raw_bytes.decode("utf-8", errors = "replace")
-    except _HTTPError:
-        raise
+        charset = resp.headers.get_content_charset() or "utf-8"
+        raw_html = raw_bytes.decode(charset, errors="replace")
+    except _HTTPError as e:
+        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
