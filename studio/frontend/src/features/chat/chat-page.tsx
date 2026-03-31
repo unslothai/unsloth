@@ -934,7 +934,6 @@ export function ChatPage(): ReactElement {
               });
             }
           }}
-          onFoldersChange={refreshLocalModels}
         />
       </SidebarProvider>
     </div>
