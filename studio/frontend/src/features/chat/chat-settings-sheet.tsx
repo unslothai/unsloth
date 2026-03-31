@@ -304,10 +304,11 @@ function ModelFoldersSection({
   const handleRemove = async (id: number) => {
     try {
       await removeScanFolder(id);
-      refresh();
       onFoldersChange?.();
-    } catch {
-      // ignore
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove folder");
+    } finally {
+      refresh();
     }
   };
 

@@ -351,12 +351,13 @@ async def list_local_models(
         for lm_dir in lm_dirs:
             local_models += _scan_lmstudio_dir(lm_dir)
 
-        # Scan user-added custom folders
+        # Scan user-added custom folders (cap per-folder to avoid unbounded scans)
         from storage.studio_db import list_scan_folders
+        _MAX_MODELS_PER_FOLDER = 200
         custom_folders = list_scan_folders()
         for folder in custom_folders:
             folder_path = Path(folder["path"])
-            custom_models = _scan_models_dir(folder_path)
+            custom_models = _scan_models_dir(folder_path)[:_MAX_MODELS_PER_FOLDER]
             local_models += [m.model_copy(update={"source": "custom"}) for m in custom_models]
 
         deduped: dict[str, LocalModelInfo] = {}
@@ -388,20 +389,24 @@ async def list_local_models(
 async def get_scan_folders(
     current_subject: str = Depends(get_current_subject),
 ):
+    """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
     return {"folders": list_scan_folders()}
 
 
-@router.post("/scan-folders", status_code=201)
+@router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 async def add_scan_folder_endpoint(
     body: AddScanFolderRequest,
     current_subject: str = Depends(get_current_subject),
 ):
+    """Register a new directory to scan for local models."""
     from storage.studio_db import add_scan_folder
     try:
         folder = add_scan_folder(body.path)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
+        raise HTTPException(status_code = 400, detail = str(e))
+    logger.info("Scan folder added: %s", folder.get("path"))
     return folder
 
 
@@ -410,8 +415,10 @@ async def remove_scan_folder_endpoint(
     folder_id: int,
     current_subject: str = Depends(get_current_subject),
 ):
+    """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
     remove_scan_folder(folder_id)
+    logger.info("Scan folder removed: id=%s", folder_id)
     return {"ok": True}
 
 

@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 from typing import Optional
 
 
+from utils.paths import studio_db_path, ensure_dir
+
+
 def _denied_path_prefixes() -> list[str]:
     """Platform-aware denylist of system directories."""
     system = platform.system()
@@ -33,10 +36,8 @@ def _denied_path_prefixes() -> list[str]:
         win = os.environ.get("SystemRoot", r"C:\Windows")
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
         pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-        return [win, pf, pf86]
+        return [os.path.normcase(p) for p in [win, pf, pf86]]
     return []
-
-from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready = False
@@ -399,11 +400,13 @@ def list_scan_folders() -> list[dict]:
 
 
 def add_scan_folder(path: str) -> dict:
-    normalized = os.path.realpath(os.path.expanduser(path.strip()))
-    if not normalized:
+    """Add a directory to the custom scan folder list. Returns the row."""
+    if not path or not path.strip():
         raise ValueError("Path cannot be empty")
+    normalized = os.path.realpath(os.path.expanduser(path.strip()))
+    check = os.path.normcase(normalized) if platform.system() == "Windows" else normalized
     for prefix in _denied_path_prefixes():
-        if normalized == prefix or normalized.startswith(prefix + os.sep):
+        if check == prefix or check.startswith(prefix + os.sep):
             raise ValueError(f"Path under {prefix} is not allowed")
     conn = get_connection()
     try:
@@ -414,15 +417,14 @@ def add_scan_folder(path: str) -> dict:
                 (normalized, now),
             )
             conn.commit()
-            row = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
-                (normalized,),
-            ).fetchone()
         except sqlite3.IntegrityError:
-            row = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
-                (normalized,),
-            ).fetchone()
+            pass  # duplicate — fall through to SELECT
+        row = conn.execute(
+            "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+            (normalized,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Folder was concurrently removed")
         return dict(row)
     finally:
         conn.close()

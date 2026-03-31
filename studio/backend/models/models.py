@@ -200,9 +200,14 @@ class LocalModelListResponse(BaseModel):
 
 
 class AddScanFolderRequest(BaseModel):
-    path: str
+    """Request body for adding a custom scan folder."""
+
+    path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+
 
 class ScanFolderInfo(BaseModel):
-    id: int
-    path: str
-    created_at: str
+    """A registered custom model scan folder."""
+
+    id: int = Field(..., description = "Database row ID")
+    path: str = Field(..., description = "Normalized absolute path")
+    created_at: str = Field(..., description = "ISO 8601 creation timestamp")
