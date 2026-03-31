@@ -748,7 +748,18 @@ get_torch_index_url() {
             { command -v dpkg-query >/dev/null 2>&1 && ver="$(dpkg-query -W -f="\${Version}\n" rocm-core 2>/dev/null)" && [ -n "$ver" ] && awk -F'[.-]' '{print "rocm"$1"."$2; exit}' <<<"$ver"; } || \
             { command -v rpm >/dev/null 2>&1 && ver="$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null)" && [ -n "$ver" ] && awk -F'[.-]' '{print "rocm"$1"."$2; exit}' <<<"$ver"; })
         if [ -n "$ROCM_TAG" ]; then
-            echo "$_base/$ROCM_TAG"
+            # Detect AMD GPU architecture for architecture-specific wheels
+            GPU_ARCH=""
+            if command -v rocminfo >/dev/null 2>&1; then
+                GPU_ARCH=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]{2,4}[a-z]?' | head -1)
+            fi
+            # Use AMD's architecture-specific repo if gfx arch is detected
+            # This provides better compatibility for newer architectures like gfx1151
+            if [ -n "$GPU_ARCH" ]; then
+                echo "https://repo.amd.com/rocm/whl/$GPU_ARCH"
+            else
+                echo "$_base/$ROCM_TAG"
+            fi
         else
             echo "$_base/cpu"
         fi
