@@ -463,7 +463,9 @@ class TestPublishedReleaseResolution:
         def fake_load(repo, release_tag):
             if release_tag == "v2.0":
                 raise PrebuiltFallback("checksum asset missing")
-            return make_checksums_with_source([], release_tag = "v1.0", upstream_tag = "b8999")
+            return make_checksums_with_source(
+                [], release_tag = "v1.0", upstream_tag = "b8999"
+            )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -509,7 +511,9 @@ class TestPublishedReleaseResolution:
             resolve_requested_install_tag("b8508", "", "unslothai/llama.cpp")
 
     def test_pinned_release_must_match_requested_upstream_tag(self, monkeypatch):
-        bundle = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        bundle = make_release(
+            [], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000"
+        )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "pinned_published_release_bundle",
@@ -807,7 +811,9 @@ class TestLinuxCudaChoiceFromRelease:
 
 
 class TestResolveInstallAttempts:
-    def test_windows_cuda_prefers_published_asset_from_selected_release(self, monkeypatch):
+    def test_windows_cuda_prefers_published_asset_from_selected_release(
+        self, monkeypatch
+    ):
         host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
@@ -851,7 +857,9 @@ class TestResolveInstallAttempts:
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
             lambda repo, tag: (_ for _ in ()).throw(
-                AssertionError("published Windows CUDA choice should not query upstream")
+                AssertionError(
+                    "published Windows CUDA choice should not query upstream"
+                )
             ),
         )
 
@@ -873,7 +881,9 @@ class TestResolveInstallAttempts:
         host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
-        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        release = make_release(
+            [], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000"
+        )
         checksums = make_checksums_with_source(
             ["llama-b9000-bin-win-cuda-12.4-x64.zip"],
             release_tag = release.release_tag,
@@ -934,7 +944,9 @@ class TestResolveInstallAttempts:
             has_physical_nvidia = False,
             nvidia_smi = None,
         )
-        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        release = make_release(
+            [], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000"
+        )
         checksums = make_checksums_with_source(
             ["llama-b9000-bin-ubuntu-x64.tar.gz"],
             release_tag = release.release_tag,
@@ -975,7 +987,9 @@ class TestResolveInstallAttempts:
 
     def test_linux_cuda_does_not_fall_back_to_upstream_cpu(self, monkeypatch):
         host = make_host(system = "Linux", machine = "x86_64", compute_caps = ["86"])
-        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
+        release = make_release(
+            [], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000"
+        )
         checksums = make_checksums_with_source(
             [],
             release_tag = release.release_tag,
@@ -996,7 +1010,9 @@ class TestResolveInstallAttempts:
         )
         mock_linux_runtime(monkeypatch, ["cuda12"])
 
-        with pytest.raises(PrebuiltFallback, match = "no compatible published Linux CUDA bundle"):
+        with pytest.raises(
+            PrebuiltFallback, match = "no compatible published Linux CUDA bundle"
+        ):
             resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
 
     def test_windows_cpu_prefers_published_asset(self, monkeypatch):
@@ -1192,7 +1208,9 @@ class TestResolveInstallAttempts:
 
 
 class TestResolveInstallReleasePlans:
-    def test_latest_collects_multiple_older_release_plans_up_to_limit(self, monkeypatch):
+    def test_latest_collects_multiple_older_release_plans_up_to_limit(
+        self, monkeypatch
+    ):
         host = make_host(
             has_usable_nvidia = False,
             has_physical_nvidia = False,
@@ -1228,7 +1246,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                releases
+            ),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -1250,7 +1270,9 @@ class TestResolveInstallReleasePlans:
         assert [plan.release_tag for plan in plans] == ["r3", "r2"]
         assert [plan.llama_tag for plan in plans] == ["b9003", "b9002"]
 
-    def test_latest_skips_non_installable_release_and_keeps_searching(self, monkeypatch):
+    def test_latest_skips_non_installable_release_and_keeps_searching(
+        self, monkeypatch
+    ):
         host = make_host(
             has_usable_nvidia = False,
             has_physical_nvidia = False,
@@ -1278,7 +1300,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
+                releases
+            ),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -1286,7 +1310,9 @@ class TestResolveInstallReleasePlans:
             lambda repo, tag: (
                 {}
                 if tag == "b9002"
-                else {f"llama-{tag}-bin-ubuntu-x64.tar.gz": f"https://example.com/llama-{tag}-bin-ubuntu-x64.tar.gz"}
+                else {
+                    f"llama-{tag}-bin-ubuntu-x64.tar.gz": f"https://example.com/llama-{tag}-bin-ubuntu-x64.tar.gz"
+                }
             ),
         )
 
@@ -1304,9 +1330,13 @@ class TestResolveInstallReleasePlans:
 
     def test_malformed_release_fallback_env_uses_default(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "not-an-int")
-        assert env_int("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", 3, minimum = 1) == 3
+        assert (
+            env_int("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", 3, minimum = 1) == 3
+        )
 
-    def test_import_with_malformed_release_fallback_env_does_not_crash(self, monkeypatch):
+    def test_import_with_malformed_release_fallback_env_does_not_crash(
+        self, monkeypatch
+    ):
         monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "bad-value")
         spec = importlib.util.spec_from_file_location(
             "studio_install_llama_prebuilt_env_reload",

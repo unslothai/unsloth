@@ -58,6 +58,7 @@ def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
         value = max(minimum, value)
     return value
 
+
 APPROVED_PREBUILT_LLAMA_TAG = "b8508"
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
 DEFAULT_PUBLISHED_REPO = os.environ.get(
@@ -1444,7 +1445,9 @@ def resolve_published_release(
             raise PrebuiltFallback(
                 f"no usable published llama.cpp releases were available in {repo}"
             )
-        raise PrebuiltFallback(f"no published llama.cpp releases were available in {repo}")
+        raise PrebuiltFallback(
+            f"no published llama.cpp releases were available in {repo}"
+        )
 
     raise PrebuiltFallback(
         f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
@@ -1509,7 +1512,9 @@ def iter_resolved_published_releases(
         return
 
     if normalized_requested == "latest":
-        raise PrebuiltFallback(f"no published llama.cpp releases were available in {repo}")
+        raise PrebuiltFallback(
+            f"no published llama.cpp releases were available in {repo}"
+        )
 
     raise PrebuiltFallback(
         f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
@@ -3492,7 +3497,9 @@ def resolve_install_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     requested_tag = normalized_requested_llama_tag(llama_tag)
-    allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
+    allow_older_release_fallback = (
+        requested_tag == "latest" and not published_release_tag
+    )
     release_limit = max(1, max_release_fallbacks)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
@@ -3508,7 +3515,9 @@ def resolve_install_release_plans(
         try:
             if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
                 linux_cuda_selection = resolve_linux_cuda_choice(host, bundle)
-                attempts = apply_approved_hashes(linux_cuda_selection.attempts, checksums)
+                attempts = apply_approved_hashes(
+                    linux_cuda_selection.attempts, checksums
+                )
                 if not attempts:
                     raise PrebuiltFallback("no compatible Linux CUDA asset was found")
                 log_lines(linux_cuda_selection.selection_log)
@@ -4104,7 +4113,9 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except BusyInstallConflict as exc:
-        log(f"fatal helper busy conflict: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}")
+        log(
+            f"fatal helper busy conflict: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
+        )
         raise SystemExit(EXIT_BUSY)
     except Exception as exc:
         message = textwrap.shorten(str(exc), width = 400, placeholder = "...")

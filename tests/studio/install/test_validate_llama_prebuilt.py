@@ -15,7 +15,9 @@ sys.modules[SPEC.name] = VALIDATE
 SPEC.loader.exec_module(VALIDATE)
 
 
-def test_build_local_approved_checksums_uses_staged_upstream_tag(tmp_path: Path, monkeypatch):
+def test_build_local_approved_checksums_uses_staged_upstream_tag(
+    tmp_path: Path, monkeypatch
+):
     stage_dir = tmp_path / "release-1"
     stage_dir.mkdir()
     asset_path = stage_dir / "app-test-linux-x64-cuda12-newer.tar.gz"
@@ -63,7 +65,9 @@ def test_build_local_approved_checksums_uses_staged_upstream_tag(tmp_path: Path,
     assert "llama.cpp-source-test.tar.gz" not in checksums.artifacts
 
 
-def test_validate_native_asset_passes_release_tag_and_upstream_tag(tmp_path: Path, monkeypatch):
+def test_validate_native_asset_passes_release_tag_and_upstream_tag(
+    tmp_path: Path, monkeypatch
+):
     stage_dir = tmp_path / "release-7"
     stage_dir.mkdir()
     asset_path = stage_dir / "app-test-linux-x64-cuda12-newer.tar.gz"

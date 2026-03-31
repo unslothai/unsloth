@@ -750,12 +750,8 @@ def write_linux_install_shape(install_dir: Path) -> None:
     runtime_dir.mkdir(parents = True, exist_ok = True)
     (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
     (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text(
-        "#!/bin/sh\n", encoding = "utf-8"
-    )
-    (runtime_dir / "llama-quantize").write_text(
-        "#!/bin/sh\n", encoding = "utf-8"
-    )
+    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
+    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "libllama.so.0").write_bytes(b"DLL")
     (runtime_dir / "libggml.so.0").write_bytes(b"DLL")
     (runtime_dir / "libggml-base.so.0").write_bytes(b"DLL")
@@ -884,7 +880,8 @@ def test_existing_install_matches_plan_false_without_fingerprint(tmp_path: Path)
     install_dir.mkdir()
     write_linux_install_shape(install_dir)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"tag": "b9001", "asset": "llama-b9001-bin-ubuntu-x64.tar.gz"}) + "\n",
+        json.dumps({"tag": "b9001", "asset": "llama-b9001-bin-ubuntu-x64.tar.gz"})
+        + "\n",
         encoding = "utf-8",
     )
 
@@ -947,7 +944,9 @@ def test_existing_install_matches_plan_false_with_malformed_metadata(tmp_path: P
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_linux_install_shape(install_dir)
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{not-json\n", encoding = "utf-8")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        "{not-json\n", encoding = "utf-8"
+    )
 
     host = HostInfo(
         system = "Linux",
@@ -1302,7 +1301,9 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
         INSTALL_LLAMA_PREBUILT,
         "download_validation_model",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("matching install should skip before validation model download")
+            AssertionError(
+                "matching install should skip before validation model download"
+            )
         ),
     )
 
@@ -1642,14 +1643,17 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         approved_checksums = checksums,
         prebuilt_fallback_used = True,
     )
-    assert existing_install_matches_choice(
-        install_dir,
-        host,
-        llama_tag = "b9001",
-        release_tag = "release-1",
-        choice = fallback_choice,
-        approved_checksums = checksums,
-    ) is True
+    assert (
+        existing_install_matches_choice(
+            install_dir,
+            host,
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = fallback_choice,
+            approved_checksums = checksums,
+        )
+        is True
+    )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -1815,7 +1819,9 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         (staging_dir / "marker.txt").write_text("ready\n")
         return attempts[0], staging_dir, initial_fallback_used
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "validate_prebuilt_attempts", fake_validate)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "validate_prebuilt_attempts", fake_validate
+    )
 
     activated = {}
     monkeypatch.setattr(
