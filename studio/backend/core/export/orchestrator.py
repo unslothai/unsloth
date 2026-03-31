@@ -217,6 +217,7 @@ class ExportOrchestrator:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -227,6 +228,7 @@ class ExportOrchestrator:
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
+            "hf_token": hf_token,
         }
 
         # Always kill existing subprocess and spawn fresh.

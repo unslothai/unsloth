@@ -278,8 +278,18 @@ export function ChatSettingsPanel({
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufMaxContextLength = useChatRuntimeStore((s) => s.ggufMaxContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
+  const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const setCustomContextLength = useChatRuntimeStore((s) => s.setCustomContextLength);
+
+  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
+  const ctxMaxValue = ggufMaxContextLength ?? ggufContextLength ?? null;
+  const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
+  const ctxDirty = customContextLength !== null;
+  const modelSettingsDirty = kvDirty || ctxDirty;
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
@@ -468,32 +478,53 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-3 py-1">
               {isGguf && (
                 <>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium">Context Length</div>
-                      <div className="text-[11px] text-muted-foreground">
-                        Reported by the loaded GGUF model.
-                      </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium">Context Length</span>
+                      <Input
+                        type="number"
+                        value={typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? "")}
+                        placeholder="..."
+                        min={128}
+                        max={ctxMaxValue ?? undefined}
+                        step={1024}
+                        className="h-6 w-[100px] text-right text-xs tabular-nums"
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === "") {
+                            setCustomContextLength(null);
+                            return;
+                          }
+                          const v = parseInt(raw, 10);
+                          if (!Number.isNaN(v) && v >= 0) {
+                            const maxCtx = ctxMaxValue ?? Infinity;
+                            const clamped = Math.min(v, maxCtx);
+                            setCustomContextLength(clamped === (ggufContextLength ?? 0) ? null : clamped);
+                          }
+                        }}
+                      />
                     </div>
-                    <Input
-                      value={ggufContextLength ?? ""}
-                      placeholder="Loading..."
-                      disabled={true}
-                      className="h-7 w-[90px] text-xs"
+                    <Slider
+                      min={1024}
+                      max={ctxMaxValue ?? 4096}
+                      step={1024}
+                      value={[Math.min(typeof ctxDisplayValue === "number" ? ctxDisplayValue : (ggufContextLength ?? 4096), ctxMaxValue ?? 4096)]}
+                      onValueChange={([v]) => {
+                        setCustomContextLength(v === (ggufContextLength ?? 0) ? null : v);
+                      }}
                     />
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-xs font-medium">KV Cache Dtype</div>
                       <div className="text-[11px] text-muted-foreground">
-                        Quantize KV cache to reduce VRAM. Reload to apply.
+                        Quantize KV cache to reduce VRAM.
                       </div>
                     </div>
                     <Select
                       value={kvCacheDtype ?? "f16"}
                       onValueChange={(v) => {
                         setKvCacheDtype(v === "f16" ? null : v);
-                        onReloadModel?.();
                       }}
                     >
                       <SelectTrigger className="h-7 w-[90px] text-xs">
@@ -508,14 +539,35 @@ export function ChatSettingsPanel({
                       </SelectContent>
                     </Select>
                   </div>
+                  {modelSettingsDirty && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => onReloadModel?.()}
+                        className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomContextLength(null);
+                          setKvCacheDtype(loadedKvCacheDtype);
+                        }}
+                        className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
-              {!isGguf && (
+              {!isGguf && params.checkpoint && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium">Trust remote code</div>
+                    <div className="text-xs font-medium">Enable custom code</div>
                     <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only enable for repos you trust.
+                      Allow models with custom code (e.g. Nemotron). Only enable if sure.
                     </div>
                   </div>
                   <Switch
@@ -633,6 +685,7 @@ export function ChatSettingsPanel({
                   onCheckedChange={onAutoTitleChange}
                 />
               </div>
+              <HfTokenField />
             </div>
           </CollapsibleSection>
 
@@ -775,6 +828,29 @@ function AutoHealToolCallsToggle() {
       <Switch
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function HfTokenField() {
+  const hfToken = useChatRuntimeStore((s) => s.hfToken);
+  const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="min-w-0">
+        <div className="text-xs font-medium">Hugging Face Token</div>
+        <div className="text-[11px] text-muted-foreground">
+          For downloading gated or private models.
+        </div>
+      </div>
+      <Input
+        type="password"
+        value={hfToken}
+        placeholder="hf_..."
+        className="h-7 text-xs font-mono"
+        onChange={(e) => setHfToken(e.target.value)}
       />
     </div>
   );

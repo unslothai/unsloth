@@ -61,6 +61,7 @@ import { ArtifactPanel } from "./components/artifact-panel";
 import { useArtifactStore } from "./stores/artifact-store";
 import { PromptLibrarySheet } from "./components/prompt-library-sheet";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
@@ -606,22 +607,36 @@ export function ChatPage(): ReactElement {
     [modelsFromStore],
   );
 
-  const loraModels = useMemo<LoraModelOption[]>(
-    () =>
-      lorasFromStore.map((lora) => ({
-        id: lora.id,
-        name: lora.name,
-        baseModel: lora.baseModel,
-        updatedAt: lora.updatedAt,
-        source: lora.source,
-        exportType: lora.exportType,
-      })),
-    [lorasFromStore],
-  );
+  const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
+
+  const loraModels = useMemo<LoraModelOption[]>(() => {
+    const fromLoras = lorasFromStore.map((lora) => ({
+      id: lora.id,
+      name: lora.name,
+      baseModel: lora.baseModel,
+      updatedAt: lora.updatedAt,
+      source: lora.source,
+      exportType: lora.exportType,
+    }));
+    return [...fromLoras, ...localModels];
+  }, [lorasFromStore, localModels]);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     void refresh();
+    void listLocalModels().then((res) => {
+      setLocalModels(
+        res.models
+          .filter((m) => m.source === "lmstudio" || m.source === "models_dir")
+          .map((m) => ({
+            id: m.id,
+            name: m.source === "lmstudio" && m.model_id ? m.model_id : m.display_name,
+            baseModel: m.source === "lmstudio" ? "LM Studio" : "Local models",
+            updatedAt: m.updated_at ?? undefined,
+            source: "local" as const,
+          })),
+      );
+    }).catch(() => {});
   }, [refresh]);
 
   useEffect(() => {

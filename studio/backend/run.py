@@ -24,6 +24,7 @@ if str(backend_dir) not in sys.path:
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
+from startup_banner import print_studio_access_banner
 
 logger = get_logger(__name__)
 
@@ -158,6 +159,29 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
+_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+
+
+def _write_pid_file():
+    """Write the current process PID to the studio PID file."""
+    try:
+        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
+        _PID_FILE.write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _remove_pid_file():
+    """Remove the PID file if it belongs to this process."""
+    try:
+        if _PID_FILE.is_file():
+            stored = _PID_FILE.read_text().strip()
+            if stored == str(os.getpid()):
+                _PID_FILE.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def _graceful_shutdown(server = None):
     """Explicitly shut down all subprocess backends and the uvicorn server.
 
@@ -165,6 +189,7 @@ def _graceful_shutdown(server = None):
     before the parent exits. This is critical on Windows where atexit
     handlers are unreliable after Ctrl+C.
     """
+    _remove_pid_file()
     logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
 
     # 1. Shut down uvicorn server (releases the listening socket)
@@ -287,10 +312,10 @@ def run_server(
     if frontend_path:
         if setup_frontend(app, frontend_path):
             if not silent:
-                print(f"✅ Frontend loaded from {frontend_path}")
+                print(f"[OK] Frontend loaded from {frontend_path}")
         else:
             if not silent:
-                print(f"⚠️ Frontend not found at {frontend_path}")
+                print(f"[WARNING] Frontend not found at {frontend_path}")
 
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
@@ -307,21 +332,27 @@ def run_server(
     thread.start()
     time.sleep(3)
 
+    _write_pid_file()
+    import atexit
+
+    atexit.register(_remove_pid_file)
+
+    # Expose a shutdown callable via app.state so the /api/shutdown endpoint
+    # can trigger graceful shutdown without circular imports.
+    def _trigger_shutdown():
+        _graceful_shutdown(_server)
+        if _shutdown_event is not None:
+            _shutdown_event.set()
+
+    app.state.trigger_shutdown = _trigger_shutdown
+
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
-
-        print("")
-        print("=" * 50)
-        print(f"🦥 Open your web browser, and enter http://localhost:{port}")
-        print("=" * 50)
-        print("")
-        print("=" * 50)
-        print(f"🦥 Unsloth Studio is running on port {port}")
-        print(f"   Local Access:          http://localhost:{port}")
-        print(f"   Worldwide Web Address: http://{display_host}:{port}")
-        print(f"   API:                   http://{display_host}:{port}/api")
-        print(f"   Health:                http://{display_host}:{port}/api/health")
-        print("=" * 50)
+        print_studio_access_banner(
+            port = port,
+            bind_host = host,
+            display_host = display_host,
+        )
 
     return app
 

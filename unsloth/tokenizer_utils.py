@@ -42,6 +42,7 @@ __all__ = [
     "check_tokenizer",
     "add_new_tokens",
     "fix_sentencepiece_gguf",
+    "get_tokenizer_info",
 ]
 
 
@@ -894,6 +895,55 @@ def check_tokenizer(
                 )
                 return tokenizer
     return convert_to_fast_tokenizer(tokenizer)
+
+
+def get_tokenizer_info(tokenizer) -> dict:
+    """Return a concise diagnostic summary of a tokenizer instance.
+
+    Collects key properties into a plain dict suitable for logging, debugging,
+    or displaying in the Unsloth Studio UI. All fields are safe to access —
+    missing attributes fall back to ``None`` rather than raising.
+
+    Example output::
+
+        {
+            "name_or_path": "unsloth/Llama-3.2-1B-Instruct",
+            "tokenizer_class": "PreTrainedTokenizerFast",
+            "is_fast": True,
+            "vocab_size": 128000,
+            "added_tokens_count": 256,
+            "model_max_length": 131072,
+            "padding_side": "right",
+            "bos_token": "<|begin_of_text|>",
+            "eos_token": "<|eot_id|>",
+            "pad_token": "<|finetune_right_pad_id|>",
+            "unk_token": None,
+            "has_chat_template": True,
+            "special_tokens_count": 3,
+        }
+
+    Args:
+        tokenizer: Any HuggingFace ``PreTrainedTokenizer`` or
+                   ``PreTrainedTokenizerFast`` instance.
+
+    Returns:
+        A ``dict`` of tokenizer properties. Safe to serialize to JSON.
+    """
+    return {
+        "name_or_path": getattr(tokenizer, "name_or_path", None),
+        "tokenizer_class": type(tokenizer).__name__,
+        "is_fast": getattr(tokenizer, "is_fast", False),
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
+        "added_tokens_count": len(getattr(tokenizer, "added_tokens_decoder", {})),
+        "model_max_length": getattr(tokenizer, "model_max_length", None),
+        "padding_side": getattr(tokenizer, "padding_side", None),
+        "bos_token": getattr(tokenizer, "bos_token", None),
+        "eos_token": getattr(tokenizer, "eos_token", None),
+        "pad_token": getattr(tokenizer, "pad_token", None),
+        "unk_token": getattr(tokenizer, "unk_token", None),
+        "has_chat_template": getattr(tokenizer, "chat_template", None) is not None,
+        "special_tokens_count": len(getattr(tokenizer, "all_special_tokens", [])),
+    }
 
 
 import inspect
