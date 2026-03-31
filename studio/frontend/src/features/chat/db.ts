@@ -54,32 +54,31 @@ db.version(4)
     memory: "id, createdAt",
   })
   .upgrade(async (tx) => {
-    // Backfill searchText from first user message in each thread
+    // Backfill searchText from first user message in each thread.
+    // Process sequentially to avoid IndexedDB transaction auto-commit.
     const threads = await tx.table("threads").toArray();
-    await Promise.all(
-      threads.map(async (thread) => {
-        const msgs = await tx
-          .table("messages")
-          .where("threadId")
-          .equals(thread.id)
-          .toArray();
-        const firstUser = msgs
-          .sort((a: MessageRecord, b: MessageRecord) => a.createdAt - b.createdAt)
-          .find((m: MessageRecord) => m.role === "user");
-        if (!firstUser) return;
-        const textParts = Array.isArray(firstUser.content)
-          ? firstUser.content
-              .filter((p: { type: string }) => p.type === "text")
-              .map((p: { text: string }) => p.text)
-              .join(" ")
-          : "";
-        if (textParts.trim()) {
-          await tx
-            .table("threads")
-            .update(thread.id, { searchText: textParts.slice(0, 500) });
-        }
-      }),
-    );
+    for (const thread of threads) {
+      const msgs = await tx
+        .table("messages")
+        .where("threadId")
+        .equals(thread.id)
+        .sortBy("createdAt");
+      const firstUser = msgs.find(
+        (m: MessageRecord) => m.role === "user",
+      );
+      if (!firstUser) continue;
+      const textParts = Array.isArray(firstUser.content)
+        ? firstUser.content
+            .filter((p: { type: string }) => p.type === "text")
+            .map((p: { text: string }) => p.text)
+            .join(" ")
+        : "";
+      if (textParts.trim()) {
+        await tx
+          .table("threads")
+          .update(thread.id, { searchText: textParts.slice(0, 500) });
+      }
+    }
   });
 
 export { db };

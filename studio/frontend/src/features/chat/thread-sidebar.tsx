@@ -135,11 +135,13 @@ export function ThreadSidebar({
     // Filter items by matching title or searchText from underlying threads
     return items.filter((item) => {
       if (item.title.toLowerCase().includes(q)) return true;
-      // Check searchText on the underlying thread records
-      const thread = (allThreads ?? []).find(
-        (t) => t.id === item.id || t.pairId === item.id,
+      // Check searchText on all underlying thread records (both sides of compare pairs)
+      const relatedThreads = (allThreads ?? []).filter((t) =>
+        item.type === "single" ? t.id === item.id : t.pairId === item.id,
       );
-      return thread?.searchText?.toLowerCase().includes(q) ?? false;
+      return relatedThreads.some(
+        (t) => t.searchText?.toLowerCase().includes(q),
+      );
     });
   }, [items, debouncedQuery, allThreads]);
 
@@ -200,14 +202,22 @@ export function ThreadSidebar({
   }
 
   async function handleMoveToFolder(item: SidebarItem, folderId: string | undefined) {
-    const newFolderId = folderId || undefined;
     if (item.type === "single") {
-      await db.threads.update(item.id, { folderId: newFolderId });
+      await db.threads.where("id").equals(item.id).modify((thread) => {
+        if (folderId) {
+          thread.folderId = folderId;
+        } else {
+          delete thread.folderId;
+        }
+      });
     } else {
-      const paired = await db.threads.where("pairId").equals(item.id).toArray();
-      for (const t of paired) {
-        await db.threads.update(t.id, { folderId: newFolderId });
-      }
+      await db.threads.where("pairId").equals(item.id).modify((thread) => {
+        if (folderId) {
+          thread.folderId = folderId;
+        } else {
+          delete thread.folderId;
+        }
+      });
     }
   }
 

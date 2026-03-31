@@ -530,6 +530,7 @@ export function ChatPage(): ReactElement {
   const handleNewThread = useCallback(
     () => {
       useChatRuntimeStore.getState().setActiveThreadId(null);
+      useArtifactStore.getState().clearArtifacts();
       setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
     },
     [],
@@ -592,6 +593,7 @@ export function ChatPage(): ReactElement {
 
   const handleThreadSelect = useCallback(
     (nextView: ChatView) => {
+      useArtifactStore.getState().clearArtifacts();
       setView(nextView);
     },
     [],

@@ -640,9 +640,18 @@ const FeedbackButtons: FC = () => {
       setFeedback((prev) => {
         const next = prev === value ? null : value;
         if (messageId) {
-          void db.messages
-            .update(messageId, { feedback: next ?? undefined })
-            .catch((err) => console.error("Failed to save feedback:", err));
+          if (next) {
+            void db.messages
+              .update(messageId, { feedback: next })
+              .catch((err) => console.error("Failed to save feedback:", err));
+          } else {
+            // Dexie ignores undefined values in update(), so use modify+delete
+            void db.messages
+              .where("id")
+              .equals(messageId)
+              .modify((msg) => { delete msg.feedback; })
+              .catch((err) => console.error("Failed to clear feedback:", err));
+          }
         }
         return next;
       });

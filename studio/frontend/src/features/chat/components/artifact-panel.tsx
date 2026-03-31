@@ -64,22 +64,30 @@ export const ArtifactPanel: FC = () => {
 
   const [copied, setCopied] = useState(false);
   const [localValue, setLocalValue] = useState("");
-  const resetRef = useRef<ReturnType<typeof setTimeout>>();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const active = artifacts.find((a) => a.id === activeId) ?? artifacts[0];
+  const viewedContent = active
+    ? (active.history[active.activeVersion] ?? active.content)
+    : "";
 
-  // Sync local editor value when switching between artifacts
+  // Sync local editor value when switching artifacts or versions
   useEffect(() => {
-    if (active) setLocalValue(active.content);
-    // Only reset on tab switch, not on content updates (which would clobber edits)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id]);
+    if (active) setLocalValue(viewedContent);
+  }, [active?.id, active?.activeVersion, viewedContent]);
+
+  // Cleanup copy timer on unmount
+  useEffect(() => {
+    return () => {
+      if (resetRef.current) clearTimeout(resetRef.current);
+    };
+  }, []);
 
   if (!panelOpen || artifacts.length === 0 || !active) return null;
 
   const handleCopy = () => {
-    if (copyToClipboard(active.content)) {
+    if (copyToClipboard(localValue)) {
       setCopied(true);
       if (resetRef.current) clearTimeout(resetRef.current);
       resetRef.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
@@ -94,7 +102,7 @@ export const ArtifactPanel: FC = () => {
         : active.language
           ? `.${active.language}`
           : ".txt";
-    downloadTextFile(`${active.title}${ext}`, active.content);
+    downloadTextFile(`${active.title}${ext}`, localValue);
   };
 
   const canPrev = active.activeVersion > 0;
@@ -164,7 +172,7 @@ export const ArtifactPanel: FC = () => {
           value={localValue}
           onChange={(e) => setLocalValue(e.target.value)}
           onBlur={() => {
-            if (localValue !== active.content) {
+            if (localValue !== viewedContent) {
               updateContent(active.id, localValue);
             }
           }}

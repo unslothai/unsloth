@@ -45,7 +45,7 @@ export async function exportAsMarkdown(threadId: string): Promise<void> {
   }
 
   downloadTextFile(
-    `${sanitizeFilename(thread.title)}.md`,
+    buildExportFilename(thread, "md"),
     lines.join("\n"),
     "text/markdown",
   );
@@ -63,7 +63,7 @@ export async function exportAsJSON(threadId: string): Promise<void> {
   };
 
   downloadTextFile(
-    `${sanitizeFilename(thread.title)}.json`,
+    buildExportFilename(thread, "json"),
     JSON.stringify(payload, null, 2),
     "application/json",
   );
@@ -82,7 +82,7 @@ export async function exportAsJSONL(threadId: string): Promise<void> {
 
   const line = JSON.stringify({ messages: chatMessages });
   downloadTextFile(
-    `${sanitizeFilename(thread.title)}.jsonl`,
+    buildExportFilename(thread, "jsonl"),
     line + "\n",
     "application/x-ndjson",
   );
@@ -90,10 +90,21 @@ export async function exportAsJSONL(threadId: string): Promise<void> {
 
 function sanitizeFilename(name: string): string {
   return name
-    .replace(/[^a-zA-Z0-9_\- ]/g, "")
+    .replace(/[^\p{L}\p{N}_\- ]/gu, "")
     .replace(/\s+/g, "_")
     .slice(0, 80)
     || "chat_export";
+}
+
+function buildExportFilename(
+  thread: ThreadRecord,
+  ext: "md" | "json" | "jsonl",
+): string {
+  const base = sanitizeFilename(thread.title);
+  const suffix = thread.pairId
+    ? `_${sanitizeFilename(thread.modelId || thread.modelType || "compare")}`
+    : "";
+  return `${base}${suffix}.${ext}`;
 }
 
 export async function getExportThreadIds(
