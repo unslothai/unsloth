@@ -639,6 +639,7 @@ class FastBaseModel:
                 print(
                     f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager."
                 )
+            _set_attn_impl(auto_config, "eager")
             del kwargs["attn_implementation"]
 
         bnb_config = None
