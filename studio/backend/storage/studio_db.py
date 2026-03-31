@@ -418,10 +418,6 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
 
-    # On Windows, normalize case so that C:\Models and c:\models dedup correctly.
-    if platform.system() == "Windows":
-        normalized = os.path.normcase(normalized)
-
     # Validate the path is an existing, readable directory before persisting.
     if not os.path.exists(normalized):
         raise ValueError("Path does not exist")
@@ -430,13 +426,29 @@ def add_scan_folder(path: str) -> dict:
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
 
-    check = normalized  # already normcased on Windows above
+    # On Windows, use normcase for denylist comparison and dedup key, but
+    # store the original-cased path so downstream consumers see the native
+    # drive-letter casing the user expects (e.g. C:\Models, not c:\models).
+    check = (
+        os.path.normcase(normalized) if platform.system() == "Windows" else normalized
+    )
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
             raise ValueError(f"Path under {prefix} is not allowed")
+
+    # Use the normcased form as the dedup key so C:\Models and c:\models
+    # collapse, but persist the original path for display.
+    dedup_key = check
     conn = get_connection()
     try:
         now = datetime.now(timezone.utc).isoformat()
+        # Check for existing row using the dedup key
+        existing = conn.execute(
+            "SELECT id, path, created_at FROM scan_folders WHERE path = ? OR path = ?",
+            (normalized, dedup_key),
+        ).fetchone()
+        if existing is not None:
+            return dict(existing)
         try:
             conn.execute(
                 "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",

@@ -146,15 +146,20 @@ def _scan_models_dir(
     for child in models_dir.iterdir():
         if limit is not None and len(found) >= limit:
             break
-        if not child.is_dir():
+        try:
+            if not child.is_dir():
+                continue
+            has_model_files = (
+                (child / "config.json").exists()
+                or (child / "adapter_config.json").exists()
+                or any(child.glob("*.safetensors"))
+                or any(child.glob("*.bin"))
+                or any(child.glob("*.gguf"))
+            )
+        except OSError:
+            # Skip individual children that are unreadable (permissions, broken
+            # symlinks, etc.) rather than failing the entire scan.
             continue
-        has_model_files = (
-            (child / "config.json").exists()
-            or (child / "adapter_config.json").exists()
-            or any(child.glob("*.safetensors"))
-            or any(child.glob("*.bin"))
-            or any(child.glob("*.gguf"))
-        )
         if not has_model_files:
             continue
         try:
@@ -370,7 +375,11 @@ async def list_local_models(
         from storage.studio_db import list_scan_folders
 
         _MAX_MODELS_PER_FOLDER = 200
-        custom_folders = list_scan_folders()
+        try:
+            custom_folders = list_scan_folders()
+        except Exception as e:
+            logger.warning("Could not load custom scan folders: %s", e)
+            custom_folders = []
         for folder in custom_folders:
             folder_path = Path(folder["path"])
             try:
