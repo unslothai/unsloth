@@ -6,6 +6,7 @@ All tests use mocks -- no AMD hardware required.
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -956,6 +957,372 @@ class TestLiveRegression:
             pytest.skip("Could not extract get_torch_index_url for live test")
         url = result.stdout.strip()
         assert "cu1" in url or "cuda" in url.lower(), f"Expected CUDA URL, got: {url}"
+
+
+# =============================================================================
+# TEST: worker.py -- ROCm Mamba/SSM source build path
+# =============================================================================
+
+# Load worker.py module
+_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+
+
+class TestWorkerRocmMambaSsm:
+    """Verify worker.py Mamba/SSM install logic on ROCm."""
+
+    def test_probe_returns_hip_version_field(self):
+        """_probe_causal_conv1d_env probe script should include hip_version."""
+        source = _WORKER_PATH.read_text()
+        assert "hip_version" in source
+
+    def test_probe_script_has_getattr_hip(self):
+        """Probe script should use getattr for torch.version.hip (safe on CUDA)."""
+        source = _WORKER_PATH.read_text()
+        assert "getattr(torch.version, 'hip', None)" in source
+
+    def test_direct_wheel_url_returns_none_without_cuda_major(self):
+        """_direct_wheel_url should return None when cuda_major is empty (ROCm)."""
+        # Load module for function access
+        _worker_spec = importlib.util.spec_from_file_location(
+            "test_worker", _WORKER_PATH
+        )
+        assert _worker_spec is not None and _worker_spec.loader is not None
+        worker_mod = importlib.util.module_from_spec(_worker_spec)
+
+        # Mock all the imports worker.py needs
+        sys.modules["structlog"] = MagicMock()
+        sys.modules["loggers"] = MagicMock()
+        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+        sys.modules["utils"] = MagicMock()
+        sys.modules["utils.hardware"] = MagicMock()
+
+        try:
+            _worker_spec.loader.exec_module(worker_mod)
+        except Exception:
+            pytest.skip("Could not load worker module in test environment")
+
+        env_rocm = {
+            "python_tag": "cp312",
+            "torch_mm": "2.6",
+            "cuda_major": "",
+            "hip_version": "7.1.12345",
+            "cxx11abi": "TRUE",
+        }
+        result = worker_mod._direct_wheel_url(
+            filename_prefix="causal_conv1d",
+            package_version="1.6.1",
+            release_tag="v1.6.1.post4",
+            release_base_url="https://github.com/Dao-AILab/causal-conv1d/releases/download",
+            env=env_rocm,
+        )
+        assert result is None
+
+    def test_hipcc_check_exists_in_source(self):
+        """worker.py should check for hipcc before ROCm source builds."""
+        source = _WORKER_PATH.read_text()
+        assert "hipcc" in source
+
+    def test_rocm_source_build_status_message(self):
+        """worker.py should send a specific status for ROCm source compilation."""
+        source = _WORKER_PATH.read_text()
+        assert "Compiling" in source and "from source for ROCm" in source
+
+    def test_rocm_build_failure_message(self):
+        """worker.py should send a clear error on ROCm build failure."""
+        source = _WORKER_PATH.read_text()
+        assert "Failed to compile" in source and "for ROCm" in source
+
+    def test_timeout_on_install(self):
+        """worker.py should have a timeout on pip install subprocess."""
+        source = _WORKER_PATH.read_text()
+        assert "TimeoutExpired" in source
+        assert "timeout" in source
+
+
+# =============================================================================
+# TEST: amd.py -- AMD GPU monitoring
+# =============================================================================
+
+
+class TestAmdGpuMonitoring:
+    """Verify amd.py module structure and mock behavior."""
+
+    def test_amd_py_exists(self):
+        """amd.py should exist in the hardware directory."""
+        amd_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        )
+        assert amd_path.exists()
+
+    def test_amd_py_has_required_functions(self):
+        """amd.py should export the same function signatures as nvidia.py."""
+        amd_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        )
+        source = amd_path.read_text()
+        assert "def get_physical_gpu_count" in source
+        assert "def get_primary_gpu_utilization" in source
+        assert "def get_visible_gpu_utilization" in source
+
+    def test_amd_smi_json_parsing(self):
+        """Verify _extract_gpu_metrics parses amd-smi JSON correctly."""
+        amd_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        )
+        _amd_spec = importlib.util.spec_from_file_location("test_amd", amd_path)
+        assert _amd_spec is not None and _amd_spec.loader is not None
+        amd_mod = importlib.util.module_from_spec(_amd_spec)
+
+        sys.modules["loggers"] = MagicMock()
+        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+
+        try:
+            _amd_spec.loader.exec_module(amd_mod)
+        except Exception:
+            pytest.skip("Could not load amd module in test environment")
+
+        # Simulate amd-smi metric JSON output
+        gpu_data = {
+            "usage": {"gfx_activity": "85"},
+            "temperature": {"edge": "72"},
+            "power": {
+                "current_socket_power": "200.5",
+                "power_cap": "300",
+            },
+            "vram": {
+                "vram_used": 8192,  # MB
+                "vram_total": 16384,  # MB
+            },
+        }
+        metrics = amd_mod._extract_gpu_metrics(gpu_data)
+        assert metrics["gpu_utilization_pct"] == 85.0
+        assert metrics["temperature_c"] == 72.0
+        assert metrics["power_draw_w"] == 200.5
+        assert metrics["power_limit_w"] == 300.0
+        assert metrics["vram_used_gb"] == round(8192 / 1024, 2)
+        assert metrics["vram_total_gb"] == round(16384 / 1024, 2)
+        assert metrics["vram_utilization_pct"] is not None
+        assert metrics["power_utilization_pct"] is not None
+
+    def test_amd_primary_gpu_with_mock(self):
+        """get_primary_gpu_utilization returns correct dict with mocked amd-smi."""
+        amd_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        )
+        _amd_spec = importlib.util.spec_from_file_location("test_amd2", amd_path)
+        assert _amd_spec is not None and _amd_spec.loader is not None
+        amd_mod = importlib.util.module_from_spec(_amd_spec)
+
+        sys.modules["loggers"] = MagicMock()
+        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+
+        try:
+            _amd_spec.loader.exec_module(amd_mod)
+        except Exception:
+            pytest.skip("Could not load amd module")
+
+        mock_json = json.dumps([{
+            "usage": {"gfx_activity": "50"},
+            "temperature": {"edge": "65"},
+            "power": {"current_socket_power": "150", "power_cap": "250"},
+            "vram": {"vram_used": 4096, "vram_total": 16384},
+        }])
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = mock_json
+
+        with patch.object(subprocess, "run", return_value=mock_result):
+            result = amd_mod.get_primary_gpu_utilization()
+        assert result["available"] is True
+        assert result["gpu_utilization_pct"] == 50.0
+        assert result["temperature_c"] == 65.0
+
+    def test_amd_smi_not_found_returns_unavailable(self):
+        """get_primary_gpu_utilization returns available=False when amd-smi is missing."""
+        amd_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        )
+        _amd_spec = importlib.util.spec_from_file_location("test_amd3", amd_path)
+        assert _amd_spec is not None and _amd_spec.loader is not None
+        amd_mod = importlib.util.module_from_spec(_amd_spec)
+
+        sys.modules["loggers"] = MagicMock()
+        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+
+        try:
+            _amd_spec.loader.exec_module(amd_mod)
+        except Exception:
+            pytest.skip("Could not load amd module")
+
+        with patch.object(
+            subprocess, "run", side_effect=OSError("amd-smi not found")
+        ):
+            result = amd_mod.get_primary_gpu_utilization()
+        assert result["available"] is False
+
+    def test_amd_timeout_returns_unavailable(self):
+        """get_primary_gpu_utilization handles timeout gracefully."""
+        amd_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+        )
+        _amd_spec = importlib.util.spec_from_file_location("test_amd4", amd_path)
+        assert _amd_spec is not None and _amd_spec.loader is not None
+        amd_mod = importlib.util.module_from_spec(_amd_spec)
+
+        sys.modules["loggers"] = MagicMock()
+        sys.modules["loggers"].get_logger = MagicMock(return_value=MagicMock())
+
+        try:
+            _amd_spec.loader.exec_module(amd_mod)
+        except Exception:
+            pytest.skip("Could not load amd module")
+
+        with patch.object(
+            subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("amd-smi", 5),
+        ):
+            result = amd_mod.get_primary_gpu_utilization()
+        assert result["available"] is False
+
+
+# =============================================================================
+# TEST: hardware.py -- IS_ROCM branching to amd.py
+# =============================================================================
+
+
+class TestHardwareAmdBranching:
+    """Verify hardware.py branches to amd.py when IS_ROCM is True."""
+
+    def test_hardware_imports_amd_module(self):
+        """hardware.py should import from amd module when IS_ROCM."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        assert "from . import amd" in source
+
+    def test_hardware_branches_on_is_rocm_for_utilization(self):
+        """get_gpu_utilization should check IS_ROCM before choosing backend."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        # Find the get_gpu_utilization function
+        func_start = source.find("def get_gpu_utilization")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "IS_ROCM" in func_body
+        assert "amd.get_primary_gpu_utilization" in func_body
+
+    def test_hardware_branches_on_is_rocm_for_visible(self):
+        """get_visible_gpu_utilization should check IS_ROCM."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def get_visible_gpu_utilization")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "IS_ROCM" in func_body
+        assert "amd.get_visible_gpu_utilization" in func_body
+
+    def test_hardware_branches_on_is_rocm_for_physical_count(self):
+        """get_physical_gpu_count should try amd.py when IS_ROCM."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def get_physical_gpu_count")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "IS_ROCM" in func_body
+        assert "amd.get_physical_gpu_count" in func_body
+
+
+# =============================================================================
+# TEST: install_python_stack.py -- Windows AMD warning
+# =============================================================================
+
+
+class TestWindowsRocmWarning:
+    """Verify Windows AMD GPU detection and warning message."""
+
+    def test_windows_amd_warning_in_source(self):
+        """install_python_stack.py should warn Windows AMD users."""
+        source = _STACK_PATH.read_text()
+        assert "AMD GPU detected on Windows" in source
+
+    def test_windows_amd_warning_checks_hipinfo_or_amdsmi(self):
+        """Warning should check for hipinfo or amd-smi."""
+        source = _STACK_PATH.read_text()
+        assert "hipinfo" in source
+        assert "amd-smi" in source
+
+    def test_windows_amd_warning_has_docs_link(self):
+        """Warning should include AMD docs link."""
+        source = _STACK_PATH.read_text()
+        assert "docs.unsloth.ai/get-started/install-and-update/amd" in source
+
+
+# =============================================================================
+# TEST: unsloth/kernels/utils.py -- is_rdna() expansion
+# =============================================================================
+
+
+class TestIsRdnaExpansion:
+    """Verify is_rdna() covers RDNA2, RDNA3, RDNA3.5, RDNA4 architectures."""
+
+    def test_is_rdna_source_has_rdna2(self):
+        """is_rdna() should include RDNA2 architectures."""
+        utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
+        source = utils_path.read_text()
+        func_start = source.find("def is_rdna()")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "gfx1030" in func_body
+        assert "gfx1031" in func_body
+        assert "gfx1032" in func_body
+
+    def test_is_rdna_source_has_rdna3(self):
+        """is_rdna() should include RDNA3 architectures."""
+        utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
+        source = utils_path.read_text()
+        func_start = source.find("def is_rdna()")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "gfx1100" in func_body
+        assert "gfx1101" in func_body
+        assert "gfx1102" in func_body
+        assert "gfx1103" in func_body
+
+    def test_is_rdna_source_has_rdna35(self):
+        """is_rdna() should include RDNA3.5 architectures."""
+        utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
+        source = utils_path.read_text()
+        func_start = source.find("def is_rdna()")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "gfx1150" in func_body
+        assert "gfx1151" in func_body
+        assert "gfx1152" in func_body
+
+    def test_is_rdna_source_has_rdna4(self):
+        """is_rdna() should include RDNA4 architectures."""
+        utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
+        source = utils_path.read_text()
+        func_start = source.find("def is_rdna()")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "gfx1200" in func_body
+        assert "gfx1201" in func_body
+
+    def test_is_cdna_not_changed(self):
+        """is_cdna() should remain unchanged (no RDNA architectures added)."""
+        utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
+        source = utils_path.read_text()
+        func_start = source.find("def is_cdna()")
+        func_body = source[func_start:source.find("\ndef ", func_start + 1)]
+        assert "gfx940" in func_body
+        assert "gfx941" in func_body
+        assert "gfx942" in func_body
+        assert "gfx950" in func_body
+        # RDNA architectures should NOT be in is_cdna
+        assert "gfx1030" not in func_body
+        assert "gfx1100" not in func_body
 
 
 if __name__ == "__main__":

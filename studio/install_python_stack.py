@@ -705,6 +705,19 @@ def install_python_stack() -> int:
         _progress("ROCm torch check")
         _ensure_rocm_torch()
 
+    # Windows + AMD GPU: PyTorch does not publish ROCm wheels for Windows.
+    # Detect and warn so users know manual steps are needed for GPU training.
+    if IS_WINDOWS and not NO_TORCH:
+        if shutil.which("hipinfo") or shutil.which("amd-smi"):
+            _safe_print(
+                _dim("  Note:"),
+                "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
+            )
+            _safe_print(
+                " " * 8,
+                "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
+            )
+
     # 3. Extra dependencies
     _progress("unsloth extras")
     pip_install(

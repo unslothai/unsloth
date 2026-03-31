@@ -405,15 +405,26 @@ def get_gpu_utilization() -> Dict[str, Any]:
     device = get_device()
 
     if device == DeviceType.CUDA:
-        try:
-            from . import nvidia
+        if IS_ROCM:
+            try:
+                from . import amd
 
-            result = nvidia.get_primary_gpu_utilization()
-            if result.get("available"):
-                result["backend"] = device.value
-                return result
-        except Exception as e:
-            logger.warning("nvidia-smi utilization query failed: %s", e)
+                result = amd.get_primary_gpu_utilization()
+                if result.get("available"):
+                    result["backend"] = device.value
+                    return result
+            except Exception as e:
+                logger.warning("amd-smi utilization query failed: %s", e)
+        else:
+            try:
+                from . import nvidia
+
+                result = nvidia.get_primary_gpu_utilization()
+                if result.get("available"):
+                    result["backend"] = device.value
+                    return result
+            except Exception as e:
+                logger.warning("nvidia-smi utilization query failed: %s", e)
 
     mem = get_gpu_memory_info()
     if device != DeviceType.CPU and mem.get("available"):
@@ -438,18 +449,32 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        try:
-            from . import nvidia
+        if IS_ROCM:
+            try:
+                from . import amd
 
-            result = nvidia.get_visible_gpu_utilization(
-                parent_visible_spec["numeric_ids"],
-                parent_cuda_visible_devices = parent_visible_spec["raw"],
-            )
-            if result.get("available"):
-                result["backend"] = device.value
-                return result
-        except Exception as e:
-            logger.warning("nvidia-smi visible GPU utilization query failed: %s", e)
+                result = amd.get_visible_gpu_utilization(
+                    parent_visible_spec["numeric_ids"],
+                    parent_cuda_visible_devices = parent_visible_spec["raw"],
+                )
+                if result.get("available"):
+                    result["backend"] = device.value
+                    return result
+            except Exception as e:
+                logger.warning("amd-smi visible GPU utilization query failed: %s", e)
+        else:
+            try:
+                from . import nvidia
+
+                result = nvidia.get_visible_gpu_utilization(
+                    parent_visible_spec["numeric_ids"],
+                    parent_cuda_visible_devices = parent_visible_spec["raw"],
+                )
+                if result.get("available"):
+                    result["backend"] = device.value
+                    return result
+            except Exception as e:
+                logger.warning("nvidia-smi visible GPU utilization query failed: %s", e)
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
     if device in (DeviceType.CUDA, DeviceType.XPU):
@@ -1121,16 +1146,27 @@ def get_physical_gpu_count() -> int:
     device = get_device()
 
     if device == DeviceType.CUDA:
-        try:
-            from . import nvidia
+        if IS_ROCM:
+            try:
+                from . import amd
 
-            count = nvidia.get_physical_gpu_count()
-            if count is not None:
-                _physical_gpu_count = count
-                return _physical_gpu_count
-        except Exception:
-            pass
-        # nvidia-smi unavailable or failed — fall back to torch
+                count = amd.get_physical_gpu_count()
+                if count is not None:
+                    _physical_gpu_count = count
+                    return _physical_gpu_count
+            except Exception:
+                pass
+        else:
+            try:
+                from . import nvidia
+
+                count = nvidia.get_physical_gpu_count()
+                if count is not None:
+                    _physical_gpu_count = count
+                    return _physical_gpu_count
+            except Exception:
+                pass
+        # SMI tool unavailable or failed -- fall back to torch
         count = _torch_get_physical_gpu_count()
         _physical_gpu_count = count if count is not None else 1
         return _physical_gpu_count
@@ -1153,8 +1189,8 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
-        # Try nvidia-smi first (NVIDIA only)
-        if device == DeviceType.CUDA:
+        # Try native SMI tool first (nvidia-smi for NVIDIA, skipped for ROCm)
+        if device == DeviceType.CUDA and not IS_ROCM:
             try:
                 from . import nvidia
 

@@ -86,6 +86,7 @@ def _probe_causal_conv1d_env() -> dict[str, str] | None:
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
                     "'torch_mm': torch_mm, "
                     "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                    "'hip_version': str(torch.version.hip) if getattr(torch.version, 'hip', None) else '', "
                     "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
                     "}))"
                 ),
@@ -237,25 +238,88 @@ def _install_package_wheel_first(
         else:
             logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
-    _send_status(event_queue, f"Installing {display_name} from PyPI...")
-    pypi_cmd = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--no-build-isolation",
-        "--no-deps",
-        "--no-cache-dir",
-        f"{pypi_name}=={pypi_version}",
-    ]
-    result = _sp.run(
-        pypi_cmd,
-        stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
-        text = True,
-    )
+    is_hip = env and env.get("hip_version")
+    if is_hip and not shutil.which("hipcc"):
+        logger.error(
+            "%s requires hipcc for source compilation on ROCm. "
+            "Install the ROCm HIP SDK: https://rocm.docs.amd.com",
+            display_name,
+        )
+        _send_status(
+            event_queue,
+            f"{display_name}: hipcc not found (ROCm HIP SDK required)",
+        )
+        return
+
+    if is_hip:
+        _send_status(
+            event_queue,
+            f"Compiling {display_name} from source for ROCm "
+            "(this may take several minutes)...",
+        )
+    else:
+        _send_status(event_queue, f"Installing {display_name} from PyPI...")
+
+    # Prefer uv for faster dependency resolution when available
+    if shutil.which("uv"):
+        pypi_cmd = [
+            "uv", "pip", "install",
+            "--python", sys.executable,
+            "--no-build-isolation",
+            "--no-deps",
+            f"{pypi_name}=={pypi_version}",
+        ]
+    else:
+        pypi_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-build-isolation",
+            "--no-deps",
+            "--no-cache-dir",
+            f"{pypi_name}=={pypi_version}",
+        ]
+
+    # Source compilation on ROCm can take 5-10 minutes; use a generous timeout
+    timeout = 600 if is_hip else 300
+
+    try:
+        result = _sp.run(
+            pypi_cmd,
+            stdout = _sp.PIPE,
+            stderr = _sp.STDOUT,
+            text = True,
+            timeout = timeout,
+        )
+    except _sp.TimeoutExpired:
+        logger.error(
+            "%s installation timed out after %ds", display_name, timeout,
+        )
+        _send_status(
+            event_queue,
+            f"{display_name} installation timed out after {timeout}s",
+        )
+        return
+
     if result.returncode != 0:
-        logger.error("Failed to install %s from PyPI:\n%s", display_name, result.stdout)
+        if is_hip:
+            # Surface a clear error for ROCm source build failures
+            error_lines = (result.stdout or "").strip().splitlines()
+            snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
+            logger.error(
+                "Failed to compile %s for ROCm:\n%s", display_name, result.stdout,
+            )
+            _send_status(
+                event_queue,
+                f"Failed to compile {display_name} for ROCm. "
+                "Check that hipcc and ROCm development headers are installed.\n"
+                f"{snippet}",
+            )
+        else:
+            logger.error(
+                "Failed to install %s from PyPI:\n%s", display_name, result.stdout,
+            )
         return
 
     logger.info("Installed %s from PyPI", display_name)
