@@ -72,8 +72,8 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
                 parts = raw.split(".")
-                if len(parts) >= 2 and parts[0].isdigit():
-                    return int(parts[0]), int(parts[1])
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
+                    return int(parts[0]), int(parts[1].split("-")[0])
         except Exception:
             pass
 
@@ -130,7 +130,7 @@ def _ensure_rocm_torch() -> None:
             [
                 sys.executable,
                 "-c",
-                "import torch; print(torch.version.hip or torch.version.cuda or '')",
+                "import torch; v=torch.version; print(getattr(v,'hip','') or getattr(v,'cuda','') or '')",
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
