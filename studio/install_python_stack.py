@@ -47,13 +47,14 @@ _PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
 def _detect_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm stack, or None."""
     # Check /opt/rocm/.info/version or ROCM_PATH equivalent
-    rocm_root = os.environ.get("ROCM_PATH", "/opt/rocm")
+    rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     for path in (
         os.path.join(rocm_root, ".info", "version"),
         os.path.join(rocm_root, "lib", "rocm_version"),
     ):
         try:
-            parts = open(path).read().strip().split("-")[0].split(".")
+            with open(path) as fh:
+                parts = fh.read().strip().split("-")[0].split(".")
             return int(parts[0]), int(parts[1])
         except Exception:
             pass
@@ -86,7 +87,7 @@ def _ensure_rocm_torch() -> None:
     links against HIP (ROCm) or CUDA (NVIDIA).  Skips on Windows/macOS.
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
-    rocm_root = os.environ.get("ROCM_PATH", "/opt/rocm")
+    rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     if not os.path.isdir(rocm_root) and not shutil.which("hipcc"):
         return  # no ROCm toolchain
 
@@ -96,22 +97,29 @@ def _ensure_rocm_torch() -> None:
         return
 
     # Skip if torch is already GPU-enabled (HIP or CUDA)
-    probe = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import torch; print(torch.version.hip or torch.version.cuda or '')",
-        ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.DEVNULL,
-        timeout = 30,
-    )
-    if probe.returncode == 0 and probe.stdout.decode().strip():
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import torch; print(torch.version.hip or torch.version.cuda or '')",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        probe = None
+    if probe is not None and probe.returncode == 0 and probe.stdout.decode().strip():
         return  # torch already GPU-enabled
 
     # Select best matching wheel tag (newest ROCm version <= installed)
     tag = next(
-        (t for (maj, mn), t in _ROCM_TORCH_INDEX.items() if ver >= (maj, mn)),
+        (
+            t
+            for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+            if ver >= (maj, mn)
+        ),
         None,
     )
     if tag is None:
@@ -124,7 +132,7 @@ def _ensure_rocm_torch() -> None:
         f"ROCm torch ({tag})",
         "--force-reinstall",
         "--no-cache-dir",
-        "torch",
+        "torch>=2.4,<2.11.0",
         "torchvision",
         "torchaudio",
         "--index-url",

@@ -609,19 +609,16 @@ class TestEnsureRocmTorch:
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_probe_timeout_handled(self, mock_ver, mock_pip):
-        """Probe subprocess timeout should be handled gracefully."""
+    def test_probe_timeout_triggers_reinstall(self, mock_ver, mock_pip):
+        """Probe subprocess timeout should not crash; should proceed to reinstall."""
         with patch("os.path.isdir", return_value = True):
             with patch(
                 "subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)
             ):
-                # Should not crash -- timeout on probe means torch not importable
-                # The function will get an exception from subprocess.run and
-                # proceed to reinstall
-                try:
-                    _ensure_rocm_torch()
-                except subprocess.TimeoutExpired:
-                    pass  # Acceptable -- the fix is about the timeout being set
+                _ensure_rocm_torch()
+        # If probe times out, the function should treat torch as unusable and reinstall
+        assert mock_pip.call_count == 2
+        assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
 
 # =============================================================================
@@ -831,14 +828,15 @@ class TestInstallShStructure:
         """ROCm 7.2+ should fall back to rocm7.1 index."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text()
-        assert "rocm7.2" in source  # case pattern
-        assert 'echo "$_base/rocm7.1"' in source  # fallback
+        assert 'echo "$_base/rocm7.1"' in source  # fallback for unknown versions
+        # Allowlisted versions should pass through directly
+        assert "rocm6.*|rocm7.0*|rocm7.1*)" in source
 
     def test_rocm_tag_validation_guard_exists(self):
         """install.sh should validate _rocm_tag with a case guard."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text()
-        assert "rocm[0-9]*.[0-9]*)" in source
+        assert "rocm[1-9]*.[0-9]*)" in source
         assert '_rocm_tag=""' in source  # rejection path
 
     def test_dpkg_epoch_handling(self):
