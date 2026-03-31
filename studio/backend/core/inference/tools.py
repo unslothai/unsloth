@@ -208,9 +208,12 @@ def _fetch_page_text(
 
     try:
         import urllib.request
+        from urllib.error import HTTPError as _HTTPError
         from urllib.parse import urljoin
 
-        # Disable auto-redirect so we can validate each hop for SSRF
+        # Disable auto-redirect so we can validate each hop for SSRF.
+        # urllib raises HTTPError for 3xx when the handler returns None,
+        # so we catch that and extract the Location header manually.
         class _NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
@@ -224,9 +227,12 @@ def _fetch_page_text(
                 current_url,
                 headers = {"User-Agent": "UnslothStudio/1.0"},
             )
-            resp = opener.open(req, timeout = timeout)
-            if resp.status in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location")
+            try:
+                resp = opener.open(req, timeout = timeout)
+            except _HTTPError as e:
+                if e.code not in (301, 302, 303, 307, 308):
+                    return f"Failed to fetch URL: HTTP {e.code}"
+                location = e.headers.get("Location")
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header."
                 current_url = urljoin(current_url, location)
@@ -247,6 +253,8 @@ def _fetch_page_text(
             return "Failed to fetch URL: too many redirects."
 
         raw_html = raw_bytes.decode("utf-8", errors = "replace")
+    except _HTTPError:
+        raise
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 

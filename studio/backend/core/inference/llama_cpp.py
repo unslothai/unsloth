@@ -2732,10 +2732,11 @@ class LlamaCppBackend:
                         "Error",
                         "Search failed",
                         "Execution error",
-                        "Blocked",
-                        "No ",
+                        "Blocked:",
                         "Exit code",
                         "Failed to fetch",
+                        "Failed to resolve",
+                        "No query provided",
                     )
                     _is_error = isinstance(result, str) and result.lstrip().startswith(
                         _error_prefixes
