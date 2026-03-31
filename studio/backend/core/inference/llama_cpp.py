@@ -2156,11 +2156,12 @@ class LlamaCppBackend:
         # Track recent (tool_name, arguments) hashes to detect loops
         # where the model repeats the exact same call.
         import hashlib as _hl
+
         _tool_call_history: list[str] = []
         _DEDUP_WINDOW = 2  # flag if same call appears this many times in a row
 
         def _tool_call_key(name: str, args: dict) -> str:
-            raw = json.dumps({"t": name, "a": args}, sort_keys=True)
+            raw = json.dumps({"t": name, "a": args}, sort_keys = True)
             return _hl.md5(raw.encode()).hexdigest()
 
         def _is_duplicate_call(name: str, args: dict) -> bool:
@@ -2743,14 +2744,16 @@ class LlamaCppBackend:
         # The model used all iterations without producing a final text
         # response. Inject a nudge so the final streaming pass produces
         # a useful answer instead of continuing to request tools.
-        conversation.append({
-            "role": "user",
-            "content": (
-                "You have used all available tool calls. Based on "
-                "everything you have found so far, provide your final "
-                "answer now. Do not call any more tools."
-            ),
-        })
+        conversation.append(
+            {
+                "role": "user",
+                "content": (
+                    "You have used all available tool calls. Based on "
+                    "everything you have found so far, provide your final "
+                    "answer now. Do not call any more tools."
+                ),
+            }
+        )
 
         # Clear status
         yield {"type": "status", "text": ""}
