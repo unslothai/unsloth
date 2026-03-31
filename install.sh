@@ -983,7 +983,20 @@ get_torch_index_url() {
         _smi="/usr/bin/nvidia-smi"
     fi
     if [ -z "$_smi" ]; then
-        # No NVIDIA GPU -- check for AMD ROCm
+        # No NVIDIA GPU -- check for AMD ROCm GPU
+        # First confirm an actual AMD GPU is present (not just ROCm tools installed)
+        _has_rocm_gpu=false
+        if command -v rocminfo >/dev/null 2>&1 && \
+           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/{found=1} END{exit !found}'; then
+            _has_rocm_gpu=true
+        elif command -v amd-smi >/dev/null 2>&1 && \
+             amd-smi list 2>/dev/null | awk 'NR>1 && NF{found=1} END{exit !found}'; then
+            _has_rocm_gpu=true
+        fi
+        if [ "$_has_rocm_gpu" != true ]; then
+            echo "$_base/cpu"; return
+        fi
+        # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
         _rocm_tag=$({ command -v amd-smi >/dev/null 2>&1 && \
             amd-smi version 2>/dev/null | awk -F'ROCm version: ' \

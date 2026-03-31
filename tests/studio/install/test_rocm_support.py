@@ -47,6 +47,7 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _detect_rocm_version = stack_mod._detect_rocm_version
 _ensure_rocm_torch = stack_mod._ensure_rocm_torch
+_has_rocm_gpu = stack_mod._has_rocm_gpu
 _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
 
 
@@ -519,8 +520,9 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_cuda_skips(self, mock_ver, mock_pip):
+    def test_torch_already_has_cuda_skips(self, mock_ver, mock_gpu, mock_pip):
         """If torch already has CUDA, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -531,8 +533,9 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_hip_skips(self, mock_ver, mock_pip):
+    def test_torch_already_has_hip_skips(self, mock_ver, mock_gpu, mock_pip):
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -543,8 +546,9 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_gets_rocm_reinstall(self, mock_ver, mock_pip):
+    def test_cpu_torch_gets_rocm_reinstall(self, mock_ver, mock_gpu, mock_pip):
         """CPU-only torch on ROCm host should trigger reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -560,8 +564,9 @@ class TestEnsureRocmTorch:
         assert "bitsandbytes" in str(bnb_call)
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
-    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_pip):
+    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_pip):
         """ROCm 6.3 should select rocm6.3 tag."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -573,8 +578,9 @@ class TestEnsureRocmTorch:
         assert "rocm6.3" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (5, 0))
-    def test_old_rocm_skips(self, mock_ver, mock_pip):
+    def test_old_rocm_skips(self, mock_ver, mock_gpu, mock_pip):
         """ROCm version too old (below 6.0) should skip."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -585,8 +591,9 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
-    def test_version_unreadable_prints_warning(self, mock_ver, mock_pip, capsys):
+    def test_version_unreadable_prints_warning(self, mock_ver, mock_gpu, mock_pip, capsys):
         """ROCm detected but version unreadable should print warning and skip."""
         with patch("os.path.isdir", return_value = True):
             _ensure_rocm_torch()
@@ -595,8 +602,9 @@ class TestEnsureRocmTorch:
         assert "unreadable" in captured.out
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    def test_rocm_72_selects_71_tag(self, mock_ver, mock_pip):
+    def test_rocm_72_selects_71_tag(self, mock_ver, mock_gpu, mock_pip):
         """ROCm 7.2 should select rocm7.1 tag (capped, not in mapping)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -608,8 +616,9 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_probe_timeout_triggers_reinstall(self, mock_ver, mock_pip):
+    def test_probe_timeout_triggers_reinstall(self, mock_ver, mock_gpu, mock_pip):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
         with patch("os.path.isdir", return_value = True):
             with patch(
@@ -619,6 +628,14 @@ class TestEnsureRocmTorch:
         # If probe times out, the function should treat torch as unusable and reinstall
         assert mock_pip.call_count == 2
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
+
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
+    def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_pip):
+        """ROCm tools present but no actual AMD GPU should skip entirely."""
+        with patch("os.path.isdir", return_value = True):
+            _ensure_rocm_torch()
+        mock_pip.assert_not_called()
 
 
 # =============================================================================
@@ -657,7 +674,11 @@ class TestRocmTorchIndex:
         """ROCm 7.2 (not in map) should select rocm7.1 via >= comparison."""
         ver = (7, 2)
         tag = next(
-            (t for (maj, mn), t in _ROCM_TORCH_INDEX.items() if ver >= (maj, mn)),
+            (
+                t
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                if ver >= (maj, mn)
+            ),
             None,
         )
         assert tag == "rocm7.1"
@@ -665,7 +686,11 @@ class TestRocmTorchIndex:
     def test_rocm_64_selects_64(self):
         ver = (6, 4)
         tag = next(
-            (t for (maj, mn), t in _ROCM_TORCH_INDEX.items() if ver >= (maj, mn)),
+            (
+                t
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                if ver >= (maj, mn)
+            ),
             None,
         )
         assert tag == "rocm6.4"

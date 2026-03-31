@@ -1431,17 +1431,24 @@ def detect_host() -> HostInfo:
         except Exception:
             pass
 
-    # Detect AMD ROCm (HIP)
+    # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
     has_rocm = False
     if not is_macos:
-        rocm_hints = [
-            shutil.which("hipcc"),
-            shutil.which("amd-smi"),
-            shutil.which("rocm-smi"),
-        ]
-        rocm_paths = [p for p in ("/opt/rocm", os.environ.get("ROCM_PATH")) if p]
-        if any(rocm_hints) or any(os.path.isdir(p) for p in rocm_paths):
-            has_rocm = True
+        for _cmd, _marker in (
+            (["rocminfo"], "gfx"),
+            (["amd-smi", "list"], None),
+        ):
+            _exe = shutil.which(_cmd[0])
+            if not _exe:
+                continue
+            try:
+                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+            except Exception:
+                continue
+            if _result.returncode == 0 and _result.stdout.strip():
+                if _marker is None or _marker in _result.stdout.lower():
+                    has_rocm = True
+                    break
 
     return HostInfo(
         system = system,

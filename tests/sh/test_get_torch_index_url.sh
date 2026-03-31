@@ -46,13 +46,22 @@ MOCK
 }
 
 # Helper: create a mock amd-smi that prints a given ROCm version string
+# Supports both "amd-smi version" and "amd-smi list" subcommands so that
+# the GPU presence check (amd-smi list) also succeeds in tests.
 make_mock_amd_smi() {
     _dir=$(mktemp -d)
     cat > "$_dir/amd-smi" <<MOCK
 #!/bin/sh
-cat <<AMD_OUT
+case "\$1" in
+    list)
+        printf 'GPU: 0\\n  BDF: 0000:03:00.0\\n  NAME: gfx1100\\n'
+        ;;
+    *)
+        cat <<AMD_OUT
 AMDSMI Tool: 25.0.1+2b74356 | AMDSMI Library version: 25.0.1.0 | ROCm version: $1
 AMD_OUT
+        ;;
+esac
 MOCK
     chmod +x "$_dir/amd-smi"
     echo "$_dir"
