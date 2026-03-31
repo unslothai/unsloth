@@ -129,14 +129,14 @@ function ModelRow({
       <span
         className={cn(
           "block min-w-0 flex-1 truncate",
-          exceeds && "text-[#BA7517]",
+          exceeds && "text-amber-600 dark:text-amber-400",
         )}
       >
         {label}
       </span>
       <span className="ml-auto flex items-center gap-1.5 shrink-0">
         {vramStatus === "exceeds" && (
-          <span className="text-[9px] font-medium text-[#854F0B] bg-[#FAEEDA] px-1.5 py-0.5 rounded">OOM</span>
+          <span className="text-[9px] font-medium text-amber-700 bg-amber-50 dark:text-amber-400 dark:bg-amber-950 px-1.5 py-0.5 rounded">OOM</span>
         )}
         {vramStatus === "tight" && (
           <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
@@ -351,7 +351,7 @@ function GgufVariantExpander({
             >
               <span className={cn(
                 "min-w-0 flex-1 truncate font-mono text-xs",
-                oom && "text-[#BA7517]"
+                oom && "text-amber-600 dark:text-amber-400"
               )}>
                 {v.quant}
                 {v.downloaded ? (
@@ -366,7 +366,7 @@ function GgufVariantExpander({
               </span>
               <span className="flex items-center gap-1.5 shrink-0">
                 {oom && (
-                  <span className="text-[9px] font-medium text-[#854F0B] bg-[#FAEEDA] px-1.5 py-0.5 rounded">
+                  <span className="text-[9px] font-medium text-amber-700 bg-amber-50 dark:text-amber-400 dark:bg-amber-950 px-1.5 py-0.5 rounded">
                     OOM
                   </span>
                 )}
