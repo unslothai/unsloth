@@ -395,10 +395,17 @@ async def list_local_models(
                 m.model_copy(update = {"source": "custom"}) for m in custom_models
             ]
 
+        # Deduplicate models, but always keep custom folder entries so they
+        # appear in the "Custom Folders" UI section even when the same model
+        # also exists in the HF cache or default models directory.  Use a
+        # (id, source) key for custom entries to avoid collisions.
         deduped: dict[str, LocalModelInfo] = {}
         for model in local_models:
-            if model.id not in deduped:
-                deduped[model.id] = model
+            key = (
+                f"{model.id}\x00custom" if model.source == "custom" else model.id
+            )
+            if key not in deduped:
+                deduped[key] = model
 
         models = sorted(
             deduped.values(),
