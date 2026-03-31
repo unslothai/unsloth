@@ -29,7 +29,7 @@ except:
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__, importlib_version, _prepare_model_for_qat
+from ._utils import __version__, importlib_version, _prepare_model_for_qat, _set_attn_impl
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
@@ -614,12 +614,12 @@ class FastBaseModel:
             # Gemma3N variants use timm-based vision towers which do not support
             # flex_attention. The old code defaulted gemma3n to eager; preserve
             # that behavior rather than letting the hierarchy pick sdpa.
-            attn_impl = "eager"
+            attn_impl = _set_attn_impl(auto_config, "eager")
         elif model_class is None and supports_sdpa:
             # When model_class cannot be resolved (remote-code or unmapped
             # configs), the old code defaulted to sdpa. Preserve that fallback
             # instead of falling through to eager.
-            attn_impl = "sdpa"
+            attn_impl = _set_attn_impl(auto_config, "sdpa")
         else:
             attn_impl = determine_attention_implementation(model_class, auto_config)
 
