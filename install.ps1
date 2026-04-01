@@ -968,7 +968,14 @@ shell.Run cmd, 0, False
     # and bypass the fast-path version check from PR #4667.
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
-    & $UnslothExe @studioArgs
+    # In Tauri mode, Python's stdout may be an invalid handle (no console).
+    # Force unbuffered output and capture via PowerShell to prevent OSError on write/flush.
+    if ($TauriMode) {
+        $env:PYTHONUNBUFFERED = "1"
+        & $UnslothExe @studioArgs 2>&1 | ForEach-Object { Write-Host $_ }
+    } else {
+        & $UnslothExe @studioArgs
+    }
     $setupExit = $LASTEXITCODE
     if ($setupExit -ne 0) {
         Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
