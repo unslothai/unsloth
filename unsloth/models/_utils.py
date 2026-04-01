@@ -841,9 +841,12 @@ for model_name in model_architectures:
         if Version(transformers_version) <= Version("4.42.4"):
             config = patch_mistral_nemo_config(config)
 
-    exec(config, globals())
-    exec(f"import {config_filepath}", globals())
-    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+    try:
+        exec(config, globals())
+        exec(f"import {config_filepath}", globals())
+        exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+    except:
+        continue
 # =============================================
 
 # =============================================
