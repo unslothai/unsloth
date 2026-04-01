@@ -211,7 +211,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
             # certificate verification, over the already-connected socket.
             conn.sock = _tls_ctx.wrap_socket(
                 conn.sock,
-                server_hostname=sni_host,
+                server_hostname = sni_host,
             )
 
         conn.connect = _patched_connect
