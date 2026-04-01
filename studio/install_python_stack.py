@@ -80,9 +80,11 @@ _UNICODE_TO_ASCII: dict[str, str] = {
 
 
 def _safe_print(*args: object, **kwargs: object) -> None:
-    """Drop-in print() replacement that survives non-UTF-8 consoles."""
+    """Drop-in print() replacement that survives non-UTF-8 consoles and detached stdout."""
     try:
         print(*args, **kwargs)
+    except OSError:
+        return
     except UnicodeEncodeError:
         # Stringify, then swap emoji for ASCII equivalents
         text = " ".join(str(a) for a in args)
@@ -163,7 +165,7 @@ def _step(label: str, value: str, color_fn = None) -> None:
     if color_fn is None:
         color_fn = _green
     padded = label[:_COL]
-    print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
+    _safe_print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
 
 
 def _progress(label: str) -> None:
@@ -177,10 +179,13 @@ def _progress(label: str) -> None:
     bar = "=" * filled + "-" * (width - filled)
     pad = " " * (_COL - len(_LABEL))
     end = "\n" if _STEP >= _TOTAL else ""
-    sys.stdout.write(
-        f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
-    )
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(
+            f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
+        )
+        sys.stdout.flush()
+    except OSError:
+        pass
 
 
 def run(
