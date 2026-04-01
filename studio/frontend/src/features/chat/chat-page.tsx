@@ -866,7 +866,9 @@ export function ChatPage(): ReactElement {
                   label={
                     loadProgress?.phase === "starting"
                       ? "Starting model…"
-                      : "Loading model…"
+                      : loadingModel.isDownloaded
+                        ? "Loading model…"
+                        : "Loading model…"
                   }
                   title={
                     loadingModel.isDownloaded
