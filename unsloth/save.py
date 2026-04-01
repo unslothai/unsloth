@@ -2777,19 +2777,58 @@ def unsloth_generic_save(
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
-    merge_and_overwrite_lora(
-        get_model_name,
-        model = model,
-        tokenizer = tokenizer,
-        save_directory = save_directory,
-        push_to_hub = push_to_hub,
-        private = private,
-        token = token,
-        save_method = save_method,
-        output_dtype = None,
-        low_disk_space_usage = True,
-        use_temp_file = False,
-    )
+    # Full-finetuned models (no LoRA) cannot use merge_and_overwrite_lora
+    # since there are no adapters to merge. Fall back to save_pretrained.
+    # This mirrors the non-PeftModel handling in save_pretrained_torchao
+    # and the GGUF save path.
+    _is_peft = isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModel)
+    if not _is_peft:
+        if push_to_hub:
+            print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
+            model.push_to_hub(
+                repo_id = save_directory,
+                token = token,
+                private = private,
+                commit_message = commit_message,
+                max_shard_size = max_shard_size,
+                safe_serialization = safe_serialization,
+                create_pr = create_pr,
+                revision = revision,
+                commit_description = commit_description,
+                tags = tags,
+            )
+            if tokenizer is not None:
+                tokenizer.push_to_hub(
+                    save_directory,
+                    token = token,
+                    private = private,
+                    commit_message = commit_message,
+                )
+        else:
+            print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
+            model.save_pretrained(
+                save_directory,
+                safe_serialization = safe_serialization,
+                max_shard_size = max_shard_size,
+            )
+            if tokenizer is not None:
+                tokenizer.save_pretrained(save_directory)
+
+        print(f"Unsloth: Model saved successfully to '{save_directory}'")
+    else:
+        merge_and_overwrite_lora(
+            get_model_name,
+            model = model,
+            tokenizer = tokenizer,
+            save_directory = save_directory,
+            push_to_hub = push_to_hub,
+            private = private,
+            token = token,
+            save_method = save_method,
+            output_dtype = None,
+            low_disk_space_usage = True,
+            use_temp_file = False,
+        )
 
     if push_to_hub and datasets:
         try:
