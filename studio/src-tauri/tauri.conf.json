@@ -16,11 +16,10 @@
       {
         "label": "main",
         "title": "Unsloth Studio",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 900,
-        "minHeight": 600,
-        "visible": true
+        "width": 540,
+        "height": 540,
+        "visible": false,
+        "resizable": false
       }
     ],
     "trayIcon": {
