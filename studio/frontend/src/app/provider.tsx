@@ -25,9 +25,13 @@ function easeOutQuart(t: number): number {
   return 1 - (1 - t) ** 4;
 }
 
-async function animateToGoldenRatio(): Promise<void> {
+async function animateToGoldenRatio(abortRef: { current: boolean }): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
+
+  // Ensure window is visible before resizing
+  await win.show();
+
   const monitor = await currentMonitor();
   if (!monitor) return;
 
@@ -49,13 +53,16 @@ async function animateToGoldenRatio(): Promise<void> {
   if (prefersReducedMotion) {
     await win.setSize(new LogicalSize(finalW, finalH));
   } else {
-    // Current size (540x540)
-    const startW = 540;
-    const startH = 540;
+    // Read current size instead of hardcoding — stays correct if tauri.conf.json changes
+    const inner = await win.innerSize();
+    const factor = await win.scaleFactor();
+    const startW = Math.round(inner.width / factor);
+    const startH = Math.round(inner.height / factor);
     const steps = 15;
     const stepDuration = 23; // ~350ms total
 
     for (let i = 1; i <= steps; i++) {
+      if (abortRef.current) return;
       const t = easeOutQuart(i / steps);
       const w = Math.round(startW + (finalW - startW) * t);
       const h = Math.round(startH + (finalH - startH) * t);
@@ -63,6 +70,8 @@ async function animateToGoldenRatio(): Promise<void> {
       await new Promise((r) => setTimeout(r, stepDuration));
     }
   }
+
+  if (abortRef.current) return;
 
   // Apply constraints and finalize
   await win.setResizable(true);
@@ -82,8 +91,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   } = useTauriBackend();
 
   const hasResized = useRef(false);
+  const abortRef = useRef(false);
 
-  // Show the window once the frontend mounts
+  // Show the window once the frontend mounts (for pre-running states)
   useEffect(() => {
     if (isTauri) void showWindow();
   }, []);
@@ -92,14 +102,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status === "running" && !hasResized.current) {
       hasResized.current = true;
-      animateToGoldenRatio().catch(async () => {
+      abortRef.current = false;
+      animateToGoldenRatio(abortRef).catch(async () => {
         // On failure, at minimum make the window resizable so user can fix manually
         try {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
           await getCurrentWindow().setResizable(true);
-        } catch { /* last resort */ }
+        } catch { /* swallow — window may still be functional */ }
       });
     }
+    return () => { abortRef.current = true; };
   }, [status]);
 
   if (!isTauri) return <>{children}</>;
