@@ -14,13 +14,11 @@ Run: pytest tests/studio/install/test_pr4562_bugfixes.py -v
 """
 
 import importlib.util
-import json
 import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -627,6 +625,12 @@ class TestSourceCodePatterns:
         )
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
+        # _TRY_METAL_CPU_FALLBACK must be reset to false in both fallback branches
+        # (1 init + 2 resets = at least 3 occurrences of =false)
+        assert content.count("_TRY_METAL_CPU_FALLBACK=false") >= 3, (
+            "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
+            "(init + configure fallback + build fallback)"
+        )
 
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
         """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
@@ -834,6 +838,7 @@ class TestMacOSMetalBuildLogic:
             mkdir -p "$_BUILD_TMP"
             if ! cmake -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
                 if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
                     echo "FALLBACK_TRIGGERED"
                     rm -rf "$_BUILD_TMP/build"
                     cmake -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
@@ -847,11 +852,15 @@ class TestMacOSMetalBuildLogic:
 
             echo "BUILD_OK=$BUILD_OK"
             echo "BUILD_DESC=$_BUILD_DESC"
+            echo "TRY_METAL_CPU_FALLBACK=$_TRY_METAL_CPU_FALLBACK"
         """)
         output = run_bash(script)
         assert "FALLBACK_TRIGGERED" in output
         assert "BUILD_OK=true" in output
         assert "BUILD_DESC=building (CPU fallback)" in output
+        assert "TRY_METAL_CPU_FALLBACK=false" in output, (
+            "Fallback flag should be reset to false after configure fallback"
+        )
 
         # Verify cmake args: first call has Metal ON, second has Metal OFF
         calls = calls_file.read_text().splitlines()
@@ -921,6 +930,7 @@ class TestMacOSMetalBuildLogic:
             # Configure (succeeds)
             if ! cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
                 if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
                     echo "CONFIGURE_FALLBACK"
                     rm -rf "$_BUILD_TMP/build"
                     cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
@@ -936,6 +946,7 @@ class TestMacOSMetalBuildLogic:
             if [ "$BUILD_OK" = true ]; then
                 if ! cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
                     if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                        _TRY_METAL_CPU_FALLBACK=false
                         echo "BUILD_FALLBACK_TRIGGERED"
                         rm -rf "$_BUILD_TMP/build"
                         if cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
@@ -952,12 +963,16 @@ class TestMacOSMetalBuildLogic:
 
             echo "BUILD_OK=$BUILD_OK"
             echo "BUILD_DESC=$_BUILD_DESC"
+            echo "TRY_METAL_CPU_FALLBACK=$_TRY_METAL_CPU_FALLBACK"
         """)
         output = run_bash(script)
         assert "CONFIGURE_FALLBACK" not in output, "Configure should have succeeded"
         assert "BUILD_FALLBACK_TRIGGERED" in output
         assert "BUILD_OK=true" in output
         assert "BUILD_DESC=building (CPU fallback)" in output
+        assert "TRY_METAL_CPU_FALLBACK=false" in output, (
+            "Fallback flag should be reset to false after build fallback"
+        )
 
         # Verify: configure with Metal ON, build fails, re-configure with Metal OFF, rebuild
         calls = calls_file.read_text().splitlines()
