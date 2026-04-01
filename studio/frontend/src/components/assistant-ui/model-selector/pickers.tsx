@@ -513,12 +513,17 @@ export function HubModelPicker({
     setFolderError(null);
     setFolderLoading(true);
     try {
-      await addScanFolder(trimmed);
+      const created = await addScanFolder(trimmed);
+      // Optimistic update so the folder appears immediately
+      const next = [..._scanFoldersCache, created];
+      _scanFoldersCache = next;
+      setScanFolders(next);
       setFolderInput("");
       setShowFolderInput(false);
-      refreshScanFolders();
       refreshLocalModelsList();
       onFoldersChange?.();
+      // Background reconciliation with the server
+      void refreshScanFolders();
     } catch (e) {
       setFolderError(e instanceof Error ? e.message : "Failed to add folder");
     } finally {
@@ -529,11 +534,15 @@ export function HubModelPicker({
   const handleRemoveFolder = useCallback(async (id: number) => {
     try {
       await removeScanFolder(id);
+      // Optimistic update so the folder disappears immediately
+      const next = _scanFoldersCache.filter((f) => f.id !== id);
+      _scanFoldersCache = next;
+      setScanFolders(next);
+      refreshScanFolders();
       refreshLocalModelsList();
       onFoldersChange?.();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to remove folder");
-    } finally {
       refreshScanFolders();
     }
   }, [refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
@@ -969,7 +978,8 @@ export function HubModelPicker({
                   <button
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
+                    aria-label={`Remove folder ${f.path}`}
+                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
                   >
                     <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
                   </button>
