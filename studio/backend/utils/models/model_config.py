@@ -1423,22 +1423,14 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         # adapter_config.json, or C:\Users\...\model on Windows), try matching
         # the last 1-2 path components against the registry
         # (e.g. "Spark-TTS-0.5B/LLM").
-        _is_local_path = (
-            model_name.startswith("/")
-            or model_name.startswith(".")
-            or model_name.startswith("\\\\")  # UNC path
-            or (
-                len(model_name) >= 3 and model_name[1] == ":" and model_name[2] in "/\\"
-            )  # Drive letter
-            or "\\" in model_name
-        )
-        if model_name not in _REVERSE_MODEL_MAPPING and _is_local_path:
+        _is_local_path = is_local_path(model_name)
+        if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
             parts = Path(model_name).parts
             for depth in [2, 1]:
                 if len(parts) >= depth:
                     suffix = "/".join(parts[-depth:])
-                    if suffix in _REVERSE_MODEL_MAPPING:
-                        canonical_file = _REVERSE_MODEL_MAPPING[suffix]
+                    if suffix.lower() in _REVERSE_MODEL_MAPPING:
+                        canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
                         for config_path in defaults_dir.rglob(canonical_file):
                             if config_path.is_file():
                                 with open(config_path, "r", encoding = "utf-8") as f:

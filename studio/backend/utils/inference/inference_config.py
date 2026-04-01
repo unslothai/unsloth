@@ -17,6 +17,7 @@ import structlog
 from loggers import get_logger
 
 from utils.models.model_config import load_model_defaults
+from utils.paths import is_local_path
 
 logger = get_logger(__name__)
 
@@ -97,17 +98,7 @@ def _has_specific_yaml(model_identifier: str) -> bool:
     # For local filesystem paths (e.g. C:\Users\...\model on Windows),
     # use only the basename to avoid passing absolute paths into rglob
     # which raises "Non-relative patterns are unsupported".
-    _is_local = (
-        model_identifier.startswith("/")
-        or model_identifier.startswith(".")
-        or model_identifier.startswith("\\\\")
-        or (
-            len(model_identifier) >= 3
-            and model_identifier[1] == ":"
-            and model_identifier[2] in "/\\"
-        )
-        or "\\" in model_identifier
-    )
+    _is_local = is_local_path(model_identifier)
     _lookup = Path(model_identifier).name if _is_local else model_identifier
     model_filename = _lookup.replace("/", "_") + ".yaml"
     for config_path in defaults_dir.rglob(model_filename):
