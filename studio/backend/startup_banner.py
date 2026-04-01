@@ -20,7 +20,7 @@ def stdout_supports_color() -> bool:
         return True
     try:
         return sys.stdout.isatty()
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         return False
 
 
@@ -52,27 +52,35 @@ def print_studio_access_banner(
 
     ipv6_bind = bind_host in ("::", "::1")
     if ipv6_bind:
-        local_url = f"http://[::1]:{port}"
+        loopback_url = f"http://[::1]:{port}"
         alt_local = f"http://localhost:{port}"
     else:
-        local_url = f"http://127.0.0.1:{port}"
+        loopback_url = f"http://127.0.0.1:{port}"
         alt_local = f"http://localhost:{port}"
     if ":" in display_host:
         external_url = f"http://[{display_host}]:{port}"
     else:
         external_url = f"http://{display_host}:{port}"
+
     listen_all = bind_host in ("0.0.0.0", "::")
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
-    api_base = local_url if listen_all or loopback_bind else external_url
+
+    # Use loopback URL only when the server is reachable on loopback;
+    # otherwise show the actual bound address.
+    primary_url = loopback_url if listen_all or loopback_bind else external_url
+    tip_url = alt_local if listen_all or loopback_bind else external_url
+    api_base = primary_url
 
     lines: list[str] = [
         "",
         style("🦥 Unsloth Studio is running", title),
         style("─" * 52, dim),
-        style("  On this machine — open this in your browser:", dim),
-        style(f"    {local_url}", local_url_style),
-        style(f"    (same as {alt_local})", dim),
+        style("  On this machine -- open this in your browser:", dim),
+        style(f"    {primary_url}", local_url_style),
     ]
+
+    if (listen_all or loopback_bind) and primary_url != alt_local:
+        lines.append(style(f"    (same as {alt_local})", dim))
 
     if listen_all and display_host not in (
         "127.0.0.1",
@@ -88,7 +96,7 @@ def print_studio_access_banner(
                 style(f"    {external_url}", secondary),
             ]
         )
-    elif not listen_all and bind_host not in ("127.0.0.1", "localhost", "::1"):
+    elif not listen_all and not loopback_bind and external_url != primary_url:
         lines.extend(
             [
                 "",
@@ -105,7 +113,7 @@ def print_studio_access_banner(
             style(f"    {api_base}/api/health", secondary),
             style("─" * 52, dim),
             style(
-                "  Tip: if you are on the same computer, use the Local link above.",
+                f"  Tip: if you are on this computer, open {tip_url}/ in your browser.",
                 dim,
             ),
             "",

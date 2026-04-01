@@ -8,11 +8,36 @@
 # Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 set -e
 
+# ── Output style (aligned with studio/setup.sh) ──
+RULE=""
+_rule_i=0
+while [ "$_rule_i" -lt 52 ]; do
+    RULE="${RULE}─"
+    _rule_i=$((_rule_i + 1))
+done
+if [ -n "${NO_COLOR:-}" ]; then
+    C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
+elif [ -t 1 ] || [ -n "${FORCE_COLOR:-}" ]; then
+    _ESC="$(printf '\033')"
+    C_TITLE="${_ESC}[38;5;150m"
+    C_DIM="${_ESC}[38;5;245m"
+    C_OK="${_ESC}[38;5;108m"
+    C_WARN="${_ESC}[38;5;136m"
+    C_ERR="${_ESC}[91m"
+    C_RST="${_ESC}[0m"
+else
+    C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
+fi
+
+step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
+substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
+
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
+_VERBOSE=false
 _next_is_package=false
 _next_is_python=false
 for arg in "$@"; do
@@ -31,8 +56,43 @@ for arg in "$@"; do
         --package) _next_is_package=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
+        --verbose|-v) _VERBOSE=true ;;
     esac
 done
+
+if [ "$_VERBOSE" = true ]; then
+    export UNSLOTH_VERBOSE=1
+fi
+
+_is_verbose() {
+    [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
+}
+
+run_maybe_quiet() {
+    if _is_verbose; then
+        "$@"
+    else
+        "$@" > /dev/null 2>&1
+    fi
+}
+
+run_install_cmd() {
+    _label="$1"
+    shift
+    if _is_verbose; then
+        "$@" && return 0
+        _rc=$?
+        step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
+        return "$_rc"
+    fi
+    _log=$(mktemp)
+    "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
+    _rc=$?
+    step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
+    cat "$_log" >&2
+    rm -f "$_log"
+    return $_rc
+}
 
 if [ "$_next_is_package" = true ]; then
     echo "❌ ERROR: --package requires an argument." >&2
@@ -643,14 +703,13 @@ WSLPS1_EOF
     fi
 
     if [ "$_css_created" -eq 1 ]; then
-        echo "[OK] Created Unsloth Studio shortcut(s)"
+        substep "Created Unsloth Studio shortcut"
     fi
 }
 
 echo ""
-echo "========================================="
-echo "   Unsloth Studio Installer"
-echo "========================================="
+printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Installer"
+printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
 # ── Detect platform ──
@@ -660,7 +719,7 @@ if [ "$(uname)" = "Darwin" ]; then
 elif grep -qi microsoft /proc/version 2>/dev/null; then
     OS="wsl"
 fi
-echo "==> Platform: $OS"
+step "platform" "$OS"
 
 # ── Architecture detection & Python version ──
 _ARCH=$(uname -m)
@@ -740,8 +799,8 @@ MISSING=$(echo "$MISSING" | sed 's/^ *//')
 
 if [ -n "$MISSING" ]; then
     echo ""
-    echo "==> Unsloth Studio needs these packages: $MISSING"
-    echo "    These are needed to build the GGUF inference engine."
+    step "deps" "missing: $MISSING" "$C_WARN"
+    substep "These are needed to build the GGUF inference engine."
 
     case "$OS" in
         macos)
@@ -766,7 +825,7 @@ if [ -n "$MISSING" ]; then
     esac
     echo ""
 else
-    echo "==> All system dependencies found."
+    step "deps" "all system dependencies found"
 fi
 
 # ── Install uv ──
@@ -812,10 +871,10 @@ _uv_version_ok() {
 }
 
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
-    echo "==> Installing uv package manager..."
+    substep "installing uv package manager..."
     _uv_tmp=$(mktemp)
     download "https://astral.sh/uv/install.sh" "$_uv_tmp"
-    sh "$_uv_tmp" </dev/null
+    run_maybe_quiet sh "$_uv_tmp" </dev/null
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
@@ -833,7 +892,7 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     rm -rf "$VENV_DIR"
 elif [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
     # Old layout exists — validate before migrating
-    echo "==> Found legacy Studio environment, validating..."
+    substep "found legacy Studio environment, validating..."
     if "$STUDIO_HOME/.venv/bin/python" -c "
 import torch
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -866,8 +925,9 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
 fi
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
-    echo "==> Creating Python ${PYTHON_VERSION} virtual environment (${VENV_DIR})..."
-    uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
+    substep "$VENV_DIR"
+    run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
 fi
 
 # Guard against Python 3.13.8 torch import bug on Apple Silicon
@@ -880,12 +940,13 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  Recreating venv with Python 3.12..."
         rm -rf "$VENV_DIR"
         PYTHON_VERSION="3.12"
-        uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
     fi
 fi
 
 if [ -x "$VENV_DIR/bin/python" ]; then
-    echo "==> Using environment at ${VENV_DIR}"
+    step "venv" "using environment"
+    substep "${VENV_DIR}"
 fi
 
 # ── Resolve repo root (for --local installs) ──
@@ -960,71 +1021,71 @@ _VENV_PY="$VENV_DIR/bin/python"
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
-    echo "==> Upgrading unsloth in migrated environment..."
+    substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
         # PyPI metadata still declares torch as a hard dep), then install
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps
         # to prevent transitive torch resolution.
-        uv pip install --python "$_VENV_PY" --no-deps \
+        run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.16" unsloth-zoo
+            "unsloth>=2026.3.18" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
-            uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
-        uv pip install --python "$_VENV_PY" \
+        run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.16" unsloth-zoo
+            "unsloth>=2026.3.18" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        echo "==> Overlaying local repo (editable)..."
-        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        substep "overlaying local repo (editable)..."
+        run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
     if [ "$SKIP_TORCH" = true ]; then
-        echo "==> Skipping PyTorch (--no-torch or Intel Mac x86_64)."
+        substep "skipping PyTorch (--no-torch or Intel Mac x86_64)." "$C_WARN"
     else
-        echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
-        uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
+        substep "installing PyTorch ($TORCH_INDEX_URL)..."
+        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
-    echo "==> Installing unsloth (this may take a few minutes)..."
+    substep "installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-        uv pip install --python "$_VENV_PY" --no-deps \
+        run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.3.16" unsloth-zoo
+            "unsloth>=2026.3.18" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
-            uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-            echo "==> Overlaying local repo (editable)..."
-            uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+            substep "overlaying local repo (editable)..."
+            run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.3.16" unsloth-zoo
-        echo "==> Overlaying local repo (editable)..."
-        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "unsloth>=2026.3.18" unsloth-zoo
+        substep "overlaying local repo (editable)..."
+        run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        uv pip install --python "$_VENV_PY" \
+        run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth "$PACKAGE_NAME"
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
-    echo "==> Installing unsloth (this may take a few minutes)..."
+    substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.16" --torch-backend=auto
-        echo "==> Overlaying local repo (editable)..."
-        uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.18" --torch-backend=auto
+        substep "overlaying local repo (editable)..."
+        run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
     fi
 fi
 
@@ -1059,19 +1120,33 @@ if [ -n "$VENV_ABS_BIN" ]; then
     export PATH="$VENV_ABS_BIN:$PATH"
 fi
 
-echo "==> Running unsloth setup..."
+if ! command -v bash >/dev/null 2>&1; then
+    step "setup" "bash is required to run studio setup" "$C_ERR"
+    substep "Please install bash and re-run install.sh"
+    exit 1
+fi
+
+step "setup" "running unsloth studio update..."
+# install.sh already installs base packages (unsloth + unsloth-zoo) and
+# no-torch-runtime.txt above, so tell install_python_stack.py to skip
+# the base step to avoid redundant reinstallation.
+_SKIP_BASE=1
+# Run setup.sh outside set -e so that a llama.cpp build failure (exit 1)
+# does not skip PATH setup, shortcuts, and launch below.  We capture the
+# exit code and propagate it after post-install steps finish.
+_SETUP_EXIT=0
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-    SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
-    bash "$SETUP_SH" </dev/null
+    bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
-    SKIP_STUDIO_BASE=1 \
+    SKIP_STUDIO_BASE="$_SKIP_BASE" \
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
-    bash "$SETUP_SH" </dev/null
+    bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
 # ── Make 'unsloth' available globally via ~/.local/bin ──
@@ -1096,7 +1171,7 @@ case ":$PATH:" in
                 echo '' >> "$_SHELL_PROFILE"
                 echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
                 echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
-                echo "==> Added ~/.local/bin to PATH in $_SHELL_PROFILE"
+                step "path" "added ~/.local/bin to PATH in $_SHELL_PROFILE"
             fi
         fi
         export PATH="$_LOCAL_BIN:$PATH"
@@ -1105,17 +1180,30 @@ esac
 
 create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 
+# If setup.sh failed, report and exit now.
+# PATH and shortcuts are already set up so the user can fix and retry.
+if [ "$_SETUP_EXIT" -ne 0 ]; then
+    echo ""
+    step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    substep "Check the output above for details, then re-run:"
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        substep "  unsloth studio update --local"
+    else
+        substep "  unsloth studio update"
+    fi
+    echo ""
+    exit "$_SETUP_EXIT"
+fi
+
 echo ""
-echo "========================================="
-echo "   Unsloth Studio installed!"
-echo "========================================="
+printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
+printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
 # Launch studio automatically in interactive terminals;
 # in non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ]; then
-    echo "==> Launching Unsloth Studio..."
-    echo ""
+    step "launch" "starting Unsloth Studio..."
     "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
     _LAUNCH_EXIT=$?
     if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
@@ -1130,13 +1218,10 @@ if [ -t 1 ]; then
     fi
     exit "$_LAUNCH_EXIT"
 else
-    echo "  To launch, run:"
-    echo ""
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
-    echo ""
-    echo "  Or activate the environment first:"
-    echo ""
-    echo "    source ${VENV_DIR}/bin/activate"
-    echo "    unsloth studio -H 0.0.0.0 -p 8888"
+    step "launch" "manual commands:"
+    substep "unsloth studio -H 0.0.0.0 -p 8888"
+    substep "or activate env first:"
+    substep "source ${VENV_DIR}/bin/activate"
+    substep "unsloth studio -H 0.0.0.0 -p 8888"
     echo ""
 fi

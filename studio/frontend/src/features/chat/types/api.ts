@@ -86,6 +86,7 @@ export interface LoadModelResponse {
     trust_remote_code?: boolean;
   };
   context_length?: number | null;
+  max_context_length?: number | null;
   supports_reasoning?: boolean;
   reasoning_always_on?: boolean;
   supports_tools?: boolean;
@@ -119,6 +120,7 @@ export interface InferenceStatusResponse {
   reasoning_always_on?: boolean;
   supports_tools?: boolean;
   context_length?: number | null;
+  max_context_length?: number | null;
 }
 
 export interface AudioGenerationResponse {
