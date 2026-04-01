@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llama-tag",
         default = "latest",
-        help = "llama.cpp tag to resolve. Defaults to the latest usable published Unsloth release.",
+        help = "llama.cpp tag to resolve. Defaults to the approved prebuilt tag for this host.",
     )
     parser.add_argument(
         "--published-repo",
