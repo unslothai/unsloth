@@ -235,6 +235,7 @@ _EAGER_ONLY_PREFIXES = ("gemma3n",)
 def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
 
+
 def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
