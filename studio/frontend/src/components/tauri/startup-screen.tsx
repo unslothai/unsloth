@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { AnimatePresence, motion } from "motion/react";
 
 // ---------------------------------------------------------------------------
@@ -114,12 +115,19 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
         <Logo />
-        <p className="mt-4 text-xs text-muted-foreground">
+        <p className="mt-4 text-xs font-bold text-muted-foreground">
           To install Unsloth, click Get Started.
         </p>
       </div>
       <div className="mb-10">
-        <ActionButton onClick={onInstall}>Get Started</ActionButton>
+        <ShimmerButton
+          onClick={onInstall}
+          shimmerColor="#a7f3d0"
+          background="oklch(0.696 0.17 162.48)"
+          className="text-sm font-medium"
+        >
+          Get Started
+        </ShimmerButton>
       </div>
     </div>
   );
@@ -142,12 +150,12 @@ function InstallingContent({
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
-        <p className="text-sm font-medium text-foreground">Installing...</p>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm font-bold text-foreground">Installing...</p>
+        <p className="text-sm font-bold text-muted-foreground">
           Please wait a few mins, then you can start training.
         </p>
         {currentStepIndex >= 0 && (
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-1 text-xs font-bold text-muted-foreground">
             Step {stepNum} of {INSTALL_STEPS.length}: {stepLabel}
           </p>
         )}
