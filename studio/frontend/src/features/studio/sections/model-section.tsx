@@ -519,7 +519,7 @@ export function ModelSection() {
                             </Tooltip>
                             <span className="ml-auto flex items-center gap-1.5 shrink-0">
                               {fitStatus === "exceeds" && (
-                                <span className="text-[9px] font-medium text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-950 px-1.5 py-0.5 rounded">
+                                <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
                                   OOM
                                 </span>
                               )}
