@@ -765,43 +765,51 @@ model_architectures = [
     "falcon_h1",
 ]
 
-for model_name in model_architectures:
-    config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
-    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
-    try:
-        exec(f"from {config_filepath} import {config_filename}", globals())
-    except:
-        continue
+# Transformers 5.x uses class-level annotations with @strict, @auto_docstring,
+# and interval() in config classes. exec(inspect.getsource(...)) fails because
+# those symbols are not in scope. Skip the exec-based config patching for 5.x
+# since those configs already use rope_parameters (the v5 replacement for
+# rope_scaling).
+_skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
 
-    try:
-        config = inspect.getsource(eval(config_filename))
-    except:
-        continue
-    if "RopeParameters" in config:
+if not _skip_config_exec_patch:
+    for model_name in model_architectures:
+        config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
+        model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+        config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
         try:
-            exec(f"from {config_filepath} import RopeParameters", globals())
+            exec(f"from {config_filepath} import {config_filename}", globals())
         except:
             continue
 
-    if "rope_scaling" in config:
-        continue
-    config = re.sub(
-        r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
-        r"rope_scaling=None,"
-        r"\n        **kwargs):\n"
-        r"\n        self.rope_scaling = rope_scaling\n",
-        config,
-    )
+        try:
+            config = inspect.getsource(eval(config_filename))
+        except:
+            continue
+        if "RopeParameters" in config:
+            try:
+                exec(f"from {config_filepath} import RopeParameters", globals())
+            except:
+                continue
 
-    # Just for Mistral Nemo
-    if model_name == "mistral":
-        if Version(transformers_version) <= Version("4.42.4"):
-            config = patch_mistral_nemo_config(config)
+        if "rope_scaling" in config:
+            continue
+        config = re.sub(
+            r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
+            r"rope_scaling=None,"
+            r"\n        **kwargs):\n"
+            r"\n        self.rope_scaling = rope_scaling\n",
+            config,
+        )
 
-    exec(config, globals())
-    exec(f"import {config_filepath}", globals())
-    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+        # Just for Mistral Nemo
+        if model_name == "mistral":
+            if Version(transformers_version) <= Version("4.42.4"):
+                config = patch_mistral_nemo_config(config)
+
+        exec(config, globals())
+        exec(f"import {config_filepath}", globals())
+        exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
 # =============================================
 
 # =============================================
