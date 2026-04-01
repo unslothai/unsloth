@@ -226,7 +226,50 @@ def _fetch_page_text(
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
 
-        opener = urllib.request.build_opener(_NoRedirect)
+        # Custom HTTPS handler that overrides server_hostname for SNI
+        # and certificate verification.  The SSRF-protection logic below
+        # rewrites URLs to use the resolved IP, which would break both
+        # SNI (server gets no hostname in ClientHello) and cert checks
+        # (Python verifies against the IP, not the domain).  This handler
+        # injects the original hostname so TLS works correctly while
+        # still connecting to the pinned IP.
+        import http.client
+        import ssl as _ssl
+
+        _tls_ctx = _ssl.create_default_context()
+
+        class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
+            def __init__(self, hostname: str):
+                super().__init__(context = _tls_ctx)
+                self._sni_hostname = hostname
+
+            def https_open(self, req):
+                return self.do_open(self._sni_connection, req)
+
+            def _sni_connection(self, host, **kwargs):
+                kwargs["context"] = _tls_ctx
+                conn = http.client.HTTPSConnection(host, **kwargs)
+                _orig_connect = conn.connect
+                sni_host = self._sni_hostname
+                conn._context = _tls_ctx
+
+                # Python's HTTPSConnection.connect() uses self.host for SNI
+                # and certificate verification.  Temporarily swap it to the
+                # original hostname during the TLS handshake so SNI is sent
+                # and the cert is verified against the domain, not the IP.
+                def _patched_connect():
+                    real_host = conn.host
+                    conn.host = sni_host
+                    try:
+                        _orig_connect()
+                    except Exception:
+                        conn.host = real_host
+                        raise
+                    conn.host = real_host
+
+                conn.connect = _patched_connect
+                return conn
+
         max_bytes = max_chars * 4 + 1
         current_url = url
         current_host = parsed.hostname
@@ -238,10 +281,15 @@ def _fetch_page_text(
             ip_netloc = f"{pinned_ip}:{cp.port}" if cp.port else pinned_ip
             pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
 
+            opener = urllib.request.build_opener(
+                _NoRedirect,
+                _SNIHTTPSHandler(current_host),
+            )
+
             req = urllib.request.Request(
                 pinned_url,
                 headers = {
-                    "User-Agent": "UnslothStudio/1.0",
+                    "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Googlebot/2.1; +http://www.google.com/bot.html) Chrome/131.0.0.0 Safari/537.36",
                     "Host": current_host,
                 },
             )
