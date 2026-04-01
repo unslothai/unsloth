@@ -714,6 +714,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+            token_type_ids = kwargs.get("token_type_ids", None)
+            mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -831,6 +834,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if logit_scale_divide is None:
                 logit_scale_divide = 0
 
+            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+            token_type_ids_chunks = chunk_optional(token_type_ids, B)
+            mm_token_type_ids_chunks = chunk_optional(mm_token_type_ids, B)
+
             zipped_inputs = zip(
                 input_ids_chunks,
                 attention_mask_chunks,
@@ -838,6 +845,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_grid_thw_chunks,
                 pixel_attention_mask_chunks,
                 image_sizes_chunks,
+                token_type_ids_chunks,
+                mm_token_type_ids_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -849,7 +858,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_grid_thw_chunk,
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
+                    token_type_ids_chunk,
+                    mm_token_type_ids_chunk,
                 ) in zipped_inputs:
+                    _extra_vision_kwargs = {}
+                    if token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
+                    if mm_token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
                     ):
@@ -861,6 +877,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_grid_thw = image_grid_thw_chunk,
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             completion_input_ids_chunk = input_ids_chunk[
@@ -893,6 +910,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             logits_chunk = logits_chunk[:, :-1, :]
