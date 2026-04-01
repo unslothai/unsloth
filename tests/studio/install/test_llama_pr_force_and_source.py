@@ -302,12 +302,13 @@ class TestBashCloneUrlParameterized:
                 run_quiet_no_exit "clone llama.cpp" \\
                     git clone --depth 1 "${{_LLAMA_SOURCE}}.git" "$_BUILD_TMP" || BUILD_OK=false
             else
-                _CLONE_BRANCH_ARGS=()
+                _CLONE_ARGS=(git clone --depth 1)
                 if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-                    _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
+                    _CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")
                 fi
+                _CLONE_ARGS+=("${{_LLAMA_SOURCE}}.git" "$_BUILD_TMP")
                 run_quiet_no_exit "clone llama.cpp" \\
-                    git clone --depth 1 "${{_CLONE_BRANCH_ARGS[@]}}" "${{_LLAMA_SOURCE}}.git" "$_BUILD_TMP" || BUILD_OK=false
+                    "${{_CLONE_ARGS[@]}}" || BUILD_OK=false
             fi
             echo "BUILD_OK=$BUILD_OK"
         """)
@@ -348,6 +349,36 @@ class TestBashCloneUrlParameterized:
         r = run_bash(script)
         assert r.returncode == 0
         log = log_file.read_text()
+        assert "ggml-org/llama.cpp.git" in log
+
+    def test_latest_tag_omits_branch_flag(self, tmp_path: Path):
+        """resolved_tag='latest' should not pass --branch to git clone."""
+        mock_bin, log_file = make_mock_git(tmp_path)
+        build_tmp = str(tmp_path / "build_tmp")
+        script = self._clone_script(
+            mock_bin,
+            build_tmp,
+            resolved_tag = "latest",
+        )
+        r = run_bash(script)
+        assert r.returncode == 0
+        log = log_file.read_text()
+        assert "--branch" not in log
+        assert "ggml-org/llama.cpp.git" in log
+
+    def test_empty_tag_omits_branch_flag(self, tmp_path: Path):
+        """resolved_tag='' (empty) should not pass --branch to git clone."""
+        mock_bin, log_file = make_mock_git(tmp_path)
+        build_tmp = str(tmp_path / "build_tmp")
+        script = self._clone_script(
+            mock_bin,
+            build_tmp,
+            resolved_tag = "",
+        )
+        r = run_bash(script)
+        assert r.returncode == 0
+        log = log_file.read_text()
+        assert "--branch" not in log
         assert "ggml-org/llama.cpp.git" in log
 
 
@@ -395,8 +426,8 @@ class TestSourcePatternsSh:
 
     def test_clone_urls_parameterized_tag_path(self):
         """Non-PR clone path uses ${_LLAMA_SOURCE}.git, not hardcoded URL."""
-        # Find the non-PR clone line (after _CLONE_BRANCH_ARGS)
-        idx = self.content.index("_CLONE_BRANCH_ARGS=()")
+        # Find the non-PR clone line (after _CLONE_ARGS)
+        idx = self.content.index("_CLONE_ARGS=(git clone --depth 1)")
         block = self.content[idx : idx + 400]
         assert '"${_LLAMA_SOURCE}.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
