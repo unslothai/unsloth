@@ -229,13 +229,14 @@ def apply_unsloth_gradient_checkpointing(
 # NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
 # Gemma3N: timm vision wrappers don't support flex_attention.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h")
-_FLEX_EXCLUDED_PREFIXES = ("gemma3n",)
+_EAGER_ONLY_PREFIXES = ("gemma3n",)
 
 
 def _is_flex_excluded(model_type):
-    return model_type in _FLEX_EXCLUDED_MODELS or any(
-        model_type.startswith(p) for p in _FLEX_EXCLUDED_PREFIXES
-    )
+    return model_type in _FLEX_EXCLUDED_MODELS
+
+def _is_eager_only(model_type):
+    return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
 def _set_attn_impl(config, impl):
@@ -249,6 +250,11 @@ def _set_attn_impl(config, impl):
 
 def determine_attention_implementation(model_class, config):
     model_type = getattr(config, "model_type", "").lower()
+
+    # Eager-only models (e.g. gemma3n timm vision towers)
+    if _is_eager_only(model_type):
+        _set_attn_impl(config, "eager")
+        return "eager"
 
     # Flash Attention 2
     if HAS_FLASH_ATTENTION and model_class is not None:

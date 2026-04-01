@@ -607,13 +607,7 @@ class FastBaseModel:
             model_class = auto_model._model_mapping[auto_config.__class__]
         except Exception:
             model_class = None
-        model_type = str(getattr(auto_config, "model_type", "")).lower()
-        if model_type.startswith("gemma3n"):
-            # Gemma3N variants use timm-based vision towers which do not
-            # support flex_attention or sdpa reliably. Preserve the old
-            # default of eager rather than letting the hierarchy pick sdpa.
-            attn_impl = _set_attn_impl(auto_config, "eager")
-        elif model_class is None:
+        if model_class is None:
             # When model_class cannot be resolved (remote-code or unmapped
             # configs), preserve the old fallback of sdpa when supported.
             attn_impl = _set_attn_impl(
