@@ -437,21 +437,28 @@ const CodeToolsToggle: FC = () => {
 
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const [elapsed, setElapsed] = useState(0);
   const [visible, setVisible] = useState(false);
   const wasActiveRef = useRef(false);
 
+  // Reset carry-over state when the run actually ends.
+  useEffect(() => {
+    if (!isThreadRunning) {
+      wasActiveRef.current = false;
+    }
+  }, [isThreadRunning]);
+
   useEffect(() => {
     if (!toolStatus) {
       setElapsed(0);
-      setVisible(false);
-      // Delay the ref reset so a follow-up tool in the same agentic
-      // turn is not re-debounced after the transient status-clear
-      // event that the backend emits between iterations.
-      const resetTimer = setTimeout(() => {
-        wasActiveRef.current = false;
-      }, 500);
-      return () => clearTimeout(resetTimer);
+      // Only hide the badge if the run is over; transient clears
+      // between tool iterations keep it visible while the thread
+      // is still running.
+      if (!isThreadRunning) {
+        setVisible(false);
+      }
+      return;
     }
 
     setElapsed(0);
@@ -476,7 +483,7 @@ const ToolStatusDisplay: FC = () => {
       clearInterval(interval);
       if (showTimer) clearTimeout(showTimer);
     };
-  }, [toolStatus]);
+  }, [toolStatus, isThreadRunning]);
 
   if (!toolStatus || !visible) return null;
   const isRunning = toolStatus.startsWith("Running");
