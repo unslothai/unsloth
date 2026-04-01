@@ -358,11 +358,11 @@ class LlamaCppBackend:
         """True if we have enough GGUF metadata to estimate KV cache size."""
         if self._n_layers is None:
             return False
-        # New-style: explicit key/value dimensions from GGUF
-        if self._kv_key_length is not None:
-            return True
-        # MLA: kv_lora_rank is sufficient
+        # MLA: kv_lora_rank is sufficient (K-only cache)
         if self._kv_lora_rank is not None:
+            return True
+        # New-style: need both explicit key AND value dimensions
+        if self._kv_key_length is not None and self._kv_value_length is not None:
             return True
         # Legacy: need embedding_length + head count
         return self._embedding_length is not None and (
@@ -434,6 +434,7 @@ class LlamaCppBackend:
         # which is still far more accurate than the legacy formula (which ignores SWA).
         if (
             self._sliding_window is not None
+            and self._sliding_window > 0
             and key_len is not None
             and val_len is not None
         ):
