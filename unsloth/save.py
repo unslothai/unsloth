@@ -2783,6 +2783,18 @@ def unsloth_generic_save(
     # and the GGUF save path.
     _is_peft = isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModel)
     if not _is_peft:
+        # Honor merged_16bit by casting to the target dtype if needed
+        _save_kwargs = dict(
+            safe_serialization = safe_serialization,
+            max_shard_size = max_shard_size,
+        )
+        if "16bit" in save_method:
+            _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            _save_kwargs["state_dict"] = {
+                k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
+                for k, v in model.state_dict().items()
+            }
+
         if push_to_hub:
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
             model.push_to_hub(
@@ -2790,12 +2802,11 @@ def unsloth_generic_save(
                 token = token,
                 private = private,
                 commit_message = commit_message,
-                max_shard_size = max_shard_size,
-                safe_serialization = safe_serialization,
                 create_pr = create_pr,
                 revision = revision,
                 commit_description = commit_description,
                 tags = tags,
+                **_save_kwargs,
             )
             if tokenizer is not None:
                 tokenizer.push_to_hub(
@@ -2808,11 +2819,7 @@ def unsloth_generic_save(
                 )
         else:
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-            model.save_pretrained(
-                save_directory,
-                safe_serialization = safe_serialization,
-                max_shard_size = max_shard_size,
-            )
+            model.save_pretrained(save_directory, **_save_kwargs)
             if tokenizer is not None:
                 tokenizer.save_pretrained(save_directory)
 
