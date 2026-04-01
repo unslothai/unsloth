@@ -107,6 +107,8 @@ const UNSLOTH_PREFETCH = 20;
 /** When the user searched for a specific publisher, show fewer unsloth results
  *  before the pinned (original publisher) model. */
 const UNSLOTH_PINNED_PREFETCH = 4;
+/** Matches a valid "owner/repo" identifier (exactly two non-empty segments). */
+const PUBLISHER_RE = /^([^/\s]+)\/([^/\s]+)$/;
 
 /**
  * Prime the hf-cache from a listModels result. For public (non-gated,
@@ -282,7 +284,7 @@ export function useHfModelSearch(
       // surface, then pin the original publisher model after a small batch of
       // unsloth results.  Queries for unsloth-owned models are left as-is so
       // they get the full 20-result prefetch and secondary sort.
-      const publisherMatch = trimmed.match(/^([^/\s]+)\/([^/\s]+)$/);
+      const publisherMatch = PUBLISHER_RE.exec(trimmed);
       const isPublisherQuery = !!publisherMatch && publisherMatch[1] !== "unsloth";
       const searchQuery = isPublisherQuery ? publisherMatch[2] : trimmed;
       return mergedModelIterator(searchQuery, undefined, accessToken, isPublisherQuery ? trimmed : undefined) as AsyncGenerator<unknown>;
@@ -297,7 +299,7 @@ export function useHfModelSearch(
   // Skip when the user searched for a specific non-unsloth publisher
   // (e.g. "openai/gpt-oss-20b") -- the iterator already handles the
   // pinned ordering in that case.
-  const publisherMatch = query.trim().match(/^([^/\s]+)\/([^/\s]+)$/);
+  const publisherMatch = PUBLISHER_RE.exec(query.trim());
   const isPublisherQuery = !!publisherMatch && publisherMatch[1] !== "unsloth";
   const results = useMemo(
     () =>
