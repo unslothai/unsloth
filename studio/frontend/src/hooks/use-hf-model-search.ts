@@ -104,6 +104,9 @@ function makeMapModel(excludeGguf: boolean) {
 
 /** Number of unsloth results to pull up-front before yielding general results. */
 const UNSLOTH_PREFETCH = 20;
+/** When the user searched for a specific publisher, show fewer unsloth results
+ *  before the pinned (original publisher) model. */
+const UNSLOTH_PINNED_PREFETCH = 4;
 
 /**
  * Prime the hf-cache from a listModels result. For public (non-gated,
@@ -131,6 +134,7 @@ async function* mergedModelIterator(
   query: string,
   task?: PipelineType,
   accessToken?: string,
+  pinnedId?: string,
 ): AsyncGenerator<unknown> {
   const common = {
     additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
@@ -148,6 +152,8 @@ async function* mergedModelIterator(
     ...common,
   });
 
+  const limit = pinnedId ? UNSLOTH_PINNED_PREFETCH : UNSLOTH_PREFETCH;
+
   // Phase 1: pull & yield unsloth models first
   const seen = new Set<string>();
   let count = 0;
@@ -159,10 +165,26 @@ async function* mergedModelIterator(
     }
     yield model;
     count++;
-    if (count >= UNSLOTH_PREFETCH) break;
+    if (count >= limit) break;
   }
 
-  // Phase 2: yield general results, skipping already-seen unsloth models
+  // Phase 1b: yield the pinned (original publisher) model before general results
+  if (pinnedId) {
+    seen.add(pinnedId);
+    try {
+      const pinned = await cachedModelInfo({
+        name: pinnedId,
+        additionalFields: ["safetensors", "tags"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      });
+      primeFromListing(pinnedId, accessToken, pinned);
+      yield pinned;
+    } catch {
+      // Model doesn't exist or is inaccessible — skip silently
+    }
+  }
+
+  // Phase 2: yield general results, skipping already-seen models
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
@@ -251,7 +273,13 @@ export function useHfModelSearch(
         }) as AsyncGenerator<unknown>;
       }
       // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
-      return mergedModelIterator(trimmed, undefined, accessToken) as AsyncGenerator<unknown>;
+      // Strip org prefix (e.g. "openai/gpt-oss-20b" → "gpt-oss-20b") so unsloth
+      // variants surface via the owner:"unsloth" search in mergedModelIterator.
+      // When the user searched for a specific publisher, pin that model after
+      // a small batch of unsloth results.
+      const hasPublisher = trimmed.includes("/");
+      const searchQuery = hasPublisher ? trimmed.split("/").pop()! : trimmed;
+      return mergedModelIterator(searchQuery, undefined, accessToken, hasPublisher ? trimmed : undefined) as AsyncGenerator<unknown>;
     },
     [query, task, accessToken, priorityIds],
   );
@@ -259,15 +287,20 @@ export function useHfModelSearch(
   const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
   const search = useHfPaginatedSearch(createIter, mapModel);
 
-  // Secondary sort guarantee: unsloth models always float to the top
+  // Secondary sort guarantee: unsloth models always float to the top.
+  // Skip when the user searched for a specific publisher (query contains "/")
+  // — the iterator already handles the pinned ordering in that case.
+  const hasPublisher = query.trim().includes("/");
   const results = useMemo(
     () =>
-      [...search.results].sort((a, b) => {
-        const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
-        const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
-        return aFirst - bFirst;
-      }),
-    [search.results],
+      hasPublisher
+        ? search.results
+        : [...search.results].sort((a, b) => {
+            const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
+            const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
+            return aFirst - bFirst;
+          }),
+    [search.results, hasPublisher],
   );
 
   return { ...search, results };
