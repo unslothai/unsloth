@@ -858,9 +858,9 @@ class TestMacOSMetalBuildLogic:
         assert "FALLBACK_TRIGGERED" in output
         assert "BUILD_OK=true" in output
         assert "BUILD_DESC=building (CPU fallback)" in output
-        assert "TRY_METAL_CPU_FALLBACK=false" in output, (
-            "Fallback flag should be reset to false after configure fallback"
-        )
+        assert (
+            "TRY_METAL_CPU_FALLBACK=false" in output
+        ), "Fallback flag should be reset to false after configure fallback"
 
         # Verify cmake args: first call has Metal ON, second has Metal OFF
         calls = calls_file.read_text().splitlines()
@@ -970,9 +970,9 @@ class TestMacOSMetalBuildLogic:
         assert "BUILD_FALLBACK_TRIGGERED" in output
         assert "BUILD_OK=true" in output
         assert "BUILD_DESC=building (CPU fallback)" in output
-        assert "TRY_METAL_CPU_FALLBACK=false" in output, (
-            "Fallback flag should be reset to false after build fallback"
-        )
+        assert (
+            "TRY_METAL_CPU_FALLBACK=false" in output
+        ), "Fallback flag should be reset to false after build fallback"
 
         # Verify: configure with Metal ON, build fails, re-configure with Metal OFF, rebuild
         calls = calls_file.read_text().splitlines()
