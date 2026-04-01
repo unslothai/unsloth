@@ -866,14 +866,12 @@ export function ChatPage(): ReactElement {
                   label={
                     loadProgress?.phase === "starting"
                       ? "Starting model…"
-                      : loadingModel.isDownloaded
-                        ? "Loading model…"
-                        : "Downloading model…"
+                      : "Loading model…"
                   }
                   title={
                     loadingModel.isDownloaded
                       ? `Loading ${loadingModel.displayName} from cache.`
-                      : `Loading ${loadingModel.displayName}. This may include downloading.`
+                      : `Loading ${loadingModel.displayName} into memory.`
                   }
                   progressPercent={loadProgress?.percent}
                   progressLabel={loadProgress?.label}
