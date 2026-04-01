@@ -949,6 +949,17 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     substep "${VENV_DIR}"
 fi
 
+# Default torch constraint -- tightened for Python 3.13+ on arm64 macOS
+# (torch <2.6 has no cp313 macOS arm64 wheels)
+TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _PY_MINOR=$("$VENV_DIR/bin/python" -c \
+        "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+    if [ "$_PY_MINOR" -ge 13 ] 2>/dev/null; then
+        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
+    fi
+fi
+
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 
@@ -1049,7 +1060,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         substep "skipping PyTorch (--no-torch or Intel Mac x86_64)." "$C_WARN"
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
+        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
