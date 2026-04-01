@@ -2781,12 +2781,15 @@ def unsloth_generic_save(
     # since there are no adapters to merge. Fall back to save_pretrained.
     # This mirrors the non-PeftModel handling in save_pretrained_torchao
     # and the GGUF save path.
-    _is_peft = isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModel)
+    _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
+        if not is_main_process: return
+
         # Honor merged_16bit by casting to the target dtype if needed
         _save_kwargs = dict(
             safe_serialization = safe_serialization,
             max_shard_size = max_shard_size,
+            variant = variant,
         )
         if "16bit" in save_method:
             _target_dtype = (
@@ -2811,6 +2814,8 @@ def unsloth_generic_save(
                 **_save_kwargs,
             )
             if tokenizer is not None:
+                old_padding_side = tokenizer.padding_side
+                tokenizer.padding_side = "left"
                 tokenizer.push_to_hub(
                     save_directory,
                     token = token,
@@ -2819,11 +2824,15 @@ def unsloth_generic_save(
                     create_pr = create_pr,
                     revision = revision,
                 )
+                tokenizer.padding_side = old_padding_side
         else:
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
             model.save_pretrained(save_directory, **_save_kwargs)
             if tokenizer is not None:
+                old_padding_side = tokenizer.padding_side
+                tokenizer.padding_side = "left"
                 tokenizer.save_pretrained(save_directory)
+                tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     else:
