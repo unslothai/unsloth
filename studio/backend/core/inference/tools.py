@@ -216,9 +216,11 @@ def _fetch_page_text(
         return reason
 
     try:
+        import http.client
+        import ssl
         import urllib.request
         from urllib.error import HTTPError as _HTTPError
-        from urllib.parse import urljoin, urlunparse
+        from urllib.parse import urljoin
 
         # Disable auto-redirect so we can validate each hop for SSRF.
         # urllib raises HTTPError for 3xx when the handler returns None,
@@ -227,23 +229,93 @@ def _fetch_page_text(
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
 
-        opener = urllib.request.build_opener(_NoRedirect)
+        class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+            """HTTPS connection that connects to a pinned IP while
+            preserving the original hostname for SNI and certificate
+            verification.  This prevents DNS rebinding between the
+            SSRF validation step and the actual fetch."""
+
+            _pinned_ip: str | None = None
+
+            def connect(self):
+                import socket
+
+                ip = self._pinned_ip or self.host
+                self.sock = socket.create_connection(
+                    (ip, self.port), self.timeout,
+                )
+                if self._context:
+                    ctx = self._context
+                else:
+                    try:
+                        import certifi
+                        ctx = ssl.create_default_context(cafile = certifi.where())
+                    except ImportError:
+                        ctx = ssl.create_default_context()
+                self.sock = ctx.wrap_socket(
+                    self.sock, server_hostname = self.host,
+                )
+
+        class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+            """HTTPSHandler that routes connections through a pinned IP."""
+
+            def __init__(self, pinned_ip: str):
+                super().__init__()
+                self._pinned_ip = pinned_ip
+
+            def https_open(self, req):
+                return self.do_open(self._make_connection, req)
+
+            def _make_connection(self, host, **kwargs):
+                conn = _PinnedHTTPSConnection(host, **kwargs)
+                conn._pinned_ip = self._pinned_ip
+                return conn
+
+        class _PinnedHTTPConnection(http.client.HTTPConnection):
+            """HTTP connection that connects to a pinned IP while
+            preserving the original hostname in the Host header."""
+
+            _pinned_ip: str | None = None
+
+            def connect(self):
+                import socket
+
+                ip = self._pinned_ip or self.host
+                self.sock = socket.create_connection(
+                    (ip, self.port), self.timeout,
+                )
+
+        class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+            """HTTPHandler that routes connections through a pinned IP."""
+
+            def __init__(self, pinned_ip: str):
+                super().__init__()
+                self._pinned_ip = pinned_ip
+
+            def http_open(self, req):
+                return self.do_open(self._make_connection, req)
+
+            def _make_connection(self, host, **kwargs):
+                conn = _PinnedHTTPConnection(host, **kwargs)
+                conn._pinned_ip = self._pinned_ip
+                return conn
+
         max_bytes = max_chars * 4 + 1
         current_url = url
-        current_host = parsed.hostname
 
         for _hop in range(5):
-            # Pin to the validated IP to prevent DNS rebinding.
-            # Rewrite the URL to use the IP and set the Host header.
-            cp = urlparse(current_url)
-            ip_netloc = f"{pinned_ip}:{cp.port}" if cp.port else pinned_ip
-            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+            # Build opener with IP-pinning handler to prevent DNS rebinding.
+            # The original hostname is preserved in the URL for correct SNI.
+            if urlparse(current_url).scheme == "https":
+                pin_handler = _PinnedHTTPSHandler(pinned_ip)
+            else:
+                pin_handler = _PinnedHTTPHandler(pinned_ip)
+            opener = urllib.request.build_opener(_NoRedirect, pin_handler)
 
             req = urllib.request.Request(
-                pinned_url,
+                current_url,
                 headers = {
                     "User-Agent": "UnslothStudio/1.0",
-                    "Host": current_host,
                 },
             )
             try:
@@ -267,7 +339,6 @@ def _fetch_page_text(
                 )
                 if not ok2:
                     return reason2
-                current_host = rp.hostname
                 continue
             # Success -- read capped body
             raw_bytes = resp.read(max_bytes)
