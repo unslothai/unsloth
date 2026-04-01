@@ -515,7 +515,7 @@ export function HubModelPicker({
     try {
       const created = await addScanFolder(trimmed);
       // Backend returns existing row for duplicates, so deduplicate
-      const next = _scanFoldersCache.some((f) => f.id === created.id)
+      const next = _scanFoldersCache.some((f) => f.id === created.id || f.path === created.path)
         ? _scanFoldersCache
         : [..._scanFoldersCache, created];
       _scanFoldersCache = next;
@@ -952,6 +952,7 @@ export function HubModelPicker({
                 </span>
                 <button
                   type="button"
+                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
                   onClick={() => {
                     setShowFolderInput((open) => {
                       if (open) { setFolderInput(""); setFolderError(null); }
