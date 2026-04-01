@@ -865,7 +865,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if token_type_ids_chunk is not None:
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
-                        _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
+                        _extra_vision_kwargs["mm_token_type_ids"] = (
+                            mm_token_type_ids_chunk
+                        )
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
                     ):
