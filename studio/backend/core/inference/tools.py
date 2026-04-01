@@ -203,7 +203,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
             self.sock,
-            server_hostname=self._sni_hostname,
+            server_hostname = self._sni_hostname,
         )
 
 
@@ -216,7 +216,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     """
 
     def __init__(self, hostname: str):
-        super().__init__(context=_tls_ctx)
+        super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
 
     def https_open(self, req):
@@ -224,9 +224,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
-        return _PinnedHTTPSConnection(
-            host, sni_hostname=self._sni_hostname, **kwargs
-        )
+        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
