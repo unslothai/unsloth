@@ -242,18 +242,21 @@ def _fetch_page_text(
 
                 ip = self._pinned_ip or self.host
                 self.sock = socket.create_connection(
-                    (ip, self.port), self.timeout,
+                    (ip, self.port),
+                    self.timeout,
                 )
                 if self._context:
                     ctx = self._context
                 else:
                     try:
                         import certifi
+
                         ctx = ssl.create_default_context(cafile = certifi.where())
                     except ImportError:
                         ctx = ssl.create_default_context()
                 self.sock = ctx.wrap_socket(
-                    self.sock, server_hostname = self.host,
+                    self.sock,
+                    server_hostname = self.host,
                 )
 
         class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -282,7 +285,8 @@ def _fetch_page_text(
 
                 ip = self._pinned_ip or self.host
                 self.sock = socket.create_connection(
-                    (ip, self.port), self.timeout,
+                    (ip, self.port),
+                    self.timeout,
                 )
 
         class _PinnedHTTPHandler(urllib.request.HTTPHandler):
