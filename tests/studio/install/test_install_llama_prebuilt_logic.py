@@ -2032,8 +2032,8 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
         is True
     )
 
-    # Remove convert_hf_to_gguf.py and verify the guard catches it
-    (install_dir / "convert_hf_to_gguf.py").unlink()
+    # Remove a macOS-specific runtime artifact and verify the guard catches it
+    (install_dir / "build" / "bin" / "libmtmd.0.dylib").unlink()
     assert (
         existing_install_matches_choice(
             install_dir,

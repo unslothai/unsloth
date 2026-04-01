@@ -627,15 +627,25 @@ class TestSourceCodePatterns:
         )
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
-        # CPU fallback must NOT carry Metal-only RPATH flags
-        idx = content.index("CPU_FALLBACK_CMAKE_ARGS=")
-        fallback_block = content[idx : idx + 500]
-        for line in fallback_block.splitlines():
-            if "-DGGML_METAL=OFF" in line:
-                assert (
-                    "@loader_path" not in line
-                ), "CPU fallback args should not contain RPATH flags"
-                break
+
+    def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
+        """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
+        script = (
+            '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        fallback_line = next(
+            line for line in output.splitlines()
+            if line.startswith("CPU_FALLBACK_CMAKE_ARGS=")
+        )
+        assert "-DGGML_METAL=OFF" in fallback_line
+        assert "@loader_path" not in fallback_line, (
+            "CPU fallback args should not contain RPATH flags"
+        )
+        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in fallback_line, (
+            "CPU fallback args should not contain RPATH build flag"
+        )
 
     def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
         """Intel macOS should stay on the existing non-Metal path in this patch."""
@@ -719,7 +729,6 @@ class TestSourceCodePatterns:
 # Variables _IS_MACOS_ARM64, NVCC_PATH, GPU_BACKEND are injected by tests.
 _GPU_BACKEND_FRAGMENT = textwrap.dedent("""\
     CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
-    CPU_FALLBACK_CMAKE_ARGS=""
     _TRY_METAL_CPU_FALLBACK=false
     CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
 
@@ -846,15 +855,11 @@ class TestMacOSMetalBuildLogic:
         # Verify cmake args: first call has Metal ON, second has Metal OFF
         calls = calls_file.read_text().splitlines()
         assert len(calls) >= 2, f"Expected >= 2 cmake calls, got {len(calls)}"
-        assert (
-            "-DGGML_METAL=ON" in calls[0]
-        ), f"First cmake call should have Metal ON: {calls[0]}"
-        assert (
-            "-DGGML_METAL=OFF" in calls[1]
-        ), f"Second cmake call should have Metal OFF: {calls[1]}"
-        assert (
-            "-DGGML_METAL=ON" not in calls[1]
-        ), f"Second cmake call should NOT have Metal ON: {calls[1]}"
+        assert "-DGGML_METAL=ON" in calls[0], f"First cmake call should have Metal ON: {calls[0]}"
+        assert "-DGGML_METAL=OFF" in calls[1], f"Second cmake call should have Metal OFF: {calls[1]}"
+        assert "-DGGML_METAL=ON" not in calls[1], f"Second cmake call should NOT have Metal ON: {calls[1]}"
+        assert "@loader_path" not in calls[1], f"CPU fallback should not have RPATH: {calls[1]}"
+        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[1], f"CPU fallback should not have RPATH build flag: {calls[1]}"
 
     def test_metal_build_failure_retries_cpu_fallback(self, tmp_path: Path):
         """When cmake --build fails on Metal, the fallback should re-configure and rebuild with CPU."""
@@ -950,8 +955,11 @@ class TestMacOSMetalBuildLogic:
         assert "-DGGML_METAL=ON" in calls[0]
         # Second call: build (fails)
         assert "--build" in calls[1]
-        # Third call: re-configure with Metal OFF
+        # Third call: re-configure with Metal OFF and no RPATH flags
         assert "-DGGML_METAL=OFF" in calls[2]
         assert "-DGGML_METAL=ON" not in calls[2]
+        assert "@loader_path" not in calls[2], f"CPU fallback should not have RPATH: {calls[2]}"
+        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[2], f"CPU fallback should not have RPATH build flag: {calls[2]}"
+        assert "-DLLAMA_BUILD_TESTS=OFF" in calls[2], f"CPU fallback should preserve baseline flags: {calls[2]}"
         # Fourth call: rebuild (succeeds)
         assert "--build" in calls[3]

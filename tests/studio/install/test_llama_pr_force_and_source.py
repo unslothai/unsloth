@@ -366,6 +366,21 @@ class TestBashCloneUrlParameterized:
         assert "--branch" not in log
         assert "ggml-org/llama.cpp.git" in log
 
+    def test_empty_tag_omits_branch_flag(self, tmp_path: Path):
+        """resolved_tag='' (empty) should not pass --branch to git clone."""
+        mock_bin, log_file = make_mock_git(tmp_path)
+        build_tmp = str(tmp_path / "build_tmp")
+        script = self._clone_script(
+            mock_bin,
+            build_tmp,
+            resolved_tag = "",
+        )
+        r = run_bash(script)
+        assert r.returncode == 0
+        log = log_file.read_text()
+        assert "--branch" not in log
+        assert "ggml-org/llama.cpp.git" in log
+
 
 # =========================================================================
 # TEST GROUP D: Static source patterns -- setup.sh
