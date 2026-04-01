@@ -407,7 +407,8 @@ class LlamaCppBackend:
         # V is reconstructed from the latent on the fly -- no separate V cache.
         # key_length = kv_lora_rank + rope_dim (the full compressed representation).
         if self._kv_lora_rank is not None:
-            key_len = self._kv_key_length or (self._kv_lora_rank + 64)
+            rope_dim = self._key_length_mla or 64
+            key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
             return int(n_layers * n_ctx * n_kv * key_len * bpe)
 
         key_len = self._kv_key_length
@@ -428,14 +429,16 @@ class LlamaCppBackend:
 
         # Path 3: Sliding Window (Gemma-3, gpt-oss)
         # SWA layers only cache min(ctx, window) tokens; global layers cache full ctx.
-        # Conservative: assume half layers are global, half are SWA.
+        # Most SWA architectures use few global layers (e.g., Gemma-3 uses 1 in 6).
+        # Without an explicit field, we conservatively assume 1/4 of layers are global
+        # which is still far more accurate than the legacy formula (which ignores SWA).
         if (
             self._sliding_window is not None
             and key_len is not None
             and val_len is not None
         ):
             swa = self._sliding_window
-            n_global = n_layers // 2
+            n_global = max(1, n_layers // 4)
             n_swa = n_layers - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
             return int(
