@@ -749,7 +749,7 @@ export function ChatPage(): ReactElement {
   }, [refresh, refreshLocalModels]);
 
   useEffect(() => {
-    saveExternalProviders(externalProviders);
+    void saveExternalProviders(externalProviders);
   }, [externalProviders]);
 
   useEffect(() => {

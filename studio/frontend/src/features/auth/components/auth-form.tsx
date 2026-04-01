@@ -10,6 +10,8 @@ import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { usePlatformStore } from "@/config/env";
+import { setSessionPassword } from "@/features/chat/crypto-storage";
+import { reEncryptAllKeys } from "@/features/chat/external-providers";
 import { refreshSession } from "../api";
 
 // Bootstrap credentials injected into index.html by the backend
@@ -266,10 +268,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
 
       if (!isLoginMode) {
+        // Re-encrypt stored API keys with the new password before switching session
+        await reEncryptAllKeys(currentPassword, newPassword);
+        setSessionPassword(newPassword);
         resetOnboardingDone();
         setRequiresPasswordChange(false);
         setMustChangePassword(false);
       } else {
+        setSessionPassword(password);
         setMustChangePassword(token.must_change_password);
       }
       storeAuthTokens(

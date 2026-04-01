@@ -243,7 +243,7 @@ export function ChatProvidersDialog({
         createdAt,
         updatedAt,
       };
-      setExternalProviderApiKey(created.id, apiKey.trim());
+      await setExternalProviderApiKey(created.id, apiKey.trim());
       onProvidersChange([...providers.filter((p) => p.id !== created.id), provider]);
       resetForm();
       toast.success("Provider added.");
@@ -281,7 +281,7 @@ export function ChatProvidersDialog({
         displayName: existing.name,
         baseUrl,
       });
-      setExternalProviderApiKey(editingProviderId, apiKey.trim());
+      await setExternalProviderApiKey(editingProviderId, apiKey.trim());
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
         ? Date.parse(updated.updated_at)
         : Date.now();
@@ -307,10 +307,10 @@ export function ChatProvidersDialog({
     }
   }
 
-  function editProvider(provider: ExternalProviderConfig) {
+  async function editProvider(provider: ExternalProviderConfig) {
     setEditingProviderId(provider.id);
     setProviderType(provider.providerType);
-    setApiKey(getExternalProviderApiKey(provider.id));
+    setApiKey(await getExternalProviderApiKey(provider.id));
     setBaseUrlDraft(provider.baseUrl);
     setAvailableModels([...provider.models]);
     setSelectedModelIds([...provider.models]);
@@ -331,9 +331,9 @@ export function ChatProvidersDialog({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
-    const savedKey = getExternalProviderApiKey(provider.id).trim();
+    const savedKey = (await getExternalProviderApiKey(provider.id)).trim();
     if (!savedKey) {
-      editProvider(provider);
+      await editProvider(provider);
       toast.info(`No API key found for ${provider.name}. Add one and save.`);
       return;
     }

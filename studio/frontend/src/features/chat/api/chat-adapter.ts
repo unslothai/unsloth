@@ -464,7 +464,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           )
         : null;
       const externalApiKey = externalProvider
-        ? getExternalProviderApiKey(externalProvider.id).trim()
+        ? (await getExternalProviderApiKey(externalProvider.id)).trim()
         : "";
 
       if (isExternalRequest && !externalProvider) {

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  decryptValue,
+  encryptValue,
+  getSessionPassword,
+} from "./crypto-storage";
+
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -135,25 +141,11 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
   }
 }
 
-export function saveExternalProviders(providers: ExternalProviderConfig[]): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
-    const allowedIds = new Set(providers.map((provider) => provider.id));
-    const keys = loadExternalProviderApiKeys();
-    const pruned: Record<string, string> = {};
-    for (const [providerId, apiKey] of Object.entries(keys)) {
-      if (allowedIds.has(providerId)) {
-        pruned[providerId] = apiKey;
-      }
-    }
-    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(pruned));
-  } catch {
-    // ignore
-  }
-}
-
-export function loadExternalProviderApiKeys(): Record<string, string> {
+/**
+ * Load the raw (encrypted or legacy plaintext) key map from localStorage.
+ * Values are opaque strings — either AES-GCM ciphertext or legacy plaintext.
+ */
+function loadRawKeyMap(): Record<string, string> {
   if (!canUseStorage()) return {};
   try {
     const raw = localStorage.getItem(EXTERNAL_PROVIDER_KEYS_KEY);
@@ -161,9 +153,9 @@ export function loadExternalProviderApiKeys(): Record<string, string> {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: Record<string, string> = {};
-    for (const [providerId, apiKey] of Object.entries(parsed)) {
-      if (typeof providerId === "string" && typeof apiKey === "string") {
-        out[providerId] = apiKey;
+    for (const [providerId, value] of Object.entries(parsed)) {
+      if (typeof providerId === "string" && typeof value === "string") {
+        out[providerId] = value;
       }
     }
     return out;
@@ -172,17 +164,82 @@ export function loadExternalProviderApiKeys(): Record<string, string> {
   }
 }
 
-export function getExternalProviderApiKey(providerId: string): string {
-  const keys = loadExternalProviderApiKeys();
-  return keys[providerId] ?? "";
-}
-
-export function setExternalProviderApiKey(providerId: string, apiKey: string): void {
+function saveRawKeyMap(map: Record<string, string>): void {
   if (!canUseStorage()) return;
   try {
-    const next = loadExternalProviderApiKeys();
-    next[providerId] = apiKey;
-    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(next));
+    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+export async function saveExternalProviders(
+  providers: ExternalProviderConfig[],
+): Promise<void> {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
+    // Prune keys for removed providers — works on raw ciphertext, no decryption needed
+    const allowedIds = new Set(providers.map((provider) => provider.id));
+    const keys = loadRawKeyMap();
+    const pruned: Record<string, string> = {};
+    for (const [providerId, value] of Object.entries(keys)) {
+      if (allowedIds.has(providerId)) {
+        pruned[providerId] = value;
+      }
+    }
+    saveRawKeyMap(pruned);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Retrieve a provider API key, decrypting from localStorage.
+ * Transparently migrates legacy plaintext keys to encrypted form.
+ * Returns "" if no key is stored or no session password is available.
+ */
+export async function getExternalProviderApiKey(
+  providerId: string,
+): Promise<string> {
+  const keys = loadRawKeyMap();
+  const stored = keys[providerId];
+  if (!stored) return "";
+
+  const password = getSessionPassword();
+  if (!password) return "";
+
+  try {
+    return await decryptValue(stored, password);
+  } catch {
+    // Decryption failed — likely a legacy plaintext key. Migrate it.
+    try {
+      const encrypted = await encryptValue(stored, password);
+      keys[providerId] = encrypted;
+      saveRawKeyMap(keys);
+    } catch {
+      // Migration failed — return the raw value as-is
+    }
+    return stored;
+  }
+}
+
+/**
+ * Store a provider API key, encrypting it before writing to localStorage.
+ * Falls back to plaintext storage if no session password is available.
+ */
+export async function setExternalProviderApiKey(
+  providerId: string,
+  apiKey: string,
+): Promise<void> {
+  if (!canUseStorage()) return;
+  try {
+    const keys = loadRawKeyMap();
+    const password = getSessionPassword();
+    keys[providerId] = password
+      ? await encryptValue(apiKey, password)
+      : apiKey;
+    saveRawKeyMap(keys);
   } catch {
     // ignore
   }
@@ -191,10 +248,33 @@ export function setExternalProviderApiKey(providerId: string, apiKey: string): v
 export function removeExternalProviderApiKey(providerId: string): void {
   if (!canUseStorage()) return;
   try {
-    const next = loadExternalProviderApiKeys();
-    delete next[providerId];
-    localStorage.setItem(EXTERNAL_PROVIDER_KEYS_KEY, JSON.stringify(next));
+    const keys = loadRawKeyMap();
+    delete keys[providerId];
+    saveRawKeyMap(keys);
   } catch {
     // ignore
   }
+}
+
+/**
+ * Re-encrypt all stored API keys when the user changes their password.
+ * Decrypts each key with the old password and re-encrypts with the new one.
+ */
+export async function reEncryptAllKeys(
+  oldPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const keys = loadRawKeyMap();
+  if (Object.keys(keys).length === 0) return;
+  const migrated: Record<string, string> = {};
+  for (const [id, ciphertext] of Object.entries(keys)) {
+    try {
+      const plaintext = await decryptValue(ciphertext, oldPassword);
+      migrated[id] = await encryptValue(plaintext, newPassword);
+    } catch {
+      // If decryption fails (legacy plaintext), encrypt with new password
+      migrated[id] = await encryptValue(ciphertext, newPassword);
+    }
+  }
+  saveRawKeyMap(migrated);
 }
