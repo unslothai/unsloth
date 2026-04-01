@@ -12,15 +12,6 @@
 @plugin "@toolwind/corner-shape";
 @source "../node_modules/streamdown/dist/*.js";
 
-@font-face {
-  font-family: "Hellix";
-  src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
-    url("/fonts/Hellix-SemiBold.woff") format("woff");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -67,7 +58,7 @@
   --sidebar-ring: oklch(0.6929 0.1396 166.5513);
   --destructive-foreground: oklch(1 0 0);
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
+  --font-heading: var(--font-sans);
   --font-serif: Source Serif 4, serif;
   --font-mono: JetBrains Mono, monospace;
   --shadow-color: hsl(0 0% 0%);
@@ -159,7 +150,7 @@
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
+  --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -343,9 +334,69 @@
   [data-streamdown="code-block"] {
     gap: 0;
     padding: 0.5rem;
+    /* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
   }
   [data-streamdown="code-block-header"] {
     padding-left: 0.75rem;
+  }
+
+  /* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+  .aui-thread-root [data-streamdown="code-block"] {
+    font-size: 0.8125rem;
+    line-height: 1.55;
+  }
+
+  .aui-thread-root [data-streamdown="code-block-header"] {
+    font-size: 0.6875rem;
+  }
+
+  @container (min-width: 36rem) {
+    .aui-thread-root [data-streamdown="code-block"] {
+      font-size: 0.875rem;
+    }
+
+    .aui-thread-root [data-streamdown="code-block-header"] {
+      font-size: 0.75rem;
+    }
+  }
+
+  /* Chat: use the app sans stack for UI + prose. */
+  .aui-thread-root {
+    font-family: var(--font-sans);
+  }
+
+  .aui-thread-root .font-medium,
+  .aui-thread-root .font-semibold,
+  .aui-thread-root .font-bold,
+  .aui-thread-root .font-heading {
+    font-family: var(--font-sans);
+  }
+
+  .aui-thread-root :where(h1, h2, h3, h4, h5, h6) {
+    font-family: var(--font-sans);
+  }
+
+  /* Keep monospace for code fences and inline code (not KaTeX). */
+  .aui-thread-root [data-streamdown="code-block"] pre,
+  .aui-thread-root [data-streamdown="code-block"] code {
+    font-family: var(--font-mono), ui-monospace, monospace;
+  }
+
+  .aui-thread-root p code,
+  .aui-thread-root li code,
+  .aui-thread-root td code {
+    font-family: var(--font-mono), ui-monospace, monospace;
+  }
+
+  /* Align fenced code blocks with the main chat column even when nested in lists. */
+  [data-streamdown="list-item"] > [data-streamdown="code-block"],
+  [data-streamdown="list-item"] [data-streamdown="code-block"] {
+    margin-left: -1.25rem;
+    width: calc(100% + 1.25rem);
+    max-width: calc(100% + 1.25rem);
   }
 }
 

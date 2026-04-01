@@ -12,7 +12,6 @@ import { ChevronDownIcon, LoaderIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
-import { useScrollLock } from "@assistant-ui/react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -54,22 +53,18 @@ function ToolGroupRoot({
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (!open) {
-        lockScroll();
-      }
       if (!isControlled) {
         setUncontrolledOpen(open);
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [isControlled, controlledOnOpenChange],
   );
 
   return (

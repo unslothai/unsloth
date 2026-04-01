@@ -12,7 +12,6 @@ import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
-  useScrollLock,
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
@@ -52,22 +51,18 @@ function ToolFallbackRoot({
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (!open) {
-        lockScroll();
-      }
       if (!isControlled) {
         setUncontrolledOpen(open);
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [isControlled, controlledOnOpenChange],
   );
 
   return (
@@ -156,12 +151,12 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-left leading-none",
+          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-left leading-none text-muted-foreground",
           isCancelled && "text-muted-foreground line-through",
         )}
       >
         <span>
-          {label}: <b>{toolName}</b>
+          {label}: <span className="font-medium text-foreground/85">{toolName}</span>
         </span>
         {isRunning && (
           <span
@@ -169,7 +164,7 @@ function ToolFallbackTrigger({
             data-slot="tool-fallback-trigger-shimmer"
             className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
-            {label}: <b>{toolName}</b>
+            {label}: <span className="font-medium text-foreground/85">{toolName}</span>
           </span>
         )}
       </span>
