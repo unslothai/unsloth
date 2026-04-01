@@ -97,27 +97,31 @@ function ActionButton({
 
 function CheckingContent() {
   return (
-    <>
-      <Logo />
-      <div className="mt-8 flex flex-col items-center gap-2">
+    <div className="flex h-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
         <p className="text-sm text-muted-foreground">Checking...</p>
       </div>
-    </>
+    </div>
   );
 }
 
 function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
   return (
-    <>
-      <Logo />
-      <p className="mt-6 text-sm text-muted-foreground">
-        To install Unsloth, click Get Started.
-      </p>
-      <div className="mt-8">
+    <div className="flex h-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-3">
+        <p className="text-sm text-muted-foreground">
+          To install Unsloth, click Get Started.
+        </p>
         <ActionButton onClick={onInstall}>Get Started</ActionButton>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -132,9 +136,11 @@ function InstallingContent({
   const stepLabel = INSTALL_STEPS[Math.min(currentStepIndex, INSTALL_STEPS.length - 1)];
 
   return (
-    <>
-      <Logo />
-      <div className="mt-8 flex flex-col items-center gap-2">
+    <div className="flex h-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
         <p className="text-sm font-medium text-foreground">Installing...</p>
         <p className="text-sm text-muted-foreground">
@@ -149,7 +155,7 @@ function InstallingContent({
           <p className="text-xs text-muted-foreground/70">{progressDetail}</p>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -217,13 +223,15 @@ function NeedsElevationContent({
 
 function StartingContent() {
   return (
-    <>
-      <Logo />
-      <div className="mt-8 flex flex-col items-center gap-2">
+    <div className="flex h-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-2">
         <TealSpinner />
         <p className="text-sm text-muted-foreground">Starting server...</p>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -319,12 +327,12 @@ export function StartupScreen({
   }
 
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-background">
-      <div className="w-full max-w-md px-6">
+    <div className="flex h-screen w-full flex-col items-center bg-background">
+      <div className="flex flex-1 w-full max-w-md items-center justify-center px-6">
         <AnimatePresence mode="wait">
           <motion.div
             key={status}
-            className="flex flex-col items-center text-center"
+            className="flex h-full w-full flex-col items-center text-center"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

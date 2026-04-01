@@ -16,8 +16,8 @@
       {
         "label": "main",
         "title": "Unsloth Studio",
-        "width": 540,
-        "height": 540,
+        "width": 690,
+        "height": 480,
         "visible": false,
         "resizable": false
       }
