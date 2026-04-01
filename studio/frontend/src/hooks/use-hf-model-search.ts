@@ -184,7 +184,14 @@ async function* mergedModelIterator(
   if (pinnedId && !seen.has(pinnedId) && pinnedPromise) {
     const pinned = await pinnedPromise;
     if (pinned) {
+      // Record both the raw input and the canonical name returned by HF
+      // so phase 2 deduplication works even when casing differs
+      // (e.g. user typed "OpenAI/gpt-oss-20b", HF returns "openai/gpt-oss-20b").
       seen.add(pinnedId);
+      const canonicalName = (pinned as { name?: string }).name;
+      if (canonicalName && canonicalName !== pinnedId) {
+        seen.add(canonicalName);
+      }
       yield pinned;
     }
   }
@@ -285,7 +292,7 @@ export function useHfModelSearch(
       // unsloth results.  Queries for unsloth-owned models are left as-is so
       // they get the full 20-result prefetch and secondary sort.
       const publisherMatch = PUBLISHER_RE.exec(trimmed);
-      const isPublisherQuery = !!publisherMatch && publisherMatch[1] !== "unsloth";
+      const isPublisherQuery = !!publisherMatch && publisherMatch[1].toLowerCase() !== "unsloth";
       const searchQuery = isPublisherQuery ? publisherMatch[2] : trimmed;
       return mergedModelIterator(searchQuery, undefined, accessToken, isPublisherQuery ? trimmed : undefined) as AsyncGenerator<unknown>;
     },
@@ -300,7 +307,7 @@ export function useHfModelSearch(
   // (e.g. "openai/gpt-oss-20b") -- the iterator already handles the
   // pinned ordering in that case.
   const publisherMatch = PUBLISHER_RE.exec(query.trim());
-  const isPublisherQuery = !!publisherMatch && publisherMatch[1] !== "unsloth";
+  const isPublisherQuery = !!publisherMatch && publisherMatch[1].toLowerCase() !== "unsloth";
   const results = useMemo(
     () =>
       isPublisherQuery
