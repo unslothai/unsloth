@@ -514,8 +514,10 @@ export function HubModelPicker({
     setFolderLoading(true);
     try {
       const created = await addScanFolder(trimmed);
-      // Optimistic update so the folder appears immediately
-      const next = [..._scanFoldersCache, created];
+      // Backend returns existing row for duplicates, so deduplicate
+      const next = _scanFoldersCache.some((f) => f.id === created.id)
+        ? _scanFoldersCache
+        : [..._scanFoldersCache, created];
       _scanFoldersCache = next;
       setScanFolders(next);
       setFolderInput("");
