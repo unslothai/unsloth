@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PipelineType } from "@huggingface/hub";
-import { listModels, modelInfo } from "@huggingface/hub";
+import { listModels } from "@huggingface/hub";
+import { type CachedResult, cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
@@ -105,6 +106,24 @@ function makeMapModel(excludeGguf: boolean) {
 const UNSLOTH_PREFETCH = 20;
 
 /**
+ * Prime the hf-cache from a listModels result. For public (non-gated,
+ * non-private) models, also prime the anonymous slot so the VRAM hook
+ * gets cache hits without re-fetching. Gated/private models are only
+ * cached under the caller's token to avoid auth leakage.
+ */
+function primeFromListing(
+  name: string,
+  accessToken: string | undefined,
+  model: unknown,
+): void {
+  const data = model as CachedResult;
+  primeCacheFromListing(name, accessToken, data);
+  if (accessToken && !data.private && !data.gated) {
+    primeCacheFromListing(name, undefined, data);
+  }
+}
+
+/**
  * Creates a merged async generator that yields unsloth-owned models first,
  * then general results (with deduplication).
  */
@@ -134,7 +153,10 @@ async function* mergedModelIterator(
   let count = 0;
   for await (const model of unslothIter) {
     const m = model as { name?: string };
-    if (m.name) seen.add(m.name);
+    if (m.name) {
+      seen.add(m.name);
+      primeFromListing(m.name, accessToken, model);
+    }
     yield model;
     count++;
     if (count >= UNSLOTH_PREFETCH) break;
@@ -144,6 +166,9 @@ async function* mergedModelIterator(
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
+    if (m.name) {
+      primeFromListing(m.name, accessToken, model);
+    }
     yield model;
   }
 }
@@ -167,7 +192,7 @@ async function* priorityThenListingIterator(
   const seen = new Set<string>();
   const settled = await Promise.allSettled(
     priorityIds.map((id) =>
-      modelInfo({
+      cachedModelInfo({
         name: id,
         additionalFields: ["safetensors", "tags"],
         ...(accessToken ? { credentials: { accessToken } } : {}),
@@ -192,6 +217,9 @@ async function* priorityThenListingIterator(
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
+    if (m.name) {
+      primeFromListing(m.name, accessToken, model);
+    }
     yield model;
   }
 }

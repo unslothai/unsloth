@@ -28,7 +28,16 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
+import {
+  MODEL_TYPE_TO_HF_TASK,
+  PRIORITY_TRAINING_MODELS,
+  applyPriorityOrdering,
+} from "@/config/training";
+import {
+  type LocalModelInfo,
+  listLocalModels,
+  useTrainingConfigStore,
+} from "@/features/training";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -38,15 +47,10 @@ import {
 } from "@/hooks";
 import { formatCompact } from "@/lib/utils";
 import {
-  type TrainingMethod as VramTrainingMethod,
   type VramFitStatus,
+  type TrainingMethod as VramTrainingMethod,
   buildModelVramMap,
 } from "@/lib/vram";
-import {
-  listLocalModels,
-  type LocalModelInfo,
-  useTrainingConfigStore,
-} from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
   ChipIcon,
@@ -71,6 +75,13 @@ const DARK_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] [&_[data-slot=select-item]]:text-white/80 dark:[&_[data-slot=select-item]]:text-slate-900 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
 const DARK_COMBOBOX_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
+
+/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
+function extractParamLabel(id: string): string | null {
+  const name = id.split("/").pop() ?? id;
+  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  return match ? `${match[1]}B` : null;
+}
 
 export function ModelSection() {
   const gpu = useGpuInfo();
@@ -112,6 +123,7 @@ export function ModelSection() {
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
   function handleModelSelect(id: string | null) {
     selectingRef.current = true;
@@ -142,7 +154,9 @@ export function ModelSection() {
       .catch((error) => {
         if (controller.signal.aborted) return;
         setLocalModelsError(
-          error instanceof Error ? error.message : "Failed to load local models",
+          error instanceof Error
+            ? error.message
+            : "Failed to load local models",
         );
       })
       .finally(() => {
@@ -160,7 +174,7 @@ export function ModelSection() {
     error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
-    accessToken: hfToken || undefined,
+    accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
   });
@@ -233,7 +247,9 @@ export function ModelSection() {
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const r of hfResults) {
-      const detail = r.totalParams ? formatCompact(r.totalParams) : null;
+      const detail = r.totalParams
+        ? formatCompact(r.totalParams)
+        : extractParamLabel(r.id);
       const fit = fitMap.get(r.id);
       map.set(r.id, {
         est: fit?.est ?? 0,
@@ -252,7 +268,7 @@ export function ModelSection() {
   );
 
   return (
-    <div data-tour="studio-model" className="col-span-1 md:col-span-2 xl:col-span-12">
+    <div data-tour="studio-model" className="w-full min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
         title="Model"
@@ -260,362 +276,386 @@ export function ModelSection() {
         accent="emerald"
         featured={true}
         badge="2x Faster Training"
-        className="shadow-border ring-1 ring-border"
+        className="shadow-border ring-border"
       >
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div data-tour="studio-local-model" className="flex flex-col gap-2">
+        <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div
+            data-tour="studio-local-model"
+            className="flex min-w-0 flex-col gap-2"
+          >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Local Model
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Path to a locally downloaded model or a custom HF repo.
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <div ref={localComboboxAnchorRef}>
-            <Combobox
-              items={localResultIds}
-              filteredItems={localFilteredIds}
-              filter={null}
-              value={localModelInput || null}
-              onValueChange={(id) => {
-                const next = id ?? "";
-                setLocalModelInput(next);
-                if (next) setSelectedModel(next);
-              }}
-              onInputValueChange={setLocalModelInput}
-              itemToStringValue={(id) => id}
-              autoHighlight={true}
-            >
-              <ComboboxInput
-                placeholder={
-                  isLoadingLocalModels
-                    ? "Scanning local and cached models..."
-                    : "./models/my-model"
-                }
-                className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
-                onBlur={() => applyLocalModel(localModelInput)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  event.preventDefault();
-                  applyLocalModel(localModelInput);
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Path to a locally downloaded model or a custom HF repo.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <div ref={localComboboxAnchorRef} className="min-w-0">
+              <Combobox
+                items={localResultIds}
+                filteredItems={localFilteredIds}
+                filter={null}
+                value={localModelInput || null}
+                onValueChange={(id) => {
+                  const next = id ?? "";
+                  setLocalModelInput(next);
+                  if (next) setSelectedModel(next);
                 }}
+                onInputValueChange={setLocalModelInput}
+                itemToStringValue={(id) => id}
+                autoHighlight={true}
               >
-                <InputGroupAddon>
-                  <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
-                </InputGroupAddon>
-              </ComboboxInput>
-              <ComboboxContent
-                anchor={localComboboxAnchorRef}
-                className={DARK_COMBOBOX_CONTENT}
-              >
-                {isLoadingLocalModels ? (
-                  <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                    <Spinner className="size-4" /> Scanning...
-                  </div>
-                ) : localModelsError ? (
-                  <div className="px-3 py-2 text-xs text-red-500">
-                    {localModelsError}
-                  </div>
-                ) : (
-                  <ComboboxEmpty>No local models found</ComboboxEmpty>
-                )}
-                <ComboboxList className="p-1">
-                  {(id: string) => {
-                    const model = localMetaById.get(id);
-                    const source =
-                      model?.source === "hf_cache"
-                        ? "HF cache"
-                        : model?.source === "lmstudio"
-                          ? "LM Studio"
-                          : "Local dir";
-                    return (
-                      <ComboboxItem key={id} value={id} className="gap-2">
-                        <Tooltip>
-                          <TooltipTrigger asChild={true}>
-                            <span className="block min-w-0 flex-1 truncate">
-                              {model?.display_name ?? id}
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="left" className="max-w-xs break-all">
-                            {model?.path ?? id}
-                          </TooltipContent>
-                        </Tooltip>
-                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                          {source}
-                        </span>
-                      </ComboboxItem>
-                    );
+                <ComboboxInput
+                  placeholder={
+                    isLoadingLocalModels
+                      ? "Scanning local and cached models..."
+                      : "./models/my-model"
+                  }
+                  className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
+                  onBlur={() => applyLocalModel(localModelInput)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    applyLocalModel(localModelInput);
                   }}
-                </ComboboxList>
-              </ComboboxContent>
-            </Combobox>
-          </div>
-          {isLoadingLocalModels ? (
-            <p className="text-[10px] text-muted-foreground">Scanning local models...</p>
-          ) : localModelsError ? (
-            <p className="text-[10px] text-red-500">{localModelsError}</p>
-          ) : (
-            <p className="text-[10px] text-muted-foreground">
-              {trainableLocalModels.length > 0
-                ? `${trainableLocalModels.length} local/cached models found`
-                : "No local models found. Enter path manually."}
-            </p>
-          )}
-        </div>
-
-          <div data-tour="studio-base-model" className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Hugging Face Model
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
                 >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Search Hugging Face models or pick from our recommended list.{" "}
-                <a
-                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline"
+                  <InputGroupAddon>
+                    <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                  </InputGroupAddon>
+                </ComboboxInput>
+                <ComboboxContent
+                  anchor={localComboboxAnchorRef}
+                  className={DARK_COMBOBOX_CONTENT}
                 >
-                  Read more
-                </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <div
-            ref={comboboxAnchorRef}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter") return;
-              if (!(event.target instanceof HTMLInputElement)) return;
-              event.preventDefault();
-              if (hfResults.length > 0) {
-                handleModelSelect(hfResults[0].id);
-              } else {
-                const text = event.target.value.trim();
-                if (text) handleModelSelect(text);
-              }
-            }}
-          >
-            <Combobox
-              items={resultIds}
-              filteredItems={resultIds}
-              filter={null}
-              value={selectedModel}
-              onValueChange={handleModelSelect}
-              onInputValueChange={handleInputChange}
-              itemToStringValue={(id) => id}
-              autoHighlight={true}
-            >
-              <ComboboxInput placeholder="Search models..." className="w-full">
-                <InputGroupAddon>
-                  <HugeiconsIcon icon={Search01Icon} className="size-4" />
-                </InputGroupAddon>
-              </ComboboxInput>
-              <ComboboxContent anchor={comboboxAnchorRef}>
-                {isLoading ? (
-                  <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                    <Spinner className="size-4" /> Searching…
-                  </div>
-                ) : (
-                  <ComboboxEmpty>No models found</ComboboxEmpty>
-                )}
-                <div
-                  ref={scrollRef}
-                  className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
-                >
-                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                  {isLoadingLocalModels ? (
+                    <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+                      <Spinner className="size-4" /> Scanning...
+                    </div>
+                  ) : localModelsError ? (
+                    <div className="px-3 py-2 text-xs text-red-500">
+                      {localModelsError}
+                    </div>
+                  ) : (
+                    <ComboboxEmpty>No local models found</ComboboxEmpty>
+                  )}
+                  <ComboboxList className="p-1">
                     {(id: string) => {
-                      const entry = vramMap.get(id);
-                      const detail = entry?.detail ?? null;
-                      const fitStatus = entry?.status ?? null;
-                      const vramEst = entry?.est ?? null;
-                      const exceeds = fitStatus === "exceeds";
-
+                      const model = localMetaById.get(id);
+                      const source =
+                        model?.source === "hf_cache"
+                          ? "HF cache"
+                          : model?.source === "lmstudio"
+                            ? "LM Studio"
+                            : model?.source === "custom"
+                              ? "Custom Folders"
+                              : "Local dir";
                       return (
-                        <ComboboxItem
-                          key={id}
-                          value={id}
-                          className={`gap-2 ${exceeds ? "opacity-50" : ""}`}
-                        >
+                        <ComboboxItem key={id} value={id} className="gap-2">
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <span className={`block min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}>
-                                {id}
+                              <span className="block min-w-0 flex-1 truncate">
+                                {model?.display_name ?? id}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent
                               side="left"
                               className="max-w-xs break-all"
                             >
-                              {id}
-                              {vramEst != null && vramEst > 0 && gpu.available && (
-                                <span className="block text-[10px] mt-1">
-                                  {exceeds
-                                    ? `Needs ~${vramEst}GB VRAM (GPU: ${gpu.memoryTotalGb}GB)`
-                                    : fitStatus === "tight"
-                                      ? `~${vramEst}GB VRAM (tight fit on ${gpu.memoryTotalGb}GB)`
-                                      : `~${vramEst}GB VRAM`}
-                                </span>
-                              )}
+                              {model?.path ?? id}
                             </TooltipContent>
                           </Tooltip>
-                          <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                            {fitStatus === "exceeds" && (
-                              <span className="text-[9px] font-medium text-red-400">
-                                OOM
-                              </span>
-                            )}
-                            {fitStatus === "tight" && (
-                              <span className="text-[9px] font-medium text-amber-400">
-                                TIGHT
-                              </span>
-                            )}
-                            {detail && (
-                              <span className="text-[10px] text-muted-foreground">
-                                {detail}
-                              </span>
-                            )}
+                          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                            {source}
                           </span>
                         </ComboboxItem>
                       );
                     }}
                   </ComboboxList>
-                  <div ref={sentinelRef} className="h-px" />
-                  {isLoadingMore && (
-                    <div className="flex items-center justify-center py-2">
-                      <Spinner className="size-3.5 text-muted-foreground" />
-                    </div>
-                  )}
-                </div>
-              </ComboboxContent>
-            </Combobox>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+            {isLoadingLocalModels ? (
+              <p className="text-[10px] text-muted-foreground">
+                Scanning local models...
+              </p>
+            ) : localModelsError ? (
+              <p className="text-[10px] text-red-500">{localModelsError}</p>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">
+                {trainableLocalModels.length > 0
+                  ? `${trainableLocalModels.length} local/cached models found`
+                  : "No local models found. Enter path manually."}
+              </p>
+            )}
           </div>
-        </div>
 
-          <div data-tour="studio-method" className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            Method
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
+          <div
+            data-tour="studio-base-model"
+            className="flex min-w-0 flex-col gap-2"
+          >
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Hugging Face Model
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Search Hugging Face models or pick from our recommended list.{" "}
+                  <a
+                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    Read more
+                  </a>
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <div
+              ref={comboboxAnchorRef}
+              className="min-w-0"
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                if (!(event.target instanceof HTMLInputElement)) return;
+                event.preventDefault();
+                if (hfResults.length > 0) {
+                  handleModelSelect(hfResults[0].id);
+                } else {
+                  const text = event.target.value.trim();
+                  if (text) handleModelSelect(text);
+                }
+              }}
+            >
+              <Combobox
+                items={resultIds}
+                filteredItems={resultIds}
+                filter={null}
+                value={selectedModel}
+                onValueChange={handleModelSelect}
+                onInputValueChange={handleInputChange}
+                itemToStringValue={(id) => id}
+                autoHighlight={true}
+              >
+                <ComboboxInput
+                  placeholder="Search models..."
+                  className="w-full leading-5"
                 >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs">
-                QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses 16-bit.
-                Full updates all weights.{" "}
+                  <InputGroupAddon>
+                    <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                  </InputGroupAddon>
+                </ComboboxInput>
+                <ComboboxContent anchor={comboboxAnchorRef}>
+                  {isLoading ? (
+                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                      <Spinner className="size-4" /> Searching…
+                    </div>
+                  ) : (
+                    <ComboboxEmpty>No models found</ComboboxEmpty>
+                  )}
+                  <div
+                    ref={scrollRef}
+                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                  >
+                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                      {(id: string) => {
+                        const entry = vramMap.get(id);
+                        const detail = entry?.detail ?? null;
+                        const fitStatus = entry?.status ?? null;
+                        const vramEst = entry?.est ?? null;
+                        const exceeds = fitStatus === "exceeds";
+
+                        return (
+                          <ComboboxItem
+                            key={id}
+                            value={id}
+                            className={`gap-2 ${exceeds ? "opacity-50" : ""}`}
+                          >
+                            <Tooltip>
+                              <TooltipTrigger asChild={true}>
+                                <span
+                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}
+                                >
+                                  {id}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="left"
+                                className="max-w-xs break-all"
+                              >
+                                {id}
+                                {vramEst != null &&
+                                  vramEst > 0 &&
+                                  gpu.available && (
+                                    <span className="block text-[10px] mt-1">
+                                      {exceeds
+                                        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpu.memoryTotalGb}GB)`
+                                        : fitStatus === "tight"
+                                          ? `~${vramEst}GB VRAM (tight fit on ${gpu.memoryTotalGb}GB)`
+                                          : `~${vramEst}GB VRAM`}
+                                    </span>
+                                  )}
+                              </TooltipContent>
+                            </Tooltip>
+                            <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                              {fitStatus === "exceeds" && (
+                                <span className="text-[9px] font-medium text-red-400">
+                                  OOM
+                                </span>
+                              )}
+                              {fitStatus === "tight" && (
+                                <span className="text-[9px] font-medium text-amber-400">
+                                  TIGHT
+                                </span>
+                              )}
+                              {detail && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  {detail}
+                                </span>
+                              )}
+                            </span>
+                          </ComboboxItem>
+                        );
+                      }}
+                    </ComboboxList>
+                    <div ref={sentinelRef} className="h-px" />
+                    {isLoadingMore && (
+                      <div className="flex items-center justify-center py-2">
+                        <Spinner className="size-3.5 text-muted-foreground" />
+                      </div>
+                    )}
+                  </div>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+          </div>
+
+          <div
+            data-tour="studio-method"
+            className="flex min-w-0 flex-col gap-2"
+          >
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Method
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
+                  16-bit. Full updates all weights.{" "}
+                  <a
+                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    Read more
+                  </a>
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <Select
+              value={trainingMethod}
+              onValueChange={(v) => setTrainingMethod(v as TrainingMethod)}
+            >
+              <SelectTrigger className={DARK_TRIGGER}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                position="popper"
+                className={`${DARK_CONTENT} w-[var(--radix-select-trigger-width)]`}
+              >
+                <SelectItem value="qlora">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.qlora}`}
+                    />
+                    QLoRA (4-bit)
+                  </span>
+                </SelectItem>
+                <SelectItem value="lora">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.lora}`}
+                    />
+                    LoRA (16-bit)
+                  </span>
+                </SelectItem>
+                <SelectItem value="full">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
+                    />
+                    Full Fine-tune
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              Hugging Face Token (Optional)
+            </span>
+            <InputGroup>
+              <InputGroupAddon>
+                <HugeiconsIcon icon={Key01Icon} className="size-4" />
+              </InputGroupAddon>
+              <InputGroupInput
+                type="password"
+                autoComplete="new-password"
+                name="hf-token"
+                placeholder="hf_..."
+                value={hfToken}
+                onChange={(e) => setHfToken(e.target.value)}
+              />
+            </InputGroup>
+            {(tokenValidationError ?? hfSearchError) && (
+              <p className="text-xs text-destructive">
+                {tokenValidationError ?? hfSearchError}
+                {" — "}
                 <a
-                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                  href="https://huggingface.co/settings/tokens"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary underline"
+                  className="underline"
                 >
-                  Read more
+                  Get or update token
                 </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <Select
-            value={trainingMethod}
-            onValueChange={(v) => setTrainingMethod(v as TrainingMethod)}
-          >
-            <SelectTrigger className={DARK_TRIGGER}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent
-              position="popper"
-              className={`${DARK_CONTENT} w-[var(--radix-select-trigger-width)]`}
-            >
-              <SelectItem value="qlora">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.qlora}`}
-                  />
-                  QLoRA (4-bit)
-                </span>
-              </SelectItem>
-              <SelectItem value="lora">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.lora}`}
-                  />
-                  LoRA (16-bit)
-                </span>
-              </SelectItem>
-              <SelectItem value="full">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
-                  />
-                  Full Fine-tune
-                </span>
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-muted-foreground">
-            Hugging Face Token (Optional)
-          </span>
-          <InputGroup>
-            <InputGroupAddon>
-              <HugeiconsIcon icon={Key01Icon} className="size-4" />
-            </InputGroupAddon>
-            <InputGroupInput
-              type="password"
-              autoComplete="new-password"
-              name="hf-token"
-              placeholder="hf_..."
-              value={hfToken}
-              onChange={(e) => setHfToken(e.target.value)}
-            />
-          </InputGroup>
-          {(tokenValidationError ?? hfSearchError) && (
-            <p className="text-xs text-destructive">
-              {tokenValidationError ?? hfSearchError}
-              {" — "}
-              <a
-                href="https://huggingface.co/settings/tokens"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline"
-              >
-                Get or update token
-              </a>
-            </p>
-          )}
-          {isCheckingToken && (
-            <p className="text-xs text-muted-foreground">Checking token…</p>
-          )}
-        </div>
+              </p>
+            )}
+            {isCheckingToken && (
+              <p className="text-xs text-muted-foreground">Checking token…</p>
+            )}
+          </div>
         </div>
       </SectionCard>
     </div>

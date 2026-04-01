@@ -1,20 +1,26 @@
 # Unsloth Studio Installer for Windows PowerShell
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
 
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
+    $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
     # ── Parse flags ──
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
     $RepoRoot = ""
+    $SkipTorch = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
-            "--local"   { $StudioLocalInstall = $true }
-            "--package" {
+            "--local"    { $StudioLocalInstall = $true }
+            "--no-torch" { $SkipTorch = $true }
+            "--verbose"  { $script:UnslothVerbose = $true }
+            "-v"         { $script:UnslothVerbose = $true }
+            "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
                     Write-Host "[ERROR] --package requires an argument." -ForegroundColor Red
@@ -24,6 +30,12 @@ function Install-UnslothStudio {
             }
         }
     }
+    # Propagate to child processes so they also respect verbose mode.
+    # Process-scoped -- does not persist.
+    if ($script:UnslothVerbose) {
+        $env:UNSLOTH_VERBOSE = '1'
+    }
+
     if ($StudioLocalInstall) {
         $RepoRoot = (Resolve-Path (Split-Path -Parent $PSCommandPath)).Path
         if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
@@ -36,10 +48,55 @@ function Install-UnslothStudio {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
+    $Rule = [string]::new([char]0x2500, 52)
+    $Sloth = [char]::ConvertFromUtf32(0x1F9A5)
+
+    function Enable-StudioVirtualTerminal {
+        if ($env:NO_COLOR) { return $false }
+        try {
+            if (-not ("StudioVT.Native" -as [type])) {
+                Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@ -ErrorAction Stop
+            }
+            $h = [StudioVT.Native]::GetStdHandle(-11)
+            [uint32]$mode = 0
+            if (-not [StudioVT.Native]::GetConsoleMode($h, [ref]$mode)) { return $false }
+            $mode = $mode -bor 0x0004
+            return [StudioVT.Native]::SetConsoleMode($h, $mode)
+        } catch {
+            return $false
+        }
+    }
+    $script:StudioVtOk = Enable-StudioVirtualTerminal
+
+    function Get-StudioAnsi {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('Title', 'Dim', 'Ok', 'Warn', 'Err', 'Reset')]
+            [string]$Kind
+        )
+        $e = [char]27
+        switch ($Kind) {
+            'Title' { return "${e}[38;5;150m" }
+            'Dim'   { return "${e}[38;5;245m" }
+            'Ok'    { return "${e}[38;5;108m" }
+            'Warn'  { return "${e}[38;5;136m" }
+            'Err'   { return "${e}[91m" }
+            'Reset' { return "${e}[0m" }
+        }
+    }
+
     Write-Host ""
-    Write-Host "========================================="
-    Write-Host "   Unsloth Studio Installer (Windows)"
-    Write-Host "========================================="
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        Write-Host ("  " + (Get-StudioAnsi Title) + $Sloth + " Unsloth Studio Installer (Windows)" + (Get-StudioAnsi Reset))
+        Write-Host ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))
+    } else {
+        Write-Host ("  {0} Unsloth Studio Installer (Windows)" -f $Sloth) -ForegroundColor DarkGreen
+        Write-Host "  $Rule" -ForegroundColor DarkGray
+    }
     Write-Host ""
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
@@ -59,13 +116,96 @@ function Install-UnslothStudio {
         $env:Path = $unique -join ";"
     }
 
+    function step {
+        param(
+            [Parameter(Mandatory = $true)][string]$Label,
+            [Parameter(Mandatory = $true)][string]$Value,
+            [string]$Color = "Green"
+        )
+        if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+            $dim = Get-StudioAnsi Dim
+            $rst = Get-StudioAnsi Reset
+            $val = switch ($Color) {
+                'Green' { Get-StudioAnsi Ok }
+                'Yellow' { Get-StudioAnsi Warn }
+                'Red' { Get-StudioAnsi Err }
+                'DarkGray' { Get-StudioAnsi Dim }
+                default { Get-StudioAnsi Ok }
+            }
+            $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+            Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
+        } else {
+            $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+            Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
+            $fc = switch ($Color) {
+                'Green' { 'DarkGreen' }
+                'Yellow' { 'Yellow' }
+                'Red' { 'Red' }
+                'DarkGray' { 'DarkGray' }
+                default { 'DarkGreen' }
+            }
+            Write-Host $Value -ForegroundColor $fc
+        }
+    }
+
+    function substep {
+        param(
+            [Parameter(Mandatory = $true)][string]$Message,
+            [string]$Color = "DarkGray"
+        )
+        if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+            $msgCol = switch ($Color) {
+                'Yellow' { (Get-StudioAnsi Warn) }
+                'Red' { (Get-StudioAnsi Err) }
+                default { (Get-StudioAnsi Dim) }
+            }
+            $pad = "".PadRight(15)
+            Write-Host ("  {0}{1}{2}{3}" -f $msgCol, $pad, $Message, (Get-StudioAnsi Reset))
+        } else {
+            $fc = switch ($Color) {
+                'Yellow' { 'Yellow' }
+                'Red' { 'Red' }
+                default { 'DarkGray' }
+            }
+            Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
+        }
+    }
+
+    # Run native commands quietly by default to match install.sh behavior.
+    # Full command output is shown only when --verbose / UNSLOTH_VERBOSE=1.
+    function Invoke-InstallCommand {
+        param(
+            [Parameter(Mandatory = $true)][ScriptBlock]$Command
+        )
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            # Reset to avoid stale values from prior native commands.
+            $global:LASTEXITCODE = 0
+            if ($script:UnslothVerbose) {
+                # Merge stderr into stdout so progress/warning output stays visible
+                # without flipping $? on successful native commands (PS 5.1 treats
+                # stderr records as errors that set $? = $false even on exit code 0).
+                & $Command 2>&1 | Out-Host
+            } else {
+                $output = & $Command 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host $output -ForegroundColor Red
+                }
+            }
+            return [int]$LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+    }
+
     function New-StudioShortcuts {
         param(
             [Parameter(Mandatory = $true)][string]$UnslothExePath
         )
 
         if (-not (Test-Path $UnslothExePath)) {
-            Write-Host "[WARN] Cannot create shortcuts: unsloth.exe not found at $UnslothExePath" -ForegroundColor Yellow
+            substep "cannot create shortcuts, unsloth.exe not found at $UnslothExePath" "Yellow"
             return
         }
         try {
@@ -78,7 +218,7 @@ function Install-UnslothStudio {
 
             $localAppDataDir = $env:LOCALAPPDATA
             if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
-                Write-Host "[WARN] LOCALAPPDATA path unavailable; skipped shortcut creation" -ForegroundColor Yellow
+                substep "LOCALAPPDATA path unavailable; skipped shortcut creation" "Yellow"
                 return
             }
             $appDir = Join-Path $localAppDataDir "Unsloth Studio"
@@ -101,10 +241,10 @@ function Install-UnslothStudio {
                 $null
             }
             if (-not $desktopLink) {
-                Write-Host "[WARN] Desktop path unavailable; skipped desktop shortcut creation" -ForegroundColor Yellow
+                substep "Desktop path unavailable; skipped desktop shortcut creation" "Yellow"
             }
             if (-not $startMenuLink) {
-                Write-Host "[WARN] APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" -ForegroundColor Yellow
+                substep "APPDATA/Start Menu path unavailable; skipped Start menu shortcut creation" "Yellow"
             }
             $iconPath = Join-Path $appDir "unsloth.ico"
             $bundledIcon = $null
@@ -163,6 +303,44 @@ function Find-HealthyStudioPort {
     return `$null
 }
 
+function Test-PortBusy {
+    param([Parameter(Mandatory = `$true)][int]`$Port)
+    `$listener = `$null
+    try {
+        `$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, `$Port)
+        `$listener.Start()
+        return `$false
+    } catch {
+        return `$true
+    } finally {
+        if (`$listener) { try { `$listener.Stop() } catch {} }
+    }
+}
+
+function Find-FreeLaunchPort {
+    `$maxPort = `$basePort + `$maxPortOffset
+    try {
+        `$listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { `$_.LocalPort -ge `$basePort -and `$_.LocalPort -le `$maxPort } |
+            Select-Object -ExpandProperty LocalPort
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (`$candidate -notin `$listening) {
+                return `$candidate
+            }
+        }
+    } catch {
+        # Get-NetTCPConnection unavailable or restricted; probe ports directly
+        for (`$offset = 0; `$offset -le `$maxPortOffset; `$offset++) {
+            `$candidate = `$basePort + `$offset
+            if (-not (Test-PortBusy -Port `$candidate)) {
+                return `$candidate
+            }
+        }
+    }
+    return `$null
+}
+
 # If Studio is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
@@ -191,7 +369,16 @@ try {
 
     `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     `$studioExe = '$SingleQuotedExePath'
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$basePort
+    `$launchPort = Find-FreeLaunchPort
+    if (-not `$launchPort) {
+        `$msg = "No free port found in range `$basePort-`$(`$basePort + `$maxPortOffset)"
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show(`$msg, 'Unsloth Studio') | Out-Null
+        } catch {}
+        exit 1
+    }
+    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
@@ -312,27 +499,27 @@ shell.Run cmd, 0, False
                         $shortcut.Save()
                         $createdShortcutCount++
                     } catch {
-                        Write-Host "[WARN] Could not create shortcut at ${linkPath}: $($_.Exception.Message)" -ForegroundColor Yellow
+                        substep "could not create shortcut at ${linkPath}: $($_.Exception.Message)" "Yellow"
                     }
                 }
                 if ($createdShortcutCount -gt 0) {
-                    Write-Host "[OK] Created Unsloth Studio shortcut(s): $createdShortcutCount" -ForegroundColor Green
+                    substep "Created Unsloth Studio shortcut"
                 } else {
-                    Write-Host "[WARN] No Unsloth Studio shortcuts were created" -ForegroundColor Yellow
+                    substep "no Unsloth Studio shortcuts were created" "Yellow"
                 }
             } catch {
-                Write-Host "[WARN] Shortcut creation unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+                substep "shortcut creation unavailable: $($_.Exception.Message)" "Yellow"
             }
         } catch {
-            Write-Host "[WARN] Shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
+            substep "shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" "Yellow"
         }
     }
 
     # ── Check winget ──
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Host "Error: winget is not available." -ForegroundColor Red
-        Write-Host "       Install it from https://aka.ms/getwinget" -ForegroundColor Yellow
-        Write-Host "       or install Python $PythonVersion and uv manually, then re-run." -ForegroundColor Yellow
+        step "winget" "not available" "Red"
+        substep "Install it from https://aka.ms/getwinget" "Yellow"
+        substep "or install Python $PythonVersion and uv manually, then re-run." "Yellow"
         return
     }
 
@@ -410,10 +597,10 @@ shell.Run cmd, 0, False
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     $DetectedPython = Find-CompatiblePython
     if ($DetectedPython) {
-        Write-Host "==> Python already installed: Python $($DetectedPython.Version)"
+        step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
-        Write-Host "==> Installing Python ${PythonVersion}..."
+        substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         # Temporarily lower ErrorActionPreference so that winget stderr
         # (progress bars, warnings) does not become a terminating error
@@ -435,7 +622,7 @@ shell.Run cmd, 0, False
             # This handles both real failures AND "already installed" codes where
             # winget thinks Python is present but it's not actually on PATH
             # (e.g. user partially uninstalled, or installed via a different method).
-            Write-Host "    Python not found on PATH after winget. Retrying with --force..."
+            substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
             $ErrorActionPreference = "Continue"
             try {
                 winget install -e --id $pythonPackageId --accept-package-agreements --accept-source-agreements --force
@@ -457,7 +644,7 @@ shell.Run cmd, 0, False
 
     # ── Install uv if not present ──
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Host "==> Installing uv package manager..."
+        substep "installing uv package manager..."
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
@@ -465,15 +652,15 @@ shell.Run cmd, 0, False
         Refresh-SessionPath
         # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-            Write-Host "    Trying alternative uv installer..."
+            substep "trying alternative uv installer..." "Yellow"
             powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
             Refresh-SessionPath
         }
     }
 
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Host "Error: uv could not be installed." -ForegroundColor Red
-        Write-Host "       Install it from https://docs.astral.sh/uv/" -ForegroundColor Yellow
+        step "uv" "could not be installed" "Red"
+        substep "Install it from https://docs.astral.sh/uv/" "Yellow"
         return
     }
 
@@ -489,13 +676,13 @@ shell.Run cmd, 0, False
 
     if (Test-Path $VenvPython) {
         # New layout already exists -- nuke for fresh install
-        Write-Host "==> Removing existing environment for fresh install..."
+        substep "removing existing environment for fresh install..."
         Remove-Item -Recurse -Force $VenvDir
     } elseif (Test-Path (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
         # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
-        Write-Host "==> Found legacy Studio environment, validating..."
+        substep "found legacy Studio environment, validating..."
         $prevEAP2 = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -504,32 +691,34 @@ shell.Run cmd, 0, False
         } catch { $torchOk = $false }
         $ErrorActionPreference = $prevEAP2
         if ($torchOk) {
-            Write-Host "   Legacy environment is healthy -- migrating..."
+            substep "legacy environment is healthy -- migrating..."
             Move-Item -Path $OldVenv -Destination $VenvDir -Force
-            Write-Host "   Moved .venv -> unsloth_studio"
+            substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
         } else {
-            Write-Host "   Legacy environment failed validation -- creating fresh environment"
+            substep "legacy environment failed validation -- creating fresh environment" "Yellow"
             Remove-Item -Recurse -Force $OldVenv -ErrorAction SilentlyContinue
         }
     } elseif (Test-Path (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe")) {
         # CWD-relative venv from old install.ps1 -- migrate to absolute path
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
-        Write-Host "==> Found CWD-relative Studio environment, migrating to $VenvDir..."
+        substep "found CWD-relative Studio environment, migrating to $VenvDir..."
         Move-Item -Path $CwdVenv -Destination $VenvDir -Force
-        Write-Host "   Moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
+        substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
     }
 
     if (-not (Test-Path $VenvPython)) {
-        Write-Host "==> Creating Python $($DetectedPython.Version) virtual environment ($VenvDir)..."
-        uv venv $VenvDir --python "$($DetectedPython.Path)"
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Failed to create virtual environment (exit code $LASTEXITCODE)" -ForegroundColor Red
+        step "venv" "creating Python $($DetectedPython.Version) virtual environment"
+        substep "$VenvDir"
+        $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        if ($venvExit -ne 0) {
+            Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return
         }
     } else {
-        Write-Host "==> Using migrated environment at $VenvDir"
+        step "venv" "using migrated environment"
+        substep "$VenvDir"
     }
 
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
@@ -538,7 +727,7 @@ shell.Run cmd, 0, False
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvSmiCmd) {
-            & $nvSmiCmd.Source 2>&1 | Out-Null
+            & $nvSmiCmd.Source *> $null
             if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
         }
     } catch {}
@@ -549,18 +738,17 @@ shell.Run cmd, 0, False
         )) {
             if (Test-Path $p) {
                 try {
-                    & $p 2>&1 | Out-Null
+                    & $p *> $null
                     if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
                 } catch {}
             }
         }
     }
     if ($HasNvidiaSmi) {
-        Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
+        step "gpu" "NVIDIA GPU detected"
     } else {
-        Write-Host "[WARN] No NVIDIA GPU detected. Studio will run in chat-only (GGUF) mode." -ForegroundColor Yellow
-        Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
-        Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
+        step "gpu" "none (chat-only / GGUF)" "Yellow"
+        substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -580,10 +768,20 @@ shell.Run cmd, 0, False
                 return "$baseUrl/cpu"
             }
         } catch {}
-        Write-Host "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" -ForegroundColor Yellow
+        substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
+
+    # ── Print CPU-only hint when no GPU detected ──
+    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+        Write-Host ""
+        substep "No NVIDIA GPU detected." "Yellow"
+        substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
+        substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
+        substep ".\install.ps1 --no-torch" "Yellow"
+        Write-Host ""
+    }
 
     # ── Install PyTorch first, then unsloth separately ──
     #
@@ -603,51 +801,115 @@ shell.Run cmd, 0, False
     #   CUDA wheels.  Missing dependencies (transformers, trl, peft, etc.)
     #   are still pulled in because they are new, not upgrades.
     #
+    # ── Helper: find no-torch-runtime.txt ──
+    function Find-NoTorchRuntimeFile {
+        if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
+            return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
+        }
+        $installed = Get-ChildItem -Path $VenvDir -Recurse -Filter "no-torch-runtime.txt" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*studio*backend*requirements*no-torch-runtime.txt" } |
+            Select-Object -ExpandProperty FullName -First 1
+        return $installed
+    }
+
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
         # in the new venv location, while preserving existing torch/CUDA
-        Write-Host "==> Upgrading unsloth in migrated environment..."
-        uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.14" unsloth-zoo
+        substep "upgrading unsloth in migrated environment..."
+        if ($SkipTorch) {
+            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
+            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.18" unsloth-zoo }
+            if ($baseInstallExit -eq 0) {
+                $NoTorchReq = Find-NoTorchRuntimeFile
+                if ($NoTorchReq) {
+                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                }
+            }
+        } else {
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.18" unsloth-zoo }
+        }
+        if ($baseInstallExit -ne 0) {
+            Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+            return
+        }
         if ($StudioLocalInstall) {
-            Write-Host "==> Overlaying local repo (editable)..."
-            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            substep "overlaying local repo (editable)..."
+            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            if ($overlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                return
+            }
         }
     } elseif ($TorchIndexUrl) {
-        Write-Host "==> Installing PyTorch ($TorchIndexUrl)..."
-        uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Failed to install PyTorch (exit code $LASTEXITCODE)" -ForegroundColor Red
+        if ($SkipTorch) {
+            substep "skipping PyTorch (--no-torch flag set)." "Yellow"
+        } else {
+            substep "installing PyTorch ($TorchIndexUrl)..."
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            if ($torchInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
+                return
+            }
+        }
+
+        substep "installing unsloth (this may take a few minutes)..."
+        if ($SkipTorch) {
+            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
+            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.18" unsloth-zoo }
+            if ($baseInstallExit -eq 0) {
+                $NoTorchReq = Find-NoTorchRuntimeFile
+                if ($NoTorchReq) {
+                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                }
+            }
+        } elseif ($StudioLocalInstall) {
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.18" unsloth-zoo }
+        } else {
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName" }
+        }
+        if ($baseInstallExit -ne 0) {
+            Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
             return
         }
 
-        Write-Host "==> Installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.14" unsloth-zoo
-            Write-Host "==> Overlaying local repo (editable)..."
-            uv pip install --python $VenvPython -e $RepoRoot --no-deps
-        } else {
-            uv pip install --python $VenvPython --upgrade-package unsloth "$PackageName"
+            substep "overlaying local repo (editable)..."
+            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            if ($overlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                return
+            }
         }
     } else {
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
-        Write-Host "==> Installing unsloth (this may take a few minutes)..."
+        substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.14" --torch-backend=auto
-            Write-Host "==> Overlaying local repo (editable)..."
-            uv pip install --python $VenvPython -e $RepoRoot --no-deps
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.18" --torch-backend=auto }
+            if ($baseInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+                return
+            }
+            substep "overlaying local repo (editable)..."
+            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            if ($overlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
+                return
+            }
         } else {
-            uv pip install --python $VenvPython "$PackageName" --torch-backend=auto
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "$PackageName" --torch-backend=auto }
+            if ($baseInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+                return
+            }
         }
-    }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] Failed to install unsloth (exit code $LASTEXITCODE)" -ForegroundColor Red
-        return
     }
 
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
-    Write-Host "==> Running unsloth studio setup..."
+    step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path $UnslothExe)) {
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
@@ -659,13 +921,25 @@ shell.Run cmd, 0, False
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
+    $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+    # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
+    # a previous --local run in the same PowerShell session.
     if ($StudioLocalInstall) {
         $env:STUDIO_LOCAL_INSTALL = "1"
         $env:STUDIO_LOCAL_REPO = $RepoRoot
+    } else {
+        $env:STUDIO_LOCAL_INSTALL = "0"
+        Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
     }
-    & $UnslothExe studio setup
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] unsloth studio setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+    # Use 'studio setup' (not 'studio update') because 'update' pops
+    # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
+    # and bypass the fast-path version check from PR #4667.
+    $studioArgs = @('studio', 'setup')
+    if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+    & $UnslothExe @studioArgs
+    $setupExit = $LASTEXITCODE
+    if ($setupExit -ne 0) {
+        Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
         return
     }
 
@@ -681,27 +955,18 @@ shell.Run cmd, 0, False
             [System.Environment]::SetEnvironmentVariable("Path", "$ScriptsDir", "User")
         }
         Refresh-SessionPath
-        Write-Host "[OK] Added unsloth to PATH" -ForegroundColor Green
+        step "path" "added unsloth to PATH"
     }
-
-    Write-Host ""
-    Write-Host "========================================="
-    Write-Host "   Unsloth Studio installed!"
-    Write-Host "========================================="
-    Write-Host ""
 
     # Launch studio automatically in interactive terminals;
     # in non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
-        Write-Host "==> Launching Unsloth Studio..."
-        Write-Host ""
         & $UnslothExe studio -H 0.0.0.0 -p 8888
     } else {
-        Write-Host "  To launch, run:"
-        Write-Host ""
-        Write-Host "    & `"$VenvDir\Scripts\Activate.ps1`""
-        Write-Host "    unsloth studio -H 0.0.0.0 -p 8888"
+        step "launch" "manual commands:"
+        substep "& `"$VenvDir\Scripts\Activate.ps1`""
+        substep "unsloth studio -H 0.0.0.0 -p 8888"
         Write-Host ""
     }
 }

@@ -44,6 +44,10 @@ class LoadRequest(BaseModel):
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -132,9 +136,16 @@ class LoadResponse(BaseModel):
     context_length: Optional[int] = Field(
         None, description = "Model's native context length (from GGUF metadata)"
     )
+    max_context_length: Optional[int] = Field(
+        None, description = "Maximum context length currently available on this hardware"
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+    )
+    reasoning_always_on: bool = Field(
+        False,
+        description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
     supports_tools: bool = Field(
         False,
@@ -193,11 +204,18 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
+    reasoning_always_on: bool = Field(
+        False, description = "Whether reasoning is always on (not toggleable)"
+    )
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
+    )
+    max_context_length: Optional[int] = Field(
+        None,
+        description = "Maximum context length currently available for the active model",
     )
 
 
@@ -291,7 +309,7 @@ class ChatCompletionRequest(BaseModel):
         0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
-        1.1, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
+        1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
     image_base64: Optional[str] = Field(
         None, description = "[x-unsloth] Base64-encoded image for vision models"
@@ -326,7 +344,7 @@ class ChatCompletionRequest(BaseModel):
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
     max_tool_calls_per_message: Optional[int] = Field(
-        10,
+        25,
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )

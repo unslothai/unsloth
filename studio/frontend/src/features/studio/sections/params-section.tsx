@@ -160,13 +160,15 @@ export function ParamsSection(): ReactElement {
   const epochsSliderMax = Math.max(20, store.epochs, 1);
 
   return (
-    <div data-tour="studio-params" className="col-span-1 xl:col-span-4">
+    <div data-tour="studio-params" className="min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
         title="Parameters"
         description="Configure training hyperparameters"
         accent="orange"
-        className="md:min-h-[470px]"
+        className={`${(isLora && loraOpen) || hyperOpen
+          ? "min-h-studio-config-column"
+          : "h-studio-config-column"} duration-150`}
       >
         <div className="flex flex-col gap-4">
           {/* Max Steps / Epochs */}
@@ -380,21 +382,16 @@ export function ParamsSection(): ReactElement {
 
           {/* LoRA Settings */}
           {isLora && (
-            <div>
-              <button
-                type="button"
-                onClick={() => setLoraOpen(!loraOpen)}
-                className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
-              >
+            <Collapsible open={loraOpen} onOpenChange={setLoraOpen}>
+              <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
                 <HugeiconsIcon
                   icon={ArrowDown01Icon}
                   className={`size-3.5 transition-transform ${loraOpen ? "rotate-180" : ""}`}
                 />
                 LoRA Settings
-              </button>
-              <div
-                className={`${loraOpen ? "" : "hidden"} pt-1.5 mt-4 flex flex-col gap-4`}
-              >
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
+                <div className="pt-1.5 flex flex-col gap-4">
                 <SliderRow
                   label="Rank"
                   tooltip={
@@ -576,8 +573,9 @@ export function ParamsSection(): ReactElement {
                     </button>
                   ))}
                 </div>
-              </div>
-            </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           )}
 
           {/* Training Hyperparams */}

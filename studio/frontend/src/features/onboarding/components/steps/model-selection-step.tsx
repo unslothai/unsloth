@@ -58,6 +58,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
+function extractParamLabel(id: string): string | null {
+  const name = id.split("/").pop() ?? id;
+  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  return match ? `${match[1]}B` : null;
+}
+
 export function ModelSelectionStep() {
   const gpu = useGpuInfo();
   const {
@@ -85,6 +92,7 @@ export function ModelSelectionStep() {
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
   const {
     results: hfResults,
@@ -94,7 +102,7 @@ export function ModelSelectionStep() {
     error: hfSearchError,
   } = useHfModelSearch(debouncedQuery, {
     task,
-    accessToken: hfToken || undefined,
+    accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
   });
@@ -119,7 +127,7 @@ export function ModelSelectionStep() {
       const fit = fitMap.get(r.id);
       map.set(r.id, {
         status: fit?.status ?? null,
-        detail: r.totalParams ? formatCompact(r.totalParams) : null,
+        detail: r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id),
       });
     }
     return map;
