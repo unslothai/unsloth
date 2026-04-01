@@ -65,7 +65,7 @@ function Logo() {
   return (
     <div className="flex flex-col items-center gap-4">
       <img src="/sticker.png" alt="Unsloth" className="h-[72px] w-[72px] object-contain" />
-      <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[200px] object-contain dark:invert" />
+      <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[250px] object-contain dark:invert" />
     </div>
   );
 }
