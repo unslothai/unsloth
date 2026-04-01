@@ -65,6 +65,7 @@ __all__ = [
     "process_vision_info",
     "unsloth_compile_transformers",
     "determine_attention_implementation",
+    "_set_attn_impl",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -238,11 +239,12 @@ def _is_flex_excluded(model_type):
 
 
 def _set_attn_impl(config, impl):
-    """Helper function to set attention implementation on config."""
+    """Helper function to set attention implementation on config and return it."""
     if config is not None:
         setattr(config, "_attn_implementation", impl)
         if hasattr(config, "attn_implementation"):
             setattr(config, "attn_implementation", impl)
+    return impl
 
 
 def determine_attention_implementation(model_class, config):
