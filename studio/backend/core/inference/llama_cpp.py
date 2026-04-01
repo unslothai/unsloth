@@ -117,6 +117,11 @@ class LlamaCppBackend:
         return self._max_context_length or self._context_length
 
     @property
+    def native_context_length(self) -> Optional[int]:
+        """Return the model's native context length from GGUF metadata."""
+        return self._context_length
+
+    @property
     def chat_template(self) -> Optional[str]:
         return self._chat_template
 
@@ -315,11 +320,11 @@ class LlamaCppBackend:
         """Pick GPU(s) for a model based on estimated VRAM and free memory.
 
         ``model_size_bytes`` should include both model weights and estimated
-        KV cache.  The 70% threshold provides headroom for compute buffers,
+        KV cache.  The 90% threshold provides headroom for compute buffers,
         CUDA context, and other runtime overhead.
 
         Returns (gpu_indices, use_fit):
-          - ([1], False)       model fits on 1 GPU at 70% of free
+          - ([1], False)       model fits on 1 GPU at 90% of free
           - ([1, 2], False)    model needs 2 GPUs
           - (None, True)       model too large, let --fit handle it
         """
@@ -331,8 +336,8 @@ class LlamaCppBackend:
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
 
-        # Try fitting on 1 GPU (70% of free memory threshold)
-        if ranked[0][1] * 0.70 >= model_size_mib:
+        # Try fitting on 1 GPU (90% of free memory threshold)
+        if ranked[0][1] * 0.90 >= model_size_mib:
             return [ranked[0][0]], False
 
         # Try fitting on N GPUs (accumulate free memory from most-free)
@@ -340,7 +345,7 @@ class LlamaCppBackend:
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
-            cumulative += free_mib * 0.70
+            cumulative += free_mib * 0.90
             if cumulative >= model_size_mib:
                 return sorted(selected), False
 
@@ -467,8 +472,8 @@ class LlamaCppBackend:
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
-        Uses 70% of available VRAM as the budget (matching _select_gpus
-        threshold -- 30% reserved for compute buffers, CUDA context,
+        Uses 90% of available VRAM as the budget (matching _select_gpus
+        threshold -- 10% reserved for compute buffers, CUDA context,
         scratch space, flash-attn workspace, etc.).
         If the model weights alone don't fit, returns min_ctx unchanged.
         """
@@ -480,7 +485,7 @@ class LlamaCppBackend:
             )
             return requested_ctx
 
-        budget_bytes = available_mib * 1024 * 1024 * 0.70
+        budget_bytes = available_mib * 1024 * 1024 * 0.90
         model_footprint = model_size_bytes
 
         # Check if requested context already fits
@@ -1133,7 +1138,7 @@ class LlamaCppBackend:
                             )
                             kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
                             total_mib = (model_size + kv) / (1024 * 1024)
-                            if total_mib <= pool_mib * 0.70:
+                            if total_mib <= pool_mib * 0.90:
                                 best_cap = max(best_cap, capped)
                         if best_cap > 0:
                             max_available_ctx = best_cap
@@ -1162,7 +1167,7 @@ class LlamaCppBackend:
                                     capped, cache_type_kv
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.70:
+                                if total_mib <= pool_mib * 0.90:
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
                                     use_fit = False
@@ -1181,7 +1186,7 @@ class LlamaCppBackend:
                             )
                             kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
                             total_mib = (model_size + kv) / (1024 * 1024)
-                            if total_mib <= pool_mib * 0.70:
+                            if total_mib <= pool_mib * 0.90:
                                 effective_ctx = capped
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
