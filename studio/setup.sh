@@ -716,20 +716,29 @@ else
                     git -C "$_BUILD_TMP" checkout "pr-$_LLAMA_PR" || BUILD_OK=false
             fi
         else
-            _CLONE_BRANCH_ARGS=()
+            _CLONE_ARGS=(git clone --depth 1)
             if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-                _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
+                _CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")
             fi
+            _CLONE_ARGS+=("${_LLAMA_SOURCE}.git" "$_BUILD_TMP")
             run_quiet_no_exit "clone llama.cpp" \
-                git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" "${_LLAMA_SOURCE}.git" "$_BUILD_TMP" || BUILD_OK=false
+                "${_CLONE_ARGS[@]}" || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            _TRY_METAL_CPU_FALLBACK=false
+            _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+            _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+            _IS_MACOS_ARM64=false
+            if [ "$_HOST_SYSTEM" = "Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }; then
+                _IS_MACOS_ARM64=true
+            fi
 
             if command -v ccache &>/dev/null; then
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
             fi
+            CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
 
             GPU_BACKEND=""
             NVCC_PATH=""
@@ -765,7 +774,13 @@ else
             fi
 
             _BUILD_DESC="building"
-            if [ -n "$NVCC_PATH" ]; then
+            if [ "$_IS_MACOS_ARM64" = true ]; then
+                # Metal takes precedence on Apple Silicon (CUDA/ROCm not functional on macOS)
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+                _TRY_METAL_CPU_FALLBACK=true
+            elif [ -n "$NVCC_PATH" ]; then
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                 CUDA_ARCHS=""
@@ -847,11 +862,37 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS || BUILD_OK=false
+            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
+                    substep "Metal configure failed; retrying CPU build..." "$C_WARN"
+                    rm -rf "$_BUILD_TMP/build"
+                    run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
+                    if [ "$BUILD_OK" = true ]; then
+                        _BUILD_DESC="building (CPU fallback)"
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            if ! run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
+                    substep "Metal build failed; retrying CPU build..." "$C_WARN"
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback)"
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                    else
+                        BUILD_OK=false
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
         fi
 
         if [ "$BUILD_OK" = true ]; then
