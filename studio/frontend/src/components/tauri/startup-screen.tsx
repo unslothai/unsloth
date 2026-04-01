@@ -114,7 +114,7 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
         <Logo />
-        <p className="mt-4 text-sm text-muted-foreground">
+        <p className="mt-4 text-xs text-muted-foreground">
           To install Unsloth, click Get Started.
         </p>
       </div>
