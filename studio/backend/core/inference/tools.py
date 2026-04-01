@@ -198,7 +198,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._sni_hostname = sni_hostname
 
     def connect(self):
-        # TCP connect to the pinned IP stored in self.host.
+        # TCP connect to the pinned IP stored in self.host (+ tunnel if
+        # a proxy is configured via set_tunnel, though we do not use one).
         http.client.HTTPConnection.connect(self)
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
@@ -296,7 +297,9 @@ def _fetch_page_text(
             # Pin to the validated IP to prevent DNS rebinding.
             # Rewrite the URL to use the IP and set the Host header.
             cp = urlparse(current_url)
-            ip_netloc = f"{pinned_ip}:{cp.port}" if cp.port else pinned_ip
+            # Bracket IPv6 addresses so the netloc is valid in a URL.
+            ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+            ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
             pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             opener = urllib.request.build_opener(
