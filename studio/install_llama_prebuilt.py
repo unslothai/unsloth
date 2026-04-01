@@ -3739,6 +3739,11 @@ def existing_install_matches_choice(
     if metadata is None:
         return False
 
+    try:
+        confirm_install_tree(install_dir, host)
+    except Exception:
+        return False
+
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
 

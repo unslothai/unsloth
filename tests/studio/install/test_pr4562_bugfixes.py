@@ -14,13 +14,11 @@ Run: pytest tests/studio/install/test_pr4562_bugfixes.py -v
 """
 
 import importlib.util
-import json
 import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -86,6 +84,9 @@ def run_bash(script: str, *, timeout: int = 10, env: dict | None = None) -> str:
         timeout = timeout,
         env = run_env,
     )
+    assert (
+        result.returncode == 0
+    ), f"bash script failed (exit {result.returncode}):\n{result.stderr}"
     return result.stdout.strip()
 
 
@@ -581,15 +582,12 @@ class TestSourceCodePatterns:
         assert idx_rm > idx_git, "rm -rf should come after git check"
 
     def test_setup_sh_clone_uses_branch_tag(self):
-        """git clone in source-build should use --branch via _CLONE_BRANCH_ARGS."""
+        """git clone in source-build should use --branch via the clone args array."""
         content = SETUP_SH.read_text()
-        # The clone line should use _CLONE_BRANCH_ARGS (which conditionally includes --branch)
+        assert "_CLONE_ARGS=(git clone --depth 1)" in content
         assert (
-            "_CLONE_BRANCH_ARGS" in content
-        ), "Clone should use _CLONE_BRANCH_ARGS array"
-        assert (
-            '--branch "$_RESOLVED_LLAMA_TAG"' in content
-        ), "_CLONE_BRANCH_ARGS should be set to --branch $_RESOLVED_LLAMA_TAG"
+            '_CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")' in content
+        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_LLAMA_TAG"
         # Verify the guard: --branch is only used when tag is not "latest"
         assert (
             '_RESOLVED_LLAMA_TAG" != "latest"' in content
@@ -598,9 +596,77 @@ class TestSourceCodePatterns:
     def test_setup_sh_latest_resolution_uses_helper_only(self):
         """Shell fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_SH.read_text()
+        assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
+
+    def test_setup_sh_macos_arm64_uses_metal_flags(self):
+        """Apple Silicon source builds should explicitly enable Metal like upstream."""
+        content = SETUP_SH.read_text()
+        assert "_IS_MACOS_ARM64=true" in content
+        assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
+        assert "-DGGML_METAL=ON" in content
+        assert "-DGGML_METAL_EMBED_LIBRARY=ON" in content
+        assert "-DGGML_METAL_USE_BF16=ON" in content
+        assert "-DCMAKE_INSTALL_RPATH=@loader_path" in content
+        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in content
+
+    def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
+        """If Metal configure or build fails, setup should retry with CPU fallback."""
+        content = SETUP_SH.read_text()
+        assert "_TRY_METAL_CPU_FALLBACK=true" in content
+        assert (
+            'substep "Metal configure failed; retrying CPU build..." "$C_WARN"'
+            in content
+        )
+        assert (
+            'substep "Metal build failed; retrying CPU build..." "$C_WARN"' in content
+        )
+        assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
+        assert "-DGGML_METAL=OFF" in content
+        # _TRY_METAL_CPU_FALLBACK must be reset to false in both fallback branches
+        # (1 init + 2 resets = at least 3 occurrences of =false)
+        assert content.count("_TRY_METAL_CPU_FALLBACK=false") >= 3, (
+            "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
+            "(init + configure fallback + build fallback)"
+        )
+
+    def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
+        """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
+        script = (
+            '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        fallback_line = next(
+            line
+            for line in output.splitlines()
+            if line.startswith("CPU_FALLBACK_CMAKE_ARGS=")
+        )
+        assert "-DGGML_METAL=OFF" in fallback_line
+        assert (
+            "@loader_path" not in fallback_line
+        ), "CPU fallback args should not contain RPATH flags"
+        assert (
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in fallback_line
+        ), "CPU fallback args should not contain RPATH build flag"
+
+    def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
+        """Intel macOS should stay on the existing non-Metal path in this patch."""
+        content = SETUP_SH.read_text()
+        assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
+        assert (
+            'Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }'
+            in content
+        )
+        assert (
+            "x86_64"
+            not in content[
+                content.find("-DGGML_METAL=ON") - 200 : content.find("-DGGML_METAL=ON")
+                + 200
+            ]
+        )
 
     def test_setup_ps1_uses_checkout_b(self):
         """PS1 should use checkout -B, not checkout --force FETCH_HEAD."""
@@ -635,6 +701,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_latest_resolution_uses_helper_only(self):
         """PS1 fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_PS1.read_text()
+        assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
@@ -657,3 +724,274 @@ class TestSourceCodePatterns:
                 found = True
                 break
         assert found, "binary_path.parent not found in Linux branch of binary_env"
+
+
+# =========================================================================
+# TEST GROUP F: macOS Metal build logic (bash subprocess tests)
+# =========================================================================
+
+# Minimal bash fragment that mirrors setup.sh's GPU backend decision chain.
+# Variables _IS_MACOS_ARM64, NVCC_PATH, GPU_BACKEND are injected by tests.
+_GPU_BACKEND_FRAGMENT = textwrap.dedent("""\
+    CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
+    _TRY_METAL_CPU_FALLBACK=false
+    CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
+
+    _BUILD_DESC="building"
+    if [ "$_IS_MACOS_ARM64" = true ]; then
+        _BUILD_DESC="building (Metal)"
+        CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+        CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+        _TRY_METAL_CPU_FALLBACK=true
+    elif [ -n "$NVCC_PATH" ]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+        _BUILD_DESC="building (CUDA)"
+    elif [ "$GPU_BACKEND" = "rocm" ]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
+        _BUILD_DESC="building (ROCm)"
+    else
+        _BUILD_DESC="building (CPU)"
+    fi
+
+    echo "CMAKE_ARGS=$CMAKE_ARGS"
+    echo "CPU_FALLBACK_CMAKE_ARGS=$CPU_FALLBACK_CMAKE_ARGS"
+    echo "BUILD_DESC=$_BUILD_DESC"
+    echo "TRY_METAL_CPU_FALLBACK=$_TRY_METAL_CPU_FALLBACK"
+""")
+
+
+class TestMacOSMetalBuildLogic:
+    """Behavioral bash subprocess tests for the Metal GPU backend logic."""
+
+    def test_macos_arm64_cmake_args_contain_metal_flags(self):
+        """macOS arm64 should enable Metal, not CUDA."""
+        script = (
+            '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        assert "-DGGML_METAL=ON" in output
+        assert "-DGGML_CUDA=ON" not in output
+        assert "BUILD_DESC=building (Metal)" in output
+
+    def test_intel_macos_no_metal_flags(self):
+        """Intel macOS (not arm64) should not get Metal flags."""
+        script = (
+            '_IS_MACOS_ARM64=false\nNVCC_PATH=""\nGPU_BACKEND=""\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        assert "-DGGML_METAL=ON" not in output
+        assert "BUILD_DESC=building (CPU)" in output
+
+    def test_macos_arm64_metal_precedes_nvcc(self):
+        """Even with nvcc in PATH, macOS arm64 should use Metal, not CUDA."""
+        script = (
+            '_IS_MACOS_ARM64=true\nNVCC_PATH="/usr/local/cuda/bin/nvcc"\n'
+            'GPU_BACKEND="cuda"\n' + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        assert "-DGGML_METAL=ON" in output
+        assert "-DGGML_CUDA=ON" not in output
+        assert "BUILD_DESC=building (Metal)" in output
+
+    def test_metal_cpu_fallback_triggers_on_cmake_failure(self, tmp_path: Path):
+        """When cmake fails on Metal, the fallback should retry with -DGGML_METAL=OFF."""
+        mock_bin = tmp_path / "mock_bin"
+        mock_bin.mkdir()
+        calls_file = tmp_path / "cmake_calls.log"
+        # cmake that logs args and fails on first call (Metal), succeeds on second (CPU fallback)
+        cmake_script = mock_bin / "cmake"
+        cmake_script.write_text(
+            textwrap.dedent(f"""\
+            #!/bin/bash
+            echo "$*" >> "{calls_file}"
+            COUNTER_FILE="{tmp_path}/cmake_counter"
+            if [ ! -f "$COUNTER_FILE" ]; then
+                echo 1 > "$COUNTER_FILE"
+                exit 1
+            fi
+            exit 0
+        """)
+        )
+        cmake_script.chmod(0o755)
+
+        script = textwrap.dedent(f"""\
+            export PATH="{mock_bin}:$PATH"
+            _IS_MACOS_ARM64=true
+            NVCC_PATH=""
+            GPU_BACKEND=""
+            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
+            _TRY_METAL_CPU_FALLBACK=false
+            CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
+
+            _BUILD_DESC="building"
+            if [ "$_IS_MACOS_ARM64" = true ]; then
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+                _TRY_METAL_CPU_FALLBACK=true
+            fi
+
+            BUILD_OK=true
+            _BUILD_TMP="{tmp_path}/build_tmp"
+            mkdir -p "$_BUILD_TMP"
+            if ! cmake -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
+                    echo "FALLBACK_TRIGGERED"
+                    rm -rf "$_BUILD_TMP/build"
+                    cmake -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
+                    if [ "$BUILD_OK" = true ]; then
+                        _BUILD_DESC="building (CPU fallback)"
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
+
+            echo "BUILD_OK=$BUILD_OK"
+            echo "BUILD_DESC=$_BUILD_DESC"
+            echo "TRY_METAL_CPU_FALLBACK=$_TRY_METAL_CPU_FALLBACK"
+        """)
+        output = run_bash(script)
+        assert "FALLBACK_TRIGGERED" in output
+        assert "BUILD_OK=true" in output
+        assert "BUILD_DESC=building (CPU fallback)" in output
+        assert (
+            "TRY_METAL_CPU_FALLBACK=false" in output
+        ), "Fallback flag should be reset to false after configure fallback"
+
+        # Verify cmake args: first call has Metal ON, second has Metal OFF
+        calls = calls_file.read_text().splitlines()
+        assert len(calls) >= 2, f"Expected >= 2 cmake calls, got {len(calls)}"
+        assert (
+            "-DGGML_METAL=ON" in calls[0]
+        ), f"First cmake call should have Metal ON: {calls[0]}"
+        assert (
+            "-DGGML_METAL=OFF" in calls[1]
+        ), f"Second cmake call should have Metal OFF: {calls[1]}"
+        assert (
+            "-DGGML_METAL=ON" not in calls[1]
+        ), f"Second cmake call should NOT have Metal ON: {calls[1]}"
+        assert (
+            "@loader_path" not in calls[1]
+        ), f"CPU fallback should not have RPATH: {calls[1]}"
+        assert (
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[1]
+        ), f"CPU fallback should not have RPATH build flag: {calls[1]}"
+
+    def test_metal_build_failure_retries_cpu_fallback(self, tmp_path: Path):
+        """When cmake --build fails on Metal, the fallback should re-configure and rebuild with CPU."""
+        mock_bin = tmp_path / "mock_bin"
+        mock_bin.mkdir()
+        calls_file = tmp_path / "cmake_calls.log"
+        # cmake mock: configure always succeeds; first --build fails, rest succeed
+        cmake_script = mock_bin / "cmake"
+        cmake_script.write_text(
+            textwrap.dedent(f"""\
+            #!/bin/bash
+            echo "$*" >> "{calls_file}"
+            if [ "$1" = "--build" ]; then
+                BUILD_COUNTER_FILE="{tmp_path}/build_counter"
+                if [ ! -f "$BUILD_COUNTER_FILE" ]; then
+                    echo 1 > "$BUILD_COUNTER_FILE"
+                    exit 1
+                fi
+            fi
+            exit 0
+        """)
+        )
+        cmake_script.chmod(0o755)
+
+        script = textwrap.dedent(f"""\
+            export PATH="{mock_bin}:$PATH"
+            _IS_MACOS_ARM64=true
+            NVCC_PATH=""
+            GPU_BACKEND=""
+            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
+            _TRY_METAL_CPU_FALLBACK=false
+            CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
+            CMAKE_GENERATOR_ARGS=""
+            NCPU=2
+
+            _BUILD_DESC="building"
+            if [ "$_IS_MACOS_ARM64" = true ]; then
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+                _TRY_METAL_CPU_FALLBACK=true
+            fi
+
+            BUILD_OK=true
+            _BUILD_TMP="{tmp_path}/build_tmp"
+            mkdir -p "$_BUILD_TMP"
+
+            # Configure (succeeds)
+            if ! cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    _TRY_METAL_CPU_FALLBACK=false
+                    echo "CONFIGURE_FALLBACK"
+                    rm -rf "$_BUILD_TMP/build"
+                    cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
+                    if [ "$BUILD_OK" = true ]; then
+                        _BUILD_DESC="building (CPU fallback)"
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
+
+            # Build (first --build fails, triggers fallback)
+            if [ "$BUILD_OK" = true ]; then
+                if ! cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
+                    if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                        _TRY_METAL_CPU_FALLBACK=false
+                        echo "BUILD_FALLBACK_TRIGGERED"
+                        rm -rf "$_BUILD_TMP/build"
+                        if cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                            _BUILD_DESC="building (CPU fallback)"
+                            cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                        else
+                            BUILD_OK=false
+                        fi
+                    else
+                        BUILD_OK=false
+                    fi
+                fi
+            fi
+
+            echo "BUILD_OK=$BUILD_OK"
+            echo "BUILD_DESC=$_BUILD_DESC"
+            echo "TRY_METAL_CPU_FALLBACK=$_TRY_METAL_CPU_FALLBACK"
+        """)
+        output = run_bash(script)
+        assert "CONFIGURE_FALLBACK" not in output, "Configure should have succeeded"
+        assert "BUILD_FALLBACK_TRIGGERED" in output
+        assert "BUILD_OK=true" in output
+        assert "BUILD_DESC=building (CPU fallback)" in output
+        assert (
+            "TRY_METAL_CPU_FALLBACK=false" in output
+        ), "Fallback flag should be reset to false after build fallback"
+
+        # Verify: configure with Metal ON, build fails, re-configure with Metal OFF, rebuild
+        calls = calls_file.read_text().splitlines()
+        assert len(calls) >= 4, f"Expected >= 4 cmake calls, got {len(calls)}: {calls}"
+        # First call: configure with Metal ON
+        assert "-DGGML_METAL=ON" in calls[0]
+        # Second call: build (fails)
+        assert "--build" in calls[1]
+        # Third call: re-configure with Metal OFF and no RPATH flags
+        assert "-DGGML_METAL=OFF" in calls[2]
+        assert "-DGGML_METAL=ON" not in calls[2]
+        assert (
+            "@loader_path" not in calls[2]
+        ), f"CPU fallback should not have RPATH: {calls[2]}"
+        assert (
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[2]
+        ), f"CPU fallback should not have RPATH build flag: {calls[2]}"
+        assert (
+            "-DLLAMA_BUILD_TESTS=OFF" in calls[2]
+        ), f"CPU fallback should preserve baseline flags: {calls[2]}"
+        # Fourth call: rebuild (succeeds)
+        assert "--build" in calls[3]
