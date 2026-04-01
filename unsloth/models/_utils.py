@@ -249,7 +249,7 @@ def prefer_flex_attn_if_supported(model_class, config):
         # NemotronH: hybrid Mamba-2 + Transformer model that does not
         # support flex_attention (raises NotImplementedError from transformers).
         model_type = getattr(config, "model_type", "") if config else ""
-        if model_type in ("gpt_oss", "mllama", "nemotron_h") or str(
+        if model_type in ("gpt_oss", "mllama", "nemotron_h", "modernbert") or str(
             model_type
         ).startswith("gemma3n"):
             return None
@@ -753,6 +753,11 @@ try:
 except:
     from transformers import PretrainedConfig
 
+# transformers 5.x uses class-level annotations + decorators (@strict, @auto_docstring, interval())
+# in config classes, making exec(inspect.getsource(...)) infeasible. Skip config patching for 5.x
+# since those configs already use rope_parameters (renamed from rope_scaling).
+_skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
+
 model_architectures = [
     "llama",
     "mistral",
@@ -764,13 +769,6 @@ model_architectures = [
     "qwen3_moe",
     "falcon_h1",
 ]
-
-# Transformers 5.x uses class-level annotations with @strict, @auto_docstring,
-# and interval() in config classes. exec(inspect.getsource(...)) fails because
-# those symbols are not in scope. Skip the exec-based config patching for 5.x
-# since those configs already use rope_parameters (the v5 replacement for
-# rope_scaling).
-_skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
 
 if not _skip_config_exec_patch:
     for model_name in model_architectures:
