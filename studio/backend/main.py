@@ -121,6 +121,14 @@ async def lifespan(app: FastAPI):
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
+
+        bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
+        print("\n" + "=" * 60)
+        print("DEFAULT ADMIN ACCOUNT CREATED")
+        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
+        print(f"    password saved to: {bootstrap_path}")
+        print("    Open the Studio UI to sign in and change it.")
+        print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
