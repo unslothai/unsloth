@@ -1412,6 +1412,7 @@ class FastModel(FastBaseModel):
         if auto_model is None:
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
+
                 auto_model = AutoModelForSequenceClassification
             elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.

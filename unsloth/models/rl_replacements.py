@@ -548,16 +548,16 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         'if "token_type_ids" in forward_kwargs:\n'
         '            token_type_ids = forward_kwargs["token_type_ids"]\n'
         '            forward_kwargs["token_type_ids"] = torch.cat(\n'
-        '                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n'
-        '            )'
+        "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
+        "            )"
     )
     _tt_replace = (
-        _tt_search + '\n'
+        _tt_search + "\n"
         '        if "mm_token_type_ids" in forward_kwargs:\n'
         '            mm_tti = forward_kwargs["mm_token_type_ids"]\n'
         '            forward_kwargs["mm_token_type_ids"] = torch.cat(\n'
-        '                [mm_tti, mm_tti.new_zeros(completion_ids.shape)], dim=1\n'
-        '            )'
+        "                [mm_tti, mm_tti.new_zeros(completion_ids.shape)], dim=1\n"
+        "            )"
     )
     function = function.replace(_tt_search, _tt_replace)
 
@@ -567,7 +567,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         '            output["token_type_ids"] = forward_kwargs["token_type_ids"]'
     )
     _save_replace = (
-        _save_search + '\n'
+        _save_search + "\n"
         '        if "mm_token_type_ids" in forward_kwargs:\n'
         '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
     )
@@ -896,7 +896,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if token_type_ids_chunk is not None:
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
-                        _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
+                        _extra_vision_kwargs["mm_token_type_ids"] = (
+                            mm_token_type_ids_chunk
+                        )
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
                     ):
