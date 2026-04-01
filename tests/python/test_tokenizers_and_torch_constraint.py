@@ -420,7 +420,8 @@ class TestE2ETokenizersFix:
     @pytest.mark.parametrize("py_version", ["3.12", "3.13"])
     def test_tokenizers_directly_importable(self, tmp_path, py_version):
         venv = self._create_venv(tmp_path, f"tok-imp-{py_version}", py_version)
-        self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
+        r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
+        assert r.returncode == 0, f"Install failed: {r.stderr}"
         result = self._run_python(venv, "import tokenizers; print('OK')")
         assert result.returncode == 0, f"Failed: {result.stderr}"
 
@@ -428,7 +429,8 @@ class TestE2ETokenizersFix:
     def test_torch_not_importable(self, tmp_path, py_version):
         """In the no-torch scenario, torch should not be available."""
         venv = self._create_venv(tmp_path, f"no-torch-{py_version}", py_version)
-        self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
+        r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
+        assert r.returncode == 0, f"Install failed: {r.stderr}"
         result = self._run_python(venv, "import torch")
         assert result.returncode != 0, "torch should NOT be importable"
 
