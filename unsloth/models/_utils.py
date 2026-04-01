@@ -845,7 +845,7 @@ for model_name in model_architectures:
         exec(config, globals())
         exec(f"import {config_filepath}", globals())
         exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
-    except:
+    except Exception:
         continue
 # =============================================
 

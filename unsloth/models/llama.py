@@ -2424,6 +2424,11 @@ class FastLlamaModel:
             model_config.num_labels = num_labels
             if max_position_embeddings is not None:
                 model_config.max_position_embeddings = max_position_embeddings
+            # Pop config-level attrs that would be rejected by @strict model init
+            for _cfg_key in ("id2label", "label2id", "rope_scaling"):
+                _cfg_val = kwargs.pop(_cfg_key, None)
+                if _cfg_val is not None:
+                    setattr(model_config, _cfg_key, _cfg_val)
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
                 config = model_config,
