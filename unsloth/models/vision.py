@@ -616,7 +616,9 @@ class FastBaseModel:
         elif model_class is None:
             # When model_class cannot be resolved (remote-code or unmapped
             # configs), preserve the old fallback of sdpa when supported.
-            attn_impl = _set_attn_impl(auto_config, "sdpa" if supports_sdpa else "eager")
+            attn_impl = _set_attn_impl(
+                auto_config, "sdpa" if supports_sdpa else "eager"
+            )
         else:
             attn_impl = determine_attention_implementation(model_class, auto_config)
 
