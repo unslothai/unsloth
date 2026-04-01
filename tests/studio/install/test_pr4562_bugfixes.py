@@ -86,9 +86,9 @@ def run_bash(script: str, *, timeout: int = 10, env: dict | None = None) -> str:
         timeout = timeout,
         env = run_env,
     )
-    assert result.returncode == 0, (
-        f"bash script failed (exit {result.returncode}):\n{result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"bash script failed (exit {result.returncode}):\n{result.stderr}"
     return result.stdout.strip()
 
 
@@ -623,8 +623,7 @@ class TestSourceCodePatterns:
             in content
         )
         assert (
-            'substep "Metal build failed; retrying CPU build..." "$C_WARN"'
-            in content
+            'substep "Metal build failed; retrying CPU build..." "$C_WARN"' in content
         )
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
@@ -633,9 +632,9 @@ class TestSourceCodePatterns:
         fallback_block = content[idx : idx + 500]
         for line in fallback_block.splitlines():
             if "-DGGML_METAL=OFF" in line:
-                assert "@loader_path" not in line, (
-                    "CPU fallback args should not contain RPATH flags"
-                )
+                assert (
+                    "@loader_path" not in line
+                ), "CPU fallback args should not contain RPATH flags"
                 break
 
     def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
@@ -847,9 +846,15 @@ class TestMacOSMetalBuildLogic:
         # Verify cmake args: first call has Metal ON, second has Metal OFF
         calls = calls_file.read_text().splitlines()
         assert len(calls) >= 2, f"Expected >= 2 cmake calls, got {len(calls)}"
-        assert "-DGGML_METAL=ON" in calls[0], f"First cmake call should have Metal ON: {calls[0]}"
-        assert "-DGGML_METAL=OFF" in calls[1], f"Second cmake call should have Metal OFF: {calls[1]}"
-        assert "-DGGML_METAL=ON" not in calls[1], f"Second cmake call should NOT have Metal ON: {calls[1]}"
+        assert (
+            "-DGGML_METAL=ON" in calls[0]
+        ), f"First cmake call should have Metal ON: {calls[0]}"
+        assert (
+            "-DGGML_METAL=OFF" in calls[1]
+        ), f"Second cmake call should have Metal OFF: {calls[1]}"
+        assert (
+            "-DGGML_METAL=ON" not in calls[1]
+        ), f"Second cmake call should NOT have Metal ON: {calls[1]}"
 
     def test_metal_build_failure_retries_cpu_fallback(self, tmp_path: Path):
         """When cmake --build fails on Metal, the fallback should re-configure and rebuild with CPU."""
@@ -858,7 +863,8 @@ class TestMacOSMetalBuildLogic:
         calls_file = tmp_path / "cmake_calls.log"
         # cmake mock: configure always succeeds; first --build fails, rest succeed
         cmake_script = mock_bin / "cmake"
-        cmake_script.write_text(textwrap.dedent(f"""\
+        cmake_script.write_text(
+            textwrap.dedent(f"""\
             #!/bin/bash
             echo "$*" >> "{calls_file}"
             if [ "$1" = "--build" ]; then
@@ -869,7 +875,8 @@ class TestMacOSMetalBuildLogic:
                 fi
             fi
             exit 0
-        """))
+        """)
+        )
         cmake_script.chmod(0o755)
 
         script = textwrap.dedent(f"""\
