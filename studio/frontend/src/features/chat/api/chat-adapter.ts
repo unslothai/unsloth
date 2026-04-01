@@ -17,6 +17,7 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 import { db } from "../db";
+import type { OpenAIMessageContent } from "../types/api";
 import {
   getExternalProviderApiKey,
   loadExternalProviders,
@@ -132,9 +133,38 @@ function collectTextParts(message: RunMessage): string[] {
   return textParts;
 }
 
+function collectImageParts(
+  message: RunMessage,
+): Array<{ type: "image_url"; image_url: { url: string } }> {
+  const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  for (const part of message.content ?? []) {
+    if (part.type === "image" && "image" in part) {
+      const src = (part as { image: string }).image;
+      if (src) {
+        const url = src.startsWith("data:") ? src : `data:image/png;base64,${src}`;
+        parts.push({ type: "image_url", image_url: { url } });
+      }
+    }
+  }
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) {
+        if (part.type === "image" && "image" in part) {
+          const src = (part as { image: string }).image;
+          if (src) {
+            const url = src.startsWith("data:") ? src : `data:image/png;base64,${src}`;
+            parts.push({ type: "image_url", image_url: { url } });
+          }
+        }
+      }
+    }
+  }
+  return parts;
+}
+
 function toOpenAIMessage(message: RunMessage): {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 } | null {
   if (
     message.role !== "system" &&
@@ -144,17 +174,26 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  let content = collectTextParts(message).join("\n");
+  let textContent = collectTextParts(message).join("\n");
   // Strip inline audio base64 from prior assistant messages to avoid
   // inflating token counts (e.g. audio-player responses with embedded WAV).
   if (message.role === "assistant") {
-    content = content.replace(
+    textContent = textContent.replace(
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
       "[audio]",
     );
   }
 
-  return { role: message.role, content };
+  // For messages with images, return multimodal content array (OpenAI vision format)
+  const imageParts = collectImageParts(message);
+  if (imageParts.length > 0) {
+    return {
+      role: message.role,
+      content: [{ type: "text", text: textContent }, ...imageParts],
+    };
+  }
+
+  return { role: message.role, content: textContent };
 }
 
 function extractImageBase64(input: string): string | undefined {

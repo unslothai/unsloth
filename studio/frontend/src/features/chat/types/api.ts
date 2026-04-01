@@ -141,9 +141,16 @@ export interface AudioGenerationResponse {
   }>;
 }
 
+export type OpenAIMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 }
 
 export interface OpenAIChatCompletionsRequest {
