@@ -442,20 +442,14 @@ const ToolStatusDisplay: FC = () => {
   const [visible, setVisible] = useState(false);
   const wasActiveRef = useRef(false);
 
-  // Reset carry-over state when the run actually ends.
-  useEffect(() => {
-    if (!isThreadRunning) {
-      wasActiveRef.current = false;
-    }
-  }, [isThreadRunning]);
-
   useEffect(() => {
     if (!toolStatus) {
       setElapsed(0);
-      // Only hide the badge if the run is over; transient clears
-      // between tool iterations keep it visible while the thread
-      // is still running.
+      // Only hide the badge and reset run state when the thread
+      // run is actually over; transient clears between tool
+      // iterations keep it visible while the thread is running.
       if (!isThreadRunning) {
+        wasActiveRef.current = false;
         setVisible(false);
       }
       return;
