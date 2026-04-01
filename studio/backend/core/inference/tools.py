@@ -8,14 +8,18 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 """
 
 import ast
+import http.client
 import os
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+import random
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 
 from loggers import get_logger
 
@@ -57,16 +61,23 @@ WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for current information, recent events, or facts you are uncertain about.",
+        "description": (
+            "Search the web and fetch page content. Returns snippets for all results. "
+            "Use the url parameter to fetch full page text from a specific URL."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
                     "description": "The search query",
-                }
+                },
+                "url": {
+                    "type": "string",
+                    "description": "A URL to fetch full page content from (instead of searching). Use this to read a page found in search results.",
+                },
             },
-            "required": ["query"],
+            "required": [],
         },
     },
 }
@@ -131,7 +142,11 @@ def execute_tool(
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "web_search":
-        return _web_search(arguments.get("query", ""), timeout = effective_timeout)
+        return _web_search(
+            arguments.get("query", ""),
+            url = arguments.get("url"),
+            timeout = effective_timeout,
+        )
     if name == "python":
         return _python_exec(
             arguments.get("code", ""), cancel_event, effective_timeout, session_id
@@ -143,9 +158,226 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
-def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) -> str:
-    """Search the web using DuckDuckGo and return formatted results."""
-    if not query.strip():
+_MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
+# Raw download cap.  Must be larger than _MAX_PAGE_CHARS because SSR pages
+# embed large <head> sections (CSS, JS, SVGs) that are stripped during
+# HTML-to-Markdown conversion.  512 KB is enough to reach article content
+# on GitBook / Next.js / Docusaurus pages whose <head> alone can be 200 KB.
+_MAX_FETCH_BYTES = 512 * 1024
+
+_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+)
+
+_tls_ctx = ssl.create_default_context()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that connects to a pinned IP but uses a different
+    hostname for SNI and certificate verification.
+
+    The SSRF IP-pinning rewrites URLs to raw IPs.  A normal HTTPSConnection
+    would then send no SNI and verify the cert against the IP, both of which
+    fail.  This subclass splits the two concerns: TCP connects to the pinned
+    IP (``host`` parameter) while TLS uses ``sni_hostname`` for the
+    ClientHello and cert check.
+    """
+
+    def __init__(self, host: str, *, sni_hostname: str, **kwargs):
+        super().__init__(host, **kwargs)
+        self._sni_hostname = sni_hostname
+
+    def connect(self):
+        # TCP connect to the pinned IP stored in self.host (+ tunnel if
+        # a proxy is configured via set_tunnel, though we do not use one).
+        http.client.HTTPConnection.connect(self)
+        # TLS handshake with the real hostname for SNI + cert verification.
+        self.sock = self._context.wrap_socket(
+            self.sock,
+            server_hostname = self._sni_hostname,
+        )
+
+
+class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that sends the correct SNI hostname during TLS handshake.
+
+    The SSRF IP-pinning rewrites URLs to raw IPs, which breaks SNI and cert
+    verification.  This handler returns a ``_PinnedHTTPSConnection`` that
+    connects to the pinned IP but verifies TLS against the original hostname.
+    """
+
+    def __init__(self, hostname: str):
+        super().__init__(context = _tls_ctx)
+        self._sni_hostname = hostname
+
+    def https_open(self, req):
+        return self.do_open(self._sni_connection, req)
+
+    def _sni_connection(self, host, **kwargs):
+        kwargs["context"] = _tls_ctx
+        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
+
+
+def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
+    """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
+
+    Returns ``(ok, reason_or_empty, resolved_ip)``.  The caller should
+    connect to *resolved_ip* (with a ``Host`` header) to prevent DNS
+    rebinding between validation and the actual fetch.
+    """
+    import ipaddress
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
+    except OSError as e:
+        return False, f"Failed to resolve host: {e}", ""
+
+    if not infos:
+        return False, f"Failed to resolve host: no addresses for {hostname!r}", ""
+
+    for *_, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False, f"Blocked: refusing to fetch non-public address {ip}.", ""
+
+    # Return the first resolved address for pinning
+    first_ip = infos[0][4][0]
+    return True, "", first_ip
+
+
+def _fetch_page_text(
+    url: str, max_chars: int = _MAX_PAGE_CHARS, timeout: int = 30
+) -> str:
+    """Fetch a URL and return plain text content (HTML tags stripped).
+
+    Blocks private/loopback/link-local targets (SSRF protection) and caps
+    the download size to avoid unbounded memory usage.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r})."
+    if not parsed.hostname:
+        return "Blocked: URL is missing a hostname."
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ok, reason, pinned_ip = _validate_and_resolve_host(parsed.hostname, port)
+    if not ok:
+        return reason
+
+    try:
+        from urllib.error import HTTPError as _HTTPError
+        from urllib.parse import urljoin, urlunparse
+
+        max_bytes = _MAX_FETCH_BYTES
+        current_url = url
+        current_host = parsed.hostname
+        ua = random.choice(_USER_AGENTS)
+
+        for _hop in range(5):
+            # Pin to the validated IP to prevent DNS rebinding.
+            # Rewrite the URL to use the IP and set the Host header.
+            cp = urlparse(current_url)
+            # Bracket IPv6 addresses so the netloc is valid in a URL.
+            ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+            ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
+            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+
+            opener = urllib.request.build_opener(
+                _NoRedirect,
+                _SNIHTTPSHandler(current_host),
+            )
+
+            req = urllib.request.Request(
+                pinned_url,
+                headers = {
+                    "User-Agent": ua,
+                    "Host": current_host,
+                },
+            )
+            try:
+                resp = opener.open(req, timeout = timeout)
+            except _HTTPError as e:
+                if e.code not in (301, 302, 303, 307, 308):
+                    return (
+                        f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    )
+                location = e.headers.get("Location")
+                if not location:
+                    return "Failed to fetch URL: redirect missing Location header."
+                current_url = urljoin(current_url, location)
+                rp = urlparse(current_url)
+                if rp.scheme not in ("http", "https") or not rp.hostname:
+                    return "Blocked: redirect target is not a valid http/https URL."
+                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
+                ok2, reason2, pinned_ip = _validate_and_resolve_host(
+                    rp.hostname,
+                    rp_port,
+                )
+                if not ok2:
+                    return reason2
+                current_host = rp.hostname
+                continue
+            # Success -- read capped body
+            raw_bytes = resp.read(max_bytes)
+            break
+        else:
+            return "Failed to fetch URL: too many redirects."
+
+        charset = resp.headers.get_content_charset() or "utf-8"
+        raw_html = raw_bytes.decode(charset, errors = "replace")
+    except _HTTPError as e:
+        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+    except Exception as e:
+        return f"Failed to fetch URL: {e}"
+
+    # Convert HTML to Markdown using the builtin converter (no external deps)
+    from ._html_to_md import html_to_markdown
+
+    text = html_to_markdown(raw_html)
+
+    if not text:
+        return "(page returned no readable text)"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
+    return text
+
+
+def _web_search(
+    query: str,
+    max_results: int = 5,
+    timeout: int = _EXEC_TIMEOUT,
+    url: str | None = None,
+) -> str:
+    """Search the web using DuckDuckGo and return formatted results.
+
+    If ``url`` is provided, fetches that page directly instead of searching.
+    """
+    # Direct URL fetch mode
+    if url and url.strip():
+        fetch_timeout = 60 if timeout is None else min(timeout, 60)
+        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
+
+    if not query or not query.strip():
         return "No query provided."
     try:
         from ddgs import DDGS
@@ -160,7 +392,13 @@ def _web_search(query: str, max_results: int = 5, timeout: int = _EXEC_TIMEOUT) 
                 f"URL: {r.get('href', '')}\n"
                 f"Snippet: {r.get('body', '')}"
             )
-        return "\n\n---\n\n".join(parts)
+        text = "\n\n---\n\n".join(parts)
+        text += (
+            "\n\n---\n\nIMPORTANT: These are only short snippets. "
+            "To get the full page content, call web_search with "
+            'the url parameter (e.g. {"url": "<URL>"}).'
+        )
+        return text
     except Exception as e:
         return f"Search failed: {e}"
 
