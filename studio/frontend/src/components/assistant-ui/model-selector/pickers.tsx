@@ -941,7 +941,12 @@ export function HubModelPicker({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setShowFolderInput((v) => !v)}
+                  onClick={() => {
+                    setShowFolderInput((open) => {
+                      if (open) { setFolderInput(""); setFolderError(null); }
+                      return !open;
+                    });
+                  }}
                   className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
                 >
                   <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
@@ -980,8 +985,8 @@ export function HubModelPicker({
                       value={folderInput}
                       onChange={(e) => { setFolderInput(e.target.value); setFolderError(null); }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") handleAddFolder();
-                        if (e.key === "Escape") { setShowFolderInput(false); setFolderInput(""); setFolderError(null); }
+                        if (e.key === "Enter") { e.preventDefault(); handleAddFolder(); }
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setShowFolderInput(false); setFolderInput(""); setFolderError(null); }
                       }}
                       placeholder="/path/to/models"
                       className="h-6 min-w-0 flex-1 rounded border border-border/50 bg-transparent px-1.5 font-mono text-[10px] text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-foreground/20"
