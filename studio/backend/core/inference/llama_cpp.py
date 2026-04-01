@@ -365,9 +365,8 @@ class LlamaCppBackend:
         if self._kv_lora_rank is not None:
             return True
         # Legacy: need embedding_length + head count
-        return (
-            self._embedding_length is not None
-            and (self._n_kv_heads is not None or self._n_heads is not None)
+        return self._embedding_length is not None and (
+            self._n_kv_heads is not None or self._n_heads is not None
         )
 
     def _estimate_kv_cache_bytes(
@@ -416,7 +415,10 @@ class LlamaCppBackend:
 
         # Path 2: Hybrid Mamba/Attention (Qwen3.5-27B, Qwen3.5-35B-A3B)
         # Only 1 in N layers is attention; the rest are Mamba (no KV cache).
-        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
+        if (
+            self._ssm_inner_size is not None
+            and self._full_attention_interval is not None
+        ):
             fai = self._full_attention_interval
             n_attn = n_layers // fai if fai > 0 else n_layers
             if key_len is not None and val_len is not None:
@@ -427,14 +429,17 @@ class LlamaCppBackend:
         # Path 3: Sliding Window (Gemma-3, gpt-oss)
         # SWA layers only cache min(ctx, window) tokens; global layers cache full ctx.
         # Conservative: assume half layers are global, half are SWA.
-        if self._sliding_window is not None and key_len is not None and val_len is not None:
+        if (
+            self._sliding_window is not None
+            and key_len is not None
+            and val_len is not None
+        ):
             swa = self._sliding_window
             n_global = n_layers // 2
             n_swa = n_layers - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
             return int(
-                n_global * n_ctx * kv_per_token
-                + n_swa * min(n_ctx, swa) * kv_per_token
+                n_global * n_ctx * kv_per_token + n_swa * min(n_ctx, swa) * kv_per_token
             )
 
         # Path 4: Standard GQA with explicit key/value dimensions
