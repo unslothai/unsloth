@@ -27,7 +27,6 @@ _SKIP_TAGS = frozenset(
         "math",
         "nav",
         "footer",
-        "aside",
     }
 )
 _BLOCK_TAGS = frozenset(
@@ -37,6 +36,7 @@ _BLOCK_TAGS = frozenset(
         "section",
         "article",
         "main",
+        "aside",
         "figure",
         "figcaption",
         "details",

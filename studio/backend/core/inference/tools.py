@@ -182,16 +182,41 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that connects to a pinned IP but uses a different
+    hostname for SNI and certificate verification.
+
+    The SSRF IP-pinning rewrites URLs to raw IPs.  A normal HTTPSConnection
+    would then send no SNI and verify the cert against the IP, both of which
+    fail.  This subclass splits the two concerns: TCP connects to the pinned
+    IP (``host`` parameter) while TLS uses ``sni_hostname`` for the
+    ClientHello and cert check.
+    """
+
+    def __init__(self, host: str, *, sni_hostname: str, **kwargs):
+        super().__init__(host, **kwargs)
+        self._sni_hostname = sni_hostname
+
+    def connect(self):
+        # TCP connect to the pinned IP stored in self.host.
+        http.client.HTTPConnection.connect(self)
+        # TLS handshake with the real hostname for SNI + cert verification.
+        self.sock = self._context.wrap_socket(
+            self.sock,
+            server_hostname=self._sni_hostname,
+        )
+
+
 class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     """HTTPS handler that sends the correct SNI hostname during TLS handshake.
 
     The SSRF IP-pinning rewrites URLs to raw IPs, which breaks SNI and cert
-    verification.  This handler swaps conn.host to the original hostname
-    during connect() so TLS works while still connecting to the pinned IP.
+    verification.  This handler returns a ``_PinnedHTTPSConnection`` that
+    connects to the pinned IP but verifies TLS against the original hostname.
     """
 
     def __init__(self, hostname: str):
-        super().__init__(context = _tls_ctx)
+        super().__init__(context=_tls_ctx)
         self._sni_hostname = hostname
 
     def https_open(self, req):
@@ -199,23 +224,9 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
-        conn = http.client.HTTPSConnection(host, **kwargs)
-        sni_host = self._sni_hostname
-
-        def _patched_connect():
-            # Step 1: TCP connect to the pinned IP (conn.host is the IP).
-            # Call HTTPConnection.connect directly so HTTPSConnection does
-            # not also do the TLS wrap with server_hostname=<IP>.
-            http.client.HTTPConnection.connect(conn)
-            # Step 2: TLS handshake with the real hostname for SNI and
-            # certificate verification, over the already-connected socket.
-            conn.sock = _tls_ctx.wrap_socket(
-                conn.sock,
-                server_hostname = sni_host,
-            )
-
-        conn.connect = _patched_connect
-        return conn
+        return _PinnedHTTPSConnection(
+            host, sni_hostname=self._sni_hostname, **kwargs
+        )
 
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
