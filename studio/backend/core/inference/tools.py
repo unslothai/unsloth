@@ -200,19 +200,19 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
         conn = http.client.HTTPSConnection(host, **kwargs)
-        _orig_connect = conn.connect
         sni_host = self._sni_hostname
-        conn._context = _tls_ctx
 
         def _patched_connect():
-            real_host = conn.host
-            conn.host = sni_host
-            try:
-                _orig_connect()
-            except Exception:
-                conn.host = real_host
-                raise
-            conn.host = real_host
+            # Step 1: TCP connect to the pinned IP (conn.host is the IP).
+            # Call HTTPConnection.connect directly so HTTPSConnection does
+            # not also do the TLS wrap with server_hostname=<IP>.
+            http.client.HTTPConnection.connect(conn)
+            # Step 2: TLS handshake with the real hostname for SNI and
+            # certificate verification, over the already-connected socket.
+            conn.sock = _tls_ctx.wrap_socket(
+                conn.sock,
+                server_hostname=sni_host,
+            )
 
         conn.connect = _patched_connect
         return conn
