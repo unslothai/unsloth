@@ -716,12 +716,13 @@ else
                     git -C "$_BUILD_TMP" checkout "pr-$_LLAMA_PR" || BUILD_OK=false
             fi
         else
-            _CLONE_BRANCH_ARGS=()
+            _CLONE_ARGS=(git clone --depth 1)
             if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-                _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
+                _CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")
             fi
+            _CLONE_ARGS+=("${_LLAMA_SOURCE}.git" "$_BUILD_TMP")
             run_quiet_no_exit "clone llama.cpp" \
-                git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" "${_LLAMA_SOURCE}.git" "$_BUILD_TMP" || BUILD_OK=false
+                "${_CLONE_ARGS[@]}" || BUILD_OK=false
         fi
 
         if [ "$BUILD_OK" = true ]; then

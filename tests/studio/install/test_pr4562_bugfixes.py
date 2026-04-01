@@ -581,15 +581,12 @@ class TestSourceCodePatterns:
         assert idx_rm > idx_git, "rm -rf should come after git check"
 
     def test_setup_sh_clone_uses_branch_tag(self):
-        """git clone in source-build should use --branch via _CLONE_BRANCH_ARGS."""
+        """git clone in source-build should use --branch via the clone args array."""
         content = SETUP_SH.read_text()
-        # The clone line should use _CLONE_BRANCH_ARGS (which conditionally includes --branch)
+        assert "_CLONE_ARGS=(git clone --depth 1)" in content
         assert (
-            "_CLONE_BRANCH_ARGS" in content
-        ), "Clone should use _CLONE_BRANCH_ARGS array"
-        assert (
-            '--branch "$_RESOLVED_LLAMA_TAG"' in content
-        ), "_CLONE_BRANCH_ARGS should be set to --branch $_RESOLVED_LLAMA_TAG"
+            '_CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")' in content
+        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_LLAMA_TAG"
         # Verify the guard: --branch is only used when tag is not "latest"
         assert (
             '_RESOLVED_LLAMA_TAG" != "latest"' in content
@@ -598,6 +595,7 @@ class TestSourceCodePatterns:
     def test_setup_sh_latest_resolution_uses_helper_only(self):
         """Shell fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_SH.read_text()
+        assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
@@ -635,6 +633,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_latest_resolution_uses_helper_only(self):
         """PS1 fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_PS1.read_text()
+        assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
