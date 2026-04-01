@@ -64,7 +64,7 @@ function TealSpinner({ size = 24 }: { size?: number }) {
 function Logo() {
   return (
     <div className="flex flex-col items-center gap-4">
-      <img src="/sticker.png" alt="Unsloth" className="h-[100px] w-[100px] object-contain" />
+      <img src="/sticker.png" alt="Unsloth" className="h-[72px] w-[72px] object-contain" />
       <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[200px] object-contain dark:invert" />
     </div>
   );
