@@ -447,12 +447,13 @@ class TestE2ETokenizersFix:
             ),
             encoding = "utf-8",
         )
-        self._pip_install(venv, "--no-deps", "-r", str(req_no_tokenizers))
+        r = self._pip_install(venv, "--no-deps", "-r", str(req_no_tokenizers))
+        assert r.returncode == 0, f"Install failed: {r.stderr}"
         result = self._run_python(venv, "from transformers import AutoConfig")
         assert (
             result.returncode != 0
         ), "AutoConfig should fail without tokenizers installed"
-        assert "ModuleNotFoundError" in result.stderr or "No module" in result.stderr
+        assert "tokenizers" in result.stderr.lower() or "ModuleNotFoundError" in result.stderr
 
 
 # ======================================================================
