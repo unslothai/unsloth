@@ -1631,7 +1631,9 @@ if ($LlamaPr) {
     # prebuilt release resolution. When building from a custom fork, the fork
     # may not carry upstream bNNNN tags.
     if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
-        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
+        $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+        if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveTagArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
+        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveTagArgs 2>$null
         $fallbackExit = $LASTEXITCODE
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
             ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
@@ -1642,7 +1644,9 @@ if ($LlamaPr) {
         $ResolvedLlamaTag = $RequestedLlamaTag
     }
 } else {
-    $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-install-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>&1
+    $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+    if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveInstallArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
+    $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveInstallArgs 2>&1
     $resolveExit = $LASTEXITCODE
     $ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 1).ToString().Trim() } else { "" }
     if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
@@ -1652,7 +1656,9 @@ if ($LlamaPr) {
         # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
         # so the resolver prefers the latest usable Unsloth-published upstream tag
         # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
+        $resolveFallbackArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+        if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveFallbackArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
+        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveFallbackArgs 2>$null
         $fallbackExit = $LASTEXITCODE
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
             ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
@@ -1879,12 +1885,12 @@ if (-not $NeedLlamaSourceBuild) {
         # Always sync the remote URL so switching between default/fork sources works
         Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$LlamaSource.git" } | Out-Null
         if ($LlamaPr) {
-            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
+            $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin "pull/$LlamaPr/head" }
             if ($gitFetchExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git fetch PR #$LlamaPr"
             } else {
-                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout "pr-$LlamaPr" }
+                $gitCheckoutExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir checkout -B "pr-$LlamaPr" FETCH_HEAD }
                 if ($gitCheckoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout PR #$LlamaPr"

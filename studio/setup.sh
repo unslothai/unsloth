@@ -515,8 +515,12 @@ elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     # fork, the fork may not carry upstream bNNNN tags, so resolve the tag
     # only when the source is the default ggml-org repo.
     if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
+        _RESOLVE_TAG_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+            _RESOLVE_TAG_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+        fi
         set +e
-        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
+        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
         _RESOLVE_UPSTREAM_STATUS=$?
         set -e
         if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
@@ -526,11 +530,14 @@ elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
         _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
     fi
 else
+    _RESOLVE_INSTALL_ARGS=(--resolve-install-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _RESOLVE_INSTALL_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+    fi
     _RESOLVE_LLAMA_LOG="$(mktemp)"
     set +e
     python "$SCRIPT_DIR/install_llama_prebuilt.py" \
-        --resolve-install-tag "$_REQUESTED_LLAMA_TAG" \
-        --published-repo "$_HELPER_RELEASE_REPO" >"$_RESOLVE_LLAMA_LOG" 2>&1
+        "${_RESOLVE_INSTALL_ARGS[@]}" >"$_RESOLVE_LLAMA_LOG" 2>&1
     _RESOLVE_LLAMA_STATUS=$?
     set -e
     if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
@@ -545,7 +552,11 @@ else
         # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
         # so the resolver prefers the latest usable Unsloth-published upstream tag
         # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
+        _RESOLVE_FALLBACK_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+            _RESOLVE_FALLBACK_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+        fi
+        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_FALLBACK_ARGS[@]}" 2>/dev/null)"
         _RESOLVE_UPSTREAM_STATUS=$?
         set -e
         if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
