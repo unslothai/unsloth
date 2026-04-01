@@ -727,10 +727,19 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            CPU_FALLBACK_CMAKE_ARGS=""
+            _TRY_METAL_CPU_FALLBACK=false
+            _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+            _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+            _IS_MACOS_ARM64=false
+            if [ "$_HOST_SYSTEM" = "Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }; then
+                _IS_MACOS_ARM64=true
+            fi
 
             if command -v ccache &>/dev/null; then
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
             fi
+            CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
 
             GPU_BACKEND=""
             NVCC_PATH=""
@@ -832,6 +841,11 @@ else
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
                 fi
+            elif [ "$_IS_MACOS_ARM64" = true ]; then
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                _TRY_METAL_CPU_FALLBACK=true
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
             elif [ -d /opt/rocm ] || command -v rocm-smi &>/dev/null; then
@@ -848,7 +862,18 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS || BUILD_OK=false
+            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    substep "Metal configure failed; retrying CPU build..." "$C_WARN"
+                    rm -rf "$_BUILD_TMP/build"
+                    run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
+                    if [ "$BUILD_OK" = true ]; then
+                        _BUILD_DESC="building (CPU fallback)"
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
         fi
 
         if [ "$BUILD_OK" = true ]; then

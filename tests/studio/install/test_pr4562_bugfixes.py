@@ -600,6 +600,32 @@ class TestSourceCodePatterns:
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
+    def test_setup_sh_macos_arm64_uses_metal_flags(self):
+        """Apple Silicon source builds should explicitly enable Metal like upstream."""
+        content = SETUP_SH.read_text()
+        assert '_IS_MACOS_ARM64=true' in content
+        assert 'elif [ "$_IS_MACOS_ARM64" = true ]; then' in content
+        assert "-DGGML_METAL=ON" in content
+        assert "-DGGML_METAL_EMBED_LIBRARY=ON" in content
+        assert "-DGGML_METAL_USE_BF16=ON" in content
+        assert "-DCMAKE_INSTALL_RPATH=@loader_path" in content
+        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in content
+
+    def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
+        """If Metal configure fails, setup should retry the existing CPU build path."""
+        content = SETUP_SH.read_text()
+        assert "_TRY_METAL_CPU_FALLBACK=true" in content
+        assert 'substep "Metal configure failed; retrying CPU build..." "$C_WARN"' in content
+        assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
+        assert '-DGGML_METAL=OFF' in content
+
+    def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
+        """Intel macOS should stay on the existing non-Metal path in this patch."""
+        content = SETUP_SH.read_text()
+        assert 'elif [ "$_IS_MACOS_ARM64" = true ]; then' in content
+        assert 'Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }' in content
+        assert 'x86_64' not in content[content.find('-DGGML_METAL=ON') - 200 : content.find('-DGGML_METAL=ON') + 200]
+
     def test_setup_ps1_uses_checkout_b(self):
         """PS1 should use checkout -B, not checkout --force FETCH_HEAD."""
         content = SETUP_PS1.read_text()
