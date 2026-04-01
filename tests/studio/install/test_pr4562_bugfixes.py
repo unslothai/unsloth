@@ -759,8 +759,7 @@ class TestMacOSMetalBuildLogic:
         """Even with nvcc in PATH, macOS arm64 should use Metal, not CUDA."""
         script = (
             '_IS_MACOS_ARM64=true\nNVCC_PATH="/usr/local/cuda/bin/nvcc"\n'
-            'GPU_BACKEND="cuda"\n'
-            + _GPU_BACKEND_FRAGMENT
+            'GPU_BACKEND="cuda"\n' + _GPU_BACKEND_FRAGMENT
         )
         output = run_bash(script)
         assert "-DGGML_METAL=ON" in output
@@ -773,7 +772,8 @@ class TestMacOSMetalBuildLogic:
         mock_bin.mkdir()
         # cmake that fails on first call (Metal), succeeds on second (CPU fallback)
         cmake_script = mock_bin / "cmake"
-        cmake_script.write_text(textwrap.dedent(f"""\
+        cmake_script.write_text(
+            textwrap.dedent(f"""\
             #!/bin/bash
             COUNTER_FILE="{tmp_path}/cmake_counter"
             if [ ! -f "$COUNTER_FILE" ]; then
@@ -781,7 +781,8 @@ class TestMacOSMetalBuildLogic:
                 exit 1
             fi
             exit 0
-        """))
+        """)
+        )
         cmake_script.chmod(0o755)
 
         script = textwrap.dedent(f"""\
