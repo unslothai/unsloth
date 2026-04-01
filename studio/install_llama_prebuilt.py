@@ -2523,8 +2523,14 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         while True:
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                os.write(fd, f"{os.getpid()}\n".encode())
-                os.fsync(fd)
+                try:
+                    os.write(fd, f"{os.getpid()}\n".encode())
+                    os.fsync(fd)
+                except Exception:
+                    os.close(fd)
+                    fd = None
+                    lock_path.unlink(missing_ok = True)
+                    raise
                 break
             except FileExistsError:
                 # Check if the holder process is still alive
@@ -2537,6 +2543,10 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 if not raw:
                     # File exists but PID not yet written -- another process
                     # just created it. Wait briefly for the write to land.
+                    if time.monotonic() >= deadline:
+                        raise BusyInstallConflict(
+                            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
+                        )
                     time.sleep(0.1)
                     continue
                 try:
@@ -2761,7 +2771,10 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         ) from exc
     else:
         if rollback_dir:
-            remove_tree_logged(rollback_dir, "rollback path")
+            try:
+                remove_tree_logged(rollback_dir, "rollback path")
+            except Exception as cleanup_exc:
+                log(f"non-fatal: rollback cleanup failed after successful activation: {cleanup_exc}")
     finally:
         remove_tree(failed_dir)
         remove_tree(staging_dir)
