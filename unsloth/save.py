@@ -2789,7 +2789,9 @@ def unsloth_generic_save(
             max_shard_size = max_shard_size,
         )
         if "16bit" in save_method:
-            _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            _target_dtype = (
+                torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            )
             _save_kwargs["state_dict"] = {
                 k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
                 for k, v in model.state_dict().items()
