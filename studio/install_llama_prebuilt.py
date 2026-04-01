@@ -3669,7 +3669,6 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     return payload
 
 
-
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "linux-cpu":
         return [
