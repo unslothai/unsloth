@@ -201,7 +201,6 @@ def _fetch_page_text(
     Blocks private/loopback/link-local targets (SSRF protection) and caps
     the download size to avoid unbounded memory usage.
     """
-    import re as _re
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -351,28 +350,10 @@ def _fetch_page_text(
     except Exception as e:
         return f"Failed to fetch URL: {e}"
 
-    # Convert HTML to text -- prefer html2text for clean markdown output
-    try:
-        import html2text as _h2t
+    # Convert HTML to Markdown using the builtin converter (no external deps)
+    from ._html_to_md import html_to_markdown
 
-        converter = _h2t.HTML2Text()
-        converter.ignore_links = False
-        converter.ignore_images = True
-        converter.body_width = 0  # no wrapping
-        text = converter.handle(raw_html).strip()
-    except ImportError:
-        # Fallback: regex-based stripping
-        text = _re.sub(
-            r"<script[^>]*>.*?</script[^>]*>",
-            "",
-            raw_html,
-            flags = _re.DOTALL | _re.IGNORECASE,
-        )
-        text = _re.sub(
-            r"<style[^>]*>.*?</style[^>]*>", "", text, flags = _re.DOTALL | _re.IGNORECASE
-        )
-        text = _re.sub(r"<[^>]+>", " ", text)
-        text = _re.sub(r"\s+", " ", text).strip()
+    text = html_to_markdown(raw_html)
 
     if not text:
         return "(page returned no readable text)"
