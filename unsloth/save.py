@@ -2803,6 +2803,8 @@ def unsloth_generic_save(
                     token = token,
                     private = private,
                     commit_message = commit_message,
+                    create_pr = create_pr,
+                    revision = revision,
                 )
         else:
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
