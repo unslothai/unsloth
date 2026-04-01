@@ -8,14 +8,18 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 """
 
 import ast
+import http.client
 import os
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+import random
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 
 from loggers import get_logger
 
@@ -161,6 +165,57 @@ _MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
 # on GitBook / Next.js / Docusaurus pages whose <head> alone can be 200 KB.
 _MAX_FETCH_BYTES = 512 * 1024
 
+_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+)
+
+_tls_ctx = ssl.create_default_context()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that sends the correct SNI hostname during TLS handshake.
+
+    The SSRF IP-pinning rewrites URLs to raw IPs, which breaks SNI and cert
+    verification.  This handler swaps conn.host to the original hostname
+    during connect() so TLS works while still connecting to the pinned IP.
+    """
+    def __init__(self, hostname: str):
+        super().__init__(context=_tls_ctx)
+        self._sni_hostname = hostname
+
+    def https_open(self, req):
+        return self.do_open(self._sni_connection, req)
+
+    def _sni_connection(self, host, **kwargs):
+        kwargs["context"] = _tls_ctx
+        conn = http.client.HTTPSConnection(host, **kwargs)
+        _orig_connect = conn.connect
+        sni_host = self._sni_hostname
+        conn._context = _tls_ctx
+
+        def _patched_connect():
+            real_host = conn.host
+            conn.host = sni_host
+            try:
+                _orig_connect()
+            except Exception:
+                conn.host = real_host
+                raise
+            conn.host = real_host
+
+        conn.connect = _patched_connect
+        return conn
+
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
@@ -219,60 +274,8 @@ def _fetch_page_text(
         return reason
 
     try:
-        import urllib.request
         from urllib.error import HTTPError as _HTTPError
         from urllib.parse import urljoin, urlunparse
-
-        # Disable auto-redirect so we can validate each hop for SSRF.
-        # urllib raises HTTPError for 3xx when the handler returns None,
-        # so we catch that and extract the Location header manually.
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
-        # Custom HTTPS handler that overrides server_hostname for SNI
-        # and certificate verification.  The SSRF-protection logic below
-        # rewrites URLs to use the resolved IP, which would break both
-        # SNI (server gets no hostname in ClientHello) and cert checks
-        # (Python verifies against the IP, not the domain).  This handler
-        # injects the original hostname so TLS works correctly while
-        # still connecting to the pinned IP.
-        import http.client
-        import ssl as _ssl
-
-        _tls_ctx = _ssl.create_default_context()
-
-        class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
-            def __init__(self, hostname: str):
-                super().__init__(context = _tls_ctx)
-                self._sni_hostname = hostname
-
-            def https_open(self, req):
-                return self.do_open(self._sni_connection, req)
-
-            def _sni_connection(self, host, **kwargs):
-                kwargs["context"] = _tls_ctx
-                conn = http.client.HTTPSConnection(host, **kwargs)
-                _orig_connect = conn.connect
-                sni_host = self._sni_hostname
-                conn._context = _tls_ctx
-
-                # Python's HTTPSConnection.connect() uses self.host for SNI
-                # and certificate verification.  Temporarily swap it to the
-                # original hostname during the TLS handshake so SNI is sent
-                # and the cert is verified against the domain, not the IP.
-                def _patched_connect():
-                    real_host = conn.host
-                    conn.host = sni_host
-                    try:
-                        _orig_connect()
-                    except Exception:
-                        conn.host = real_host
-                        raise
-                    conn.host = real_host
-
-                conn.connect = _patched_connect
-                return conn
 
         max_bytes = _MAX_FETCH_BYTES
         current_url = url
@@ -293,7 +296,7 @@ def _fetch_page_text(
             req = urllib.request.Request(
                 pinned_url,
                 headers = {
-                    "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Googlebot/2.1; +http://www.google.com/bot.html) Chrome/131.0.0.0 Safari/537.36",
+                    "User-Agent": random.choice(_USER_AGENTS),
                     "Host": current_host,
                 },
             )
