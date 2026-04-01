@@ -73,6 +73,9 @@ export interface ModelConfigResponse {
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
+  vram_estimate_qlora_gb?: number | null;
+  vram_estimate_lora_gb?: number | null;
+  vram_estimate_full_gb?: number | null;
 }
 
 export interface LocalModelInfo {

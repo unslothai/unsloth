@@ -17,33 +17,29 @@ const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 
 /**
- * Auto-select LoRA (16-bit) vs QLoRA (4-bit) based on model size and GPU memory.
+ * Auto-select LoRA (16-bit) vs QLoRA (4-bit) based on backend VRAM estimates and total GPU VRAM.
  *
- * Rule: if model_size_gb * 1.5 * context_scale fits in free VRAM, use "lora" (16-bit).
- * Otherwise use "qlora" (4-bit).
+ * Uses architecture-aware estimates from the backend (weights + LoRA adapters +
+ * optimizer states + gradients + activations + CUDA overhead) rather than a
+ * file-size heuristic.  We use total VRAM (not free) because any loaded models
+ * (e.g. from the chat tab) are offloaded before training begins.
  *
- * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
+ * Full fine-tuning is never auto-selected — the user must opt in explicitly.
  */
 async function autoSelectTrainingMethod(
-  modelSizeBytes: number,
-  contextLength: number,
+  vramEstimateLoraGb: number | null,
+  vramEstimateQloraGb: number | null,
 ): Promise<TrainingMethod | null> {
+  if (vramEstimateLoraGb == null && vramEstimateQloraGb == null) return null;
   try {
     const res = await authFetch("/api/system/hardware");
     if (!res.ok) return null;
     const data = await res.json();
-    const freeGb: number | null = data?.gpu?.vram_free_gb ?? null;
-    if (freeGb == null) return null;
+    const totalGb: number | null = data?.gpu?.vram_total_gb ?? null;
+    if (totalGb == null) return null;
 
-    const modelSizeGb = modelSizeBytes / (1024 ** 3);
-
-    let contextScale = 1.0;
-    if (contextLength >= 32768) contextScale = 4.0;
-    else if (contextLength >= 16384) contextScale = 2.0;
-    else if (contextLength > 8192) contextScale = 1.7;
-
-    const estimatedUsage = modelSizeGb * 1.5 * contextScale;
-    return estimatedUsage <= freeGb ? "lora" : "qlora";
+    if (vramEstimateLoraGb != null && vramEstimateLoraGb <= totalGb) return "lora";
+    return "qlora";
   } catch {
     return null;
   }
@@ -87,6 +83,9 @@ const initialState: TrainingConfigState = {
   isDatasetAudio: false,
   maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
+  vramEstimateQloraGb: null,
+  vramEstimateLoraGb: null,
+  vramEstimateFullGb: null,
 };
 
 // AbortController for in-flight dataset multimodal checks.
@@ -121,6 +120,9 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
+  "vramEstimateQloraGb",
+  "vramEstimateLoraGb",
+  "vramEstimateFullGb",
 ]);
 
 function partializePersistedState(
@@ -213,22 +215,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
-            // Auto-select training method based on model size vs GPU memory.
-            // If model_size * 1.5 * context_scale fits in free VRAM, use LoRA 16-bit.
-            // Otherwise use QLoRA 4-bit.
-            const modelSizeBytes = modelDetails.model_size_bytes;
-            if (modelSizeBytes && modelSizeBytes > 0) {
-              void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
-                .then((method) => {
-                  if (get().selectedModel !== modelName) return;
-                  if (method) {
-                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
-                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
-                      : {};
-                    set({ trainingMethod: method, ...lrPatch });
-                  }
-                });
-            }
+            // Store backend VRAM estimates for all three training methods.
+            const vramQlora = modelDetails.vram_estimate_qlora_gb ?? null;
+            const vramLora = modelDetails.vram_estimate_lora_gb ?? null;
+            const vramFull = modelDetails.vram_estimate_full_gb ?? null;
+            set({
+              vramEstimateQloraGb: vramQlora,
+              vramEstimateLoraGb: vramLora,
+              vramEstimateFullGb: vramFull,
+            });
+
+            // Auto-select LoRA vs QLoRA using architecture-aware VRAM estimates.
+            // Full fine-tuning is never auto-selected; the user must opt in explicitly.
+            void autoSelectTrainingMethod(vramLora, vramQlora)
+              .then((method) => {
+                if (get().selectedModel !== modelName) return;
+                if (method) {
+                  const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
+                    ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
+                    : {};
+                  set({ trainingMethod: method, ...lrPatch });
+                }
+              });
 
             set({
               ...patch,
@@ -377,6 +385,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isLoadingModelDefaults: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: null,
+              vramEstimateQloraGb: null,
+              vramEstimateLoraGb: null,
+              vramEstimateFullGb: null,
             });
             return;
           }

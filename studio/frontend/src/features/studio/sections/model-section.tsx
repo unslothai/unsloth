@@ -50,6 +50,7 @@ import {
   type VramFitStatus,
   type TrainingMethod as VramTrainingMethod,
   buildModelVramMap,
+  checkVramFit,
 } from "@/lib/vram";
 import type { TrainingMethod } from "@/types/training";
 import {
@@ -94,6 +95,9 @@ export function ModelSection() {
     setTrainingMethod,
     hfToken,
     setHfToken,
+    vramEstimateQloraGb,
+    vramEstimateLoraGb,
+    vramEstimateFullGb,
   } = useTrainingConfigStore(
     useShallow(
       ({
@@ -104,6 +108,9 @@ export function ModelSection() {
         setTrainingMethod,
         hfToken,
         setHfToken,
+        vramEstimateQloraGb,
+        vramEstimateLoraGb,
+        vramEstimateFullGb,
       }) => ({
         modelType,
         selectedModel,
@@ -112,6 +119,9 @@ export function ModelSection() {
         setTrainingMethod,
         hfToken,
         setHfToken,
+        vramEstimateQloraGb,
+        vramEstimateLoraGb,
+        vramEstimateFullGb,
       }),
     ),
   );
@@ -232,10 +242,10 @@ export function ModelSection() {
 
   // Pre-compute VRAM fit status for every model in the current result set.
   // Keyed by model id so the render callback is a simple O(1) lookup.
-  //
-  // Pre-compute VRAM fit status for every model in the current result set.
-  // Keyed by model id so the render callback is a simple O(1) lookup.
   // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
+  //
+  // For the currently selected model, we override the frontend estimate with
+  // the authoritative backend estimate (architecture-aware, handles MoE).
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,
@@ -251,6 +261,23 @@ export function ModelSection() {
         ? formatCompact(r.totalParams)
         : extractParamLabel(r.id);
       const fit = fitMap.get(r.id);
+
+      // Override with backend estimate for the selected model.
+      if (r.id === selectedModel) {
+        const backendEst =
+          trainingMethod === "qlora" ? vramEstimateQloraGb
+          : trainingMethod === "lora" ? vramEstimateLoraGb
+          : vramEstimateFullGb;
+        if (backendEst != null) {
+          map.set(r.id, {
+            est: backendEst,
+            status: gpu.available ? checkVramFit(backendEst, gpu.memoryTotalGb) : null,
+            detail,
+          });
+          continue;
+        }
+      }
+
       map.set(r.id, {
         est: fit?.est ?? 0,
         status: fit?.status ?? null,
@@ -258,7 +285,7 @@ export function ModelSection() {
       });
     }
     return map;
-  }, [hfResults, gpu, trainingMethod]);
+  }, [hfResults, gpu, trainingMethod, selectedModel, vramEstimateQloraGb, vramEstimateLoraGb, vramEstimateFullGb]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);

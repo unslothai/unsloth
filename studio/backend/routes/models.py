@@ -585,6 +585,52 @@ def _get_model_size_bytes(
         return None
 
 
+def _compute_vram_estimates(
+    hf_config,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Estimate training VRAM (GB) for qlora, lora, and full fine-tuning.
+
+    Uses architecture-based estimation (weights + LoRA + optimizer + gradients
+    + activations + overhead) with default training params:
+    batch=4, seq=2048, rank=16, adamw_8bit, unsloth gradient checkpointing.
+
+    Returns (qlora_gb, lora_gb, full_gb). Returns (None, None, None) on failure.
+    """
+    try:
+        from utils.hardware.vram_estimation import (
+            DEFAULT_TARGET_MODULES,
+            TrainingVramConfig,
+            estimate_training_vram,
+            extract_arch_config,
+        )
+
+        if hf_config is None:
+            return None, None, None
+
+        arch = extract_arch_config(hf_config)
+        if arch is None:
+            return None, None, None
+
+        estimates = []
+        for method, load_in_4bit in (("qlora", True), ("lora", False), ("full", False)):
+            vram_config = TrainingVramConfig(
+                training_method = method,
+                batch_size = 4,
+                max_seq_length = 2048,
+                lora_rank = 16,
+                target_modules = list(DEFAULT_TARGET_MODULES),
+                gradient_checkpointing = "unsloth",
+                optimizer = "adamw_8bit",
+                load_in_4bit = load_in_4bit,
+            )
+            breakdown = estimate_training_vram(arch, vram_config)
+            estimates.append(round(breakdown.total / (1024 ** 3), 3))
+        return estimates[0], estimates[1], estimates[2]
+    except Exception as e:
+        logger.warning(f"Could not compute VRAM estimates: {e}")
+        return None, None, None
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
@@ -625,21 +671,24 @@ async def get_model_config(
         except Exception:
             pass
 
-        # Fallback: try AutoConfig directly if not found yet
-        if max_position_embeddings is None:
-            try:
-                from transformers import AutoConfig as _AutoConfig
+        # Load AutoConfig — used for max_position_embeddings (fallback) and VRAM estimation.
+        _ac = None
+        try:
+            from transformers import AutoConfig as _AutoConfig
 
-                _trust = model_name.lower().startswith("unsloth/")
-                _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = _trust, token = hf_token
-                )
+            _trust = model_name.lower().startswith("unsloth/")
+            _ac = _AutoConfig.from_pretrained(
+                model_name, trust_remote_code = _trust, token = hf_token
+            )
+            if max_position_embeddings is None:
                 max_position_embeddings = _get_max_position_embeddings(_ac)
-            except Exception:
-                pass
+        except Exception:
+            pass
+
+        vram_qlora, vram_lora, vram_full = _compute_vram_estimates(_ac)
 
         logger.info(
-            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}, vram_qlora={vram_qlora}, vram_lora={vram_lora}, vram_full={vram_full}"
         )
         return ModelDetails(
             id = model_name,
@@ -655,6 +704,9 @@ async def get_model_config(
             base_model = base_model,
             max_position_embeddings = max_position_embeddings,
             model_size_bytes = _get_model_size_bytes(model_name, hf_token),
+            vram_estimate_qlora_gb = vram_qlora,
+            vram_estimate_lora_gb = vram_lora,
+            vram_estimate_full_gb = vram_full,
         )
 
     except Exception as e:

@@ -81,6 +81,9 @@ export interface TrainingConfigState {
   finetuneMLPModules: boolean;
   targetModules: string[];
   maxPositionEmbeddings: number | null;
+  vramEstimateQloraGb: number | null;
+  vramEstimateLoraGb: number | null;
+  vramEstimateFullGb: number | null;
 }
 
 export interface TrainingConfigActions {

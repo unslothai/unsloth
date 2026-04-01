@@ -41,7 +41,7 @@ import {
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
-import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
+import { checkVramFit, estimateTrainingVram } from "@/lib/vram";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Trash2Icon } from "lucide-react";
@@ -659,7 +659,7 @@ export function HubModelPicker({
     for (const r of results) {
       const detail = r.totalParams ? formatCompact(r.totalParams) : null;
       if (r.totalParams) {
-        const est = estimateLoadingVram(r.totalParams, "qlora");
+        const est = estimateTrainingVram(r.totalParams, "qlora");
         const status = gpu.available
           ? checkVramFit(est, gpu.memoryTotalGb)
           : null;
@@ -680,7 +680,7 @@ export function HubModelPicker({
     for (const id of ids) {
       const totalParams = recommendedParamCountById.get(id);
       if (totalParams) {
-        const est = estimateLoadingVram(totalParams, "qlora");
+        const est = estimateTrainingVram(totalParams, "qlora");
         const status = gpu.available
           ? checkVramFit(est, gpu.memoryTotalGb)
           : null;

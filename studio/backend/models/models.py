@@ -95,6 +95,15 @@ class ModelDetails(BaseModel):
     model_size_bytes: Optional[int] = Field(
         None, description = "Total size of model weight files in bytes"
     )
+    vram_estimate_qlora_gb: Optional[float] = Field(
+        None, description = "Estimated training VRAM (GB) for QLoRA (4-bit) with default params"
+    )
+    vram_estimate_lora_gb: Optional[float] = Field(
+        None, description = "Estimated training VRAM (GB) for LoRA (fp16) with default params"
+    )
+    vram_estimate_full_gb: Optional[float] = Field(
+        None, description = "Estimated training VRAM (GB) for full fine-tuning with default params"
+    )
 
 
 class LoRAInfo(BaseModel):
