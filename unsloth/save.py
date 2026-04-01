@@ -2783,7 +2783,8 @@ def unsloth_generic_save(
     # and the GGUF save path.
     _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
-        if not is_main_process: return
+        if not is_main_process:
+            return
 
         # Honor merged_16bit by casting to the target dtype if needed
         _save_kwargs = dict(
