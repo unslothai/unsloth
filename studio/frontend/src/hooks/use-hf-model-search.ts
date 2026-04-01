@@ -169,18 +169,17 @@ async function* mergedModelIterator(
   }
 
   // Phase 1b: yield the pinned (original publisher) model before general results
-  if (pinnedId) {
-    seen.add(pinnedId);
+  if (pinnedId && !seen.has(pinnedId)) {
     try {
       const pinned = await cachedModelInfo({
         name: pinnedId,
         additionalFields: ["safetensors", "tags"],
-        ...(accessToken ? { credentials: { accessToken } } : {}),
+        ...(accessToken ? { accessToken } : {}),
       });
-      primeFromListing(pinnedId, accessToken, pinned);
+      seen.add(pinnedId);
       yield pinned;
     } catch {
-      // Model doesn't exist or is inaccessible — skip silently
+      // Model doesn't exist or is inaccessible — fall through to general results
     }
   }
 
