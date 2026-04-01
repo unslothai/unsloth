@@ -152,6 +152,16 @@ async function* mergedModelIterator(
     ...common,
   });
 
+  // Start pinned model lookup immediately so it can run in parallel with
+  // the Phase 1 unsloth iteration instead of blocking Phase 2.
+  const pinnedPromise = pinnedId
+    ? cachedModelInfo({
+        name: pinnedId,
+        additionalFields: ["safetensors", "tags"],
+        ...(accessToken ? { credentials: { accessToken } } : {}),
+      }).catch(() => null)
+    : null;
+
   const limit = pinnedId ? UNSLOTH_PINNED_PREFETCH : UNSLOTH_PREFETCH;
 
   // Phase 1: pull & yield unsloth models first
@@ -169,17 +179,11 @@ async function* mergedModelIterator(
   }
 
   // Phase 1b: yield the pinned (original publisher) model before general results
-  if (pinnedId && !seen.has(pinnedId)) {
-    try {
-      const pinned = await cachedModelInfo({
-        name: pinnedId,
-        additionalFields: ["safetensors", "tags"],
-        ...(accessToken ? { accessToken } : {}),
-      });
+  if (pinnedId && !seen.has(pinnedId) && pinnedPromise) {
+    const pinned = await pinnedPromise;
+    if (pinned) {
       seen.add(pinnedId);
       yield pinned;
-    } catch {
-      // Model doesn't exist or is inaccessible — fall through to general results
     }
   }
 
@@ -271,14 +275,17 @@ export function useHfModelSearch(
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
-      // Typed query: disable task filter so explicitly searched models still appear even if HF task metadata is wrong/missing.
-      // Strip org prefix (e.g. "openai/gpt-oss-20b" → "gpt-oss-20b") so unsloth
-      // variants surface via the owner:"unsloth" search in mergedModelIterator.
-      // When the user searched for a specific publisher, pin that model after
-      // a small batch of unsloth results.
-      const hasPublisher = trimmed.includes("/");
-      const searchQuery = hasPublisher ? trimmed.split("/").pop()! : trimmed;
-      return mergedModelIterator(searchQuery, undefined, accessToken, hasPublisher ? trimmed : undefined) as AsyncGenerator<unknown>;
+      // Typed query: disable task filter so explicitly searched models still appear
+      // even if HF task metadata is wrong/missing.
+      // If the query is a valid "owner/repo" identifier (exactly two non-empty,
+      // slash-free, space-free segments), strip the org prefix so unsloth variants
+      // surface, then pin the original publisher model after a small batch of
+      // unsloth results.  Queries for unsloth-owned models are left as-is so
+      // they get the full 20-result prefetch and secondary sort.
+      const publisherMatch = trimmed.match(/^([^/\s]+)\/([^/\s]+)$/);
+      const isPublisherQuery = !!publisherMatch && publisherMatch[1] !== "unsloth";
+      const searchQuery = isPublisherQuery ? publisherMatch[2] : trimmed;
+      return mergedModelIterator(searchQuery, undefined, accessToken, isPublisherQuery ? trimmed : undefined) as AsyncGenerator<unknown>;
     },
     [query, task, accessToken, priorityIds],
   );
@@ -287,19 +294,21 @@ export function useHfModelSearch(
   const search = useHfPaginatedSearch(createIter, mapModel);
 
   // Secondary sort guarantee: unsloth models always float to the top.
-  // Skip when the user searched for a specific publisher (query contains "/")
-  // — the iterator already handles the pinned ordering in that case.
-  const hasPublisher = query.trim().includes("/");
+  // Skip when the user searched for a specific non-unsloth publisher
+  // (e.g. "openai/gpt-oss-20b") -- the iterator already handles the
+  // pinned ordering in that case.
+  const publisherMatch = query.trim().match(/^([^/\s]+)\/([^/\s]+)$/);
+  const isPublisherQuery = !!publisherMatch && publisherMatch[1] !== "unsloth";
   const results = useMemo(
     () =>
-      hasPublisher
+      isPublisherQuery
         ? search.results
         : [...search.results].sort((a, b) => {
             const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
             const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
             return aFirst - bFirst;
           }),
-    [search.results, hasPublisher],
+    [search.results, isPublisherQuery],
   );
 
   return { ...search, results };
