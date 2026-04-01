@@ -55,12 +55,8 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 function TealSpinner({ size = 24 }: { size?: number }) {
   return (
     <span
-      className="inline-block rounded-full border-2 border-primary border-t-transparent"
-      style={{
-        width: size,
-        height: size,
-        animation: "spin 0.8s linear infinite",
-      }}
+      className="inline-block animate-spin rounded-full border-2 border-primary border-t-transparent"
+      style={{ width: size, height: size, animationDuration: "0.8s" }}
     />
   );
 }
@@ -293,14 +289,6 @@ export function StartupScreen({
   onApproveElevation,
   onStartServer,
 }: StartupScreenProps) {
-  const spinStyle = (
-    <style>{`
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-    `}</style>
-  );
-
   function renderContent() {
     switch (status) {
       case "checking":
@@ -332,7 +320,6 @@ export function StartupScreen({
 
   return (
     <div className="flex h-screen w-full items-center justify-center bg-background">
-      {spinStyle}
       <div className="w-full max-w-md px-6">
         <AnimatePresence mode="wait">
           <motion.div
