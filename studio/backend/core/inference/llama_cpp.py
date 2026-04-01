@@ -403,13 +403,16 @@ class LlamaCppBackend:
         }.get(cache_type_kv or "f16", 2.0)
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
-        # MLA stores only the compressed KV latent + RoPE in the K cache.
+        # MLA stores one compressed KV latent per token/layer (shared across heads).
         # V is reconstructed from the latent on the fly -- no separate V cache.
         # key_length = kv_lora_rank + rope_dim (the full compressed representation).
+        # MLA GGUFs set head_count_kv=1; default to 1 if absent to avoid
+        # falling back to n_heads (e.g., 128 for DeepSeek-V3) which would 128x.
         if self._kv_lora_rank is not None:
+            n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers * n_ctx * n_kv * key_len * bpe)
+            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -421,7 +424,7 @@ class LlamaCppBackend:
             and self._full_attention_interval is not None
         ):
             fai = self._full_attention_interval
-            n_attn = n_layers // fai if fai > 0 else n_layers
+            n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
                 return int(n_attn * n_ctx * n_kv * (key_len + val_len) * bpe)
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
