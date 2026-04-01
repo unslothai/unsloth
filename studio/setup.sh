@@ -8,6 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Maintainer-editable defaults ──────────────────────────────────────────
+# Change these in the GitHub-hosted script so all users get updated defaults.
+# User environment variables always override these baked-in values.
+#
+#   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
+#   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
+# ──────────────────────────────────────────────────────────────────────────
+_DEFAULT_LLAMA_PR_FORCE=""
+_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
+
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
@@ -470,35 +480,66 @@ _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-latest}"
 _HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
-_RESOLVE_LLAMA_LOG="$(mktemp)"
-set +e
-python "$SCRIPT_DIR/install_llama_prebuilt.py" \
-    --resolve-install-tag "$_REQUESTED_LLAMA_TAG" \
-    --published-repo "$_HELPER_RELEASE_REPO" >"$_RESOLVE_LLAMA_LOG" 2>&1
-_RESOLVE_LLAMA_STATUS=$?
-set -e
-if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
-    _RESOLVED_LLAMA_TAG="$(tail -n 1 "$_RESOLVE_LLAMA_LOG" | tr -d '\r')"
-else
-    _RESOLVED_LLAMA_TAG=""
-fi
-if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-    step "llama.cpp" "failed to resolve a published llama.cpp release via $_HELPER_RELEASE_REPO" "$C_WARN"
-    print_llama_error_log "$_RESOLVE_LLAMA_LOG"
-    set +e
-    # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-    # so the resolver prefers the latest usable Unsloth-published upstream tag
-    # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
-    _RESOLVE_UPSTREAM_STATUS=$?
-    set -e
-    if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-        _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-    fi
+_LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
+
+_LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
+_LLAMA_SOURCE="${UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}}"
+_LLAMA_SOURCE="${_LLAMA_SOURCE%.git}"  # normalize: strip trailing .git
+
+# Non-default source URL forces source build (fork has different code than prebuilt).
+if [ "$_LLAMA_SOURCE" != "https://github.com/ggml-org/llama.cpp" ]; then
+    step "llama.cpp" "custom source: $_LLAMA_SOURCE -- forcing source build" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
 fi
-rm -f "$_RESOLVE_LLAMA_LOG"
+
+# Baked-in PR_FORCE promotes to _LLAMA_PR when user hasn't set one.
+if [ -z "$_LLAMA_PR" ] && [ -n "$_LLAMA_PR_FORCE" ] && \
+   [[ "$_LLAMA_PR_FORCE" =~ ^[0-9]+$ ]] && [ "$_LLAMA_PR_FORCE" -gt 0 ]; then
+    _LLAMA_PR="$_LLAMA_PR_FORCE"
+    step "llama.cpp" "baked-in PR_FORCE=$_LLAMA_PR_FORCE" "$C_WARN"
+fi
+
+if [ -n "$_LLAMA_PR" ]; then
+    if ! [[ "$_LLAMA_PR" =~ ^[0-9]+$ ]] || [ "$_LLAMA_PR" -le 0 ]; then
+        step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number" "$C_ERR"
+        exit 1
+    fi
+    step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
+    _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
+    _NEED_LLAMA_SOURCE_BUILD=true
+    _SKIP_PREBUILT_INSTALL=true
+else
+    _RESOLVE_LLAMA_LOG="$(mktemp)"
+    set +e
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+        --resolve-install-tag "$_REQUESTED_LLAMA_TAG" \
+        --published-repo "$_HELPER_RELEASE_REPO" >"$_RESOLVE_LLAMA_LOG" 2>&1
+    _RESOLVE_LLAMA_STATUS=$?
+    set -e
+    if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
+        _RESOLVED_LLAMA_TAG="$(tail -n 1 "$_RESOLVE_LLAMA_LOG" | tr -d '\r')"
+    else
+        _RESOLVED_LLAMA_TAG=""
+    fi
+    if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+        step "llama.cpp" "failed to resolve a published llama.cpp release via $_HELPER_RELEASE_REPO" "$C_WARN"
+        print_llama_error_log "$_RESOLVE_LLAMA_LOG"
+        set +e
+        # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
+        # so the resolver prefers the latest usable Unsloth-published upstream tag
+        # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
+        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
+        _RESOLVE_UPSTREAM_STATUS=$?
+        set -e
+        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+        fi
+        _NEED_LLAMA_SOURCE_BUILD=true
+        _SKIP_PREBUILT_INSTALL=true
+    fi
+    rm -f "$_RESOLVE_LLAMA_LOG"
+fi
 
 substep "resolved llama.cpp tag: $_RESOLVED_LLAMA_TAG"
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
@@ -634,13 +675,27 @@ else
         [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     else
         BUILD_OK=true
-        _CLONE_BRANCH_ARGS=()
-        if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-            _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
-        fi
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
-        run_quiet_no_exit "clone llama.cpp" git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" https://github.com/ggml-org/llama.cpp.git "$_BUILD_TMP" || BUILD_OK=false
+        if [ -n "$_LLAMA_PR" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_LLAMA_SOURCE}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch PR #$_LLAMA_PR" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "pull/$_LLAMA_PR/head:pr-$_LLAMA_PR" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout PR #$_LLAMA_PR" \
+                    git -C "$_BUILD_TMP" checkout "pr-$_LLAMA_PR" || BUILD_OK=false
+            fi
+        else
+            _CLONE_BRANCH_ARGS=()
+            if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
+                _CLONE_BRANCH_ARGS=(--branch "$_RESOLVED_LLAMA_TAG")
+            fi
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_CLONE_BRANCH_ARGS[@]}" "${_LLAMA_SOURCE}.git" "$_BUILD_TMP" || BUILD_OK=false
+        fi
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
