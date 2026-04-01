@@ -494,7 +494,7 @@ export function ModelSection() {
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <span
-                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "!text-gray-400" : ""}`}
+                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "!text-gray-500 dark:!text-gray-400" : ""}`}
                                 >
                                   {id}
                                 </span>
@@ -524,7 +524,7 @@ export function ModelSection() {
                                 </span>
                               )}
                               {fitStatus === "tight" && (
-                                <span className="text-[9px] font-medium text-amber-400">
+                                <span className="text-[9px] font-medium !text-amber-400">
                                   TIGHT
                                 </span>
                               )}

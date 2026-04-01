@@ -132,7 +132,7 @@ function ModelRow({
       <span
         className={cn(
           "block min-w-0 flex-1 truncate",
-          exceeds && "!text-gray-400",
+          exceeds && "!text-gray-500 dark:!text-gray-400",
         )}
       >
         {label}
@@ -352,11 +352,8 @@ function GgufVariantExpander({
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
               )}
             >
-              <span className={cn(
-                "min-w-0 flex-1 truncate font-mono text-xs",
-                oom && "!text-gray-400"
-              )}>
-                {v.quant}
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>{v.quant}</span>
                 {v.downloaded ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
                     downloaded
