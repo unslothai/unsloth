@@ -34,6 +34,7 @@ import {
   CodeIcon,
   Delete02Icon,
   FloppyDiskIcon,
+  FolderSearchIcon,
   PencilEdit01Icon,
   Settings02Icon,
   SlidersHorizontalIcon,
@@ -43,7 +44,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ScanFolderInfo,
+  addScanFolder,
+  listScanFolders,
+  removeScanFolder,
+} from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   DEFAULT_INFERENCE_PARAMS,
@@ -259,6 +266,108 @@ function CollapsibleSection({
   );
 }
 
+function ModelFoldersSection({
+  onFoldersChange,
+}: { onFoldersChange?: () => void }) {
+  const [folders, setFolders] = useState<ScanFolderInfo[]>([]);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(() => {
+    listScanFolders()
+      .then(setFolders)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handleAdd = async () => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    setError(null);
+    setLoading(true);
+    try {
+      await addScanFolder(trimmed);
+      setInput("");
+      refresh();
+      onFoldersChange?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to add folder");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemove = async (id: number) => {
+    try {
+      await removeScanFolder(id);
+      onFoldersChange?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove folder");
+    } finally {
+      refresh();
+    }
+  };
+
+  return (
+    <CollapsibleSection icon={FolderSearchIcon} label="Model Folders">
+      <div className="flex flex-col gap-2 py-1">
+        {folders.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {folders.map((f) => (
+              <div
+                key={f.id}
+                className="group flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-accent"
+              >
+                <span
+                  className="min-w-0 flex-1 truncate text-muted-foreground"
+                  title={f.path}
+                >
+                  {f.path}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(f.id)}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
+                >
+                  <HugeiconsIcon icon={Delete02Icon} className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-1.5">
+          <Input
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleAdd();
+            }}
+            placeholder="/path/to/models"
+            className="h-7 flex-1 text-xs font-mono"
+            disabled={loading}
+          />
+          <button
+            type="button"
+            onClick={handleAdd}
+            disabled={loading || !input.trim()}
+            className="h-7 rounded-md border px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+        {error && <p className="text-[11px] text-destructive">{error}</p>}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
 interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -267,6 +376,7 @@ interface ChatSettingsPanelProps {
   autoTitle: boolean;
   onAutoTitleChange: (enabled: boolean) => void;
   onReloadModel?: () => void;
+  onFoldersChange?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -277,6 +387,7 @@ export function ChatSettingsPanel({
   autoTitle,
   onAutoTitleChange,
   onReloadModel,
+  onFoldersChange,
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
@@ -723,6 +834,8 @@ export function ChatSettingsPanel({
             <HfTokenField />
           </div>
         </CollapsibleSection>
+
+        <ModelFoldersSection onFoldersChange={onFoldersChange} />
 
         <ChatTemplateSection onReloadModel={onReloadModel} />
       </div>

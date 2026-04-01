@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import hashlib
 import json
@@ -41,9 +42,25 @@ from typing import Any, Iterable, Iterator
 EXIT_SUCCESS = 0
 EXIT_FALLBACK = 2
 EXIT_ERROR = 1
+EXIT_BUSY = 3
+
+
+def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
 
 APPROVED_PREBUILT_LLAMA_TAG = "b8508"
-DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", APPROVED_PREBUILT_LLAMA_TAG)
+DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
 DEFAULT_PUBLISHED_REPO = os.environ.get(
     "UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp"
 )
@@ -71,6 +88,11 @@ HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 SERVER_PORT_BIND_ATTEMPTS = 3
 SERVER_BIND_RETRY_WINDOW_SECONDS = 5.0
 TTY_PROGRESS_START_DELAY_SECONDS = 0.5
+DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
+    "UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS",
+    2,
+    minimum = 1,
+)
 
 
 @dataclass
@@ -170,8 +192,85 @@ class ApprovedReleaseChecksums:
     artifacts: dict[str, ApprovedArtifactHash]
 
 
+@dataclass(frozen = True)
+class ResolvedPublishedRelease:
+    bundle: PublishedReleaseBundle
+    checksums: ApprovedReleaseChecksums
+
+
+@dataclass(frozen = True)
+class InstallReleasePlan:
+    requested_tag: str
+    llama_tag: str
+    release_tag: str
+    attempts: list[AssetChoice]
+    approved_checksums: ApprovedReleaseChecksums
+
+
 class PrebuiltFallback(RuntimeError):
     pass
+
+
+class BusyInstallConflict(RuntimeError):
+    pass
+
+
+class ExistingInstallSatisfied(RuntimeError):
+    def __init__(self, choice: AssetChoice, used_fallback: bool):
+        super().__init__(f"existing install already matches candidate {choice.name}")
+        self.choice = choice
+        self.used_fallback = used_fallback
+
+
+def _os_error_messages(exc: BaseException) -> list[str]:
+    messages: list[str] = []
+    if isinstance(exc, OSError):
+        for value in (
+            getattr(exc, "strerror", None),
+            getattr(exc, "filename", None),
+            getattr(exc, "filename2", None),
+        ):
+            if isinstance(value, str) and value:
+                messages.append(value)
+    text = str(exc)
+    if text:
+        messages.append(text)
+    return [message.lower() for message in messages if message]
+
+
+def is_busy_lock_error(exc: BaseException) -> bool:
+    if isinstance(exc, BusyInstallConflict):
+        return True
+    if isinstance(exc, PermissionError):
+        return True
+    if isinstance(exc, OSError):
+        if exc.errno in {
+            errno.EACCES,
+            errno.EBUSY,
+            errno.ENOTEMPTY,
+            errno.EPERM,
+            errno.ETXTBSY,
+        }:
+            return True
+        if getattr(exc, "winerror", None) in {5, 32, 145, 183}:
+            return True
+    for message in _os_error_messages(exc):
+        if any(
+            needle in message
+            for needle in (
+                "access is denied",
+                "being used by another process",
+                "device or resource busy",
+                "permission denied",
+                "text file busy",
+                "directory not empty",
+                "file is in use",
+                "process cannot access the file",
+                "cannot create a file when that file already exists",
+            )
+        ):
+            return True
+    return False
 
 
 def log(message: str) -> None:
@@ -596,6 +695,14 @@ def latest_upstream_release_tag() -> str:
             f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
         )
     return tag
+
+
+def normalized_requested_llama_tag(requested_tag: str | None) -> str:
+    if isinstance(requested_tag, str):
+        normalized = requested_tag.strip()
+        if normalized:
+            return normalized
+    return "latest"
 
 
 def normalize_compute_cap(value: Any) -> str | None:
@@ -1283,6 +1390,137 @@ def pinned_published_release_bundle(
     return bundle
 
 
+def validated_checksums_for_bundle(
+    repo: str, bundle: PublishedReleaseBundle
+) -> ApprovedReleaseChecksums:
+    checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    require_approved_source_hash(checksums, bundle.upstream_tag)
+    return checksums
+
+
+def resolve_published_release(
+    requested_tag: str | None,
+    published_repo: str,
+    published_release_tag: str = "",
+) -> ResolvedPublishedRelease:
+    repo = published_repo or DEFAULT_PUBLISHED_REPO
+    normalized_requested = normalized_requested_llama_tag(requested_tag)
+
+    if published_release_tag:
+        bundle = pinned_published_release_bundle(repo, published_release_tag)
+        if (
+            normalized_requested != "latest"
+            and bundle.upstream_tag != normalized_requested
+        ):
+            raise PrebuiltFallback(
+                "published release "
+                f"{repo}@{published_release_tag} targeted upstream tag {bundle.upstream_tag}, "
+                f"but requested {normalized_requested}"
+            )
+        return ResolvedPublishedRelease(
+            bundle = bundle,
+            checksums = validated_checksums_for_bundle(repo, bundle),
+        )
+
+    skipped_invalid = 0
+    for bundle in iter_published_release_bundles(repo):
+        if (
+            normalized_requested != "latest"
+            and bundle.upstream_tag != normalized_requested
+        ):
+            continue
+        try:
+            checksums = validated_checksums_for_bundle(repo, bundle)
+        except PrebuiltFallback as exc:
+            skipped_invalid += 1
+            log(
+                "published release ignored for install resolution: "
+                f"{repo}@{bundle.release_tag} ({exc})"
+            )
+            continue
+        return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
+
+    if normalized_requested == "latest":
+        if skipped_invalid:
+            raise PrebuiltFallback(
+                f"no usable published llama.cpp releases were available in {repo}"
+            )
+        raise PrebuiltFallback(
+            f"no published llama.cpp releases were available in {repo}"
+        )
+
+    raise PrebuiltFallback(
+        f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
+    )
+
+
+def iter_resolved_published_releases(
+    requested_tag: str | None,
+    published_repo: str,
+    published_release_tag: str = "",
+) -> Iterable[ResolvedPublishedRelease]:
+    repo = published_repo or DEFAULT_PUBLISHED_REPO
+    normalized_requested = normalized_requested_llama_tag(requested_tag)
+
+    if published_release_tag:
+        bundle = pinned_published_release_bundle(repo, published_release_tag)
+        if (
+            normalized_requested != "latest"
+            and bundle.upstream_tag != normalized_requested
+        ):
+            raise PrebuiltFallback(
+                "published release "
+                f"{repo}@{published_release_tag} targeted upstream tag {bundle.upstream_tag}, "
+                f"but requested {normalized_requested}"
+            )
+        yield ResolvedPublishedRelease(
+            bundle = bundle,
+            checksums = validated_checksums_for_bundle(repo, bundle),
+        )
+        return
+
+    matched_any = False
+    skipped_invalid = 0
+    yielded_valid = False
+    for bundle in iter_published_release_bundles(repo):
+        if (
+            normalized_requested != "latest"
+            and bundle.upstream_tag != normalized_requested
+        ):
+            continue
+        matched_any = True
+        try:
+            checksums = validated_checksums_for_bundle(repo, bundle)
+        except PrebuiltFallback as exc:
+            skipped_invalid += 1
+            log(
+                "published release ignored for install resolution: "
+                f"{repo}@{bundle.release_tag} ({exc})"
+            )
+            continue
+        yielded_valid = True
+        yield ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
+
+    if yielded_valid:
+        return
+
+    if matched_any:
+        if skipped_invalid:
+            raise PrebuiltFallback(
+                f"no usable published llama.cpp releases were available in {repo}"
+            )
+        return
+
+    if normalized_requested == "latest":
+        raise PrebuiltFallback(
+            f"no published llama.cpp releases were available in {repo}"
+        )
+
+    raise PrebuiltFallback(
+        f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
+    )
+
+
 def resolve_requested_llama_tag(
     requested_tag: str | None,
     published_repo: str = "",
@@ -1291,9 +1529,9 @@ def resolve_requested_llama_tag(
 
     Resolution order:
       1. Concrete tag (e.g. "b8508") -- returned as-is.
-      2. "latest" with published_repo -- query the Unsloth release repo
-         (e.g. unslothai/llama.cpp) for its latest release tag. This is the
-         tested/approved version that matches the prebuilt binaries.
+      2. "latest" with published_repo -- resolve the latest usable Unsloth
+         published release bundle and return its upstream_tag. This is the
+         preferred version that matches the published prebuilt metadata.
       3. "latest" without published_repo or if (2) fails -- query the upstream
          ggml-org/llama.cpp repo. This may return a newer, untested tag.
 
@@ -1301,20 +1539,19 @@ def resolve_requested_llama_tag(
     upstream tags that have been validated with Unsloth Studio. Using the
     upstream bleeding-edge tag risks API/ABI incompatibilities.
     """
-    if requested_tag and requested_tag != "latest":
-        return requested_tag
+    normalized_requested = normalized_requested_llama_tag(requested_tag)
+    if normalized_requested != "latest":
+        return normalized_requested
     # Prefer the Unsloth release repo tag (tested/approved) over bleeding-edge
     # upstream. For example, unslothai/llama.cpp may publish b8508 while
     # ggml-org/llama.cpp latest is b8514. The source-build fallback should
     # compile the same version the prebuilt path would have installed.
     if published_repo:
         try:
-            payload = fetch_json(
-                f"https://api.github.com/repos/{published_repo}/releases/latest"
-            )
-            tag = payload.get("tag_name")
-            if isinstance(tag, str) and tag:
-                return tag
+            return resolve_published_release(
+                "latest",
+                published_repo,
+            ).bundle.upstream_tag
         except Exception:
             pass
     # Fall back to upstream ggml-org latest release tag
@@ -1324,18 +1561,13 @@ def resolve_requested_llama_tag(
 def resolve_requested_install_tag(
     requested_tag: str | None,
     published_release_tag: str = "",
+    published_repo: str = DEFAULT_PUBLISHED_REPO,
 ) -> str:
-    approved_tag = APPROVED_PREBUILT_LLAMA_TAG
-    normalized_requested = requested_tag or "latest"
-    if normalized_requested not in {"latest", approved_tag}:
-        raise PrebuiltFallback(
-            f"prebuilt installs are pinned to approved release {approved_tag}; requested {normalized_requested}"
-        )
-    if published_release_tag and published_release_tag != approved_tag:
-        raise PrebuiltFallback(
-            f"prebuilt installs require published release tag {approved_tag}; requested {published_release_tag}"
-        )
-    return approved_tag
+    return resolve_published_release(
+        requested_tag,
+        published_repo,
+        published_release_tag,
+    ).bundle.upstream_tag
 
 
 def run_capture(
@@ -1680,6 +1912,68 @@ def windows_cuda_attempts(
     return attempts
 
 
+def published_windows_cuda_attempts(
+    host: HostInfo,
+    release: PublishedReleaseBundle,
+    preferred_runtime_line: str | None,
+    selection_preamble: Iterable[str] = (),
+) -> list[AssetChoice]:
+    selection_log = list(release.selection_log) + list(selection_preamble)
+    runtime_by_line = {"cuda12": "12.4", "cuda13": "13.1"}
+    runtime_order = windows_cuda_attempts(
+        host,
+        release.upstream_tag,
+        {
+            f"llama-{release.upstream_tag}-bin-win-cuda-{runtime}-x64.zip": "published"
+            for runtime in runtime_by_line.values()
+        },
+        preferred_runtime_line,
+        selection_log,
+    )
+    published_artifacts = [
+        artifact
+        for artifact in release.artifacts
+        if artifact.install_kind == "windows-cuda"
+    ]
+    artifacts_by_runtime: dict[str, list[PublishedLlamaArtifact]] = {}
+    for artifact in published_artifacts:
+        if not artifact.runtime_line:
+            continue
+        artifacts_by_runtime.setdefault(artifact.runtime_line, []).append(artifact)
+
+    attempts: list[AssetChoice] = []
+    for ordered_attempt in runtime_order:
+        runtime_line = ordered_attempt.runtime_line
+        if not runtime_line:
+            continue
+        candidates = sorted(
+            artifacts_by_runtime.get(runtime_line, []),
+            key = lambda artifact: (artifact.rank, artifact.asset_name),
+        )
+        for artifact in candidates:
+            asset_url = release.assets.get(artifact.asset_name)
+            if not asset_url:
+                continue
+            attempts.append(
+                AssetChoice(
+                    repo = release.repo,
+                    tag = release.release_tag,
+                    name = artifact.asset_name,
+                    url = asset_url,
+                    source_label = "published",
+                    install_kind = "windows-cuda",
+                    runtime_line = runtime_line,
+                    selection_log = list(ordered_attempt.selection_log or [])
+                    + [
+                        "windows_cuda_selection: selected published asset "
+                        f"{artifact.asset_name} for runtime_line={runtime_line}"
+                    ],
+                )
+            )
+            break
+    return attempts
+
+
 def resolve_windows_cuda_choices(
     host: HostInfo, llama_tag: str, upstream_assets: dict[str, str]
 ) -> list[AssetChoice]:
@@ -1695,30 +1989,50 @@ def resolve_windows_cuda_choices(
 
 
 def resolve_linux_cuda_choice(
-    host: HostInfo, llama_tag: str, published_repo: str, published_release_tag: str
+    host: HostInfo, release: PublishedReleaseBundle
 ) -> LinuxCudaSelection:
     torch_preference = detect_torch_cuda_runtime_preference(host)
-    skipped_tag_mismatches = 0
-    for release in iter_published_release_bundles(
-        published_repo, published_release_tag
-    ):
-        if release.upstream_tag != llama_tag:
-            skipped_tag_mismatches += 1
-            continue
-        selection = linux_cuda_choice_from_release(
-            host,
-            release,
-            preferred_runtime_line = torch_preference.runtime_line,
-            selection_preamble = torch_preference.selection_log,
-        )
-        if selection is not None:
-            return selection
-    if skipped_tag_mismatches:
-        log(
-            "published Linux CUDA selection skipped "
-            f"{skipped_tag_mismatches} release(s) with upstream_tag != {llama_tag}"
-        )
+    selection = linux_cuda_choice_from_release(
+        host,
+        release,
+        preferred_runtime_line = torch_preference.runtime_line,
+        selection_preamble = torch_preference.selection_log,
+    )
+    if selection is not None:
+        return selection
     raise PrebuiltFallback("no compatible published Linux CUDA bundle was found")
+
+
+def published_asset_choice_for_kind(
+    release: PublishedReleaseBundle,
+    install_kind: str,
+) -> AssetChoice | None:
+    candidates = sorted(
+        (
+            artifact
+            for artifact in release.artifacts
+            if artifact.install_kind == install_kind
+        ),
+        key = lambda artifact: (artifact.rank, artifact.asset_name),
+    )
+    for artifact in candidates:
+        asset_url = release.assets.get(artifact.asset_name)
+        if not asset_url:
+            continue
+        return AssetChoice(
+            repo = release.repo,
+            tag = release.release_tag,
+            name = artifact.asset_name,
+            url = asset_url,
+            source_label = "published",
+            install_kind = install_kind,
+            runtime_line = artifact.runtime_line,
+            selection_log = list(release.selection_log)
+            + [
+                f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"
+            ],
+        )
+    return None
 
 
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
@@ -1786,14 +2100,60 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
     )
 
 
-def resolve_asset_choice(
-    host: HostInfo, llama_tag: str, published_repo: str, published_release_tag: str
-) -> AssetChoice:
+def resolve_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
-        return resolve_linux_cuda_choice(
-            host, llama_tag, published_repo, published_release_tag
-        ).primary
+        raise PrebuiltFallback(
+            "Linux CUDA installs require a compatible published bundle; upstream fallback is not available"
+        )
     return resolve_upstream_asset_choice(host, llama_tag)
+
+
+def resolve_release_asset_choice(
+    host: HostInfo,
+    llama_tag: str,
+    release: PublishedReleaseBundle,
+    checksums: ApprovedReleaseChecksums,
+) -> list[AssetChoice]:
+    if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
+        torch_preference = detect_torch_cuda_runtime_preference(host)
+        published_attempts = published_windows_cuda_attempts(
+            host,
+            release,
+            torch_preference.runtime_line,
+            torch_preference.selection_log,
+        )
+        if published_attempts:
+            try:
+                return apply_approved_hashes(published_attempts, checksums)
+            except PrebuiltFallback as exc:
+                log(
+                    "published Windows CUDA assets ignored for install planning: "
+                    f"{release.repo}@{release.release_tag} ({exc})"
+                )
+        upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
+        return apply_approved_hashes(
+            resolve_windows_cuda_choices(host, llama_tag, upstream_assets),
+            checksums,
+        )
+
+    published_choice: AssetChoice | None = None
+    if host.is_windows and host.is_x86_64:
+        published_choice = published_asset_choice_for_kind(release, "windows-cpu")
+    elif host.is_macos and host.is_arm64:
+        published_choice = published_asset_choice_for_kind(release, "macos-arm64")
+    elif host.is_macos and host.is_x86_64:
+        published_choice = published_asset_choice_for_kind(release, "macos-x64")
+
+    if published_choice is not None:
+        try:
+            return apply_approved_hashes([published_choice], checksums)
+        except PrebuiltFallback as exc:
+            log(
+                "published platform asset ignored for install planning: "
+                f"{release.repo}@{release.release_tag} {published_choice.name} ({exc})"
+            )
+
+    return apply_approved_hashes([resolve_asset_choice(host, llama_tag)], checksums)
 
 
 def extract_archive(archive_path: Path, destination: Path) -> None:
@@ -2163,8 +2523,14 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         while True:
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                os.write(fd, f"{os.getpid()}\n".encode())
-                os.fsync(fd)
+                try:
+                    os.write(fd, f"{os.getpid()}\n".encode())
+                    os.fsync(fd)
+                except Exception:
+                    os.close(fd)
+                    fd = None
+                    lock_path.unlink(missing_ok = True)
+                    raise
                 break
             except FileExistsError:
                 # Check if the holder process is still alive
@@ -2177,6 +2543,10 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 if not raw:
                     # File exists but PID not yet written -- another process
                     # just created it. Wait briefly for the write to land.
+                    if time.monotonic() >= deadline:
+                        raise BusyInstallConflict(
+                            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
+                        )
                     time.sleep(0.1)
                     continue
                 try:
@@ -2195,7 +2565,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     lock_path.unlink(missing_ok = True)
                     continue
                 if time.monotonic() >= deadline:
-                    raise RuntimeError(
+                    raise BusyInstallConflict(
                         f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
                     )
                 time.sleep(0.5)
@@ -2211,7 +2581,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
             yield
     except FileLockTimeout as exc:
-        raise RuntimeError(
+        raise BusyInstallConflict(
             f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
         ) from exc
 
@@ -2359,11 +2729,17 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 os.replace(rollback_dir, install_dir)
                 log(f"restored previous install from rollback path {rollback_dir.name}")
+                if is_busy_lock_error(exc):
+                    raise BusyInstallConflict(
+                        "staged prebuilt validation passed but the existing install could not be replaced "
+                        "because llama.cpp appears to still be in use; restored previous install "
+                        f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                    ) from exc
                 raise PrebuiltFallback(
                     "staged prebuilt validation passed but activation failed; restored previous install "
                     f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                 ) from exc
-        except PrebuiltFallback:
+        except (BusyInstallConflict, PrebuiltFallback):
             raise
         except Exception as rollback_exc:
             log(f"rollback after failed activation also failed: {rollback_exc}")
@@ -2395,7 +2771,12 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         ) from exc
     else:
         if rollback_dir:
-            remove_tree_logged(rollback_dir, "rollback path")
+            try:
+                remove_tree_logged(rollback_dir, "rollback path")
+            except Exception as cleanup_exc:
+                log(
+                    f"non-fatal: rollback cleanup failed after successful activation: {cleanup_exc}"
+                )
     finally:
         remove_tree(failed_dir)
         remove_tree(staging_dir)
@@ -3110,39 +3491,90 @@ def resolve_install_attempts(
     published_repo: str,
     published_release_tag: str,
 ) -> tuple[str, str, list[AssetChoice], ApprovedReleaseChecksums]:
-    requested_tag = llama_tag
-    resolved_tag = resolve_requested_install_tag(llama_tag, published_release_tag)
-    checksums = load_approved_release_checksums(published_repo, resolved_tag)
-    require_approved_source_hash(checksums, resolved_tag)
-
-    if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
-        linux_cuda_selection = resolve_linux_cuda_choice(
-            host, resolved_tag, published_repo, published_release_tag
-        )
-        attempts = apply_approved_hashes(linux_cuda_selection.attempts, checksums)
-        if not attempts:
-            raise PrebuiltFallback("no compatible Linux CUDA asset was found")
-        log_lines(linux_cuda_selection.selection_log)
-        return requested_tag, resolved_tag, attempts, checksums
-
-    if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
-        upstream_assets = github_release_assets(UPSTREAM_REPO, resolved_tag)
-        attempts = apply_approved_hashes(
-            resolve_windows_cuda_choices(host, resolved_tag, upstream_assets), checksums
-        )
-        if not attempts:
-            raise PrebuiltFallback("no compatible Windows CUDA asset was found")
-        if attempts[0].selection_log:
-            log_lines(attempts[0].selection_log)
-        return requested_tag, resolved_tag, attempts, checksums
-
-    choice = resolve_asset_choice(
-        host, resolved_tag, published_repo, published_release_tag
+    requested_tag, plans = resolve_install_release_plans(
+        llama_tag,
+        host,
+        published_repo,
+        published_release_tag,
     )
-    approved_attempts = apply_approved_hashes([choice], checksums)
-    if choice.selection_log:
-        log_lines(choice.selection_log)
-    return requested_tag, resolved_tag, approved_attempts, checksums
+    if not plans:
+        raise PrebuiltFallback("no prebuilt release plans were available")
+    plan = plans[0]
+    return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
+
+
+def resolve_install_release_plans(
+    llama_tag: str,
+    host: HostInfo,
+    published_repo: str,
+    published_release_tag: str,
+    *,
+    max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
+) -> tuple[str, list[InstallReleasePlan]]:
+    requested_tag = normalized_requested_llama_tag(llama_tag)
+    allow_older_release_fallback = (
+        requested_tag == "latest" and not published_release_tag
+    )
+    release_limit = max(1, max_release_fallbacks)
+    plans: list[InstallReleasePlan] = []
+    last_error: PrebuiltFallback | None = None
+
+    for resolved_release in iter_resolved_published_releases(
+        llama_tag,
+        published_repo,
+        published_release_tag,
+    ):
+        bundle = resolved_release.bundle
+        checksums = resolved_release.checksums
+        resolved_tag = bundle.upstream_tag
+        try:
+            if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
+                linux_cuda_selection = resolve_linux_cuda_choice(host, bundle)
+                attempts = apply_approved_hashes(
+                    linux_cuda_selection.attempts, checksums
+                )
+                if not attempts:
+                    raise PrebuiltFallback("no compatible Linux CUDA asset was found")
+                log_lines(linux_cuda_selection.selection_log)
+            else:
+                attempts = resolve_release_asset_choice(
+                    host,
+                    resolved_tag,
+                    bundle,
+                    checksums,
+                )
+                if not attempts:
+                    raise PrebuiltFallback("no compatible prebuilt asset was found")
+                if attempts[0].selection_log:
+                    log_lines(attempts[0].selection_log)
+        except PrebuiltFallback as exc:
+            last_error = exc
+            if not allow_older_release_fallback:
+                raise
+            log(
+                "published release skipped for install planning: "
+                f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
+            )
+            continue
+
+        plans.append(
+            InstallReleasePlan(
+                requested_tag = requested_tag,
+                llama_tag = resolved_tag,
+                release_tag = bundle.release_tag,
+                attempts = attempts,
+                approved_checksums = checksums,
+            )
+        )
+
+        if not allow_older_release_fallback or len(plans) >= release_limit:
+            break
+
+    if plans:
+        return requested_tag, plans
+    if last_error is not None:
+        raise last_error
+    raise PrebuiltFallback("no installable published llama.cpp releases were found")
 
 
 def write_prebuilt_metadata(
@@ -3150,22 +3582,225 @@ def write_prebuilt_metadata(
     *,
     requested_tag: str,
     llama_tag: str,
+    release_tag: str,
     choice: AssetChoice,
+    approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
 ) -> None:
+    source_archive = approved_checksums.artifacts.get(
+        source_archive_logical_name(llama_tag)
+    )
+    source_sha256 = source_archive.sha256 if source_archive is not None else None
+    fingerprint_payload = {
+        "published_repo": approved_checksums.repo,
+        "release_tag": release_tag,
+        "upstream_tag": llama_tag,
+        "asset": choice.name,
+        "asset_sha256": choice.expected_sha256,
+        "source": choice.source_label,
+        "source_sha256": source_sha256,
+        "runtime_line": choice.runtime_line,
+        "bundle_profile": choice.bundle_profile,
+        "coverage_class": choice.coverage_class,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys = True, separators = (",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
+        "release_tag": release_tag,
+        "published_repo": approved_checksums.repo,
         "asset": choice.name,
+        "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
+        "source_sha256": source_sha256,
+        "source_commit": approved_checksums.source_commit,
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
         "coverage_class": choice.coverage_class,
+        "install_fingerprint": fingerprint,
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps(metadata, indent = 2) + "\n"
+    )
+
+
+def expected_install_fingerprint(
+    *,
+    llama_tag: str,
+    release_tag: str,
+    choice: AssetChoice,
+    approved_checksums: ApprovedReleaseChecksums,
+) -> str | None:
+    source_archive = approved_checksums.artifacts.get(
+        source_archive_logical_name(llama_tag)
+    )
+    if source_archive is None or not choice.expected_sha256:
+        return None
+    payload = {
+        "published_repo": approved_checksums.repo,
+        "release_tag": release_tag,
+        "upstream_tag": llama_tag,
+        "asset": choice.name,
+        "asset_sha256": choice.expected_sha256,
+        "source": choice.source_label,
+        "source_sha256": source_archive.sha256,
+        "runtime_line": choice.runtime_line,
+        "bundle_profile": choice.bundle_profile,
+        "coverage_class": choice.coverage_class,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
+    metadata_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    if not metadata_path.is_file():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding = "utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def install_tree_is_healthy(install_dir: Path, host: HostInfo) -> bool:
+    try:
+        confirm_install_tree(install_dir, host)
+    except Exception:
+        return False
+    return True
+
+
+def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
+    if choice.install_kind == "linux-cpu":
+        return [
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu-*.so*"],
+            ["libmtmd.so*"],
+        ]
+    if choice.install_kind == "linux-cuda":
+        return [
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu-*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-cuda.so*"],
+        ]
+    if choice.install_kind in {"macos-arm64", "macos-x64"}:
+        return [
+            ["libllama*.dylib"],
+            ["libggml*.dylib"],
+            ["libmtmd*.dylib"],
+        ]
+    if choice.install_kind == "windows-cpu":
+        return [["llama.dll"]]
+    if choice.install_kind == "windows-cuda":
+        return [["llama.dll"], ["ggml-cuda.dll"]]
+    return []
+
+
+def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
+    if host.is_windows:
+        return install_dir / "build" / "bin" / "Release"
+    return install_dir / "build" / "bin"
+
+
+def runtime_payload_is_healthy(
+    install_dir: Path, host: HostInfo, choice: AssetChoice
+) -> bool:
+    runtime_dir = install_runtime_dir(install_dir, host)
+    if not runtime_dir.exists():
+        return False
+    for pattern_group in runtime_payload_health_groups(choice):
+        matched = False
+        for pattern in pattern_group:
+            if any(runtime_dir.glob(pattern)):
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
+
+
+def existing_install_matches_choice(
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    llama_tag: str,
+    release_tag: str,
+    choice: AssetChoice,
+    approved_checksums: ApprovedReleaseChecksums,
+) -> bool:
+    if not install_dir.exists():
+        return False
+    if not install_tree_is_healthy(install_dir, host):
+        return False
+
+    metadata = load_prebuilt_metadata(install_dir)
+    if metadata is None:
+        return False
+
+    if not runtime_payload_is_healthy(install_dir, host, choice):
+        return False
+    expected_fingerprint = expected_install_fingerprint(
+        llama_tag = llama_tag,
+        release_tag = release_tag,
+        choice = choice,
+        approved_checksums = approved_checksums,
+    )
+    if not expected_fingerprint:
+        return False
+
+    recorded_fingerprint = metadata.get("install_fingerprint")
+    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
+        return False
+
+    if recorded_fingerprint != expected_fingerprint:
+        return False
+
+    expected_pairs = {
+        "release_tag": release_tag,
+        "published_repo": approved_checksums.repo,
+        "tag": llama_tag,
+        "asset": choice.name,
+        "asset_sha256": choice.expected_sha256,
+        "source": choice.source_label,
+        "runtime_line": choice.runtime_line,
+        "bundle_profile": choice.bundle_profile,
+        "coverage_class": choice.coverage_class,
+    }
+    for key, expected in expected_pairs.items():
+        if metadata.get(key) != expected:
+            return False
+    return True
+
+
+def existing_install_matches_plan(
+    install_dir: Path,
+    host: HostInfo,
+    plan: InstallReleasePlan,
+) -> bool:
+    if not plan.attempts:
+        return False
+    return existing_install_matches_choice(
+        install_dir,
+        host,
+        llama_tag = plan.llama_tag,
+        release_tag = plan.release_tag,
+        choice = plan.attempts[0],
+        approved_checksums = plan.approved_checksums,
     )
 
 
@@ -3178,6 +3813,7 @@ def validate_prebuilt_choice(
     *,
     requested_tag: str,
     llama_tag: str,
+    release_tag: str,
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
     quantized_path: Path,
@@ -3206,7 +3842,9 @@ def validate_prebuilt_choice(
         install_dir,
         requested_tag = requested_tag,
         llama_tag = llama_tag,
+        release_tag = release_tag,
         choice = choice,
+        approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
     )
     validate_quantize(
@@ -3237,13 +3875,16 @@ def validate_prebuilt_attempts(
     *,
     requested_tag: str,
     llama_tag: str,
+    release_tag: str,
     approved_checksums: ApprovedReleaseChecksums,
+    initial_fallback_used: bool = False,
+    existing_install_dir: Path | None = None,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
         raise PrebuiltFallback("no prebuilt bundle attempts were available")
 
-    tried_fallback = False
+    tried_fallback = initial_fallback_used
     for index, attempt in enumerate(attempt_list):
         if index > 0:
             tried_fallback = True
@@ -3252,6 +3893,20 @@ def validate_prebuilt_attempts(
                 f"{attempt.name} install_kind={attempt.install_kind} "
                 f"runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
             )
+
+        if existing_install_dir is not None and existing_install_matches_choice(
+            existing_install_dir,
+            host,
+            llama_tag = llama_tag,
+            release_tag = release_tag,
+            choice = attempt,
+            approved_checksums = approved_checksums,
+        ):
+            log(
+                "existing llama.cpp install already matches fallback candidate "
+                f"{attempt.name}; skipping reinstall"
+            )
+            raise ExistingInstallSatisfied(attempt, tried_fallback)
 
         staging_dir = create_install_staging_dir(install_dir)
         quantized_path = work_dir / f"stories260K-q4-{index}.gguf"
@@ -3266,6 +3921,7 @@ def validate_prebuilt_attempts(
                 probe_path,
                 requested_tag = requested_tag,
                 llama_tag = llama_tag,
+                release_tag = release_tag,
                 approved_checksums = approved_checksums,
                 prebuilt_fallback_used = tried_fallback,
                 quantized_path = quantized_path,
@@ -3307,42 +3963,81 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            requested_tag, llama_tag, attempts, approved_checksums = (
-                resolve_install_attempts(
-                    llama_tag,
-                    host,
-                    published_repo,
-                    published_release_tag,
+            requested_tag, release_plans = resolve_install_release_plans(
+                llama_tag,
+                host,
+                published_repo,
+                published_release_tag,
+            )
+            if release_plans and existing_install_matches_plan(
+                install_dir, host, release_plans[0]
+            ):
+                current = release_plans[0]
+                log(
+                    "existing llama.cpp install already matches selected release "
+                    f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
                 )
-            )
-            choice = attempts[0]
-            log(
-                f"selected {choice.name} ({choice.source_label}) for {host.system} {host.machine}"
-            )
+                return
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
                 download_validation_model(
                     probe_path, validation_model_cache_path(install_dir)
                 )
-                choice, selected_staging_dir, _ = validate_prebuilt_attempts(
-                    attempts,
-                    host,
-                    install_dir,
-                    work_dir,
-                    probe_path,
-                    requested_tag = requested_tag,
-                    llama_tag = llama_tag,
-                    approved_checksums = approved_checksums,
-                )
-                activate_install_tree(selected_staging_dir, install_dir, host)
-                try:
-                    ensure_converter_scripts(install_dir, llama_tag)
-                except Exception as exc:
+                release_count = len(release_plans)
+                for release_index, plan in enumerate(release_plans):
+                    choice = plan.attempts[0]
+                    if existing_install_matches_plan(install_dir, host, plan):
+                        log(
+                            "existing llama.cpp install already matches fallback release "
+                            f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
+                        )
+                        return
                     log(
-                        "converter script fetch failed after activation; install remains valid "
-                        f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                        "selected "
+                        f"{choice.name} ({choice.source_label}) from published release "
+                        f"{plan.release_tag} for {host.system} {host.machine}"
                     )
+                    try:
+                        choice, selected_staging_dir, _ = validate_prebuilt_attempts(
+                            plan.attempts,
+                            host,
+                            install_dir,
+                            work_dir,
+                            probe_path,
+                            requested_tag = requested_tag,
+                            llama_tag = plan.llama_tag,
+                            release_tag = plan.release_tag,
+                            approved_checksums = plan.approved_checksums,
+                            initial_fallback_used = release_index > 0,
+                            existing_install_dir = install_dir,
+                        )
+                    except ExistingInstallSatisfied:
+                        return
+                    except PrebuiltFallback as exc:
+                        if release_index == release_count - 1:
+                            raise
+                        log(
+                            "published release "
+                            f"{plan.release_tag} upstream_tag={plan.llama_tag} failed; "
+                            "trying the next older published prebuilt "
+                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                        )
+                        continue
+
+                    activate_install_tree(selected_staging_dir, install_dir, host)
+                    try:
+                        ensure_converter_scripts(install_dir, plan.llama_tag)
+                    except Exception as exc:
+                        log(
+                            "converter script fetch failed after activation; install remains valid "
+                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                        )
+                    return
+    except BusyInstallConflict as exc:
+        log("prebuilt install path is blocked by an in-use llama.cpp install")
+        log(f"prebuilt busy reason: {exc}")
+        raise SystemExit(EXIT_BUSY) from exc
     except PrebuiltFallback as exc:
         log("prebuilt install path failed; falling back to source build")
         log(f"prebuilt fallback reason: {exc}")
@@ -3359,7 +4054,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llama-tag",
         default = DEFAULT_LLAMA_TAG,
-        help = f"llama.cpp release tag. Prebuilt installs are pinned to the approved tag {APPROVED_PREBUILT_LLAMA_TAG}.",
+        help = (
+            "llama.cpp release tag. Defaults to the latest usable published Unsloth "
+            "release unless UNSLOTH_LLAMA_TAG overrides it."
+        ),
     )
     parser.add_argument(
         "--published-repo",
@@ -3369,7 +4067,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--published-release-tag",
         default = DEFAULT_PUBLISHED_TAG,
-        help = "Published GitHub release tag to pin. By default, scan releases until a compatible llama.cpp bundle is found.",
+        help = (
+            "Published GitHub release tag to pin. By default, scan releases "
+            "until a usable published llama.cpp release bundle is found."
+        ),
     )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
@@ -3382,7 +4083,10 @@ def parse_args() -> argparse.Namespace:
         "--resolve-install-tag",
         nargs = "?",
         const = "latest",
-        help = "Resolve a llama.cpp tag such as 'latest' to the concrete tag installable on the current host.",
+        help = (
+            "Resolve a llama.cpp tag such as 'latest' to the concrete upstream tag "
+            "selected by the current published-release policy."
+        ),
     )
     return parser.parse_args()
 
@@ -3398,7 +4102,9 @@ def main() -> int:
     if args.resolve_install_tag is not None:
         print(
             resolve_requested_install_tag(
-                args.resolve_install_tag, args.published_release_tag or ""
+                args.resolve_install_tag,
+                args.published_release_tag or "",
+                args.published_repo,
             )
         )
         return EXIT_SUCCESS
@@ -3421,6 +4127,11 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except SystemExit:
         raise
+    except BusyInstallConflict as exc:
+        log(
+            f"fatal helper busy conflict: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
+        )
+        raise SystemExit(EXIT_BUSY)
     except Exception as exc:
         message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
         log(f"fatal helper error: {message}")

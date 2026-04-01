@@ -490,7 +490,8 @@ if (-not $HasNvidiaSmi) {
 if (-not $HasNvidiaSmi) {
     Write-Host ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+    Write-Host "       Training and GPU inference require an NVIDIA GPU with drivers installed." -ForegroundColor Yellow
+    Write-Host "       https://www.nvidia.com/Download/index.aspx" -ForegroundColor Yellow
     Write-Host ""
 } else {
     step "gpu" "NVIDIA GPU detected"
@@ -1596,29 +1597,15 @@ $resolveExit = $LASTEXITCODE
 $ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 1).ToString().Trim() } else { "" }
 if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
     Write-Host ""
-    substep "Failed to resolve an installable prebuilt llama.cpp tag via $HelperReleaseRepo" "Yellow"
+    substep "Failed to resolve a published llama.cpp release via $HelperReleaseRepo" "Yellow"
     Write-LlamaFailureLog -Output ($resolveOutput | Out-String)
     # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-    # so the resolver prefers Unsloth's tested tag (e.g. b8508) over the upstream
-    # bleeding-edge tag (e.g. b8514) from ggml-org/llama.cpp.
+    # so the resolver prefers the latest usable Unsloth-published upstream tag
+    # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
     $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
     $fallbackExit = $LASTEXITCODE
     $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
         ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
-    } elseif ($RequestedLlamaTag -eq "latest") {
-        # Try Unsloth release repo first, then fall back to ggml-org upstream
-        $resolvedLatest = $null
-        try {
-            $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$HelperReleaseRepo/releases/latest" -ErrorAction Stop
-            $resolvedLatest = $latestRelease.tag_name
-        } catch {}
-        if (-not $resolvedLatest) {
-            try {
-                $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -ErrorAction Stop
-                $resolvedLatest = $latestRelease.tag_name
-            } catch {}
-        }
-        if ($resolvedLatest) { $resolvedLatest } else { $RequestedLlamaTag }
     } else {
         $RequestedLlamaTag
     }
@@ -1667,7 +1654,19 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         $ErrorActionPreference = $prevEAPPrebuilt
 
         if ($prebuiltExit -eq 0) {
-            step "llama.cpp" "prebuilt installed and validated"
+            if ($prebuiltOutput -match "already matches selected release") {
+                step "llama.cpp" "prebuilt up to date and validated"
+            } else {
+                step "llama.cpp" "prebuilt installed and validated"
+            }
+        } elseif ($prebuiltExit -eq 3) {
+            step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path $LlamaCppDir) {
+                substep "Existing install was restored" "Yellow"
+            }
+            substep "Close Studio or other llama.cpp users and retry" "Yellow"
+            exit 3
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput

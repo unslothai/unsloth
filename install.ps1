@@ -749,6 +749,7 @@ shell.Run cmd, 0, False
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
         substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+        substep "https://www.nvidia.com/Download/index.aspx" "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -776,10 +777,10 @@ shell.Run cmd, 0, False
     # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
-        substep "No NVIDIA GPU detected." "Yellow"
-        substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
-        substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
-        substep ".\install.ps1 --no-torch" "Yellow"
+        Write-Host "  NOTE: No NVIDIA GPU detected." -ForegroundColor Yellow
+        Write-Host "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
+        Write-Host "  re-run with --no-torch for a faster, lighter install:"
+        Write-Host "    .\install.ps1 --no-torch"
         Write-Host ""
     }
 

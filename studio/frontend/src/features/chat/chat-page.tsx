@@ -162,12 +162,10 @@ const CompareContent = memo(function CompareContent({
   pairId,
   models,
   loraModels,
-  onFoldersChange,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
-  onFoldersChange?: () => void;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
@@ -178,7 +176,6 @@ const CompareContent = memo(function CompareContent({
       pairId={pairId}
       models={models}
       loraModels={loraModels}
-      onFoldersChange={onFoldersChange}
     />
   );
 });
@@ -262,12 +259,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
   models,
   loraModels,
-  onFoldersChange,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
-  onFoldersChange?: () => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -332,7 +327,6 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                     ggufVariant: meta.ggufVariant,
                   })
                 }
-                onFoldersChange={onFoldersChange}
                 variant="ghost"
                 size="sm"
                 className="max-w-[50%]"
@@ -365,7 +359,6 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                     ggufVariant: meta.ggufVariant,
                   })
                 }
-                onFoldersChange={onFoldersChange}
                 variant="ghost"
                 size="sm"
                 className="max-w-[50%]"
@@ -853,7 +846,6 @@ export function ChatPage(): ReactElement {
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
-                onFoldersChange={refreshLocalModels}
                 variant="ghost"
                 open={modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
@@ -919,7 +911,6 @@ export function ChatPage(): ReactElement {
               pairId={view.pairId}
               models={models}
               loraModels={loraModels}
-              onFoldersChange={refreshLocalModels}
             />
           )}
         </div>
@@ -943,6 +934,7 @@ export function ChatPage(): ReactElement {
               });
             }
           }}
+          onFoldersChange={refreshLocalModels}
         />
       </SidebarProvider>
     </div>

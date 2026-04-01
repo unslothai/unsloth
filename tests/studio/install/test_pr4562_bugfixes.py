@@ -6,7 +6,7 @@ Tests cover:
   - Bug 2: Source-build fallback ignores pinned tag (both .sh and .ps1)
   - Bug 3: Unix fallback deletes install before checking prerequisites
   - Bug 4: Linux LD_LIBRARY_PATH missing build/bin
-  - "latest" tag resolution fallback chain (Unsloth -> ggml-org -> raw)
+  - "latest" tag resolution fallback chain (helper -> raw)
   - Cross-platform binary_env (Linux, macOS, Windows)
   - Edge cases: malformed JSON, empty responses, env overrides
 
@@ -40,6 +40,10 @@ SPEC.loader.exec_module(MOD)
 binary_env = MOD.binary_env
 HostInfo = MOD.HostInfo
 resolve_requested_llama_tag = MOD.resolve_requested_llama_tag
+PublishedReleaseBundle = MOD.PublishedReleaseBundle
+ApprovedArtifactHash = MOD.ApprovedArtifactHash
+ApprovedReleaseChecksums = MOD.ApprovedReleaseChecksums
+source_archive_logical_name = MOD.source_archive_logical_name
 
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -240,6 +244,57 @@ class TestResolveRequestedLlamaTag:
         monkeypatch.setattr(MOD, "latest_upstream_release_tag", lambda: "b5555")
         assert resolve_requested_llama_tag("") == "b5555"
 
+    def test_latest_with_published_repo_uses_latest_valid_published_release(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        invalid = PublishedReleaseBundle(
+            repo = "unslothai/llama.cpp",
+            release_tag = "v2.0",
+            upstream_tag = "b9000",
+            assets = {},
+            manifest_asset_name = "llama-prebuilt-manifest.json",
+            artifacts = [],
+            selection_log = [],
+        )
+        valid = PublishedReleaseBundle(
+            repo = "unslothai/llama.cpp",
+            release_tag = "v1.0",
+            upstream_tag = "b8999",
+            assets = {},
+            manifest_asset_name = "llama-prebuilt-manifest.json",
+            artifacts = [],
+            selection_log = [],
+        )
+
+        monkeypatch.setattr(
+            MOD,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([invalid, valid]),
+        )
+
+        def fake_load(repo, release_tag):
+            if release_tag == "v2.0":
+                raise MOD.PrebuiltFallback("checksum asset missing")
+            return ApprovedReleaseChecksums(
+                repo = repo,
+                release_tag = release_tag,
+                upstream_tag = "b8999",
+                source_commit = None,
+                artifacts = {
+                    source_archive_logical_name("b8999"): ApprovedArtifactHash(
+                        asset_name = source_archive_logical_name("b8999"),
+                        sha256 = "a" * 64,
+                        repo = "ggml-org/llama.cpp",
+                        kind = "upstream-source",
+                    )
+                },
+            )
+
+        monkeypatch.setattr(MOD, "load_approved_release_checksums", fake_load)
+        monkeypatch.setattr(MOD, "latest_upstream_release_tag", lambda: "b7777")
+
+        assert resolve_requested_llama_tag("latest", "unslothai/llama.cpp") == "b8999"
+
 
 # =========================================================================
 # TEST GROUP C: setup.sh logic (bash subprocess tests)
@@ -429,139 +484,60 @@ class TestSetupShLogic:
 # TEST GROUP D: "latest" tag resolution (bash subprocess)
 # =========================================================================
 class TestLatestTagResolution:
-    """Test the fallback chain: Unsloth API -> ggml-org API -> raw."""
+    """Test the fallback chain: helper resolver -> raw."""
 
     RESOLVE_TEMPLATE = textwrap.dedent("""\
-        export PATH="{mock_bin}:$PATH"
         _REQUESTED_LLAMA_TAG="{requested_tag}"
         _RESOLVED_LLAMA_TAG=""
-        _RESOLVE_UPSTREAM_STATUS=1
-        _HELPER_RELEASE_REPO="unslothai/llama.cpp"
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-            if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
-                _RESOLVED_LLAMA_TAG="$(curl -fsSL "https://api.github.com/repos/${{_HELPER_RELEASE_REPO}}/releases/latest" 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
-                if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-                    _RESOLVED_LLAMA_TAG="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null | python -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)" || _RESOLVED_LLAMA_TAG=""
-                fi
-            fi
-            if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-                _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-            fi
+        _RESOLVE_UPSTREAM_STATUS={resolve_status}
+        if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "{resolved_tag}" ]; then
+            _RESOLVED_LLAMA_TAG="{resolved_tag}"
+        else
+            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
         fi
         echo "$_RESOLVED_LLAMA_TAG"
     """)
-
-    @staticmethod
-    def _make_curl_mock(
-        mock_bin: Path, unsloth_response: str | None, ggml_response: str | None
-    ):
-        """Create a curl mock that returns different responses per repo."""
-        lines = ["#!/bin/bash"]
-        if unsloth_response is not None:
-            lines.append(
-                f'if echo "$*" | grep -q "unslothai/llama.cpp"; then echo \'{unsloth_response}\'; exit 0; fi'
-            )
-        else:
-            lines.append(
-                'if echo "$*" | grep -q "unslothai/llama.cpp"; then exit 1; fi'
-            )
-        if ggml_response is not None:
-            lines.append(
-                f'if echo "$*" | grep -q "ggml-org/llama.cpp"; then echo \'{ggml_response}\'; exit 0; fi'
-            )
-        else:
-            lines.append('if echo "$*" | grep -q "ggml-org/llama.cpp"; then exit 1; fi')
-        lines.append("exit 1")
-        curl_path = mock_bin / "curl"
-        curl_path.write_text("\n".join(lines) + "\n")
-        curl_path.chmod(0o755)
 
     def _run_resolve(
         self,
         tmp_path: Path,
         requested_tag: str,
-        unsloth_resp: str | None,
-        ggml_resp: str | None,
+        resolved_tag: str,
+        resolve_status: int,
     ) -> str:
-        mock_bin = tmp_path / "mock_bin"
-        mock_bin.mkdir(exist_ok = True)
-        self._make_curl_mock(mock_bin, unsloth_resp, ggml_resp)
         script = self.RESOLVE_TEMPLATE.format(
-            mock_bin = mock_bin, requested_tag = requested_tag
+            requested_tag = requested_tag,
+            resolved_tag = resolved_tag,
+            resolve_status = resolve_status,
         )
         return run_bash(script)
 
-    def test_unsloth_succeeds(self, tmp_path: Path):
+    def test_helper_resolution_succeeds(self, tmp_path: Path):
         output = self._run_resolve(
             tmp_path,
             "latest",
-            unsloth_resp = '{"tag_name":"b8508"}',
-            ggml_resp = '{"tag_name":"b9000"}',
+            resolved_tag = "b8508",
+            resolve_status = 0,
         )
         assert output == "b8508"
 
-    def test_unsloth_fails_ggml_succeeds(self, tmp_path: Path):
+    def test_helper_resolution_falls_back_to_raw_requested_tag(self, tmp_path: Path):
         output = self._run_resolve(
             tmp_path,
             "latest",
-            unsloth_resp = None,
-            ggml_resp = '{"tag_name":"b9000"}',
-        )
-        assert output == "b9000"
-
-    def test_both_fail_raw_fallback(self, tmp_path: Path):
-        output = self._run_resolve(
-            tmp_path,
-            "latest",
-            unsloth_resp = None,
-            ggml_resp = None,
+            resolved_tag = "",
+            resolve_status = 1,
         )
         assert output == "latest"
 
-    def test_concrete_tag_passes_through(self, tmp_path: Path):
+    def test_concrete_tag_passes_through_when_helper_fails(self, tmp_path: Path):
         output = self._run_resolve(
             tmp_path,
             "b7777",
-            unsloth_resp = '{"tag_name":"b8508"}',
-            ggml_resp = '{"tag_name":"b9000"}',
+            resolved_tag = "",
+            resolve_status = 1,
         )
         assert output == "b7777"
-
-    def test_unsloth_malformed_json_falls_through(self, tmp_path: Path):
-        output = self._run_resolve(
-            tmp_path,
-            "latest",
-            unsloth_resp = '{"bad_key":"no_tag"}',
-            ggml_resp = '{"tag_name":"b9001"}',
-        )
-        assert output == "b9001"
-
-    def test_both_malformed_json_raw_fallback(self, tmp_path: Path):
-        output = self._run_resolve(
-            tmp_path,
-            "latest",
-            unsloth_resp = '{"bad":"data"}',
-            ggml_resp = '{"also":"bad"}',
-        )
-        assert output == "latest"
-
-    def test_unsloth_empty_body_falls_through(self, tmp_path: Path):
-        output = self._run_resolve(
-            tmp_path,
-            "latest",
-            unsloth_resp = "",
-            ggml_resp = '{"tag_name":"b7000"}',
-        )
-        assert output == "b7000"
-
-    def test_unsloth_empty_tag_name_falls_through(self, tmp_path: Path):
-        output = self._run_resolve(
-            tmp_path,
-            "latest",
-            unsloth_resp = '{"tag_name":""}',
-            ggml_resp = '{"tag_name":"b6000"}',
-        )
-        assert output == "b6000"
 
     def test_env_override_unsloth_llama_tag(self):
         output = run_bash(
@@ -593,10 +569,10 @@ class TestSourceCodePatterns:
     def test_setup_sh_no_rm_before_prereq_check(self):
         """rm -rf must appear AFTER cmake/git checks, not before."""
         content = SETUP_SH.read_text()
-        # Find the source-build block
-        idx_else = content.find("# Check prerequisites")
-        assert idx_else != -1
-        block = content[idx_else:]
+        # Anchor on the source-build cmake check block.
+        idx_block = content.find("command -v cmake")
+        assert idx_block != -1
+        block = content[idx_block:]
         # rm -rf should appear after the cmake/git checks
         idx_cmake = block.find("command -v cmake")
         idx_git = block.find("command -v git")
@@ -619,14 +595,12 @@ class TestSourceCodePatterns:
             '_RESOLVED_LLAMA_TAG" != "latest"' in content
         ), "Should guard against literal 'latest' tag"
 
-    def test_setup_sh_latest_resolution_queries_unsloth_first(self):
-        """The Unsloth repo should be queried before ggml-org."""
+    def test_setup_sh_latest_resolution_uses_helper_only(self):
+        """Shell fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_SH.read_text()
-        idx_unsloth = content.find("_HELPER_RELEASE_REPO}/releases/latest")
-        idx_ggml = content.find("ggml-org/llama.cpp/releases/latest")
-        assert idx_unsloth != -1, "Unsloth API query not found"
-        assert idx_ggml != -1, "ggml-org API query not found"
-        assert idx_unsloth < idx_ggml, "Unsloth should be queried before ggml-org"
+        assert "--resolve-llama-tag" in content
+        assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
+        assert "ggml-org/llama.cpp/releases/latest" not in content
 
     def test_setup_ps1_uses_checkout_b(self):
         """PS1 should use checkout -B, not checkout --force FETCH_HEAD."""
@@ -658,14 +632,12 @@ class TestSourceCodePatterns:
                         f"Found 'git pull' in llama.cpp build section at line {i+1}"
                     )
 
-    def test_setup_ps1_latest_resolution_queries_unsloth_first(self):
-        """PS1 should query Unsloth repo before ggml-org."""
+    def test_setup_ps1_latest_resolution_uses_helper_only(self):
+        """PS1 fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_PS1.read_text()
-        idx_unsloth = content.find("$HelperReleaseRepo/releases/latest")
-        idx_ggml = content.find("ggml-org/llama.cpp/releases/latest")
-        assert idx_unsloth != -1, "Unsloth API query not found in PS1"
-        assert idx_ggml != -1, "ggml-org API query not found in PS1"
-        assert idx_unsloth < idx_ggml, "Unsloth should be queried before ggml-org"
+        assert "--resolve-llama-tag" in content
+        assert "$HelperReleaseRepo/releases/latest" not in content
+        assert "ggml-org/llama.cpp/releases/latest" not in content
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""

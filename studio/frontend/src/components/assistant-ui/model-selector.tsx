@@ -34,7 +34,6 @@ interface ModelSelectorProps {
   activeGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
-  onFoldersChange?: () => void;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -101,7 +100,6 @@ function ModelSelectorContent({
   value,
   onSelect,
   onEject,
-  onFoldersChange,
   className,
   dataTour,
 }: {
@@ -110,7 +108,6 @@ function ModelSelectorContent({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
-  onFoldersChange?: () => void;
   className?: string;
   dataTour?: string;
 }) {
@@ -127,7 +124,7 @@ function ModelSelectorContent({
       )}
     >
       {chatOnly ? (
-        <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+        <HubModelPicker models={models} value={value} onSelect={onSelect} />
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
@@ -136,7 +133,7 @@ function ModelSelectorContent({
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+            <HubModelPicker models={models} value={value} onSelect={onSelect} />
           </TabsContent>
 
           <TabsContent value="lora" className="m-0">
@@ -174,7 +171,6 @@ export function ModelSelector({
   activeGgufVariant,
   onValueChange,
   onEject,
-  onFoldersChange,
   variant = "outline",
   size = "default",
   className,
@@ -257,7 +253,6 @@ export function ModelSelector({
         value={selected}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
-        onFoldersChange={onFoldersChange}
         className={contentClassName}
         dataTour={contentDataTour}
       />
