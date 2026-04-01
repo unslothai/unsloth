@@ -770,7 +770,6 @@ shell.Run cmd, 0, False
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
         substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
-        substep "https://www.nvidia.com/Download/index.aspx" "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -798,10 +797,10 @@ shell.Run cmd, 0, False
     # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
-        Write-Host "  NOTE: No NVIDIA GPU detected." -ForegroundColor Yellow
-        Write-Host "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
-        Write-Host "  re-run with --no-torch for a faster, lighter install:"
-        Write-Host "    .\install.ps1 --no-torch"
+        substep "No NVIDIA GPU detected." "Yellow"
+        substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
+        substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
+        substep ".\install.ps1 --no-torch" "Yellow"
         Write-Host ""
     }
 
@@ -842,7 +841,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.16" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.18" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -850,7 +849,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.16" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.3.18" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -883,7 +882,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.16" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.3.18" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -891,7 +890,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.16" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.3.18" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -914,7 +913,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.16" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.3.18" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return

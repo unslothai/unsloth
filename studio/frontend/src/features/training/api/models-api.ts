@@ -79,7 +79,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }

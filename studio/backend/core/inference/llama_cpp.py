@@ -2740,6 +2740,8 @@ class LlamaCppBackend:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
 
+                # Clear tool status badge before next generation iteration
+                yield {"type": "status", "text": ""}
                 # Continue the loop to let model respond with context
                 continue
 
