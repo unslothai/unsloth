@@ -460,25 +460,25 @@ export function ChatSettingsPanel({
           </div>
         ) : null}
 
+          <div className="px-2 pb-4">
+            <label
+              htmlFor="system-prompt"
+              className="mb-1.5 block text-xs font-medium"
+            >
+              System Prompt
+            </label>
+            <Textarea
+              id="system-prompt"
+              value={params.systemPrompt}
+              onChange={(e) => set("systemPrompt")(e.target.value)}
+              placeholder="You are a helpful assistant..."
+              className="min-h-20 text-xs corner-squircle"
+              rows={3}
+            />
+          </div>
+
           {!isExternalModel ? (
             <>
-              <div className="px-2 pb-4">
-                <label
-                  htmlFor="system-prompt"
-                  className="mb-1.5 block text-xs font-medium"
-                >
-                  System Prompt
-                </label>
-                <Textarea
-                  id="system-prompt"
-                  value={params.systemPrompt}
-                  onChange={(e) => set("systemPrompt")(e.target.value)}
-                  placeholder="You are a helpful assistant..."
-                  className="min-h-20 text-xs corner-squircle"
-                  rows={3}
-                />
-              </div>
-
               <CollapsibleSection icon={Settings02Icon} label="Model" defaultOpen={true}>
                 <div className="flex flex-col gap-3 py-1">
                   {isGguf && (

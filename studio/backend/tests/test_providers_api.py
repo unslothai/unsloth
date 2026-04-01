@@ -146,10 +146,6 @@ def auth_headers() -> dict[str, str]:
             change_resp.status_code == 200
         ), f"Auto password-change failed ({change_resp.status_code}): {change_resp.text}"
         token = change_resp.json()["access_token"]
-        print(
-            f"\n  NOTE: Bootstrap password changed automatically.\n"
-            f"  Set STUDIO_TEST_PASSWORD to your STUDIO_TEST_NEW_PASSWORD value for future runs."
-        )
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -226,9 +222,6 @@ class TestAuth:
         body = resp.json()
         assert body.get("access_token"), "access_token is missing or empty"
         assert body.get("token_type") == "bearer"
-        print(
-            "\n  Login response OK (token_type present, must_change_password checked)"
-        )
 
 
 # ── TestPublicKey ────────────────────────────────────────────────────

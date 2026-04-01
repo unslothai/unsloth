@@ -657,11 +657,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         let retriedWithRefreshedKey = false;
         while (true) {
-          const stream = streamChatCompletions(
-            await buildRequestPayload(retriedWithRefreshedKey),
-            abortSignal,
-          );
           try {
+            const stream = streamChatCompletions(
+              await buildRequestPayload(retriedWithRefreshedKey),
+              abortSignal,
+            );
             for await (const chunk of stream) {
           // Handle tool status events
               const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
