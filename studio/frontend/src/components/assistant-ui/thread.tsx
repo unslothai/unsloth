@@ -439,22 +439,37 @@ const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const [elapsed, setElapsed] = useState(0);
   const [visible, setVisible] = useState(false);
+  const wasActiveRef = useRef(false);
 
   useEffect(() => {
     if (!toolStatus) {
+      wasActiveRef.current = false;
       setElapsed(0);
       setVisible(false);
       return;
     }
+
     setElapsed(0);
-    setVisible(false);
-    const showTimer = setTimeout(() => setVisible(true), 300);
+    const isFirstTool = !wasActiveRef.current;
+    wasActiveRef.current = true;
+
+    // Only debounce the very first tool in a run; keep the badge
+    // visible when switching between consecutive tools so it does
+    // not flicker during multi-tool turns.
+    let showTimer: ReturnType<typeof setTimeout> | undefined;
+    if (isFirstTool) {
+      setVisible(false);
+      showTimer = setTimeout(() => setVisible(true), 300);
+    } else {
+      setVisible(true);
+    }
+
     const interval = setInterval(() => {
       setElapsed((prev) => prev + 1);
     }, 1000);
     return () => {
       clearInterval(interval);
-      clearTimeout(showTimer);
+      if (showTimer) clearTimeout(showTimer);
     };
   }, [toolStatus]);
 
