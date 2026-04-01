@@ -281,6 +281,7 @@ def _fetch_page_text(
         max_bytes = _MAX_FETCH_BYTES
         current_url = url
         current_host = parsed.hostname
+        ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
             # Pin to the validated IP to prevent DNS rebinding.
@@ -297,7 +298,7 @@ def _fetch_page_text(
             req = urllib.request.Request(
                 pinned_url,
                 headers = {
-                    "User-Agent": random.choice(_USER_AGENTS),
+                    "User-Agent": ua,
                     "Host": current_host,
                 },
             )
