@@ -189,8 +189,9 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     verification.  This handler swaps conn.host to the original hostname
     during connect() so TLS works while still connecting to the pinned IP.
     """
+
     def __init__(self, hostname: str):
-        super().__init__(context=_tls_ctx)
+        super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
 
     def https_open(self, req):
