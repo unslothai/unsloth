@@ -217,10 +217,16 @@ def _fetch_page_text(
 
     try:
         import http.client
+        import socket
         import ssl
         import urllib.request
         from urllib.error import HTTPError as _HTTPError
         from urllib.parse import urljoin
+
+        try:
+            import certifi
+        except ImportError:
+            certifi = None
 
         # Disable auto-redirect so we can validate each hop for SSRF.
         # urllib raises HTTPError for 3xx when the handler returns None,
@@ -230,44 +236,29 @@ def _fetch_page_text(
                 return None
 
         class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-            """HTTPS connection that connects to a pinned IP while
-            preserving the original hostname for SNI and certificate
-            verification.  This prevents DNS rebinding between the
-            SSRF validation step and the actual fetch."""
+            """HTTPS connection that pins to a pre-validated IP while
+            preserving the original hostname for SNI and cert verification.
+            Overrides ``_create_connection`` so that standard ``connect()``
+            logic (TLS, proxy CONNECT tunneling, TCP_NODELAY) is preserved."""
 
             _pinned_ip: str | None = None
 
-            def connect(self):
-                import socket
-
-                ip = self._pinned_ip or self.host
-                self.sock = socket.create_connection(
-                    (ip, self.port),
-                    self.timeout,
-                )
-                if self._context:
-                    ctx = self._context
-                else:
-                    try:
-                        import certifi
-
-                        ctx = ssl.create_default_context(cafile = certifi.where())
-                    except ImportError:
-                        ctx = ssl.create_default_context()
-                self.sock = ctx.wrap_socket(
-                    self.sock,
-                    server_hostname = self.host,
+            def _create_connection(self, address, timeout, source_address):
+                return socket.create_connection(
+                    (self._pinned_ip or address[0], address[1]),
+                    timeout,
+                    source_address,
                 )
 
         class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             """HTTPSHandler that routes connections through a pinned IP."""
 
-            def __init__(self, pinned_ip: str):
-                super().__init__()
+            def __init__(self, pinned_ip: str, context = None):
+                super().__init__(context = context)
                 self._pinned_ip = pinned_ip
 
             def https_open(self, req):
-                return self.do_open(self._make_connection, req)
+                return self.do_open(self._make_connection, req, context = self._context)
 
             def _make_connection(self, host, **kwargs):
                 conn = _PinnedHTTPSConnection(host, **kwargs)
@@ -275,18 +266,15 @@ def _fetch_page_text(
                 return conn
 
         class _PinnedHTTPConnection(http.client.HTTPConnection):
-            """HTTP connection that connects to a pinned IP while
-            preserving the original hostname in the Host header."""
+            """HTTP connection that pins to a pre-validated IP."""
 
             _pinned_ip: str | None = None
 
-            def connect(self):
-                import socket
-
-                ip = self._pinned_ip or self.host
-                self.sock = socket.create_connection(
-                    (ip, self.port),
-                    self.timeout,
+            def _create_connection(self, address, timeout, source_address):
+                return socket.create_connection(
+                    (self._pinned_ip or address[0], address[1]),
+                    timeout,
+                    source_address,
                 )
 
         class _PinnedHTTPHandler(urllib.request.HTTPHandler):
@@ -307,11 +295,17 @@ def _fetch_page_text(
         max_bytes = max_chars * 4 + 1
         current_url = url
 
+        # Create SSL context once and reuse across redirect hops.
+        ssl_ctx = ssl.create_default_context(
+            cafile = certifi.where() if certifi else None,
+        )
+        ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+
         for _hop in range(5):
             # Build opener with IP-pinning handler to prevent DNS rebinding.
             # The original hostname is preserved in the URL for correct SNI.
             if urlparse(current_url).scheme == "https":
-                pin_handler = _PinnedHTTPSHandler(pinned_ip)
+                pin_handler = _PinnedHTTPSHandler(pinned_ip, context = ssl_ctx)
             else:
                 pin_handler = _PinnedHTTPHandler(pinned_ip)
             opener = urllib.request.build_opener(_NoRedirect, pin_handler)
