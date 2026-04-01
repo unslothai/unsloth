@@ -147,12 +147,15 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result
         cmd.env_remove("PYTHONPATH");
     }
 
-    // On Windows, create a new process group so CTRL_BREAK_EVENT works.
+    // On Windows, create a new process group so CTRL_BREAK_EVENT works,
+    // and suppress console windows so child processes (winget, npm, powershell)
+    // don't pop up visible terminals from the Tauri GUI app.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
 
     // Spawn in a process group so stop_backend() kills the entire subprocess tree
