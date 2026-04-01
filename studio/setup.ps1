@@ -1626,6 +1626,21 @@ if ($LlamaPr) {
     $ResolvedLlamaTag = "pr-$LlamaPr"
     $NeedLlamaSourceBuild = $true
     $SkipPrebuiltInstall = $true
+} elseif ($SkipPrebuiltInstall) {
+    # Custom source or other override already forced source build; skip the
+    # prebuilt release resolution. When building from a custom fork, the fork
+    # may not carry upstream bNNNN tags.
+    if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
+        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-llama-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>$null
+        $fallbackExit = $LASTEXITCODE
+        $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
+            ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
+        } else {
+            $RequestedLlamaTag
+        }
+    } else {
+        $ResolvedLlamaTag = $RequestedLlamaTag
+    }
 } else {
     $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" --resolve-install-tag $RequestedLlamaTag --published-repo $HelperReleaseRepo 2>&1
     $resolveExit = $LASTEXITCODE
@@ -1861,9 +1876,8 @@ if (-not $NeedLlamaSourceBuild) {
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
-        if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
-            Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$LlamaSource.git" } | Out-Null
-        }
+        # Always sync the remote URL so switching between default/fork sources works
+        Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$LlamaSource.git" } | Out-Null
         if ($LlamaPr) {
             $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
             if ($gitFetchExit -ne 0) {

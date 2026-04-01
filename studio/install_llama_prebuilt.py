@@ -3749,6 +3749,12 @@ def existing_install_matches_choice(
 
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
+
+    # Verify the primary executable still exists (catches partial deletion)
+    runtime_dir = install_runtime_dir(install_dir, host)
+    server_name = "llama-server.exe" if host.is_windows else "llama-server"
+    if not (runtime_dir / server_name).exists():
+        return False
     expected_fingerprint = expected_install_fingerprint(
         llama_tag = llama_tag,
         release_tag = release_tag,

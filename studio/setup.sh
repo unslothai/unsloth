@@ -510,13 +510,19 @@ if [ -n "$_LLAMA_PR" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
-    # Custom source already forced source build; resolve a tag for the build step
-    # without attempting the prebuilt release path.
-    set +e
-    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
-    _RESOLVE_UPSTREAM_STATUS=$?
-    set -e
-    if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+    # Custom source or other override already forced source build; skip
+    # the prebuilt release resolution entirely. When building from a custom
+    # fork, the fork may not carry upstream bNNNN tags, so resolve the tag
+    # only when the source is the default ggml-org repo.
+    if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
+        set +e
+        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
+        _RESOLVE_UPSTREAM_STATUS=$?
+        set -e
+        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+        fi
+    else
         _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
     fi
 else
