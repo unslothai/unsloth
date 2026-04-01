@@ -269,11 +269,24 @@ export function useHfModelSearch(
 ) {
   const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
 
+  // Parse publisher detection once and share between the iterator factory
+  // and the secondary sort gate (avoids duplicating the regex + logic).
+  const { isPublisherQuery, searchQuery, pinnedId, trimmed } = useMemo(() => {
+    const t = query.trim();
+    const m = PUBLISHER_RE.exec(t);
+    const is = !!m && m[1].toLowerCase() !== "unsloth";
+    return {
+      isPublisherQuery: is,
+      searchQuery: is ? m![2] : t,
+      pinnedId: is ? t : undefined,
+      trimmed: t,
+    };
+  }, [query]);
+
   const createIter = useCallback(
     () => {
-      const trimmed = query.trim();
       if (!trimmed) {
-        // No query → show priority models first (with full metadata), then general unsloth listing
+        // No query: show priority models first (with full metadata), then general unsloth listing
         if (priorityIds && priorityIds.length > 0) {
           return priorityThenListingIterator(priorityIds, task, accessToken) as AsyncGenerator<unknown>;
         }
@@ -284,19 +297,16 @@ export function useHfModelSearch(
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
-      // Typed query: disable task filter so explicitly searched models still appear
-      // even if HF task metadata is wrong/missing.
+      // Typed query: disable task filter so explicitly searched models still
+      // appear even if HF task metadata is wrong/missing.
       // If the query is a valid "owner/repo" identifier (exactly two non-empty,
-      // slash-free, space-free segments), strip the org prefix so unsloth variants
-      // surface, then pin the original publisher model after a small batch of
-      // unsloth results.  Queries for unsloth-owned models are left as-is so
-      // they get the full 20-result prefetch and secondary sort.
-      const publisherMatch = PUBLISHER_RE.exec(trimmed);
-      const isPublisherQuery = !!publisherMatch && publisherMatch[1].toLowerCase() !== "unsloth";
-      const searchQuery = isPublisherQuery ? publisherMatch[2] : trimmed;
-      return mergedModelIterator(searchQuery, undefined, accessToken, isPublisherQuery ? trimmed : undefined) as AsyncGenerator<unknown>;
+      // slash-free, space-free segments), strip the org prefix so unsloth
+      // variants surface, then pin the original publisher model after a small
+      // batch of unsloth results.  Queries for unsloth-owned models are left
+      // as-is so they get the full 20-result prefetch and secondary sort.
+      return mergedModelIterator(searchQuery, undefined, accessToken, pinnedId) as AsyncGenerator<unknown>;
     },
-    [query, task, accessToken, priorityIds],
+    [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds],
   );
 
   const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
@@ -306,8 +316,6 @@ export function useHfModelSearch(
   // Skip when the user searched for a specific non-unsloth publisher
   // (e.g. "openai/gpt-oss-20b") -- the iterator already handles the
   // pinned ordering in that case.
-  const publisherMatch = PUBLISHER_RE.exec(query.trim());
-  const isPublisherQuery = !!publisherMatch && publisherMatch[1].toLowerCase() !== "unsloth";
   const results = useMemo(
     () =>
       isPublisherQuery
