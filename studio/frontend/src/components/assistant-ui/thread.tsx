@@ -440,34 +440,25 @@ const ToolStatusDisplay: FC = () => {
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const [elapsed, setElapsed] = useState(0);
   const [visible, setVisible] = useState(false);
-  const wasActiveRef = useRef(false);
 
   useEffect(() => {
     if (!toolStatus) {
       setElapsed(0);
-      // Only hide the badge and reset run state when the thread
-      // run is actually over; transient clears between tool
-      // iterations keep it visible while the thread is running.
       if (!isThreadRunning) {
-        wasActiveRef.current = false;
         setVisible(false);
       }
       return;
     }
 
     setElapsed(0);
-    const isFirstTool = !wasActiveRef.current;
-    wasActiveRef.current = true;
 
-    // Only debounce the very first tool in a run; keep the badge
-    // visible when switching between consecutive tools so it does
-    // not flicker during multi-tool turns.
+    // Debounce badge visibility by 300ms when the badge is not
+    // already on screen. Once visible from a prior tool, consecutive
+    // tools show immediately so the badge does not flicker. Fast
+    // tool calls that all complete under 300ms never show the badge.
     let showTimer: ReturnType<typeof setTimeout> | undefined;
-    if (isFirstTool) {
-      setVisible(false);
+    if (!visible) {
       showTimer = setTimeout(() => setVisible(true), 300);
-    } else {
-      setVisible(true);
     }
 
     const interval = setInterval(() => {
