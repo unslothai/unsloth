@@ -140,7 +140,8 @@ class LoadResponse(BaseModel):
         None, description = "Maximum context length currently available on this hardware"
     )
     native_context_length: Optional[int] = Field(
-        None, description = "Model's native context length from GGUF metadata (not capped by VRAM)"
+        None,
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
     )
     supports_reasoning: bool = Field(
         False,
