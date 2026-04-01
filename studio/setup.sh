@@ -509,6 +509,16 @@ if [ -n "$_LLAMA_PR" ]; then
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
+elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
+    # Custom source already forced source build; resolve a tag for the build step
+    # without attempting the prebuilt release path.
+    set +e
+    _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" --resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO" 2>/dev/null)"
+    _RESOLVE_UPSTREAM_STATUS=$?
+    set -e
+    if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+        _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+    fi
 else
     _RESOLVE_LLAMA_LOG="$(mktemp)"
     set +e
@@ -558,7 +568,7 @@ else
         _PREBUILT_CMD=(
             python "$SCRIPT_DIR/install_llama_prebuilt.py"
             --install-dir "$LLAMA_CPP_DIR"
-            --llama-tag "$_RESOLVED_LLAMA_TAG"
+            --llama-tag "$_REQUESTED_LLAMA_TAG"
             --published-repo "$_HELPER_RELEASE_REPO"
         )
         if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
@@ -576,7 +586,7 @@ else
         set -e
 
         if [ "$_PREBUILT_STATUS" -eq 0 ]; then
-            if grep -Fq "already matches selected release" "$_PREBUILT_LOG"; then
+            if grep -Fq "already matches" "$_PREBUILT_LOG"; then
                 step "llama.cpp" "prebuilt up to date and validated"
             else
                 step "llama.cpp" "prebuilt installed and validated"

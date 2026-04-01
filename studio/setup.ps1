@@ -1668,7 +1668,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
-            "--llama-tag", $ResolvedLlamaTag,
+            "--llama-tag", $RequestedLlamaTag,
             "--published-repo", $HelperReleaseRepo
         )
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
@@ -1690,7 +1690,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         $ErrorActionPreference = $prevEAPPrebuilt
 
         if ($prebuiltExit -eq 0) {
-            if ($prebuiltOutput -match "already matches selected release") {
+            if ($prebuiltOutput -match "already matches") {
                 step "llama.cpp" "prebuilt up to date and validated"
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
@@ -1861,6 +1861,9 @@ if (-not $NeedLlamaSourceBuild) {
 
     if (Test-Path (Join-Path $LlamaCppDir ".git")) {
         Write-Host "   Syncing llama.cpp to $ResolvedLlamaTag..." -ForegroundColor Gray
+        if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
+            Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$LlamaSource.git" } | Out-Null
+        }
         if ($LlamaPr) {
             $gitFetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
             if ($gitFetchExit -ne 0) {

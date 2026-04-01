@@ -241,18 +241,15 @@ def _os_error_messages(exc: BaseException) -> list[str]:
 def is_busy_lock_error(exc: BaseException) -> bool:
     if isinstance(exc, BusyInstallConflict):
         return True
-    if isinstance(exc, PermissionError):
-        return True
     if isinstance(exc, OSError):
         if exc.errno in {
             errno.EACCES,
             errno.EBUSY,
-            errno.ENOTEMPTY,
             errno.EPERM,
             errno.ETXTBSY,
         }:
             return True
-        if getattr(exc, "winerror", None) in {5, 32, 145, 183}:
+        if getattr(exc, "winerror", None) in {5, 32, 145}:
             return True
     for message in _os_error_messages(exc):
         if any(
@@ -263,7 +260,6 @@ def is_busy_lock_error(exc: BaseException) -> bool:
                 "device or resource busy",
                 "permission denied",
                 "text file busy",
-                "directory not empty",
                 "file is in use",
                 "process cannot access the file",
                 "cannot create a file when that file already exists",
@@ -3637,11 +3633,12 @@ def expected_install_fingerprint(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
 ) -> str | None:
+    if not choice.expected_sha256:
+        return None
     source_archive = approved_checksums.artifacts.get(
         source_archive_logical_name(llama_tag)
     )
-    if source_archive is None or not choice.expected_sha256:
-        return None
+    source_sha256 = source_archive.sha256 if source_archive is not None else None
     payload = {
         "published_repo": approved_checksums.repo,
         "release_tag": release_tag,
@@ -3649,7 +3646,7 @@ def expected_install_fingerprint(
         "asset": choice.name,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
-        "source_sha256": source_archive.sha256,
+        "source_sha256": source_sha256,
         "runtime_line": choice.runtime_line,
         "bundle_profile": choice.bundle_profile,
         "coverage_class": choice.coverage_class,
@@ -3744,8 +3741,6 @@ def existing_install_matches_choice(
     approved_checksums: ApprovedReleaseChecksums,
 ) -> bool:
     if not install_dir.exists():
-        return False
-    if not install_tree_is_healthy(install_dir, host):
         return False
 
     metadata = load_prebuilt_metadata(install_dir)
