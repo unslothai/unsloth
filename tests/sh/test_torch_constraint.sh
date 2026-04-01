@@ -70,7 +70,7 @@ run_constraint_snippet() {
     make_mock_python "$_py_minor" "$_venv_dir"
 
     bash -c "
-        SKIP_TORCH=$_skip_torch
+        SKIP_TORCH=\"$_skip_torch\"
         OS=\"$_os\"
         _ARCH=\"$_arch\"
         VENV_DIR=\"$_venv_dir\"
@@ -203,11 +203,10 @@ echo "=== Mock uv: verify constraint passed to uv ==="
 # arm64 + py313 -> uv receives torch>=2.6
 _UV_LOG="$TMPDIR_BASE/uv_log_tight.txt"
 make_mock_python 13 "$TMPDIR_BASE/uv_venv1"
-cat > "$TMPDIR_BASE/mock_uv_tight" <<'UVEOF'
+cat > "$TMPDIR_BASE/mock_uv_tight" <<UVEOF
 #!/bin/bash
-echo "$@" >> UV_LOG_PLACEHOLDER
+echo "\$@" >> $_UV_LOG
 UVEOF
-sed -i "s|UV_LOG_PLACEHOLDER|$_UV_LOG|" "$TMPDIR_BASE/mock_uv_tight"
 chmod +x "$TMPDIR_BASE/mock_uv_tight"
 
 bash -c "
@@ -222,7 +221,7 @@ bash -c "
             TORCH_CONSTRAINT=\"torch>=2.6,<2.11.0\"
         fi
     fi
-    $TMPDIR_BASE/mock_uv_tight pip install --python \"\$VENV_DIR/bin/python\" \"\$TORCH_CONSTRAINT\" torchvision torchaudio
+    \"$TMPDIR_BASE/mock_uv_tight\" pip install --python \"\$VENV_DIR/bin/python\" \"\$TORCH_CONSTRAINT\" torchvision torchaudio
 " 2>/dev/null
 _uv_got=$(cat "$_UV_LOG" 2>/dev/null || echo "")
 assert_contains "mock uv arm64+py313 receives torch>=2.6" "$_uv_got" "torch>=2.6,<2.11.0"
@@ -230,11 +229,10 @@ assert_contains "mock uv arm64+py313 receives torch>=2.6" "$_uv_got" "torch>=2.6
 # arm64 + py312 -> uv receives torch>=2.4
 _UV_LOG2="$TMPDIR_BASE/uv_log_default.txt"
 make_mock_python 12 "$TMPDIR_BASE/uv_venv2"
-cat > "$TMPDIR_BASE/mock_uv_default" <<'UVEOF'
+cat > "$TMPDIR_BASE/mock_uv_default" <<UVEOF
 #!/bin/bash
-echo "$@" >> UV_LOG_PLACEHOLDER
+echo "\$@" >> $_UV_LOG2
 UVEOF
-sed -i "s|UV_LOG_PLACEHOLDER|$_UV_LOG2|" "$TMPDIR_BASE/mock_uv_default"
 chmod +x "$TMPDIR_BASE/mock_uv_default"
 
 bash -c "
@@ -249,7 +247,7 @@ bash -c "
             TORCH_CONSTRAINT=\"torch>=2.6,<2.11.0\"
         fi
     fi
-    $TMPDIR_BASE/mock_uv_default pip install --python \"\$VENV_DIR/bin/python\" \"\$TORCH_CONSTRAINT\" torchvision torchaudio
+    \"$TMPDIR_BASE/mock_uv_default\" pip install --python \"\$VENV_DIR/bin/python\" \"\$TORCH_CONSTRAINT\" torchvision torchaudio
 " 2>/dev/null
 _uv_got2=$(cat "$_UV_LOG2" 2>/dev/null || echo "")
 assert_contains "mock uv arm64+py312 receives torch>=2.4" "$_uv_got2" "torch>=2.4,<2.11.0"

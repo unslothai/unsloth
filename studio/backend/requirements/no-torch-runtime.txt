@@ -28,6 +28,20 @@ peft>=0.18.0,!=0.11.0
 huggingface_hub>=0.34.0
 hf_transfer
 diffusers
+
+# Transitive deps required because this file is installed with --no-deps.
+# Without these, `from transformers import AutoConfig` fails at import time.
+regex
+typing_extensions
+filelock
+httpx
+httpcore
+certifi
+idna
+anyio
+sniffio
+h11
+
 tokenizers
 transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0
 trl>=0.18.2,!=0.19.0,<=0.24.0

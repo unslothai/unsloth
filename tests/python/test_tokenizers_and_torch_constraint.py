@@ -6,11 +6,9 @@ Tests for two install fixes:
 
 from __future__ import annotations
 
-import os
 import pathlib
 import re
 import subprocess
-import sys
 import textwrap
 
 import pytest
@@ -404,22 +402,11 @@ class TestE2ETokenizersFix:
         )
 
     @pytest.mark.parametrize("py_version", ["3.12", "3.13"])
-    def test_autoconfig_works_with_tokenizers(self, tmp_path, py_version):
-        """Install tokenizers + transformers (with dep resolution), verify
-        AutoConfig works.  We use normal resolution (not --no-deps) so
-        transitive deps are pulled in; the point of this test is proving
-        that tokenizers being present is sufficient for AutoConfig."""
+    def test_autoconfig_works_with_no_torch_runtime(self, tmp_path, py_version):
+        """Install from no-torch-runtime.txt with --no-deps (matching the
+        real install.sh path), then verify AutoConfig imports successfully."""
         venv = self._create_venv(tmp_path, f"tok-{py_version}", py_version)
-        r = self._pip_install(
-            venv,
-            "tokenizers",
-            "transformers",
-            "huggingface_hub",
-            "safetensors",
-            "packaging",
-            "pyyaml",
-            "numpy",
-        )
+        r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
 
         result = self._run_python(
@@ -433,7 +420,7 @@ class TestE2ETokenizersFix:
     @pytest.mark.parametrize("py_version", ["3.12", "3.13"])
     def test_tokenizers_directly_importable(self, tmp_path, py_version):
         venv = self._create_venv(tmp_path, f"tok-imp-{py_version}", py_version)
-        self._pip_install(venv, "tokenizers")
+        self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         result = self._run_python(venv, "import tokenizers; print('OK')")
         assert result.returncode == 0, f"Failed: {result.stderr}"
 
@@ -441,39 +428,24 @@ class TestE2ETokenizersFix:
     def test_torch_not_importable(self, tmp_path, py_version):
         """In the no-torch scenario, torch should not be available."""
         venv = self._create_venv(tmp_path, f"no-torch-{py_version}", py_version)
-        self._pip_install(
-            venv,
-            "tokenizers",
-            "transformers",
-            "huggingface_hub",
-            "safetensors",
-            "packaging",
-            "pyyaml",
-            "numpy",
-        )
+        self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         result = self._run_python(venv, "import torch")
         assert result.returncode != 0, "torch should NOT be importable"
 
     def test_negative_control_no_tokenizers(self, tmp_path):
-        """Without tokenizers, AutoConfig import should fail."""
+        """Without tokenizers, AutoConfig should fail. We create a copy of
+        no-torch-runtime.txt with the tokenizers line removed."""
         venv = self._create_venv(tmp_path, "neg-ctrl", "3.12")
-        # Use --no-deps to prevent uv from resolving tokenizers as a
-        # transitive dep of transformers.
-        self._pip_install(
-            venv,
-            "--no-deps",
-            "transformers",
-            "huggingface_hub",
-            "safetensors",
-            "packaging",
-            "pyyaml",
-            "numpy",
-            "tqdm",
-            "filelock",
-            "requests",
-            "regex",
-            "typing_extensions",
+        req_no_tokenizers = tmp_path / "no-tokenizers.txt"
+        req_no_tokenizers.write_text(
+            "\n".join(
+                line
+                for line in _read(_NO_TORCH_RT).splitlines()
+                if line.strip() != "tokenizers"
+            ),
+            encoding = "utf-8",
         )
+        self._pip_install(venv, "--no-deps", "-r", str(req_no_tokenizers))
         result = self._run_python(venv, "from transformers import AutoConfig")
         assert (
             result.returncode != 0
@@ -552,11 +524,10 @@ class TestE2EFullNoTorchSandbox:
         )
 
     def test_autoconfig_succeeds(self, tmp_path):
-        """The real bug fix: from transformers import AutoConfig should work.
-        Uses normal resolution (not --no-deps) so transitive deps are pulled
-        in -- the test focuses on whether the listed packages are sufficient."""
+        """The real bug fix: install with --no-deps (matching install.sh)
+        and verify from transformers import AutoConfig works."""
         venv = self._create_venv(tmp_path, "full-no-torch")
-        r = self._pip_install(venv, "-r", str(_NO_TORCH_RT))
+        r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
         result = self._run_python(
             venv, "from transformers import AutoConfig; print('OK')"
