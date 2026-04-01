@@ -437,21 +437,40 @@ const CodeToolsToggle: FC = () => {
 
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const [elapsed, setElapsed] = useState(0);
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
     if (!toolStatus) {
       setElapsed(0);
+      if (!isThreadRunning) {
+        setVisible(false);
+      }
       return;
     }
+
     setElapsed(0);
+
+    // Debounce badge visibility by 300ms when the badge is not
+    // already on screen. Once visible from a prior tool, consecutive
+    // tools show immediately so the badge does not flicker. Fast
+    // tool calls that all complete under 300ms never show the badge.
+    let showTimer: ReturnType<typeof setTimeout> | undefined;
+    if (!visible) {
+      showTimer = setTimeout(() => setVisible(true), 300);
+    }
+
     const interval = setInterval(() => {
       setElapsed((prev) => prev + 1);
     }, 1000);
-    return () => clearInterval(interval);
-  }, [toolStatus]);
+    return () => {
+      clearInterval(interval);
+      if (showTimer) clearTimeout(showTimer);
+    };
+  }, [toolStatus, isThreadRunning]);
 
-  if (!toolStatus) return null;
+  if (!toolStatus || !visible) return null;
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
