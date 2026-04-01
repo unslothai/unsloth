@@ -775,7 +775,13 @@ else
             fi
 
             _BUILD_DESC="building"
-            if [ -n "$NVCC_PATH" ]; then
+            if [ "$_IS_MACOS_ARM64" = true ]; then
+                # Metal takes precedence on Apple Silicon (CUDA/ROCm not functional on macOS)
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+                _TRY_METAL_CPU_FALLBACK=true
+            elif [ -n "$NVCC_PATH" ]; then
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                 CUDA_ARCHS=""
@@ -841,11 +847,6 @@ else
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
                 fi
-            elif [ "$_IS_MACOS_ARM64" = true ]; then
-                _BUILD_DESC="building (Metal)"
-                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
-                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
-                _TRY_METAL_CPU_FALLBACK=true
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
             elif [ -d /opt/rocm ] || command -v rocm-smi &>/dev/null; then

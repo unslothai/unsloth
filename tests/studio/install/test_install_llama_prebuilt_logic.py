@@ -1864,3 +1864,94 @@ def add_symlink_to_tar(archive: tarfile.TarFile, name: str, target: str) -> None
     info.type = tarfile.SYMTYPE
     info.linkname = target
     archive.addfile(info)
+
+
+def test_existing_install_matches_choice_fails_when_install_tree_incomplete(
+    tmp_path: Path,
+):
+    """confirm_install_tree guard rejects installs missing critical files."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+    )
+
+    # Full install should match
+    assert (
+        existing_install_matches_choice(
+            install_dir,
+            host,
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = choice,
+            approved_checksums = checksums,
+        )
+        is True
+    )
+
+    # Remove convert_hf_to_gguf.py (checked by confirm_install_tree but not
+    # runtime_payload_is_healthy) and verify the guard catches it
+    (install_dir / "convert_hf_to_gguf.py").unlink()
+    assert (
+        existing_install_matches_choice(
+            install_dir,
+            host,
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = choice,
+            approved_checksums = checksums,
+        )
+        is False
+    )

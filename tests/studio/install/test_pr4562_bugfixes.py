@@ -604,7 +604,7 @@ class TestSourceCodePatterns:
         """Apple Silicon source builds should explicitly enable Metal like upstream."""
         content = SETUP_SH.read_text()
         assert "_IS_MACOS_ARM64=true" in content
-        assert 'elif [ "$_IS_MACOS_ARM64" = true ]; then' in content
+        assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
         assert "-DGGML_METAL=ON" in content
         assert "-DGGML_METAL_EMBED_LIBRARY=ON" in content
         assert "-DGGML_METAL_USE_BF16=ON" in content
@@ -625,7 +625,7 @@ class TestSourceCodePatterns:
     def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
         """Intel macOS should stay on the existing non-Metal path in this patch."""
         content = SETUP_SH.read_text()
-        assert 'elif [ "$_IS_MACOS_ARM64" = true ]; then' in content
+        assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
         assert (
             'Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }'
             in content
@@ -694,3 +694,134 @@ class TestSourceCodePatterns:
                 found = True
                 break
         assert found, "binary_path.parent not found in Linux branch of binary_env"
+
+
+# =========================================================================
+# TEST GROUP F: macOS Metal build logic (bash subprocess tests)
+# =========================================================================
+
+# Minimal bash fragment that mirrors setup.sh's GPU backend decision chain.
+# Variables _IS_MACOS_ARM64, NVCC_PATH, GPU_BACKEND are injected by tests.
+_GPU_BACKEND_FRAGMENT = textwrap.dedent("""\
+    CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
+    CPU_FALLBACK_CMAKE_ARGS=""
+    _TRY_METAL_CPU_FALLBACK=false
+    CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
+
+    _BUILD_DESC="building"
+    if [ "$_IS_MACOS_ARM64" = true ]; then
+        _BUILD_DESC="building (Metal)"
+        CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+        CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+        _TRY_METAL_CPU_FALLBACK=true
+    elif [ -n "$NVCC_PATH" ]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+        _BUILD_DESC="building (CUDA)"
+    elif [ "$GPU_BACKEND" = "rocm" ]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
+        _BUILD_DESC="building (ROCm)"
+    else
+        _BUILD_DESC="building (CPU)"
+    fi
+
+    echo "CMAKE_ARGS=$CMAKE_ARGS"
+    echo "CPU_FALLBACK_CMAKE_ARGS=$CPU_FALLBACK_CMAKE_ARGS"
+    echo "BUILD_DESC=$_BUILD_DESC"
+    echo "TRY_METAL_CPU_FALLBACK=$_TRY_METAL_CPU_FALLBACK"
+""")
+
+
+class TestMacOSMetalBuildLogic:
+    """Behavioral bash subprocess tests for the Metal GPU backend logic."""
+
+    def test_macos_arm64_cmake_args_contain_metal_flags(self):
+        """macOS arm64 should enable Metal, not CUDA."""
+        script = (
+            '_IS_MACOS_ARM64=true\nNVCC_PATH=""\nGPU_BACKEND=""\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        assert "-DGGML_METAL=ON" in output
+        assert "-DGGML_CUDA=ON" not in output
+        assert "BUILD_DESC=building (Metal)" in output
+
+    def test_intel_macos_no_metal_flags(self):
+        """Intel macOS (not arm64) should not get Metal flags."""
+        script = (
+            '_IS_MACOS_ARM64=false\nNVCC_PATH=""\nGPU_BACKEND=""\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        assert "-DGGML_METAL=ON" not in output
+        assert "BUILD_DESC=building (CPU)" in output
+
+    def test_macos_arm64_metal_precedes_nvcc(self):
+        """Even with nvcc in PATH, macOS arm64 should use Metal, not CUDA."""
+        script = (
+            '_IS_MACOS_ARM64=true\nNVCC_PATH="/usr/local/cuda/bin/nvcc"\n'
+            'GPU_BACKEND="cuda"\n'
+            + _GPU_BACKEND_FRAGMENT
+        )
+        output = run_bash(script)
+        assert "-DGGML_METAL=ON" in output
+        assert "-DGGML_CUDA=ON" not in output
+        assert "BUILD_DESC=building (Metal)" in output
+
+    def test_metal_cpu_fallback_triggers_on_cmake_failure(self, tmp_path: Path):
+        """When cmake fails on Metal, the fallback should retry with -DGGML_METAL=OFF."""
+        mock_bin = tmp_path / "mock_bin"
+        mock_bin.mkdir()
+        # cmake that fails on first call (Metal), succeeds on second (CPU fallback)
+        cmake_script = mock_bin / "cmake"
+        cmake_script.write_text(textwrap.dedent(f"""\
+            #!/bin/bash
+            COUNTER_FILE="{tmp_path}/cmake_counter"
+            if [ ! -f "$COUNTER_FILE" ]; then
+                echo 1 > "$COUNTER_FILE"
+                exit 1
+            fi
+            exit 0
+        """))
+        cmake_script.chmod(0o755)
+
+        script = textwrap.dedent(f"""\
+            export PATH="{mock_bin}:$PATH"
+            _IS_MACOS_ARM64=true
+            NVCC_PATH=""
+            GPU_BACKEND=""
+            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
+            CPU_FALLBACK_CMAKE_ARGS=""
+            _TRY_METAL_CPU_FALLBACK=false
+            CPU_FALLBACK_CMAKE_ARGS="$CMAKE_ARGS"
+
+            _BUILD_DESC="building"
+            if [ "$_IS_MACOS_ARM64" = true ]; then
+                _BUILD_DESC="building (Metal)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON -DCMAKE_INSTALL_RPATH=@loader_path -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
+                CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
+                _TRY_METAL_CPU_FALLBACK=true
+            fi
+
+            BUILD_OK=true
+            _BUILD_TMP="{tmp_path}/build_tmp"
+            mkdir -p "$_BUILD_TMP"
+            if ! cmake -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    echo "FALLBACK_TRIGGERED"
+                    rm -rf "$_BUILD_TMP/build"
+                    cmake -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
+                    if [ "$BUILD_OK" = true ]; then
+                        _BUILD_DESC="building (CPU fallback)"
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
+
+            echo "BUILD_OK=$BUILD_OK"
+            echo "BUILD_DESC=$_BUILD_DESC"
+        """)
+        output = run_bash(script)
+        assert "FALLBACK_TRIGGERED" in output
+        assert "BUILD_OK=true" in output
+        assert "BUILD_DESC=building (CPU fallback)" in output
