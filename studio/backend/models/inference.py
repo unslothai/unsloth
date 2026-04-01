@@ -139,6 +139,9 @@ class LoadResponse(BaseModel):
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
     )
+    native_context_length: Optional[int] = Field(
+        None, description = "Model's native context length from GGUF metadata (not capped by VRAM)"
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking)",
@@ -216,6 +219,10 @@ class InferenceStatusResponse(BaseModel):
     max_context_length: Optional[int] = Field(
         None,
         description = "Maximum context length currently available for the active model",
+    )
+    native_context_length: Optional[int] = Field(
+        None,
+        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
     )
 
 

@@ -108,6 +108,11 @@ class LlamaCppBackend:
         return self._max_context_length or self._context_length
 
     @property
+    def native_context_length(self) -> Optional[int]:
+        """Return the model's native context length from GGUF metadata."""
+        return self._context_length
+
+    @property
     def chat_template(self) -> Optional[str]:
         return self._chat_template
 

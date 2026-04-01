@@ -395,6 +395,9 @@ export function ChatSettingsPanel({
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
+  const ggufNativeContextLength = useChatRuntimeStore(
+    (s) => s.ggufNativeContextLength,
+  );
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
@@ -404,7 +407,7 @@ export function ChatSettingsPanel({
   );
 
   const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
-  const ctxMaxValue = ggufMaxContextLength ?? ggufContextLength ?? null;
+  const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
   const modelSettingsDirty = kvDirty || ctxDirty;
@@ -655,6 +658,13 @@ export function ChatSettingsPanel({
                       );
                     }}
                   />
+                  {ggufMaxContextLength != null &&
+                    typeof ctxDisplayValue === "number" &&
+                    ctxDisplayValue > ggufMaxContextLength && (
+                      <p className="text-[11px] text-amber-500">
+                        Exceeds estimated VRAM capacity ({ggufMaxContextLength.toLocaleString()} tokens). The model may use system RAM.
+                      </p>
+                    )}
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
