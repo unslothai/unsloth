@@ -3669,13 +3669,6 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     return payload
 
 
-def install_tree_is_healthy(install_dir: Path, host: HostInfo) -> bool:
-    try:
-        confirm_install_tree(install_dir, host)
-    except Exception:
-        return False
-    return True
-
 
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "linux-cpu":
