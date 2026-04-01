@@ -151,9 +151,9 @@ export interface OpenAIChatCompletionsRequest {
   temperature: number;
   top_p: number;
   max_tokens: number;
-  top_k: number;
-  min_p: number;
-  repetition_penalty: number;
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
   presence_penalty: number;
   image_base64?: string;
   audio_base64?: string;
@@ -165,6 +165,11 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  provider_id?: string;
+  provider_type?: string;
+  external_model?: string;
+  encrypted_api_key?: string;
+  provider_base_url?: string | null;
 }
 
 export interface OpenAIChatDelta {
