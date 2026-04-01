@@ -3,6 +3,7 @@ Tests for two install fixes:
   1. tokenizers added to no-torch-runtime.txt  (prevents AutoConfig crash)
   2. TORCH_CONSTRAINT variable in install.sh    (arm64 macOS + py313+ -> torch>=2.6)
 """
+
 from __future__ import annotations
 
 import os
@@ -15,8 +16,8 @@ import textwrap
 import pytest
 
 # ── Locate source files relative to this test ──────────────────────────
-_TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent          # tests/
-_REPO_ROOT = _TESTS_DIR.parent                                      # unsloth/
+_TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
+_REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
 _NO_TORCH_RT = (
@@ -25,7 +26,7 @@ _NO_TORCH_RT = (
 
 
 def _read(path: pathlib.Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding = "utf-8")
 
 
 def _lines(path: pathlib.Path) -> list[str]:
@@ -46,15 +47,17 @@ class TestStructuralTokenizers:
     def test_tokenizers_present(self):
         """tokenizers must be a standalone package line."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0]
-                      for p in pkgs]
+        bare_names = [
+            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
+        ]
         assert "tokenizers" in bare_names
 
     def test_tokenizers_before_transformers(self):
         """tokenizers should appear before transformers (install order intent)."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0]
-                      for p in pkgs]
+        bare_names = [
+            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
+        ]
         idx_tok = bare_names.index("tokenizers")
         idx_tf = bare_names.index("transformers")
         assert idx_tok < idx_tf, (
@@ -65,8 +68,9 @@ class TestStructuralTokenizers:
     def test_torch_not_in_no_torch_file(self):
         """torch itself must NOT be listed in the no-torch requirements."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0]
-                      for p in pkgs]
+        bare_names = [
+            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
+        ]
         assert "torch" not in bare_names
 
 
@@ -95,17 +99,17 @@ class TestStructuralTorchConstraint:
         """The block must check SKIP_TORCH=false."""
         # Find the tightening if-block
         m = re.search(
-            r'if\s.*SKIP_TORCH.*=\s*false.*&&.*OS.*=.*macos.*&&.*_ARCH.*=.*arm64',
+            r"if\s.*SKIP_TORCH.*=\s*false.*&&.*OS.*=.*macos.*&&.*_ARCH.*=.*arm64",
             self._sh,
         )
         assert m is not None, "Guard not found: SKIP_TORCH + macos + arm64"
 
     def test_tightening_guarded_by_arch(self):
-        m = re.search(r'_ARCH.*=.*arm64', self._sh)
+        m = re.search(r"_ARCH.*=.*arm64", self._sh)
         assert m is not None
 
     def test_tightening_guarded_by_os(self):
-        m = re.search(r'OS.*=.*macos', self._sh)
+        m = re.search(r"OS.*=.*macos", self._sh)
         assert m is not None
 
 
@@ -155,9 +159,10 @@ class TestTorchConstraintShell:
         """Create a mock python that prints a controlled minor version."""
         venv = tmp_path / "venv"
         bin_dir = venv / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
+        bin_dir.mkdir(parents = True, exist_ok = True)
         mock_py = bin_dir / "python"
-        mock_py.write_text(textwrap.dedent(f"""\
+        mock_py.write_text(
+            textwrap.dedent(f"""\
             #!/bin/bash
             # Mock python: always report minor={minor}
             if echo "$@" | grep -q "sys.version_info.minor"; then
@@ -165,7 +170,8 @@ class TestTorchConstraintShell:
             else
                 echo "0"
             fi
-        """))
+        """)
+        )
         mock_py.chmod(0o755)
         return venv
 
@@ -180,17 +186,19 @@ class TestTorchConstraintShell:
     ) -> str:
         venv = self._make_mock_python(tmp_path, py_minor)
         script = self._SNIPPET_TEMPLATE.format(
-            skip_torch=skip_torch,
-            os=os_val,
-            arch=arch,
-            venv_dir=str(venv),
+            skip_torch = skip_torch,
+            os = os_val,
+            arch = arch,
+            venv_dir = str(venv),
         )
         script_file = tmp_path / "test_snippet.sh"
         script_file.write_text(script)
         script_file.chmod(0o755)
         result = subprocess.run(
             ["bash", str(script_file)],
-            capture_output=True, text=True, timeout=10,
+            capture_output = True,
+            text = True,
+            timeout = 10,
         )
         assert result.returncode == 0, f"Script failed: {result.stderr}"
         return result.stdout.strip()
@@ -198,80 +206,85 @@ class TestTorchConstraintShell:
     # -- arm64 macOS tightening cases --
 
     def test_arm64_macos_py313_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor=13, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.6,<2.11.0"
 
     def test_arm64_macos_py314_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor=14, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 14, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.6,<2.11.0"
 
     # -- arm64 macOS default (older python) --
 
     def test_arm64_macos_py312_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor=12, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 12, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.4,<2.11.0"
 
     def test_arm64_macos_py311_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor=11, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 11, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.4,<2.11.0"
 
     # -- Linux (unaffected) --
 
     def test_linux_x86_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor=13, os_val="linux", arch="x86_64")
+        out = self._run(tmp_path, py_minor = 13, os_val = "linux", arch = "x86_64")
         assert out == "torch>=2.4,<2.11.0"
 
     def test_linux_aarch64_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor=13, os_val="linux", arch="aarch64")
+        out = self._run(tmp_path, py_minor = 13, os_val = "linux", arch = "aarch64")
         assert out == "torch>=2.4,<2.11.0"
 
     # -- Intel Mac (arch mismatch) --
 
     def test_intel_mac_x86_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor=13, os_val="macos", arch="x86_64")
+        out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "x86_64")
         assert out == "torch>=2.4,<2.11.0"
 
     # -- SKIP_TORCH bypass --
 
     def test_skip_torch_arm64_macos_py313_default(self, tmp_path):
         out = self._run(
-            tmp_path, py_minor=13, os_val="macos", arch="arm64",
-            skip_torch="true",
+            tmp_path,
+            py_minor = 13,
+            os_val = "macos",
+            arch = "arm64",
+            skip_torch = "true",
         )
         assert out == "torch>=2.4,<2.11.0"
 
     # -- WSL --
 
     def test_wsl_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor=13, os_val="wsl", arch="x86_64")
+        out = self._run(tmp_path, py_minor = 13, os_val = "wsl", arch = "x86_64")
         assert out == "torch>=2.4,<2.11.0"
 
     # -- Edge cases --
 
     def test_py_minor_0_fallback_default(self, tmp_path):
         """If python query fails (returns 0), should stay at default."""
-        out = self._run(tmp_path, py_minor=0, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 0, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.4,<2.11.0"
 
     def test_boundary_py_minor_12_not_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor=12, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 12, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.4,<2.11.0"
 
     def test_boundary_py_minor_13_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor=13, os_val="macos", arch="arm64")
+        out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.6,<2.11.0"
 
     def test_mock_uv_receives_correct_constraint(self, tmp_path):
         """Verify a mock uv would receive the correct constraint string."""
-        venv = self._make_mock_python(tmp_path, minor=13)
+        venv = self._make_mock_python(tmp_path, minor = 13)
 
         # Create a mock uv that logs its arguments
         mock_uv = tmp_path / "mock_uv"
         log_file = tmp_path / "uv_log.txt"
-        mock_uv.write_text(textwrap.dedent(f"""\
+        mock_uv.write_text(
+            textwrap.dedent(f"""\
             #!/bin/bash
             echo "$@" >> {log_file}
-        """))
+        """)
+        )
         mock_uv.chmod(0o755)
 
         script = textwrap.dedent(f"""\
@@ -299,7 +312,9 @@ class TestTorchConstraintShell:
 
         result = subprocess.run(
             ["bash", str(script_file)],
-            capture_output=True, text=True, timeout=10,
+            capture_output = True,
+            text = True,
+            timeout = 10,
         )
         assert result.returncode == 0, f"Script failed: {result.stderr}"
         logged = log_file.read_text()
@@ -307,13 +322,15 @@ class TestTorchConstraintShell:
 
     def test_mock_uv_receives_default_constraint(self, tmp_path):
         """On py3.12 arm64 macOS, uv should receive the default constraint."""
-        venv = self._make_mock_python(tmp_path, minor=12)
+        venv = self._make_mock_python(tmp_path, minor = 12)
         mock_uv = tmp_path / "mock_uv"
         log_file = tmp_path / "uv_log.txt"
-        mock_uv.write_text(textwrap.dedent(f"""\
+        mock_uv.write_text(
+            textwrap.dedent(f"""\
             #!/bin/bash
             echo "$@" >> {log_file}
-        """))
+        """)
+        )
         mock_uv.chmod(0o755)
 
         script = textwrap.dedent(f"""\
@@ -340,7 +357,9 @@ class TestTorchConstraintShell:
 
         result = subprocess.run(
             ["bash", str(script_file)],
-            capture_output=True, text=True, timeout=10,
+            capture_output = True,
+            text = True,
+            timeout = 10,
         )
         assert result.returncode == 0, f"Script failed: {result.stderr}"
         logged = log_file.read_text()
@@ -360,7 +379,9 @@ class TestE2ETokenizersFix:
         venv = tmp_path / name
         result = subprocess.run(
             ["uv", "venv", str(venv), "--python", py],
-            capture_output=True, text=True, timeout=120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         if result.returncode != 0:
             pytest.skip(f"uv venv creation failed for {py}: {result.stderr}")
@@ -370,14 +391,16 @@ class TestE2ETokenizersFix:
     def _pip_install(venv: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
         py = str(venv / "bin" / "python")
         cmd = ["uv", "pip", "install", "--python", py, *args]
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        return subprocess.run(cmd, capture_output = True, text = True, timeout = 300)
 
     @staticmethod
     def _run_python(venv: pathlib.Path, code: str) -> subprocess.CompletedProcess:
         py = str(venv / "bin" / "python")
         return subprocess.run(
             [py, "-c", code],
-            capture_output=True, text=True, timeout=60,
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
 
     @pytest.mark.parametrize("py_version", ["3.12", "3.13"])
@@ -389,15 +412,22 @@ class TestE2ETokenizersFix:
         venv = self._create_venv(tmp_path, f"tok-{py_version}", py_version)
         r = self._pip_install(
             venv,
-            "tokenizers", "transformers", "huggingface_hub",
-            "safetensors", "packaging", "pyyaml", "numpy",
+            "tokenizers",
+            "transformers",
+            "huggingface_hub",
+            "safetensors",
+            "packaging",
+            "pyyaml",
+            "numpy",
         )
         assert r.returncode == 0, f"Install failed: {r.stderr}"
 
-        result = self._run_python(venv, "from transformers import AutoConfig; print('OK')")
-        assert result.returncode == 0, (
-            f"AutoConfig import failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        result = self._run_python(
+            venv, "from transformers import AutoConfig; print('OK')"
         )
+        assert (
+            result.returncode == 0
+        ), f"AutoConfig import failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         assert "OK" in result.stdout
 
     @pytest.mark.parametrize("py_version", ["3.12", "3.13"])
@@ -413,8 +443,13 @@ class TestE2ETokenizersFix:
         venv = self._create_venv(tmp_path, f"no-torch-{py_version}", py_version)
         self._pip_install(
             venv,
-            "tokenizers", "transformers", "huggingface_hub",
-            "safetensors", "packaging", "pyyaml", "numpy",
+            "tokenizers",
+            "transformers",
+            "huggingface_hub",
+            "safetensors",
+            "packaging",
+            "pyyaml",
+            "numpy",
         )
         result = self._run_python(venv, "import torch")
         assert result.returncode != 0, "torch should NOT be importable"
@@ -425,14 +460,24 @@ class TestE2ETokenizersFix:
         # Use --no-deps to prevent uv from resolving tokenizers as a
         # transitive dep of transformers.
         self._pip_install(
-            venv, "--no-deps", "transformers", "huggingface_hub",
-            "safetensors", "packaging", "pyyaml", "numpy", "tqdm",
-            "filelock", "requests", "regex", "typing_extensions",
+            venv,
+            "--no-deps",
+            "transformers",
+            "huggingface_hub",
+            "safetensors",
+            "packaging",
+            "pyyaml",
+            "numpy",
+            "tqdm",
+            "filelock",
+            "requests",
+            "regex",
+            "typing_extensions",
         )
         result = self._run_python(venv, "from transformers import AutoConfig")
-        assert result.returncode != 0, (
-            "AutoConfig should fail without tokenizers installed"
-        )
+        assert (
+            result.returncode != 0
+        ), "AutoConfig should fail without tokenizers installed"
         assert "ModuleNotFoundError" in result.stderr or "No module" in result.stderr
 
 
@@ -482,7 +527,9 @@ class TestE2EFullNoTorchSandbox:
         venv = tmp_path / name
         result = subprocess.run(
             ["uv", "venv", str(venv), "--python", "3.12"],
-            capture_output=True, text=True, timeout=120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         if result.returncode != 0:
             pytest.skip(f"uv venv creation failed: {result.stderr}")
@@ -492,14 +539,16 @@ class TestE2EFullNoTorchSandbox:
     def _pip_install(venv: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
         py = str(venv / "bin" / "python")
         cmd = ["uv", "pip", "install", "--python", py, *args]
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        return subprocess.run(cmd, capture_output = True, text = True, timeout = 600)
 
     @staticmethod
     def _run_python(venv: pathlib.Path, code: str) -> subprocess.CompletedProcess:
         py = str(venv / "bin" / "python")
         return subprocess.run(
             [py, "-c", code],
-            capture_output=True, text=True, timeout=60,
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
 
     def test_autoconfig_succeeds(self, tmp_path):
@@ -512,9 +561,9 @@ class TestE2EFullNoTorchSandbox:
         result = self._run_python(
             venv, "from transformers import AutoConfig; print('OK')"
         )
-        assert result.returncode == 0, (
-            f"AutoConfig failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"AutoConfig failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
     def test_torch_not_importable(self, tmp_path):
         """With --no-deps (as install.sh uses), torch must not be pulled in."""
