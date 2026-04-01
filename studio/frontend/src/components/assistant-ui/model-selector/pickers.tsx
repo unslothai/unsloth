@@ -142,7 +142,7 @@ function ModelRow({
           <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">OOM</span>
         )}
         {vramStatus === "tight" && (
-          <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
+          <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
         )}
         {meta ? (
           <span className="text-[10px] text-muted-foreground">{meta}</span>
@@ -371,7 +371,7 @@ function GgufVariantExpander({
                   </span>
                 )}
                 {tight && (
-                  <span className="text-[9px] font-medium text-amber-400">
+                  <span className="text-[9px] font-medium !text-amber-400">
                     TIGHT
                   </span>
                 )}
