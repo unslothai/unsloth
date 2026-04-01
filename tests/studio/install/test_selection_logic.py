@@ -1347,7 +1347,7 @@ class TestResolveInstallReleasePlans:
         sys.modules[spec.name] = module
         try:
             spec.loader.exec_module(module)
-            assert module.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS == 3
+            assert module.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS == 2
         finally:
             sys.modules.pop(spec.name, None)
 

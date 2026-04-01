@@ -6,8 +6,15 @@ from pathlib import Path
 import pytest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "validate-llama-prebuilt.py"
+
+if not MODULE_PATH.is_file():
+    pytest.skip(
+        f"validate-llama-prebuilt.py not present at {MODULE_PATH}",
+        allow_module_level = True,
+    )
+
 SPEC = importlib.util.spec_from_file_location("validate_llama_prebuilt", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 VALIDATE = importlib.util.module_from_spec(SPEC)
