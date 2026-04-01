@@ -1424,8 +1424,11 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         # the last 1-2 path components against the registry
         # (e.g. "Spark-TTS-0.5B/LLM").
         _is_local_path = is_local_path(model_name)
+        # Normalize Windows backslash paths so Path().parts splits correctly
+        # on POSIX/WSL hosts (pathlib treats backslashes as literals on Linux).
+        _normalized = normalize_path(model_name) if _is_local_path else model_name
         if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
-            parts = Path(model_name).parts
+            parts = Path(_normalized).parts
             for depth in [2, 1]:
                 if len(parts) >= depth:
                     suffix = "/".join(parts[-depth:])
@@ -1444,10 +1447,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         # For local filesystem paths, use only the directory basename to
         # avoid passing absolute paths (e.g. C:\...) into rglob which
         # raises "Non-relative patterns are unsupported" on Windows.
-        if _is_local_path:
-            _lookup_name = Path(model_name).name
-        else:
-            _lookup_name = model_name
+        _lookup_name = Path(_normalized).name if _is_local_path else model_name
         model_filename = _lookup_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
         for config_path in defaults_dir.rglob(model_filename):
