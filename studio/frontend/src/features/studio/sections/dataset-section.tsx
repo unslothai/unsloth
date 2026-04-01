@@ -846,6 +846,7 @@ export function DatasetSection() {
                       <SelectItem value="alpaca">Alpaca</SelectItem>
                       <SelectItem value="chatml">ChatML</SelectItem>
                       <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                      <SelectItem value="preference">Preference</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

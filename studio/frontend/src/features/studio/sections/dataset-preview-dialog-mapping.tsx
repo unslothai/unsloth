@@ -18,6 +18,7 @@ import { Loader2, Sparkles } from "lucide-react";
 
 const CHATML_ROLES = ["system", "user", "assistant"] as const;
 const ALPACA_ROLES = ["instruction", "input", "output"] as const;
+const PREFERENCE_ROLES = ["prompt", "chosen", "rejected"] as const;
 const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
 const VLM_ROLES = ["image", "text"] as const;
 const AUDIO_ROLES = ["audio", "text", "speaker_id"] as const;
@@ -31,6 +32,9 @@ const ROLE_LABELS: Record<string, string> = {
   instruction: "Instruction",
   input: "Input",
   output: "Output",
+  prompt: "Prompt",
+  chosen: "Chosen",
+  rejected: "Rejected",
   image: "Image",
   text: "Text",
   audio: "Audio",
@@ -41,6 +45,7 @@ export function getAvailableRoles(isVlm: boolean, format?: string, isAudio?: boo
   if (isAudio) return AUDIO_ROLES;
   if (isVlm) return VLM_ROLES;
   if (format === "alpaca") return ALPACA_ROLES;
+  if (format === "preference") return PREFERENCE_ROLES;
   if (format === "sharegpt") return SHAREGPT_ROLES;
   return CHATML_ROLES;
 }
@@ -55,6 +60,7 @@ export function isMappingComplete(
   if (isAudio) return roles.has("audio") && roles.has("text");
   if (isVlm) return roles.has("image") && roles.has("text");
   if (format === "alpaca") return roles.has("instruction") && roles.has("output");
+  if (format === "preference") return roles.has("chosen") && roles.has("rejected");
   if (format === "sharegpt") return roles.has("human") && roles.has("gpt");
   return roles.has("user") && roles.has("assistant");
 }
@@ -122,6 +128,8 @@ export function DatasetMappingCard({
       ? "image and text"
       : format === "alpaca"
         ? "instruction and output"
+        : format === "preference"
+          ? "chosen and rejected"
         : format === "sharegpt"
           ? "human and gpt"
           : "user and assistant";
@@ -310,6 +318,9 @@ export function remapRolesForFormat(
   mapping: Record<string, string>,
   format?: string,
 ): Record<string, string> {
+  if (format === "preference") {
+    return { ...mapping };
+  }
   const table = format ? FROM_CANONICAL[format] : undefined;
   const out: Record<string, string> = {};
   for (const [col, role] of Object.entries(mapping)) {

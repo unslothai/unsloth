@@ -191,6 +191,7 @@ function hasManualMapping(config: TrainingConfigState, isVlm = false, isAudio = 
   if (isVlm) return roles.has("image") && roles.has("text");
   const fmt = config.datasetFormat;
   if (fmt === "alpaca") return roles.has("instruction") && roles.has("output");
+  if (fmt === "preference") return roles.has("chosen") && roles.has("rejected");
   if (fmt === "sharegpt") return roles.has("human") && roles.has("gpt");
   return roles.has("user") && roles.has("assistant");
 }

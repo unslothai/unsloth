@@ -4,7 +4,8 @@
 """
 Format detection utilities for dataset processing.
 
-This module contains functions for detecting dataset formats (Alpaca, ShareGPT, ChatML),
+This module contains functions for detecting dataset formats (Alpaca, Preference,
+ShareGPT, ChatML),
 detecting multimodal/VLM dataset structures, and heuristic-based column mapping.
 """
 
@@ -25,13 +26,24 @@ def detect_dataset_format(dataset):
 
     Returns:
         dict: {
-            "format": "alpaca" | "sharegpt" | "chatml" | "unknown",
+            "format": "alpaca" | "preference" | "sharegpt" | "chatml" | "unknown",
             "chat_column": "messages" | "conversations" | None,
             "needs_standardization": bool,
             "sample_keys": list of keys found in messages (for debugging)
         }
     """
     column_names = set(next(iter(dataset)).keys())
+
+    # Check for preference datasets first. These are fed directly into DPO-style
+    # trainers and should not fall through into chat-role mapping.
+    preference_columns = {"chosen", "rejected"}
+    if preference_columns.issubset(column_names):
+        return {
+            "format": "preference",
+            "chat_column": None,
+            "needs_standardization": False,
+            "sample_keys": [],
+        }
 
     # Check for Alpaca
     alpaca_columns = {"instruction", "output"}

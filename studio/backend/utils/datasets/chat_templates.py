@@ -96,6 +96,7 @@ def get_dataset_info_summary(dataset_info):
 
     format_descriptions = {
         "alpaca": "Alpaca format (instruction/input/output)",
+        "preference": "Preference format (prompt/chosen/rejected)",
         "sharegpt": "ShareGPT format (needs standardization)",
         "chatml_messages": "ChatML format (messages column) - OpenAI compatible",
         "chatml_conversations": "ChatML format (conversations column) - HuggingFace standard",

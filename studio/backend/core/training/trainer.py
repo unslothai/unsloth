@@ -67,7 +67,7 @@ from utils.paths import (
     resolve_output_dir,
     resolve_tensorboard_dir,
 )
-from trl import SFTTrainer, SFTConfig
+from trl import DPOConfig, DPOTrainer, SFTConfig, SFTTrainer
 
 logger = get_logger(__name__)
 
@@ -132,6 +132,7 @@ class UnslothTrainer:
             None  # Path to downloaded Spark-TTS repo (for BiCodecTokenizer)
         )
         self.model_name = None
+        self._preference_training = False
 
         # Training metrics tracking
         self.training_start_time: Optional[float] = None
@@ -2745,6 +2746,8 @@ class UnslothTrainer:
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
+            self._preference_training = False
+
             # On spawn-based platforms (Windows, macOS), register all known
             # compiled-cache directories on sys.path and PYTHONPATH before any
             # dataset.map() call so spawned workers can import dynamically
@@ -3109,6 +3112,11 @@ class UnslothTrainer:
             else:
                 logger.info("No eval dataset — evaluation disabled\n")
 
+            is_preference_dataset = (
+                isinstance(dataset, dict)
+                and dataset.get("final_format") == "preference"
+            )
+
             # Add model-specific parameters
             # Use optim and lr_scheduler_type from training_args if provided, otherwise use defaults
             optim_value = training_args.get("optim", "adamw_8bit")
@@ -3202,6 +3210,79 @@ class UnslothTrainer:
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
+            elif is_preference_dataset:
+                from transformers import ProcessorMixin
+
+                dpo_tokenizer = self.tokenizer
+                if isinstance(self.tokenizer, ProcessorMixin) and hasattr(
+                    self.tokenizer, "tokenizer"
+                ):
+                    logger.info(
+                        "  ⚠️ Unwrapping Processor → raw tokenizer for DPOTrainer"
+                    )
+                    dpo_tokenizer = self.tokenizer.tokenizer
+
+                dpo_config_args = {
+                    "per_device_train_batch_size": training_args.get("batch_size", 2),
+                    "gradient_accumulation_steps": training_args.get(
+                        "gradient_accumulation_steps", 4
+                    ),
+                    "num_train_epochs": training_args.get("num_epochs", 3),
+                    "learning_rate": lr_value,
+                    "fp16": not is_bfloat16_supported(),
+                    "bf16": is_bfloat16_supported(),
+                    "logging_steps": 1,
+                    "weight_decay": training_args.get("weight_decay", 0.001),
+                    "seed": training_args.get("random_seed", 3407),
+                    "output_dir": output_dir,
+                    "report_to": _build_report_targets(training_args),
+                    "include_num_input_tokens_seen": True,
+                    "dataset_num_proc": config_args["dataset_num_proc"],
+                    "max_length": training_args.get("max_seq_length", 2048),
+                    "max_prompt_length": max(
+                        1, training_args.get("max_seq_length", 2048) // 2
+                    ),
+                    "optim": optim_value,
+                    "lr_scheduler_type": lr_scheduler_type_value,
+                    "remove_unused_columns": False,
+                }
+                if training_args.get("enable_tensorboard", False):
+                    dpo_config_args["logging_dir"] = str(
+                        resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
+                    )
+                if warmup_ratio_val is not None:
+                    dpo_config_args["warmup_ratio"] = warmup_ratio_val
+                elif warmup_steps_val is not None:
+                    dpo_config_args["warmup_steps"] = warmup_steps_val
+                else:
+                    dpo_config_args["warmup_steps"] = 5
+                if save_steps_val and save_steps_val > 0:
+                    dpo_config_args["save_steps"] = save_steps_val
+                    dpo_config_args["save_strategy"] = "steps"
+                if max_steps_val and max_steps_val > 0:
+                    del dpo_config_args["num_train_epochs"]
+                    dpo_config_args["max_steps"] = max_steps_val
+                if eval_dataset is not None and eval_steps_val > 0:
+                    dpo_config_args["eval_strategy"] = "steps"
+                    dpo_config_args["eval_steps"] = eval_steps_val
+                if "dataloader_num_workers" in config_args:
+                    dpo_config_args["dataloader_num_workers"] = config_args[
+                        "dataloader_num_workers"
+                    ]
+
+                trainer_kwargs = {
+                    "model": self.model,
+                    "ref_model": None,
+                    "train_dataset": dataset["dataset"],
+                    "processing_class": dpo_tokenizer,
+                    "args": DPOConfig(**dpo_config_args),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = DPOTrainer(**trainer_kwargs)
+                self._preference_training = True
+                if dpo_tokenizer is not self.tokenizer:
+                    self.trainer.processing_class = self.tokenizer
             else:
                 # For text-only training, if the tokenizer is actually a Processor
                 # (e.g., Gemma-3 returns a ProcessorMixin even for text), we must
@@ -3249,6 +3330,7 @@ class UnslothTrainer:
                 train_on_responses_enabled
                 and not self.is_audio_vlm
                 and not self.is_audio
+                and not is_preference_dataset
                 and not (is_deepseek_ocr or dataset["final_format"].lower() == "alpaca")
             ):
                 try:
@@ -3295,6 +3377,7 @@ class UnslothTrainer:
                 and response_part
                 and not self.is_audio_vlm
                 and not self.is_audio
+                and not is_preference_dataset
                 and not (is_deepseek_ocr or dataset["final_format"].lower() == "alpaca")
             ):
                 try:
@@ -3398,7 +3481,7 @@ class UnslothTrainer:
             self.trainer.train()
 
             # ========== SAVE MODEL ==========
-            self._finalize_training(output_dir)
+            self._finalize_training(output_dir, "DPO" if is_preference_dataset else "")
 
         except Exception as e:
             import traceback
@@ -3426,7 +3509,9 @@ class UnslothTrainer:
                 config = json.load(f)
 
             # Determine the training method
-            if self.load_in_4bit:
+            if self._preference_training:
+                method = "dpo"
+            elif self.load_in_4bit:
                 method = "qlora"
             else:
                 method = "lora"
