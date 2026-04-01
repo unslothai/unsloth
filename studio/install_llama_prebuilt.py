@@ -2774,7 +2774,9 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             try:
                 remove_tree_logged(rollback_dir, "rollback path")
             except Exception as cleanup_exc:
-                log(f"non-fatal: rollback cleanup failed after successful activation: {cleanup_exc}")
+                log(
+                    f"non-fatal: rollback cleanup failed after successful activation: {cleanup_exc}"
+                )
     finally:
         remove_tree(failed_dir)
         remove_tree(staging_dir)
