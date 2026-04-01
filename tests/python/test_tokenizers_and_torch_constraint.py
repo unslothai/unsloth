@@ -453,7 +453,10 @@ class TestE2ETokenizersFix:
         assert (
             result.returncode != 0
         ), "AutoConfig should fail without tokenizers installed"
-        assert "tokenizers" in result.stderr.lower() or "ModuleNotFoundError" in result.stderr
+        assert (
+            "tokenizers" in result.stderr.lower()
+            or "ModuleNotFoundError" in result.stderr
+        )
 
 
 # ======================================================================
