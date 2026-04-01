@@ -40,18 +40,26 @@ sys.modules.setdefault("structlog", _structlog_stub)
 # httpx
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
-    "ConnectError", "TimeoutException", "ReadTimeout",
-    "ReadError", "RemoteProtocolError", "CloseError",
+    "ConnectError",
+    "TimeoutException",
+    "ReadTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "CloseError",
 ):
     setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
+
 
 class _FakeTimeout:
     def __init__(self, *a, **kw):
         pass
 
+
 _httpx_stub.Timeout = _FakeTimeout
 _httpx_stub.Client = type(
-    "Client", (), {
+    "Client",
+    (),
+    {
         "__init__": lambda self, **kw: None,
         "__enter__": lambda self: self,
         "__exit__": lambda self, *a: None,
@@ -65,6 +73,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
     """Build a minimal GGUF v3 binary blob with the given KV metadata.
 
@@ -74,8 +83,8 @@ def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
     buf = io.BytesIO()
     # Header: magic, version, tensor_count, kv_count
     buf.write(struct.pack("<I", 0x46554747))  # GGUF magic
-    buf.write(struct.pack("<I", 3))            # version 3
-    buf.write(struct.pack("<Q", 0))            # tensor_count
+    buf.write(struct.pack("<I", 3))  # version 3
+    buf.write(struct.pack("<Q", 0))  # tensor_count
     buf.write(struct.pack("<Q", len(kv_pairs)))
 
     for key, val in kv_pairs.items():
@@ -105,8 +114,9 @@ def _backend_from_gguf(arch: str, fields: dict) -> LlamaCppBackend:
     for k, v in fields.items():
         kv[f"{arch}.{k}"] = v
     import tempfile, os
+
     data = _make_gguf_bytes(arch, kv)
-    fd, path = tempfile.mkstemp(suffix=".gguf")
+    fd, path = tempfile.mkstemp(suffix = ".gguf")
     try:
         os.write(fd, data)
         os.close(fd)
@@ -121,19 +131,23 @@ def _backend_from_gguf(arch: str, fields: dict) -> LlamaCppBackend:
 # A. GGUF Parser Tests
 # ---------------------------------------------------------------------------
 
+
 class TestGGUFParserNewFields:
     """Verify that the 8 new architecture-aware fields are correctly parsed."""
 
-    @pytest.mark.parametrize("field,gguf_key,value", [
-        ("_kv_key_length",          "attention.key_length",        128),
-        ("_kv_value_length",        "attention.value_length",      128),
-        ("_sliding_window",         "attention.sliding_window",    1024),
-        ("_full_attention_interval","full_attention_interval",     4),
-        ("_kv_lora_rank",           "attention.kv_lora_rank",      512),
-        ("_key_length_mla",         "attention.key_length_mla",    256),
-        ("_ssm_inner_size",         "ssm.inner_size",              6144),
-        ("_ssm_state_size",         "ssm.state_size",              128),
-    ])
+    @pytest.mark.parametrize(
+        "field,gguf_key,value",
+        [
+            ("_kv_key_length", "attention.key_length", 128),
+            ("_kv_value_length", "attention.value_length", 128),
+            ("_sliding_window", "attention.sliding_window", 1024),
+            ("_full_attention_interval", "full_attention_interval", 4),
+            ("_kv_lora_rank", "attention.kv_lora_rank", 512),
+            ("_key_length_mla", "attention.key_length_mla", 256),
+            ("_ssm_inner_size", "ssm.inner_size", 6144),
+            ("_ssm_state_size", "ssm.state_size", 128),
+        ],
+    )
     def test_field_parsed(self, field, gguf_key, value):
         b = _backend_from_gguf("testarch", {gguf_key: value})
         assert getattr(b, field) == value
@@ -141,9 +155,14 @@ class TestGGUFParserNewFields:
     def test_missing_fields_are_none(self):
         b = _backend_from_gguf("testarch", {"block_count": 10})
         for attr in [
-            "_kv_key_length", "_kv_value_length", "_sliding_window",
-            "_full_attention_interval", "_kv_lora_rank", "_key_length_mla",
-            "_ssm_inner_size", "_ssm_state_size",
+            "_kv_key_length",
+            "_kv_value_length",
+            "_sliding_window",
+            "_full_attention_interval",
+            "_kv_lora_rank",
+            "_key_length_mla",
+            "_ssm_inner_size",
+            "_ssm_state_size",
         ]:
             assert getattr(b, attr) is None
 
@@ -184,12 +203,15 @@ class TestGGUFParserReset:
 
     def test_reset_between_parses(self):
         # First parse with all fields
-        b = _backend_from_gguf("arch1", {
-            "block_count": 32,
-            "attention.key_length": 128,
-            "attention.kv_lora_rank": 512,
-            "ssm.inner_size": 4096,
-        })
+        b = _backend_from_gguf(
+            "arch1",
+            {
+                "block_count": 32,
+                "attention.key_length": 128,
+                "attention.kv_lora_rank": 512,
+                "ssm.inner_size": 4096,
+            },
+        )
         assert b._kv_key_length == 128
         assert b._kv_lora_rank == 512
         assert b._ssm_inner_size == 4096
@@ -197,8 +219,9 @@ class TestGGUFParserReset:
         # Second parse without those fields -- they should be None
         kv = {"general.architecture": "arch2", "arch2.block_count": 64}
         import tempfile, os
+
         data = _make_gguf_bytes("arch2", kv)
-        fd, path = tempfile.mkstemp(suffix=".gguf")
+        fd, path = tempfile.mkstemp(suffix = ".gguf")
         os.write(fd, data)
         os.close(fd)
         try:
@@ -214,6 +237,7 @@ class TestGGUFParserReset:
 # ---------------------------------------------------------------------------
 # B. _can_estimate_kv Gate Tests
 # ---------------------------------------------------------------------------
+
 
 class TestCanEstimateKV:
     """Verify gate logic for all field combinations."""
@@ -274,6 +298,7 @@ class TestCanEstimateKV:
 # C. Path 1: MLA Estimation
 # ---------------------------------------------------------------------------
 
+
 class TestMLAEstimation:
     """MLA: K-only cache using compressed KV latent + RoPE."""
 
@@ -310,7 +335,7 @@ class TestMLAEstimation:
 
     def test_mla_fallback_when_no_key_length(self):
         """If key_length is missing, fallback to kv_lora_rank + key_length_mla."""
-        b = self._mla_backend(_kv_key_length=None)
+        b = self._mla_backend(_kv_key_length = None)
         # _key_length_mla=192 in default, so rope_dim=192
         result = b._estimate_kv_cache_bytes(1000, "f16")
         expected = 61 * 1000 * 1 * (512 + 192) * 2  # 704
@@ -318,14 +343,14 @@ class TestMLAEstimation:
 
     def test_mla_fallback_no_key_length_mla(self):
         """If both key_length and key_length_mla are missing, fallback to +64."""
-        b = self._mla_backend(_kv_key_length=None, _key_length_mla=None)
+        b = self._mla_backend(_kv_key_length = None, _key_length_mla = None)
         result = b._estimate_kv_cache_bytes(1000, "f16")
         expected = 61 * 1000 * 1 * (512 + 64) * 2  # 576
         assert result == expected
 
     def test_mla_defaults_n_kv_to_1_when_heads_absent(self):
         """MLA should use n_kv=1 even if n_kv_heads is None (not n_heads)."""
-        b = self._mla_backend(_n_kv_heads=None)  # n_heads=128 still set
+        b = self._mla_backend(_n_kv_heads = None)  # n_heads=128 still set
         result = b._estimate_kv_cache_bytes(1000, "f16")
         # Should use n_kv_mla=1, NOT n_heads=128
         expected = 61 * 1000 * 1 * 576 * 2
@@ -343,6 +368,7 @@ class TestMLAEstimation:
 # ---------------------------------------------------------------------------
 # D. Path 2: Hybrid Mamba Estimation
 # ---------------------------------------------------------------------------
+
 
 class TestHybridMambaEstimation:
     """Hybrid Mamba: only attention layers (1 in N) need KV cache."""
@@ -373,8 +399,11 @@ class TestHybridMambaEstimation:
 
     def test_qwen35_35b_a3b(self):
         b = self._hybrid_backend(
-            _n_layers=40, _n_kv_heads=2, _n_heads=16,
-            _embedding_length=2048, _ssm_inner_size=4096,
+            _n_layers = 40,
+            _n_kv_heads = 2,
+            _n_heads = 16,
+            _embedding_length = 2048,
+            _ssm_inner_size = 4096,
         )
         # n_attn = 40 // 4 = 10
         expected = 10 * 262144 * 2 * (256 + 256) * 2
@@ -382,14 +411,14 @@ class TestHybridMambaEstimation:
 
     def test_hybrid_without_explicit_dims(self):
         """Fallback to head_dim when key_length/value_length are missing."""
-        b = self._hybrid_backend(_kv_key_length=None, _kv_value_length=None)
+        b = self._hybrid_backend(_kv_key_length = None, _kv_value_length = None)
         head_dim = 5120 // 24  # 213
         expected = 16 * 4096 * 4 * 2 * head_dim * 2
         assert b._estimate_kv_cache_bytes(4096, "f16") == expected
 
     def test_fai_zero_safety(self):
         """full_attention_interval=0 should not cause ZeroDivisionError."""
-        b = self._hybrid_backend(_full_attention_interval=0)
+        b = self._hybrid_backend(_full_attention_interval = 0)
         result = b._estimate_kv_cache_bytes(4096, "f16")
         # fai=0 -> n_attn = n_layers (all layers)
         expected = 64 * 4096 * 4 * (256 + 256) * 2
@@ -399,6 +428,7 @@ class TestHybridMambaEstimation:
 # ---------------------------------------------------------------------------
 # E. Path 3: Sliding Window Estimation
 # ---------------------------------------------------------------------------
+
 
 class TestSlidingWindowEstimation:
     """SWA: half global (full ctx) + half sliding window."""
@@ -423,29 +453,33 @@ class TestSlidingWindowEstimation:
         b = self._swa_backend()
         # 1/4 heuristic: 62 // 4 = 15 global, 47 SWA
         n_global = max(1, 62 // 4)  # 15
-        n_swa = 62 - n_global       # 47
+        n_swa = 62 - n_global  # 47
         kv_per = 16 * (128 + 128) * 2
         expected = int(n_global * 131072 * kv_per + n_swa * min(131072, 1024) * kv_per)
         assert b._estimate_kv_cache_bytes(131072, "f16") == expected
 
     def test_gpt_oss(self):
         b = self._swa_backend(
-            _n_layers=24, _n_kv_heads=8, _n_heads=64,
-            _embedding_length=2880, _kv_key_length=64,
-            _kv_value_length=64, _sliding_window=128,
+            _n_layers = 24,
+            _n_kv_heads = 8,
+            _n_heads = 64,
+            _embedding_length = 2880,
+            _kv_key_length = 64,
+            _kv_value_length = 64,
+            _sliding_window = 128,
         )
         # 1/4 heuristic: 24 // 4 = 6 global, 18 SWA
         n_global = max(1, 24 // 4)  # 6
-        n_swa = 24 - n_global       # 18
+        n_swa = 24 - n_global  # 18
         kv_per = 8 * (64 + 64) * 2
         expected = int(n_global * 131072 * kv_per + n_swa * min(131072, 128) * kv_per)
         assert b._estimate_kv_cache_bytes(131072, "f16") == expected
 
     def test_ctx_smaller_than_window(self):
         """When context < sliding_window, SWA layers use full context anyway."""
-        b = self._swa_backend(_sliding_window=8192)
+        b = self._swa_backend(_sliding_window = 8192)
         n_global = max(1, 62 // 4)  # 15
-        n_swa = 62 - n_global       # 47
+        n_swa = 62 - n_global  # 47
         kv_per = 16 * (128 + 128) * 2
         ctx = 4096
         expected = int(n_global * ctx * kv_per + n_swa * min(ctx, 8192) * kv_per)
@@ -454,9 +488,9 @@ class TestSlidingWindowEstimation:
 
     def test_odd_layer_count(self):
         """Odd layer count: n_global = max(1, n//4), n_swa = n - n_global."""
-        b = self._swa_backend(_n_layers=63)
+        b = self._swa_backend(_n_layers = 63)
         n_global = max(1, 63 // 4)  # 15
-        n_swa = 63 - n_global       # 48
+        n_swa = 63 - n_global  # 48
         kv_per = 16 * (128 + 128) * 2
         expected = int(n_global * 1000 * kv_per + n_swa * min(1000, 1024) * kv_per)
         assert b._estimate_kv_cache_bytes(1000, "f16") == expected
@@ -465,6 +499,7 @@ class TestSlidingWindowEstimation:
 # ---------------------------------------------------------------------------
 # F. Path 4: Standard GQA Estimation
 # ---------------------------------------------------------------------------
+
 
 class TestStandardGQAEstimation:
     """Standard GQA with explicit key_length/value_length."""
@@ -491,7 +526,7 @@ class TestStandardGQAEstimation:
 
     def test_asymmetric_kv_dims(self):
         """key_length != value_length (some architectures have this)."""
-        b = self._gqa_backend(_kv_key_length=192, _kv_value_length=64)
+        b = self._gqa_backend(_kv_key_length = 192, _kv_value_length = 64)
         expected = 28 * 4096 * 8 * (192 + 64) * 2
         assert b._estimate_kv_cache_bytes(4096, "f16") == expected
 
@@ -510,6 +545,7 @@ class TestStandardGQAEstimation:
 # ---------------------------------------------------------------------------
 # G. Path 5: Legacy Fallback Estimation
 # ---------------------------------------------------------------------------
+
 
 class TestLegacyEstimation:
     """Legacy: embed // n_heads, for old GGUFs without new fields."""
@@ -535,7 +571,7 @@ class TestLegacyEstimation:
 
     def test_legacy_with_only_n_heads(self):
         """n_kv_heads is None, falls back to n_heads."""
-        b = self._legacy_backend(_n_kv_heads=None)
+        b = self._legacy_backend(_n_kv_heads = None)
         head_dim = 4096 // 32
         expected = int(2 * 32 * head_dim * 32 * 4096 * 2)
         assert b._estimate_kv_cache_bytes(4096, "f16") == expected
@@ -555,6 +591,7 @@ class TestLegacyEstimation:
 # ---------------------------------------------------------------------------
 # H. Path Priority (selection order)
 # ---------------------------------------------------------------------------
+
 
 class TestPathPriority:
     """Confirm: MLA > Hybrid Mamba > SWA > GQA > Legacy."""
@@ -599,8 +636,11 @@ class TestPathPriority:
         # Use embedding_length=768 so legacy head_dim (768//16=48) differs from
         # key_length (256), and MLA key_len (256) != legacy K+V (2*48=96).
         params = {
-            "_n_layers": 40, "_n_kv_heads": 4, "_n_heads": 16,
-            "_embedding_length": 768, "_kv_key_length": 256,
+            "_n_layers": 40,
+            "_n_kv_heads": 4,
+            "_n_heads": 16,
+            "_embedding_length": 768,
+            "_kv_key_length": 256,
             "_kv_value_length": 256,
         }
         ctx = 4096
@@ -649,22 +689,26 @@ class TestPathPriority:
 # I. KV Cache Quantization
 # ---------------------------------------------------------------------------
 
+
 class TestQuantization:
     """Verify all supported cache_type_kv values produce correct scaling."""
 
-    @pytest.mark.parametrize("cache_type,expected_bpe", [
-        ("f32", 4.0),
-        ("f16", 2.0),
-        ("bf16", 2.0),
-        ("q8_0", 34 / 32),
-        ("q5_1", 0.75),
-        ("q5_0", 0.6875),
-        ("q4_1", 0.625),
-        ("q4_0", 0.5625),
-        ("iq4_nl", 0.5625),
-        (None, 2.0),        # default is f16
-        ("unknown", 2.0),   # unknown falls back to f16
-    ])
+    @pytest.mark.parametrize(
+        "cache_type,expected_bpe",
+        [
+            ("f32", 4.0),
+            ("f16", 2.0),
+            ("bf16", 2.0),
+            ("q8_0", 34 / 32),
+            ("q5_1", 0.75),
+            ("q5_0", 0.6875),
+            ("q4_1", 0.625),
+            ("q4_0", 0.5625),
+            ("iq4_nl", 0.5625),
+            (None, 2.0),  # default is f16
+            ("unknown", 2.0),  # unknown falls back to f16
+        ],
+    )
     def test_quantization_scaling(self, cache_type, expected_bpe):
         b = LlamaCppBackend()
         b._n_layers = 10
@@ -681,6 +725,7 @@ class TestQuantization:
 # ---------------------------------------------------------------------------
 # J. Edge Cases
 # ---------------------------------------------------------------------------
+
 
 class TestEdgeCases:
     """Boundary conditions and degenerate inputs."""
@@ -744,15 +789,21 @@ class TestEdgeCases:
 # K. Lifecycle Tests
 # ---------------------------------------------------------------------------
 
+
 class TestLifecycle:
     """Init, unload, and reparse field management."""
 
     def test_init_fields_none(self):
         b = LlamaCppBackend()
         for attr in [
-            "_kv_key_length", "_kv_value_length", "_sliding_window",
-            "_full_attention_interval", "_kv_lora_rank", "_key_length_mla",
-            "_ssm_inner_size", "_ssm_state_size",
+            "_kv_key_length",
+            "_kv_value_length",
+            "_sliding_window",
+            "_full_attention_interval",
+            "_kv_lora_rank",
+            "_key_length_mla",
+            "_ssm_inner_size",
+            "_ssm_state_size",
         ]:
             assert getattr(b, attr) is None
 
@@ -766,43 +817,54 @@ class TestLifecycle:
         b._full_attention_interval = 4
         b.unload_model()
         for attr in [
-            "_kv_key_length", "_kv_value_length", "_sliding_window",
-            "_full_attention_interval", "_kv_lora_rank", "_key_length_mla",
-            "_ssm_inner_size", "_ssm_state_size",
+            "_kv_key_length",
+            "_kv_value_length",
+            "_sliding_window",
+            "_full_attention_interval",
+            "_kv_lora_rank",
+            "_key_length_mla",
+            "_ssm_inner_size",
+            "_ssm_state_size",
         ]:
             assert getattr(b, attr) is None
 
     def test_end_to_end_synthetic_mla(self):
         """Full round-trip: write GGUF -> parse -> estimate."""
-        b = _backend_from_gguf("deepseek2", {
-            "context_length": 163840,
-            "block_count": 61,
-            "attention.head_count_kv": 1,
-            "attention.head_count": 128,
-            "embedding_length": 7168,
-            "attention.key_length": 576,
-            "attention.value_length": 512,
-            "attention.kv_lora_rank": 512,
-            "attention.key_length_mla": 192,
-        })
+        b = _backend_from_gguf(
+            "deepseek2",
+            {
+                "context_length": 163840,
+                "block_count": 61,
+                "attention.head_count_kv": 1,
+                "attention.head_count": 128,
+                "embedding_length": 7168,
+                "attention.key_length": 576,
+                "attention.value_length": 512,
+                "attention.kv_lora_rank": 512,
+                "attention.key_length_mla": 192,
+            },
+        )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(163840, "f16")
         expected = 61 * 163840 * 1 * 576 * 2
         assert result == expected
 
     def test_end_to_end_synthetic_hybrid(self):
-        b = _backend_from_gguf("qwen35", {
-            "context_length": 262144,
-            "block_count": 64,
-            "attention.head_count_kv": 4,
-            "attention.head_count": 24,
-            "embedding_length": 5120,
-            "attention.key_length": 256,
-            "attention.value_length": 256,
-            "full_attention_interval": 4,
-            "ssm.inner_size": 6144,
-            "ssm.state_size": 128,
-        })
+        b = _backend_from_gguf(
+            "qwen35",
+            {
+                "context_length": 262144,
+                "block_count": 64,
+                "attention.head_count_kv": 4,
+                "attention.head_count": 24,
+                "embedding_length": 5120,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "full_attention_interval": 4,
+                "ssm.inner_size": 6144,
+                "ssm.state_size": 128,
+            },
+        )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(262144, "f16")
         n_attn = 64 // 4
@@ -810,47 +872,56 @@ class TestLifecycle:
         assert result == expected
 
     def test_end_to_end_synthetic_swa(self):
-        b = _backend_from_gguf("gemma3", {
-            "context_length": 131072,
-            "block_count": 62,
-            "attention.head_count_kv": 16,
-            "attention.head_count": 32,
-            "embedding_length": 5376,
-            "attention.key_length": 128,
-            "attention.value_length": 128,
-            "attention.sliding_window": 1024,
-        })
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "context_length": 131072,
+                "block_count": 62,
+                "attention.head_count_kv": 16,
+                "attention.head_count": 32,
+                "embedding_length": 5376,
+                "attention.key_length": 128,
+                "attention.value_length": 128,
+                "attention.sliding_window": 1024,
+            },
+        )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(131072, "f16")
         n_global = max(1, 62 // 4)  # 15
-        n_swa = 62 - n_global       # 47
+        n_swa = 62 - n_global  # 47
         kv_per = 16 * 256 * 2
         expected = int(n_global * 131072 * kv_per + n_swa * 1024 * kv_per)
         assert result == expected
 
     def test_end_to_end_synthetic_gqa(self):
-        b = _backend_from_gguf("qwen3", {
-            "context_length": 40960,
-            "block_count": 28,
-            "attention.head_count_kv": 8,
-            "attention.head_count": 16,
-            "embedding_length": 1024,
-            "attention.key_length": 128,
-            "attention.value_length": 128,
-        })
+        b = _backend_from_gguf(
+            "qwen3",
+            {
+                "context_length": 40960,
+                "block_count": 28,
+                "attention.head_count_kv": 8,
+                "attention.head_count": 16,
+                "embedding_length": 1024,
+                "attention.key_length": 128,
+                "attention.value_length": 128,
+            },
+        )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(40960, "f16")
         expected = 28 * 40960 * 8 * 256 * 2
         assert result == expected
 
     def test_end_to_end_synthetic_legacy(self):
-        b = _backend_from_gguf("llama", {
-            "context_length": 4096,
-            "block_count": 32,
-            "attention.head_count_kv": 8,
-            "attention.head_count": 32,
-            "embedding_length": 4096,
-        })
+        b = _backend_from_gguf(
+            "llama",
+            {
+                "context_length": 4096,
+                "block_count": 32,
+                "attention.head_count_kv": 8,
+                "attention.head_count": 32,
+                "embedding_length": 4096,
+            },
+        )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(4096, "f16")
         head_dim = 4096 // 32
