@@ -28,7 +28,7 @@ SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 BASH = "/bin/bash"
 PWSH = "/usr/bin/pwsh"
 PWSH_AVAILABLE = os.path.isfile(PWSH) and os.access(PWSH, os.X_OK)
-requires_pwsh = pytest.mark.skipif(not PWSH_AVAILABLE, reason="pwsh not available")
+requires_pwsh = pytest.mark.skipif(not PWSH_AVAILABLE, reason = "pwsh not available")
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ def make_mock_git(tmp_path: Path, *, fail_on: str = "") -> tuple[Path, Path]:
         script = (
             f'#!/bin/bash\necho "$*" >> {log_file}\n'
             f'_args=("$@")\n'
-            f'_i=0\n'
+            f"_i=0\n"
             f'while [ "${{_args[$_i]:-}}" = "-C" ]; do _i=$((_i+2)); done\n'
             f'_subcmd="${{_args[$_i]:-}}"\n'
             f'if [ "$_subcmd" = "{fail_on}" ]; then exit 1; fi\n'
@@ -172,7 +172,8 @@ class TestBashPrForcePromotion:
     def test_user_pr_overrides_pr_force(self):
         """UNSLOTH_LLAMA_PR takes priority over PR_FORCE."""
         script = _bash_resolution_fragment(
-            llama_pr = "100", llama_pr_force = "200",
+            llama_pr = "100",
+            llama_pr_force = "200",
         )
         r = run_bash(script)
         assert r.returncode == 0
@@ -181,7 +182,8 @@ class TestBashPrForcePromotion:
 
     def test_user_pr_overrides_baked_in(self):
         script = _bash_resolution_fragment(
-            llama_pr = "100", default_pr_force = "200",
+            llama_pr = "100",
+            default_pr_force = "200",
         )
         r = run_bash(script)
         assert r.returncode == 0
@@ -282,8 +284,10 @@ class TestBashCloneUrlParameterized:
 
     @staticmethod
     def _clone_script(
-        mock_bin: Path, build_tmp: str,
-        llama_pr: str = "", llama_source: str = "https://github.com/ggml-org/llama.cpp",
+        mock_bin: Path,
+        build_tmp: str,
+        llama_pr: str = "",
+        llama_source: str = "https://github.com/ggml-org/llama.cpp",
         resolved_tag: str = "b8508",
     ) -> str:
         return RUN_QUIET_STUB + textwrap.dedent(f"""\
@@ -312,7 +316,8 @@ class TestBashCloneUrlParameterized:
         mock_bin, log_file = make_mock_git(tmp_path)
         build_tmp = str(tmp_path / "build_tmp")
         script = self._clone_script(
-            mock_bin, build_tmp,
+            mock_bin,
+            build_tmp,
             llama_pr = "123",
             llama_source = "https://github.com/unslothai/llama.cpp",
         )
@@ -326,7 +331,8 @@ class TestBashCloneUrlParameterized:
         mock_bin, log_file = make_mock_git(tmp_path)
         build_tmp = str(tmp_path / "build_tmp")
         script = self._clone_script(
-            mock_bin, build_tmp,
+            mock_bin,
+            build_tmp,
             llama_source = "https://github.com/unslothai/llama.cpp",
         )
         r = run_bash(script)
@@ -359,7 +365,10 @@ class TestSourcePatternsSh:
         assert '_DEFAULT_LLAMA_PR_FORCE=""' in self.content
 
     def test_has_default_source(self):
-        assert '_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"' in self.content
+        assert (
+            '_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"'
+            in self.content
+        )
 
     def test_has_pr_force_env_read(self):
         assert "UNSLOTH_LLAMA_PR_FORCE" in self.content
@@ -371,7 +380,7 @@ class TestSourcePatternsSh:
         assert '_LLAMA_PR="$_LLAMA_PR_FORCE"' in self.content
 
     def test_source_trailing_git_strip(self):
-        assert '${_LLAMA_SOURCE%.git}' in self.content
+        assert "${_LLAMA_SOURCE%.git}" in self.content
 
     def test_clone_urls_parameterized_pr_path(self):
         """PR clone path uses ${_LLAMA_SOURCE}.git, not hardcoded URL."""
@@ -388,12 +397,12 @@ class TestSourcePatternsSh:
         """Non-PR clone path uses ${_LLAMA_SOURCE}.git, not hardcoded URL."""
         # Find the non-PR clone line (after _CLONE_BRANCH_ARGS)
         idx = self.content.index("_CLONE_BRANCH_ARGS=()")
-        block = self.content[idx:idx + 400]
+        block = self.content[idx : idx + 400]
         assert '"${_LLAMA_SOURCE}.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
 
     def test_custom_source_forces_build(self):
-        assert 'custom source: $_LLAMA_SOURCE -- forcing source build' in self.content
+        assert "custom source: $_LLAMA_SOURCE -- forcing source build" in self.content
 
     def test_no_hardcoded_clone_urls(self):
         """No remaining hardcoded ggml-org clone URLs in clone commands."""
@@ -419,7 +428,10 @@ class TestSourcePatternsPs1:
         assert '$DefaultLlamaPrForce = ""' in self.content
 
     def test_has_default_source(self):
-        assert '$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"' in self.content
+        assert (
+            '$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"'
+            in self.content
+        )
 
     def test_has_pr_force_env_read(self):
         assert "$env:UNSLOTH_LLAMA_PR_FORCE" in self.content
@@ -435,7 +447,9 @@ class TestSourcePatternsPs1:
 
     def test_clone_urls_parameterized_pr_path(self):
         """PR clone path uses $LlamaSource.git, not hardcoded URL."""
-        pr_idx = self.content.index("if ($LlamaPr) {\n", self.content.index("Cloning llama.cpp"))
+        pr_idx = self.content.index(
+            "if ($LlamaPr) {\n", self.content.index("Cloning llama.cpp")
+        )
         else_idx = self.content.index("} else {", pr_idx)
         pr_block = self.content[pr_idx:else_idx]
         assert '"$LlamaSource.git"' in pr_block
@@ -444,12 +458,12 @@ class TestSourcePatternsPs1:
     def test_clone_urls_parameterized_tag_path(self):
         """Non-PR clone path uses $LlamaSource.git, not hardcoded URL."""
         clone_args_idx = self.content.index('$cloneArgs = @("clone"')
-        block = self.content[clone_args_idx:clone_args_idx + 400]
+        block = self.content[clone_args_idx : clone_args_idx + 400]
         assert '"$LlamaSource.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
 
     def test_custom_source_forces_build(self):
-        assert 'custom source: $LlamaSource -- forcing source build' in self.content
+        assert "custom source: $LlamaSource -- forcing source build" in self.content
 
     def test_no_hardcoded_clone_urls(self):
         """No remaining hardcoded ggml-org clone URLs in clone commands."""
@@ -506,9 +520,11 @@ class TestPwshPrForcePromotion:
         env: dict | None = None,
     ) -> subprocess.CompletedProcess:
         script = self.FRAGMENT_TEMPLATE.replace(
-            "%%DEFAULT_PR_FORCE%%", default_pr_force,
+            "%%DEFAULT_PR_FORCE%%",
+            default_pr_force,
         ).replace(
-            "%%DEFAULT_SOURCE%%", default_source,
+            "%%DEFAULT_SOURCE%%",
+            default_source,
         )
         run_env = {}
         # Ensure env vars are unset by default
@@ -531,10 +547,12 @@ class TestPwshPrForcePromotion:
         assert "LLAMA_PR=999" in r.stdout
 
     def test_user_pr_overrides_pr_force(self):
-        r = self._run(env = {
-            "UNSLOTH_LLAMA_PR": "100",
-            "UNSLOTH_LLAMA_PR_FORCE": "200",
-        })
+        r = self._run(
+            env = {
+                "UNSLOTH_LLAMA_PR": "100",
+                "UNSLOTH_LLAMA_PR_FORCE": "200",
+            }
+        )
         assert r.returncode == 0
         assert "LLAMA_PR=100" in r.stdout
         assert "baked-in PR_FORCE" not in r.stdout
@@ -551,9 +569,11 @@ class TestPwshPrForcePromotion:
         assert "baked-in PR_FORCE" not in r.stdout
 
     def test_custom_source_forces_build(self):
-        r = self._run(env = {
-            "UNSLOTH_LLAMA_SOURCE": "https://github.com/unslothai/llama.cpp",
-        })
+        r = self._run(
+            env = {
+                "UNSLOTH_LLAMA_SOURCE": "https://github.com/unslothai/llama.cpp",
+            }
+        )
         assert r.returncode == 0
         assert "NEED_SOURCE=True" in r.stdout
         assert "SKIP_PREBUILT=True" in r.stdout
@@ -565,9 +585,11 @@ class TestPwshPrForcePromotion:
         assert "SKIP_PREBUILT=False" in r.stdout
 
     def test_trailing_git_stripped(self):
-        r = self._run(env = {
-            "UNSLOTH_LLAMA_SOURCE": "https://github.com/unslothai/llama.cpp.git",
-        })
+        r = self._run(
+            env = {
+                "UNSLOTH_LLAMA_SOURCE": "https://github.com/unslothai/llama.cpp.git",
+            }
+        )
         assert r.returncode == 0
         assert "LLAMA_SOURCE=https://github.com/unslothai/llama.cpp" in r.stdout
 
