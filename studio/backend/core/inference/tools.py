@@ -154,8 +154,12 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
-_MAX_PAGE_CHARS = 16000  # limit fetched page text
-_MAX_FETCH_BYTES = _MAX_PAGE_CHARS * 4 + 1  # cap raw download size
+_MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
+# Raw download cap.  Must be larger than _MAX_PAGE_CHARS because SSR pages
+# embed large <head> sections (CSS, JS, SVGs) that are stripped during
+# HTML-to-Markdown conversion.  512 KB is enough to reach article content
+# on GitBook / Next.js / Docusaurus pages whose <head> alone can be 200 KB.
+_MAX_FETCH_BYTES = 512 * 1024
 
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
@@ -270,7 +274,7 @@ def _fetch_page_text(
                 conn.connect = _patched_connect
                 return conn
 
-        max_bytes = max_chars * 4 + 1
+        max_bytes = _MAX_FETCH_BYTES
         current_url = url
         current_host = parsed.hostname
 
