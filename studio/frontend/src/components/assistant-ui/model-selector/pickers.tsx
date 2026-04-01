@@ -419,6 +419,7 @@ let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
+let _scanFoldersCache: ScanFolderInfo[] = [];
 
 /** Sort LM Studio models with unsloth publisher first. */
 function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
@@ -438,10 +439,12 @@ export function HubModelPicker({
   models,
   value,
   onSelect,
+  onFoldersChange,
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onFoldersChange?: () => void;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
@@ -474,7 +477,7 @@ export function HubModelPicker({
     useState<LocalModelInfo[]>(_customFolderCache);
 
   // Custom scan folders management
-  const [scanFolders, setScanFolders] = useState<ScanFolderInfo[]>([]);
+  const [scanFolders, setScanFolders] = useState<ScanFolderInfo[]>(_scanFoldersCache);
   const [folderInput, setFolderInput] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -496,12 +499,17 @@ export function HubModelPicker({
   }, []);
 
   const refreshScanFolders = useCallback(() => {
-    listScanFolders().then(setScanFolders).catch(() => {});
+    listScanFolders()
+      .then((v) => {
+        _scanFoldersCache = v;
+        setScanFolders(v);
+      })
+      .catch(() => {});
   }, []);
 
   const handleAddFolder = useCallback(async () => {
     const trimmed = folderInput.trim();
-    if (!trimmed) return;
+    if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
     try {
@@ -510,23 +518,25 @@ export function HubModelPicker({
       setShowFolderInput(false);
       refreshScanFolders();
       refreshLocalModelsList();
+      onFoldersChange?.();
     } catch (e) {
       setFolderError(e instanceof Error ? e.message : "Failed to add folder");
     } finally {
       setFolderLoading(false);
     }
-  }, [folderInput, refreshScanFolders, refreshLocalModelsList]);
+  }, [folderInput, folderLoading, refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
 
   const handleRemoveFolder = useCallback(async (id: number) => {
     try {
       await removeScanFolder(id);
       refreshLocalModelsList();
-    } catch {
-      // ignore
+      onFoldersChange?.();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to remove folder");
     } finally {
       refreshScanFolders();
     }
-  }, [refreshScanFolders, refreshLocalModelsList]);
+  }, [refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
 
   const refreshCachedLists = useCallback(() => {
     listCachedGguf()
@@ -568,7 +578,7 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-  }, [alreadyCached]);
+  }, [alreadyCached, refreshLocalModelsList, refreshScanFolders]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return;
@@ -971,7 +981,7 @@ export function HubModelPicker({
                       onChange={(e) => { setFolderInput(e.target.value); setFolderError(null); }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") handleAddFolder();
-                        if (e.key === "Escape") { setShowFolderInput(false); setFolderError(null); }
+                        if (e.key === "Escape") { setShowFolderInput(false); setFolderInput(""); setFolderError(null); }
                       }}
                       placeholder="/path/to/models"
                       className="h-6 min-w-0 flex-1 rounded border border-border/50 bg-transparent px-1.5 font-mono text-[10px] text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-foreground/20"
