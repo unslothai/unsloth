@@ -112,13 +112,13 @@ function CheckingContent() {
 function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
   return (
     <div className="flex h-full flex-col items-center">
-      <div className="flex flex-1 items-center">
+      <div className="flex flex-1 flex-col items-center justify-center">
         <Logo />
-      </div>
-      <div className="mb-10 flex flex-col items-center gap-3">
-        <p className="text-sm text-muted-foreground">
+        <p className="mt-4 text-sm text-muted-foreground">
           To install Unsloth, click Get Started.
         </p>
+      </div>
+      <div className="mb-10">
         <ActionButton onClick={onInstall}>Get Started</ActionButton>
       </div>
     </div>
