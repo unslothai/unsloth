@@ -727,7 +727,6 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
-            CPU_FALLBACK_CMAKE_ARGS=""
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
@@ -878,7 +877,20 @@ else
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+            if ! run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
+                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    substep "Metal build failed; retrying CPU build..." "$C_WARN"
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback)"
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                    else
+                        BUILD_OK=false
+                    fi
+                else
+                    BUILD_OK=false
+                fi
+            fi
         fi
 
         if [ "$BUILD_OK" = true ]; then
