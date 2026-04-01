@@ -443,10 +443,15 @@ const ToolStatusDisplay: FC = () => {
 
   useEffect(() => {
     if (!toolStatus) {
-      wasActiveRef.current = false;
       setElapsed(0);
       setVisible(false);
-      return;
+      // Delay the ref reset so a follow-up tool in the same agentic
+      // turn is not re-debounced after the transient status-clear
+      // event that the backend emits between iterations.
+      const resetTimer = setTimeout(() => {
+        wasActiveRef.current = false;
+      }, 500);
+      return () => clearTimeout(resetTimer);
     }
 
     setElapsed(0);
