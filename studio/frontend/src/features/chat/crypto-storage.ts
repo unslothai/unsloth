@@ -16,23 +16,49 @@ const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
-// ── Session password (in-memory only) ────────────────────────────
+// ── Session password ─────────────────────────────────────────────
+//
+// Held in a module variable for fast access, backed by sessionStorage
+// so it survives page refreshes within the same tab.  Cleared on
+// logout and when the tab is closed (sessionStorage semantics).
+
+const SESSION_PW_KEY = "unsloth_chat_session_pw";
 
 let _sessionPassword: string | null = null;
 
-/** Store the login password in memory for the duration of the session. */
+/** Store the login password for the duration of the browser session. */
 export function setSessionPassword(password: string): void {
   _sessionPassword = password;
+  try {
+    sessionStorage.setItem(SESSION_PW_KEY, password);
+  } catch {
+    // Private browsing or quota — in-memory only
+  }
 }
 
-/** Retrieve the in-memory session password. Returns null when logged out. */
+/** Retrieve the session password. Restores from sessionStorage after a page refresh. */
 export function getSessionPassword(): string | null {
-  return _sessionPassword;
+  if (_sessionPassword) return _sessionPassword;
+  try {
+    const stored = sessionStorage.getItem(SESSION_PW_KEY);
+    if (stored) {
+      _sessionPassword = stored;
+      return stored;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
-/** Clear the in-memory session password (called on logout). */
+/** Clear the session password (called on logout). */
 export function clearSessionPassword(): void {
   _sessionPassword = null;
+  try {
+    sessionStorage.removeItem(SESSION_PW_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 // ── Key derivation ───────────────────────────────────────────────

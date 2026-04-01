@@ -226,7 +226,7 @@ export async function getExternalProviderApiKey(
 
 /**
  * Store a provider API key, encrypting it before writing to localStorage.
- * Falls back to plaintext storage if no session password is available.
+ * Throws if no session password is available (should not happen in normal flow).
  */
 export async function setExternalProviderApiKey(
   providerId: string,
@@ -236,9 +236,10 @@ export async function setExternalProviderApiKey(
   try {
     const keys = loadRawKeyMap();
     const password = getSessionPassword();
-    keys[providerId] = password
-      ? await encryptValue(apiKey, password)
-      : apiKey;
+    if (!password) {
+      throw new Error("No session password — cannot encrypt API key");
+    }
+    keys[providerId] = await encryptValue(apiKey, password);
     saveRawKeyMap(keys);
   } catch {
     // ignore
