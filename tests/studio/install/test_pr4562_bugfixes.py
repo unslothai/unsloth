@@ -14,6 +14,7 @@ Run: pytest tests/studio/install/test_pr4562_bugfixes.py -v
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -345,6 +346,30 @@ class TestResolveRequestedLlamaTag:
             "published_repo": "unslothai/llama.cpp",
             "published_release_tag": "llama-prebuilt-main",
         }
+
+
+class TestFetchJsonRetries:
+    def test_fetch_json_retries_invalid_github_api_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        calls = {"count": 0}
+
+        def fake_download_bytes(url, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return b'{"incomplete":"payload'
+            return json.dumps([{"tag_name": "b8635"}]).encode("utf-8")
+
+        monkeypatch.setattr(MOD, "download_bytes", fake_download_bytes)
+        monkeypatch.setattr(MOD, "sleep_backoff", lambda _attempt: None)
+
+        payload = MOD.fetch_json(
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=100&page=1"
+        )
+
+        assert isinstance(payload, list)
+        assert payload[0]["tag_name"] == "b8635"
+        assert calls["count"] == 2
 
 
 # =========================================================================
