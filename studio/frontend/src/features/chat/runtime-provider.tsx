@@ -679,9 +679,23 @@ function ThreadNewChatSwitch({
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
 
   useEffect(() => {
-    if (!isLoading) {
-      aui.threads().switchToNewThread();
+    if (isLoading) {
+      return;
     }
+
+    let cancelled = false;
+
+    void (async () => {
+      aui.threads().switchToNewThread();
+      const { remoteId } = await aui.threadListItem().initialize();
+      if (!cancelled) {
+        useChatRuntimeStore.getState().setActiveThreadId(remoteId);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [aui, isLoading, nonce]);
 
   return null;

@@ -421,6 +421,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       let runtime = useChatRuntimeStore.getState();
+      let resolvedThreadId =
+        unstable_threadId ?? runtime.activeThreadId ?? undefined;
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -441,6 +443,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
+      resolvedThreadId = unstable_threadId ?? runtime.activeThreadId ?? undefined;
       const { params } = runtime;
       const {
         supportsTools,
@@ -480,7 +483,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = unstable_threadId || "__default";
+        const threadKey = resolvedThreadId || "__default";
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -527,7 +530,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         return;
       }
 
-      const threadKey = unstable_threadId || "__default";
+      const threadKey = resolvedThreadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
@@ -600,7 +603,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
-                  session_id: unstable_threadId || undefined,
+                  session_id: resolvedThreadId,
                 }
               : {}),
           },
@@ -641,7 +644,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 let parsedResult: string | { text: string; images: string[]; sessionId: string };
                 if (imgIdx !== -1) {
                   const text = rawResult.slice(0, imgIdx);
-                  const sessionId = unstable_threadId || "";
+                  const sessionId = resolvedThreadId || "";
                   try {
                     const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
                     parsedResult = { text, images, sessionId };

@@ -34,7 +34,8 @@ _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
 
 # Per-session working directories so each chat thread gets its own sandbox.
-# Falls back to a shared ~/studio_sandbox/ for API callers without a session_id.
+# Falls back to a shared ~/studio_sandbox/_default for API callers without a
+# session_id.
 _workdirs: dict[str, str] = {}
 
 
@@ -55,7 +56,7 @@ def _get_workdir(session_id: str | None = None) -> str:
             if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root)):
                 workdir = os.path.join(sandbox_root, "_invalid")
         else:
-            workdir = sandbox_root
+            workdir = os.path.join(sandbox_root, "_default")
         os.makedirs(workdir, exist_ok = True)
         _workdirs[key] = workdir
     return _workdirs[key]
