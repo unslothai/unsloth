@@ -4733,6 +4733,12 @@ if __name__ == "__main__":
             f"fatal helper busy conflict: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
         )
         raise SystemExit(EXIT_BUSY)
+    except PrebuiltFallback as exc:
+        # Expected when the published repo (e.g. ggml-org/llama.cpp) has no
+        # prebuilt manifest.  Exit quietly with EXIT_FALLBACK so the caller
+        # falls back to source build without a noisy "fatal helper error".
+        log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
+        raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
         log(f"fatal helper error: {message}")
