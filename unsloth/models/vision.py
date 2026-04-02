@@ -1302,16 +1302,48 @@ class FastBaseModel:
         # Monkey-patch PEFT to target the inner .linear child instead.
         _clippable_linear_cls = None
         try:
-            from transformers.models.gemma4.modeling_gemma4 import Gemma4ClippableLinear as _clippable_linear_cls
+            from transformers.models.gemma4.modeling_gemma4 import (
+                Gemma4ClippableLinear as _clippable_linear_cls,
+            )
         except ImportError:
             pass
         if _clippable_linear_cls is not None:
             from peft.tuners.lora.model import LoraModel as _LoraModel
+
             _original_car = _LoraModel._create_and_replace
-            def _patched_car(self, peft_config, adapter_name, target, target_name, parent, current_key=None, **kwargs):
+
+            def _patched_car(
+                self,
+                peft_config,
+                adapter_name,
+                target,
+                target_name,
+                parent,
+                current_key = None,
+                **kwargs,
+            ):
                 if isinstance(target, _clippable_linear_cls):
-                    return _original_car(self, peft_config, adapter_name, target.linear, "linear", target, current_key=current_key, **kwargs)
-                return _original_car(self, peft_config, adapter_name, target, target_name, parent, current_key=current_key, **kwargs)
+                    return _original_car(
+                        self,
+                        peft_config,
+                        adapter_name,
+                        target.linear,
+                        "linear",
+                        target,
+                        current_key = current_key,
+                        **kwargs,
+                    )
+                return _original_car(
+                    self,
+                    peft_config,
+                    adapter_name,
+                    target,
+                    target_name,
+                    parent,
+                    current_key = current_key,
+                    **kwargs,
+                )
+
             _LoraModel._create_and_replace = _patched_car
 
         model = _get_peft_model(model, lora_config)
