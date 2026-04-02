@@ -48,6 +48,16 @@ class LoadRequest(BaseModel):
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
     )
+    server_args: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "Additional or override arguments to pass to llama-server. "
+            "Keys are argument names (with or without leading dashes), "
+            "values are the argument values. Use true/false for flags. "
+            'Example: {"--threads": 8, "--flash-attn": "off", "tensor-split": "1,2"}. '
+            "Blocked args (managed internally): --host, --port, -m/--model, --hf, --mmproj."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -162,6 +172,10 @@ class LoadResponse(BaseModel):
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
+    )
+    server_args_used: Optional[List[str]] = Field(
+        None,
+        description = "The actual command-line arguments passed to llama-server (API key redacted)",
     )
 
 

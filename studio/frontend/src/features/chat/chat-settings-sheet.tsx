@@ -37,6 +37,7 @@ import {
   PencilEdit01Icon,
   Settings02Icon,
   SlidersHorizontalIcon,
+  Terminal,
   UserSettings01Icon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
@@ -294,6 +295,9 @@ export function ChatSettingsPanel({
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
   );
+  const serverArgs = useChatRuntimeStore((s) => s.serverArgs);
+  const setServerArgs = useChatRuntimeStore((s) => s.setServerArgs);
+  const serverArgsDirty = serverArgs !== null;
 
   const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
   const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
@@ -620,6 +624,8 @@ export function ChatSettingsPanel({
             )}
           </div>
         </CollapsibleSection>
+
+        {isGguf && <ServerArgsSection onReloadModel={onReloadModel} />}
 
         <CollapsibleSection
           icon={SlidersHorizontalIcon}
@@ -955,4 +961,97 @@ function ChatTemplateSection({
       </div>
     </CollapsibleSection>
   );
+}
+
+function ServerArgsSection({
+  onReloadModel,
+}: {
+  onReloadModel?: () => void;
+}) {
+  const serverArgs = useChatRuntimeStore((s) => s.serverArgs);
+  const setServerArgs = useChatRuntimeStore((s) => s.setServerArgs);
+
+  const [draft, setDraft] = useState(() => serializeServerArgs(serverArgs));
+  const isDirty = draft !== serializeServerArgs(serverArgs);
+
+  return (
+    <CollapsibleSection icon={Terminal} label="Server Args">
+      <div className="flex flex-col gap-2 py-1">
+        <div className="text-[11px] text-muted-foreground">
+          Extra llama-server CLI arguments (GGUF only). One per line as{" "}
+          <code className="rounded bg-muted px-1 text-[10px]">--key value</code>{" "}
+          or <code className="rounded bg-muted px-1 text-[10px]">--flag</code>.
+          Blocked: --host, --port, -m, --model, --hf, --mmproj.
+        </div>
+        <Textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          className="min-h-24 font-mono text-[11px] leading-relaxed corner-squircle"
+          rows={5}
+          spellCheck={false}
+          placeholder={"--flash-attn off\n--threads 8\n--parallel 2"}
+        />
+        {isDirty && (
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setServerArgs(parseServerArgs(draft));
+                onReloadModel?.();
+              }}
+              className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              Apply & Reload
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(serializeServerArgs(serverArgs));
+              }}
+              className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+            >
+              Revert
+            </button>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
+function serializeServerArgs(
+  args: Record<string, string | number | boolean> | null,
+): string {
+  if (!args || Object.keys(args).length === 0) return "";
+  return Object.entries(args)
+    .map(([k, v]) => {
+      const key = k.startsWith("--") ? k : `--${k}`;
+      if (typeof v === "boolean") return v ? key : `# ${key}`;
+      return `${key} ${v}`;
+    })
+    .join("\n");
+}
+
+function parseServerArgs(
+  text: string,
+): Record<string, string | number | boolean> | null {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"));
+  if (lines.length === 0) return null;
+
+  const result: Record<string, string | number | boolean> = {};
+  for (const line of lines) {
+    const parts = line.split(/\s+/);
+    const key = parts[0].replace(/^--/, "");
+    if (parts.length === 1) {
+      result[key] = true;
+    } else {
+      const raw = parts.slice(1).join(" ");
+      const num = Number(raw);
+      result[key] = Number.isFinite(num) && raw.length > 0 ? num : raw;
+    }
+  }
+  return result;
 }

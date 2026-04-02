@@ -179,6 +179,7 @@ async def load_model(
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     chat_template = llama_backend.chat_template,
+                    server_args_used = llama_backend.server_args_used,
                 )
         else:
             if (
@@ -226,6 +227,15 @@ async def load_model(
                 detail = f"Invalid model identifier: {request.model_path}",
             )
 
+        model_defaults = load_model_defaults(config.identifier)
+        model_server_args = model_defaults.get("server_args", {})
+        if not isinstance(model_server_args, dict):
+            model_server_args = {}
+        request_server_args = request.server_args or {}
+        if not isinstance(request_server_args, dict):
+            request_server_args = {}
+        merged_server_args = {**model_server_args, **request_server_args}
+
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
@@ -263,6 +273,7 @@ async def load_model(
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
+                    server_args = merged_server_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -275,6 +286,7 @@ async def load_model(
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
+                    server_args = merged_server_args,
                 )
 
             if not success:
@@ -317,6 +329,7 @@ async def load_model(
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
+                server_args_used = llama_backend.server_args_used,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -688,6 +701,17 @@ async def get_status(
     except Exception as e:
         logger.error(f"Error getting status: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to get status: {str(e)}")
+
+
+@router.get("/server-args")
+async def get_server_args(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the active llama-server command arguments (API key redacted)."""
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(status_code = 400, detail = "No model loaded")
+    return {"server_args": llama_backend.server_args_used}
 
 
 # =====================================================================

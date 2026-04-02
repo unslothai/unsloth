@@ -21,7 +21,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 import httpx
 
@@ -84,6 +84,16 @@ class LlamaCppBackend:
         3. unload_model() — terminates llama-server subprocess
     """
 
+    _SERVER_ARG_BLOCKLIST = {
+        "host",
+        "port",
+        "m",
+        "model",
+        "hf",
+        "mmproj",
+        "api-key",
+    }
+
     def __init__(self):
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
@@ -121,6 +131,7 @@ class LlamaCppBackend:
         self._stdout_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        self._server_args_used: List[str] = []
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -151,6 +162,11 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def server_args_used(self) -> List[str]:
+        """Return the actual args used to start llama-server (for debugging/display)."""
+        return list(self._server_args_used)
 
     @property
     def context_length(self) -> Optional[int]:
@@ -1050,6 +1066,7 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
+        server_args: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1364,11 +1381,22 @@ class LlamaCppBackend:
             else:
                 self._api_key = None
 
+            # Let user-provided args replace conflicting built-in defaults.
+            self._remove_conflicting_server_args(cmd, server_args)
+
+            # Optional overrides/additions from API or model defaults.
+            # These are appended so llama-server resolves duplicates in favor
+            # of the user-provided value.
+            extra_args = self._build_server_args(server_args)
+            if extra_args:
+                cmd.extend(extra_args)
+
             _log_cmd = list(cmd)
             if "--api-key" in _log_cmd:
                 _ki = _log_cmd.index("--api-key") + 1
                 if _ki < len(_log_cmd):
                     _log_cmd[_ki] = "<redacted>"
+            self._server_args_used = _log_cmd
             logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
             # Set library paths so llama-server can find its shared libs and CUDA DLLs
@@ -1592,9 +1620,102 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._process = None
+            self._api_key = None
+            self._server_args_used = []
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
+
+    @staticmethod
+    def _normalize_server_arg_key(raw_key: Any) -> Optional[str]:
+        """Normalize argument key by trimming dashes and standardizing separators."""
+        if raw_key is None:
+            return None
+        key = str(raw_key).strip()
+        if not key:
+            return None
+        key = key.lstrip("-").replace("_", "-")
+        return key or None
+
+    @staticmethod
+    def _cmd_token_looks_like_value(token: Any) -> bool:
+        """Return True when a token is likely a value, not another flag."""
+        if token is None:
+            return False
+        token_str = str(token)
+        import re
+
+        return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", token_str))
+
+    def _remove_conflicting_server_args(
+        self, cmd: List[str], server_args: Optional[Dict[str, Any]]
+    ) -> None:
+        """Remove built-in args that are being overridden by user args."""
+        if not server_args or not isinstance(server_args, dict):
+            return
+
+        override_keys = set()
+        for raw_key in server_args.keys():
+            key = self._normalize_server_arg_key(raw_key)
+            if key and key not in self._SERVER_ARG_BLOCKLIST:
+                override_keys.add(key)
+
+        if not override_keys:
+            return
+
+        i = 1  # Skip the binary path.
+        while i < len(cmd):
+            cmd_key = self._normalize_server_arg_key(cmd[i])
+            if cmd_key in override_keys:
+                del cmd[i]
+                if i < len(cmd):
+                    next_token = cmd[i]
+                    if not next_token.startswith(
+                        "-"
+                    ) or self._cmd_token_looks_like_value(next_token):
+                        del cmd[i]
+                continue
+            i += 1
+
+    def _build_server_args(self, server_args: Optional[Dict[str, Any]]) -> List[str]:
+        """Build additional llama-server CLI args with safety filtering."""
+        if not server_args:
+            return []
+        if not isinstance(server_args, dict):
+            logger.warning(
+                "Ignoring non-dict server_args",
+                server_args_type = type(server_args).__name__,
+            )
+            return []
+
+        extra_args: List[str] = []
+        for raw_key, value in server_args.items():
+            key = self._normalize_server_arg_key(raw_key)
+            if not key:
+                logger.warning("Ignoring empty llama-server arg key")
+                continue
+            if key in self._SERVER_ARG_BLOCKLIST:
+                logger.warning("Ignoring blocked llama-server arg", arg = key)
+                continue
+
+            flag = f"-{key}" if len(key) == 1 else f"--{key}"
+
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                if value:
+                    extra_args.append(flag)
+                continue
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    extra_args.extend([flag, str(item)])
+                continue
+
+            extra_args.extend([flag, str(value)])
+
+        if extra_args:
+            logger.info("Applying additional llama-server args", extra_args = extra_args)
+        return extra_args
 
     @staticmethod
     def _kill_orphaned_servers():
