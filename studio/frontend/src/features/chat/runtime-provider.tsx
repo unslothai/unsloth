@@ -47,9 +47,9 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "Solve the integral of x·sin(x), and verify it step by step",
   },
   {
-    title: "Draw an SVG of a cute sloth",
+    title: "Draw an SVG of a cute sloth & show the code",
     label: "SVG sloth",
-    prompt: "Draw an SVG of a cute sloth",
+    prompt: "Draw an SVG of a cute sloth & show the code",
   },
 ];
 
@@ -569,10 +569,32 @@ function ThreadHistoryProvider({
           store.setContextUsage(savedUsage);
         }
 
+        // If any message has a stored parentId, reconstruct the tree
+        // so retries/regenerations load as branches instead of being
+        // unrolled into a flat list.  For mixed legacy/new threads
+        // (old messages without parentId + new messages with), infer
+        // sequential parents for old messages to preserve the chain.
+        // Fall back to fromArray for fully legacy threads.
+        const hasParentIds = msgs.some((m) => "parentId" in m);
+        if (hasParentIds) {
+          let previousId: string | null = null;
+          return {
+            messages: msgs.map((m) => {
+              const parentId = "parentId" in m
+                ? (m.parentId ?? null)
+                : previousId;
+              previousId = m.id;
+              return {
+                parentId,
+                message: toThreadMessage(m),
+              };
+            }),
+          };
+        }
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
 
-      async append({ message }: ExportedMessageRepositoryItem) {
+      async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
         const content = cloneContent(message.content);
         const attachments =
@@ -586,6 +608,7 @@ function ThreadHistoryProvider({
         await db.messages.put({
           id: message.id,
           threadId: remoteId,
+          parentId: parentId ?? null,
           role: message.role,
           content,
           ...(attachments.length > 0 && { attachments }),

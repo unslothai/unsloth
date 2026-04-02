@@ -2905,10 +2905,15 @@ class LlamaCppBackend:
                         _error_prefixes
                     )
                     _tool_call_history.append((_tc_key, _is_error))
+                    # Strip image sentinel before feeding result to the LLM
+                    # (the full result with sentinel is still yielded via
+                    # tool_end so the frontend can extract image paths).
                     _result_content = result
+                    if "\n__IMAGES__:" in _result_content:
+                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
                     if _is_error:
                         _result_content = (
-                            result + "\n\nThe tool call encountered an issue. "
+                            _result_content + "\n\nThe tool call encountered an issue. "
                             "Please try a different approach or rephrase your request."
                         )
 
