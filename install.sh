@@ -729,12 +729,13 @@ if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
     # sysctl hw.optional.arm64 returns "1" on Apple Silicon even in Rosetta.
     if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
         echo ""
-        echo "  WARNING: Apple Silicon detected, but this shell is running under Rosetta (x86_64)."
-        echo "  Re-run install.sh from a native arm64 terminal for full PyTorch support."
-        echo "  Continuing in GGUF-only mode for now."
+        echo "  NOTE: Apple Silicon detected under Rosetta (x86_64 shell)."
+        echo "  Overriding to arm64 for correct binaries."
         echo ""
+        _ARCH="arm64"
+    else
+        MAC_INTEL=true
     fi
-    MAC_INTEL=true
 fi
 
 if [ -n "$_USER_PYTHON" ]; then

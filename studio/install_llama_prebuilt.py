@@ -1993,6 +1993,18 @@ def run_capture(
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
+    # macOS Rosetta: platform.machine() reports x86_64 on Apple Silicon.
+    # Detect the real hardware via sysctl so we download arm64 binaries.
+    if system == "Darwin" and machine in {"x86_64", "amd64"}:
+        try:
+            r = subprocess.run(
+                ["sysctl", "-in", "hw.optional.arm64"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.stdout.strip() == "1":
+                machine = "arm64"
+        except Exception:
+            pass
     is_windows = system == "Windows"
     is_linux = system == "Linux"
     is_macos = system == "Darwin"
