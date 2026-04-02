@@ -216,6 +216,10 @@ def unsloth_base_fast_generate(
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except:
         pass
+    try:
+        kwargs["pixel_values_videos"] = kwargs["pixel_values_videos"].to(dtype)
+    except:
+        pass
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -1029,6 +1033,15 @@ class FastBaseModel:
                     f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
                     file = sys.stderr,
                 )
+        # Backwards compat: if processor has no chat_template (e.g. old saves without
+        # chat_template.jinja) but the inner tokenizer does, copy it to the processor.
+        if (
+            hasattr(tokenizer, "tokenizer")
+            and getattr(tokenizer, "chat_template", None) is None
+            and getattr(tokenizer.tokenizer, "chat_template", None) is not None
+        ):
+            tokenizer.chat_template = tokenizer.tokenizer.chat_template
+
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
@@ -1285,7 +1298,27 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
+        # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA on it directly.
+        # Monkey-patch PEFT to target the inner .linear child instead.
+        _clippable_linear_cls = None
+        try:
+            from transformers.models.gemma4.modeling_gemma4 import Gemma4ClippableLinear as _clippable_linear_cls
+        except ImportError:
+            pass
+        if _clippable_linear_cls is not None:
+            from peft.tuners.lora.model import LoraModel as _LoraModel
+            _original_car = _LoraModel._create_and_replace
+            def _patched_car(self, peft_config, adapter_name, target, target_name, parent, current_key=None, **kwargs):
+                if isinstance(target, _clippable_linear_cls):
+                    return _original_car(self, peft_config, adapter_name, target.linear, "linear", target, current_key=current_key, **kwargs)
+                return _original_car(self, peft_config, adapter_name, target, target_name, parent, current_key=current_key, **kwargs)
+            _LoraModel._create_and_replace = _patched_car
+
         model = _get_peft_model(model, lora_config)
+
+        # Restore original PEFT method
+        if _clippable_linear_cls is not None:
+            _LoraModel._create_and_replace = _original_car
         # Apply QAT + LoRA if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
@@ -1383,7 +1416,7 @@ class FastBaseModel:
         # after this point, so we intercept gradient_checkpointing_enable
         # to always force use_reentrant=True for Gemma3N.
         _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
-        if "gemma3n" in _model_type.lower():
+        if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
             def _gc_enable_reentrant(**kwargs):

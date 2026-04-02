@@ -810,7 +810,9 @@ class LlamaCppBackend:
                 # Detect tool calling support from chat template
                 tool_markers = [
                     "{%- if tools %}",
+                    "{%- if tools -%}",
                     "{% if tools %}",
+                    "{% if tools -%}",
                     '"role" == "tool"',
                     "'role' == 'tool'",
                     'message.role == "tool"',
