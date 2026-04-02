@@ -52,8 +52,15 @@ _REPROMPT_MAX_CHARS = 2000
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
-# Model size extraction (shared with routes/inference.py)
-from utils.models import extract_model_size_b as _extract_model_size_b
+# Model size extraction — lazy import to avoid pulling in transformers
+# at module level (utils.models.model_config imports AutoConfig).
+# This module is imported by core/inference/__init__.py, which runs
+# before the subprocess version-activation code, so an eager import
+# here would cache transformers 4.x in sys.modules and break the
+# 5.x version switch.
+def _extract_model_size_b(model_id: str):
+    from utils.models import extract_model_size_b
+    return extract_model_size_b(model_id)
 
 # ── Pre-compiled patterns for tool XML stripping ─────────────
 _TOOL_CLOSED_PATS = [
