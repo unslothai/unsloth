@@ -1637,14 +1637,26 @@ function Invoke-LlamaHelper {
     }
 
     try {
-        if ($StderrPath) {
-            $output = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>$StderrPath
-        } else {
-            $output = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>$null
+        # Capture all output (stdout + stderr) so that PowerShell does not
+        # convert stderr lines into visible ErrorRecord objects.  Separate
+        # stdout from stderr afterwards.
+        $allOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $stdoutLines = @()
+        $stderrLines = @()
+        foreach ($line in $allOutput) {
+            if ($line -is [System.Management.Automation.ErrorRecord]) {
+                $stderrLines += $line.ToString()
+            } else {
+                $stdoutLines += $line
+            }
+        }
+        if ($StderrPath -and $stderrLines.Count -gt 0) {
+            $stderrLines | Out-File -FilePath $StderrPath -Encoding utf8
         }
         return [pscustomobject]@{
-            Output = $output
-            ExitCode = $LASTEXITCODE
+            Output = $stdoutLines
+            ExitCode = $exitCode
         }
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
