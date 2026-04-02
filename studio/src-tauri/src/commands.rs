@@ -21,7 +21,7 @@ pub async fn check_install_status() -> bool {
     // Match the same AppImage env clearing used in process.rs and install.rs,
     // otherwise the probe can fail due to bundled libs even when the install is fine.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
+    if std::env::var_os("APPIMAGE").is_some() {
         cmd.env_remove("LD_LIBRARY_PATH");
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
@@ -220,16 +220,36 @@ pub async fn start_install(
 
 /// Install system packages with elevated permissions (Linux only).
 /// Called by frontend after user approves the elevation dialog.
+/// Only allows packages that the install script reported as needed.
 #[cfg(target_os = "linux")]
 #[tauri::command]
-pub fn install_system_packages(packages: Vec<String>) -> Result<(), String> {
+pub fn install_system_packages(
+    packages: Vec<String>,
+    state: tauri::State<'_, install::InstallState>,
+) -> Result<(), String> {
+    // Cross-check against the packages the install script actually reported
+    let allowed = state
+        .lock()
+        .map(|s| s.needed_packages.clone())
+        .unwrap_or_default();
+    for pkg in &packages {
+        if !allowed.contains(pkg) {
+            return Err(format!(
+                "Package '{}' was not requested by the install script",
+                pkg
+            ));
+        }
+    }
     install::install_system_packages(&packages)
 }
 
 /// Stub for non-Linux platforms — elevation is handled by the scripts themselves.
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
-pub fn install_system_packages(_packages: Vec<String>) -> Result<(), String> {
+pub fn install_system_packages(
+    _packages: Vec<String>,
+    _state: tauri::State<'_, install::InstallState>,
+) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
 }
 

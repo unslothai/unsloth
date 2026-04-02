@@ -2,22 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ShimmerButton } from "@/components/ui/shimmer-button";
+import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import { AnimatePresence, motion } from "motion/react";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type BackendStatus =
-  | "checking"
-  | "not-installed"
-  | "installing"
-  | "install-error"
-  | "needs-elevation"
-  | "starting"
-  | "running"
-  | "stopped"
-  | "error";
 
 interface StartupScreenProps {
   status: BackendStatus;

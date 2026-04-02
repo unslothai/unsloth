@@ -4,7 +4,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
 
-type BackendStatus =
+export type BackendStatus =
   | "checking"
   | "not-installed"
   | "installing"
