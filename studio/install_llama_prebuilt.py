@@ -431,9 +431,7 @@ def normalize_source_commit(value: str | None) -> str | None:
     return normalized
 
 
-def validate_schema_version(
-    payload: dict[str, Any], *, label: str
-) -> None:
+def validate_schema_version(payload: dict[str, Any], *, label: str) -> None:
     schema_version = payload.get("schema_version")
     if schema_version is None:
         return
@@ -532,10 +530,9 @@ def refs_match(candidate_ref: str | None, requested_ref: str | None) -> bool:
     candidate_commit = normalize_source_commit(candidate_ref)
     requested_commit = normalize_source_commit(requested_ref)
     if candidate_commit and requested_commit:
-        return (
-            candidate_commit.startswith(requested_commit)
-            or requested_commit.startswith(candidate_commit)
-        )
+        return candidate_commit.startswith(
+            requested_commit
+        ) or requested_commit.startswith(candidate_commit)
     return False
 
 
@@ -719,9 +716,7 @@ def fetch_json(url: str) -> Any:
             hint = ""
             if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
                 hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
-            raise RuntimeError(
-                f"GitHub API returned 403 for {url}{hint}"
-            ) from exc
+            raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
         raise
     if not data:
         raise RuntimeError(f"downloaded empty JSON payload from {url}")
@@ -1239,7 +1234,9 @@ def parse_published_release_bundle(
         release_tag = release_tag,
         upstream_tag = upstream_tag,
         manifest_sha256 = manifest_sha256,
-        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
+        source_repo = source_repo
+        if isinstance(source_repo, str) and source_repo
+        else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
@@ -1334,7 +1331,9 @@ def parse_approved_release_checksums(
         repo = repo,
         release_tag = release_tag,
         upstream_tag = upstream_tag,
-        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
+        source_repo = source_repo
+        if isinstance(source_repo, str) and source_repo
+        else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
@@ -1834,7 +1833,9 @@ def exact_source_archive_hash(
 ) -> ApprovedArtifactHash | None:
     if not checksums.source_commit:
         return None
-    return checksums.artifacts.get(exact_source_archive_logical_name(checksums.source_commit))
+    return checksums.artifacts.get(
+        exact_source_archive_logical_name(checksums.source_commit)
+    )
 
 
 def source_clone_url_from_checksums(checksums: ApprovedReleaseChecksums) -> str | None:
@@ -1883,7 +1884,8 @@ def source_build_plan_for_release(
             source_commit = source_commit,
         )
     return SourceBuildPlan(
-        source_url = source_url_from_repo_slug(UPSTREAM_REPO) or "https://github.com/ggml-org/llama.cpp",
+        source_url = source_url_from_repo_slug(UPSTREAM_REPO)
+        or "https://github.com/ggml-org/llama.cpp",
         source_ref = release.bundle.upstream_tag,
         source_ref_kind = "tag",
         compatibility_upstream_tag = release.bundle.upstream_tag,
@@ -2795,9 +2797,7 @@ def hydrate_source_tree(
     except PrebuiltFallback:
         raise
     except Exception as exc:
-        raise PrebuiltFallback(
-            f"failed to hydrate {label}: {exc}"
-        ) from exc
+        raise PrebuiltFallback(f"failed to hydrate {label}: {exc}") from exc
     finally:
         remove_tree(extract_dir)
 
@@ -4548,9 +4548,7 @@ def parse_args() -> argparse.Namespace:
         "--resolve-source-build",
         nargs = "?",
         const = "latest",
-        help = (
-            "Resolve the source-build fallback plan."
-        ),
+        help = ("Resolve the source-build fallback plan."),
     )
     parser.add_argument(
         "--output-format",
@@ -4605,13 +4603,15 @@ def main() -> int:
 
     if args.resolve_install_tag is not None:
         resolved = resolve_requested_install_tag(
-                args.resolve_install_tag,
-                args.published_release_tag or "",
-                args.published_repo,
-            )
+            args.resolve_install_tag,
+            args.published_release_tag or "",
+            args.published_repo,
+        )
         emit_resolver_output(
             {
-                "requested_tag": normalized_requested_llama_tag(args.resolve_install_tag),
+                "requested_tag": normalized_requested_llama_tag(
+                    args.resolve_install_tag
+                ),
                 "llama_tag": resolved,
             },
             output_format = args.output_format,
@@ -4626,7 +4626,9 @@ def main() -> int:
         )
         emit_resolver_output(
             {
-                "requested_tag": normalized_requested_llama_tag(args.resolve_source_build),
+                "requested_tag": normalized_requested_llama_tag(
+                    args.resolve_source_build
+                ),
                 "source_url": plan.source_url,
                 "source_ref_kind": plan.source_ref_kind,
                 "source_ref": plan.source_ref,

@@ -60,7 +60,9 @@ resolve_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_install_release_p
 resolve_published_release = INSTALL_LLAMA_PREBUILT.resolve_published_release
 resolve_source_build_plan = INSTALL_LLAMA_PREBUILT.resolve_source_build_plan
 validated_checksums_for_bundle = INSTALL_LLAMA_PREBUILT.validated_checksums_for_bundle
-parse_approved_release_checksums = INSTALL_LLAMA_PREBUILT.parse_approved_release_checksums
+parse_approved_release_checksums = (
+    INSTALL_LLAMA_PREBUILT.parse_approved_release_checksums
+)
 published_release_matches_request = (
     INSTALL_LLAMA_PREBUILT.published_release_matches_request
 )
@@ -68,7 +70,9 @@ exact_source_archive_logical_name = (
     INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name
 )
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
-windows_cuda_upstream_asset_names = INSTALL_LLAMA_PREBUILT.windows_cuda_upstream_asset_names
+windows_cuda_upstream_asset_names = (
+    INSTALL_LLAMA_PREBUILT.windows_cuda_upstream_asset_names
+)
 env_int = INSTALL_LLAMA_PREBUILT.env_int
 
 
@@ -189,13 +193,17 @@ def make_checksums_with_source(
             kind = "upstream-source",
         ),
     }
-    normalized_source_commit = source_commit.lower() if isinstance(source_commit, str) else None
+    normalized_source_commit = (
+        source_commit.lower() if isinstance(source_commit, str) else None
+    )
     if normalized_source_commit:
-        artifacts[exact_source_archive_logical_name(normalized_source_commit)] = ApprovedArtifactHash(
-            asset_name = exact_source_archive_logical_name(normalized_source_commit),
-            sha256 = "c" * 64,
-            repo = source_repo or "example/custom-llama.cpp",
-            kind = "exact-source",
+        artifacts[exact_source_archive_logical_name(normalized_source_commit)] = (
+            ApprovedArtifactHash(
+                asset_name = exact_source_archive_logical_name(normalized_source_commit),
+                sha256 = "c" * 64,
+                repo = source_repo or "example/custom-llama.cpp",
+                kind = "exact-source",
+            )
         )
     return ApprovedReleaseChecksums(
         repo = "unslothai/llama.cpp",
@@ -765,9 +773,9 @@ class TestSourceBuildPlanResolution:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "resolve_published_release",
-            lambda requested_tag, published_repo, published_release_tag = "": (_ for _ in ()).throw(
-                PrebuiltFallback("missing")
-            ),
+            lambda requested_tag, published_repo, published_release_tag = "": (
+                _ for _ in ()
+            ).throw(PrebuiltFallback("missing")),
         )
 
         plan = resolve_source_build_plan("main", "unslothai/llama.cpp")
@@ -842,7 +850,9 @@ class TestValidatedChecksumsForBundle:
     def test_rejects_manifest_checksum_mismatch(self, monkeypatch):
         bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
         bundle.manifest_sha256 = "a" * 64
-        checksums = make_checksums_with_source([], release_tag = "r1", upstream_tag = "b8508")
+        checksums = make_checksums_with_source(
+            [], release_tag = "r1", upstream_tag = "b8508"
+        )
         checksums.artifacts[bundle.manifest_asset_name] = ApprovedArtifactHash(
             asset_name = bundle.manifest_asset_name,
             sha256 = "b" * 64,
