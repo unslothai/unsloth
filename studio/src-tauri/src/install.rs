@@ -326,7 +326,13 @@ pub fn run_install(app: AppHandle, state: InstallState) -> Result<(), String> {
 /// Windows: kill job object (no graceful equivalent)
 pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let mut child = {
-        let mut install = state.lock().map_err(|e| e.to_string())?;
+        let mut install = match state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Install state mutex poisoned, recovering for cleanup");
+                poisoned.into_inner()
+            }
+        };
         install.intentional_stop = true;
         install.child.take()
     };
