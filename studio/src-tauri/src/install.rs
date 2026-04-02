@@ -347,16 +347,15 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     // Try graceful SIGTERM first so pip/cmake can clean up temp files
     #[cfg(unix)]
     {
-        let neg_pid = -(pid as libc::pid_t);
-        if neg_pid >= 0 {
-            // PID too large for group signal, fall back to direct kill
-            warn!("PID {} overflows i32 negation, using direct kill", pid);
+        if pid > i32::MAX as u32 {
+            // PID too large for i32 negation, fall back to direct kill
+            warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
             return Ok(());
         }
         unsafe {
-            libc::kill(neg_pid, libc::SIGTERM);
+            libc::kill(-(pid as i32), libc::SIGTERM);
         }
         // Wait up to 5s for graceful exit
         for _ in 0..50 {

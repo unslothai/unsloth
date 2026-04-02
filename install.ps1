@@ -945,7 +945,7 @@ shell.Run cmd, 0, False
         $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
         if ((Test-Path $fixedPy) -and (Test-Path $target)) {
             $installed = Get-Content $target -Raw
-            if ($installed -notmatch 'except OSError') {
+            if ($installed -notmatch '^\s*except\s+OSError') {
                 Copy-Item $fixedPy $target -Force
                 substep "patched install_python_stack.py (stdout fix)"
             } else {

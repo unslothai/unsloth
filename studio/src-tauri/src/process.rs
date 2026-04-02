@@ -100,16 +100,39 @@ fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
 }
 
 /// Check if the installed unsloth CLI supports --api-only by probing --help output.
+/// Times out after 5s to avoid blocking startup if the binary hangs.
 fn supports_api_only(bin: &std::path::Path) -> bool {
-    let output = std::process::Command::new(bin)
+    let mut child = match std::process::Command::new(bin)
         .args(["studio", "--help"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output();
-    match output {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).contains("--api-only"),
-        Err(_) => false,
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // Poll for up to 5 seconds
+    for _ in 0..50 {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let stdout = child.stdout.take();
+                if let Some(mut out) = stdout {
+                    let mut buf = String::new();
+                    use std::io::Read;
+                    let _ = out.read_to_string(&mut buf);
+                    return buf.contains("--api-only");
+                }
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_) => return false,
+        }
     }
+    // Timed out — kill and assume not supported
+    let _ = child.kill();
+    let _ = child.wait();
+    false
 }
 
 /// Spawn the backend process and wire up stdout/stderr reader threads.
@@ -333,16 +356,15 @@ pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(),
     // This gives Python and any workers a chance to shut down gracefully.
     #[cfg(unix)]
     {
-        let neg_pid = -(pid as libc::pid_t);
-        if neg_pid >= 0 {
-            // PID too large for group signal, fall back to direct kill
-            warn!("PID {} overflows i32 negation, using direct kill", pid);
+        if pid > i32::MAX as u32 {
+            // PID too large for i32 negation, fall back to direct kill
+            warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
             return Ok(());
         }
         unsafe {
-            libc::kill(neg_pid, libc::SIGTERM);
+            libc::kill(-(pid as i32), libc::SIGTERM);
         }
     }
     #[cfg(windows)]
