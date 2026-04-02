@@ -6,7 +6,6 @@
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
 @import "@fontsource-variable/figtree";
-@import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
 @import "tw-shimmer";
 @plugin "@toolwind/corner-shape";
