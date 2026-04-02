@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Generator, Optional
 
 import httpx
@@ -2831,7 +2832,15 @@ class LlamaCppBackend:
                         arguments = raw_args
 
                     if tool_name == "web_search":
-                        status_text = f"Searching: {arguments.get('query', '')}"
+                        _ws_url = arguments.get("url", "")
+                        if _ws_url:
+                            try:
+                                _ws_host = urlparse(_ws_url).netloc or _ws_url
+                            except Exception:
+                                _ws_host = _ws_url
+                            status_text = f"Reading: {_ws_host}"
+                        else:
+                            status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
                         preview = (
                             (arguments.get("code") or "").strip().split("\n")[0][:60]
