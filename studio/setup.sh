@@ -559,7 +559,7 @@ else
     set -e
     if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
         _RESOLVED_LLAMA_TAG="$(
-            printf '%s' "${_RESOLVE_INSTALL_JSON:-}" | python -c 'import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw).get("llama_tag","") if raw else "")' 2>/dev/null || true
+            printf '%s' "${_RESOLVE_INSTALL_JSON:-}" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
         )"
     else
         _RESOLVED_LLAMA_TAG=""
