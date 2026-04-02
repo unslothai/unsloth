@@ -129,6 +129,17 @@ function ModelSelectorContent({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
 
+  const chatOnlyTabsDefault = useMemo(
+    () => (value && externalModels.some((m) => m.id === value) ? "external" : "hub"),
+    [value, externalModels],
+  );
+
+  const studioTabsDefault = useMemo((): "hub" | "lora" | "external" => {
+    if (value && externalModels.some((m) => m.id === value)) return "external";
+    if (value && loraModels.some((l) => l.id === value)) return "lora";
+    return "hub";
+  }, [value, externalModels, loraModels]);
+
   return (
     <PopoverContent
       align="start"
@@ -140,7 +151,7 @@ function ModelSelectorContent({
     >
       {chatOnly ? (
         hasExternal ? (
-          <Tabs defaultValue="hub" className="w-full">
+          <Tabs defaultValue={chatOnlyTabsDefault} className="w-full">
             <TabsList className="mb-2 w-full">
               <TabsTrigger value="hub">Hub models</TabsTrigger>
               <TabsTrigger value="external">External</TabsTrigger>
@@ -160,7 +171,7 @@ function ModelSelectorContent({
           <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
         )
       ) : (
-        <Tabs defaultValue="hub" className="w-full">
+        <Tabs defaultValue={studioTabsDefault} className="w-full">
           <TabsList className="mb-2 w-full">
             <TabsTrigger value="hub">Hub models</TabsTrigger>
             <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
