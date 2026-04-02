@@ -71,6 +71,12 @@ function Refresh-Environment {
     $env:Path = "$machinePath;$userPath"
 }
 
+# PowerShell 5.1 compatibility helper: avoid relying on New-TemporaryFile.
+function New-UnslothTemporaryFile {
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    return Get-Item -LiteralPath $tempPath
+}
+
 # Find nvcc on PATH, CUDA_PATH, or standard toolkit dirs.
 # Returns the path to nvcc.exe, or $null if not found.
 function Find-Nvcc {
@@ -1620,8 +1626,10 @@ function Invoke-LlamaHelper {
         [string]$StderrPath = $null
     )
 
+    $previousErrorActionPreference = $ErrorActionPreference
     $previousNativeErrorPreference = $null
     $restoreNativeErrorPreference = $false
+    $ErrorActionPreference = "Continue"
     if ($PSVersionTable.PSVersion.Major -ge 7) {
         $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $false
@@ -1639,6 +1647,7 @@ function Invoke-LlamaHelper {
             ExitCode = $LASTEXITCODE
         }
     } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         if ($restoreNativeErrorPreference) {
             $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
         }
@@ -1695,7 +1704,7 @@ if ($LlamaPr) {
 } else {
     $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
     if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveInstallArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-    $resolveErrorLog = New-TemporaryFile
+    $resolveErrorLog = New-UnslothTemporaryFile
     $resolveResult = Invoke-LlamaHelper -Arguments $resolveInstallArgs -StderrPath $resolveErrorLog
     $resolveOutput = $resolveResult.Output
     $resolveExit = $resolveResult.ExitCode
