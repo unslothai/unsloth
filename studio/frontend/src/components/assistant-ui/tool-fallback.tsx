@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
+  useScrollLock,
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
@@ -51,18 +52,22 @@ function ToolFallbackRoot({
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
+      if (!open) {
+        lockScroll();
+      }
       if (!isControlled) {
         setUncontrolledOpen(open);
       }
       controlledOnOpenChange?.(open);
     },
-    [isControlled, controlledOnOpenChange],
+    [lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (

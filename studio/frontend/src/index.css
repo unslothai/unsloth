@@ -392,8 +392,8 @@
   }
 
   /* Align fenced code blocks with the main chat column even when nested in lists. */
-  [data-streamdown="list-item"] > [data-streamdown="code-block"],
-  [data-streamdown="list-item"] [data-streamdown="code-block"] {
+  .aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
+  .aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
     margin-left: -1.25rem;
     width: calc(100% + 1.25rem);
     max-width: calc(100% + 1.25rem);
