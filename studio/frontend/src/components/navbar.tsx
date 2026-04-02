@@ -372,90 +372,94 @@ export function Navbar() {
           })}
         </nav>
 
-        {/* Right: docs/tour desktop */}
-        <div className="hidden items-center justify-self-end gap-2 md:flex">
-          <AnimatedThemeToggler
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
-            title="Toggle theme"
-            aria-label="Toggle theme"
-          />
-          <HoverCard openDelay={200} closeDelay={100}>
-            <HoverCardTrigger asChild={true}>
-              <a
-                href="https://unsloth.ai/docs"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors"
-              >
-                <HugeiconsIcon icon={Book03Icon} className="size-4" />
-                Learn more
-              </a>
-            </HoverCardTrigger>
-            <HoverCardContent align="end" className="w-80 p-0">
-              <a
-                href="https://unsloth.ai/docs"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group/card flex flex-col gap-1 p-4 no-underline"
-              >
-                <p className="text-sm font-semibold font-heading">
-                  Unsloth Documentation
-                </p>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Guides on fine-tuning LLMs 2x faster with 70% less memory.
-                  Covers LoRA, QLoRA, data formatting, and deployment.
-                </p>
-                <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
-                  Visit docs
-                  <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
-                </span>
-              </a>
-            </HoverCardContent>
-          </HoverCard>
-
-          <button
-            type="button"
-            onClick={tourId ? openTour : undefined}
-            className={cn(
-              "flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-              !tourId && "invisible pointer-events-none",
-            )}
-            title="Tour"
-            aria-hidden={!tourId}
-            tabIndex={tourId ? 0 : -1}
-          >
-            <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
-            <span className="text-sm font-medium">Tour</span>
-          </button>
-
-          <HoverCard openDelay={200} closeDelay={100}>
-            <HoverCardTrigger asChild={true}>
+        {/* Right: docs/tour desktop — one wrapper per control so flex gap is even (HoverCard roots can confuse flex spacing). */}
+        <div className="hidden items-center justify-self-end gap-0 md:flex">
+          <div className="flex shrink-0 items-center">
+            <AnimatedThemeToggler
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4"
+              title="Toggle theme"
+              aria-label="Toggle theme"
+            />
+          </div>
+          <div className="flex shrink-0 items-center">
+            <HoverCard openDelay={200} closeDelay={100}>
+              <HoverCardTrigger asChild={true}>
+                <a
+                  href="https://unsloth.ai/docs"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-emerald-600 transition-colors hover:bg-accent hover:text-emerald-700 dark:hover:text-emerald-400"
+                >
+                  <HugeiconsIcon icon={Book03Icon} className="size-4" />
+                  Learn more
+                </a>
+              </HoverCardTrigger>
+              <HoverCardContent align="end" className="w-80 p-0">
+                <a
+                  href="https://unsloth.ai/docs"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group/card flex flex-col gap-1 p-4 no-underline"
+                >
+                  <p className="text-sm font-semibold font-heading">
+                    Unsloth Documentation
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Guides on fine-tuning LLMs 2x faster with 70% less memory.
+                    Covers LoRA, QLoRA, data formatting, and deployment.
+                  </p>
+                  <span className="mt-1 flex items-center gap-1 text-xs font-medium text-emerald-600 group-hover/card:underline">
+                    Visit docs
+                    <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                  </span>
+                </a>
+              </HoverCardContent>
+            </HoverCard>
+          </div>
+          {tourId ? (
+            <div className="flex shrink-0 items-center">
               <button
                 type="button"
-                className="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label="How to update Unsloth Studio"
+                onClick={openTour}
+                className="flex h-9 items-center gap-1.5 rounded-md px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title="Tour"
               >
-                <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
-                Update
+                <HugeiconsIcon icon={CursorInfo02Icon} className="size-4" />
+                <span className="text-sm font-medium">Tour</span>
               </button>
-            </HoverCardTrigger>
-            <HoverCardContent align="end" className="w-[22.5rem] p-0">
-              <UpdateStudioInstructions
-                className="p-4"
-                defaultShell={defaultUpdateShell}
-              />
-            </HoverCardContent>
-          </HoverCard>
-
-          <button
-            type="button"
-            onClick={() => setShutdownOpen(true)}
-            className="-mr-1.5 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Shut down Unsloth Studio server"
-            aria-label="Shut down Unsloth Studio server"
-          >
-            <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
-          </button>
+            </div>
+          ) : null}
+          <div className="flex shrink-0 items-center">
+            <HoverCard openDelay={200} closeDelay={100}>
+              <HoverCardTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="How to update Unsloth Studio"
+                >
+                  <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
+                  Update
+                </button>
+              </HoverCardTrigger>
+              <HoverCardContent align="end" className="w-[22.5rem] p-0">
+                <UpdateStudioInstructions
+                  className="p-4"
+                  defaultShell={defaultUpdateShell}
+                />
+              </HoverCardContent>
+            </HoverCard>
+          </div>
+          <div className="flex shrink-0 items-center">
+            <button
+              type="button"
+              onClick={() => setShutdownOpen(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Shut down Unsloth Studio server"
+              aria-label="Shut down Unsloth Studio server"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} className="size-5" />
+            </button>
+          </div>
         </div>
 
         {/* Right: mobile */}

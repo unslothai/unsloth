@@ -8,20 +8,28 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 """
 
 import ast
+import http.client
 import os
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+import random
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
+
+# Strict raster-image allowlist for sandbox file serving.
+# No .svg (XSS risk via embedded scripts), no .html, no .pdf.
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
 
@@ -154,8 +162,74 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
-_MAX_PAGE_CHARS = 16000  # limit fetched page text
-_MAX_FETCH_BYTES = _MAX_PAGE_CHARS * 4 + 1  # cap raw download size
+_MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
+# Raw download cap.  Must be larger than _MAX_PAGE_CHARS because SSR pages
+# embed large <head> sections (CSS, JS, SVGs) that are stripped during
+# HTML-to-Markdown conversion.  512 KB is enough to reach article content
+# on GitBook / Next.js / Docusaurus pages whose <head> alone can be 200 KB.
+_MAX_FETCH_BYTES = 512 * 1024
+
+_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+)
+
+_tls_ctx = ssl.create_default_context()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that connects to a pinned IP but uses a different
+    hostname for SNI and certificate verification.
+
+    The SSRF IP-pinning rewrites URLs to raw IPs.  A normal HTTPSConnection
+    would then send no SNI and verify the cert against the IP, both of which
+    fail.  This subclass splits the two concerns: TCP connects to the pinned
+    IP (``host`` parameter) while TLS uses ``sni_hostname`` for the
+    ClientHello and cert check.
+    """
+
+    def __init__(self, host: str, *, sni_hostname: str, **kwargs):
+        super().__init__(host, **kwargs)
+        self._sni_hostname = sni_hostname
+
+    def connect(self):
+        # TCP connect to the pinned IP stored in self.host (+ tunnel if
+        # a proxy is configured via set_tunnel, though we do not use one).
+        http.client.HTTPConnection.connect(self)
+        # TLS handshake with the real hostname for SNI + cert verification.
+        self.sock = self._context.wrap_socket(
+            self.sock,
+            server_hostname = self._sni_hostname,
+        )
+
+
+class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that sends the correct SNI hostname during TLS handshake.
+
+    The SSRF IP-pinning rewrites URLs to raw IPs, which breaks SNI and cert
+    verification.  This handler returns a ``_PinnedHTTPSConnection`` that
+    connects to the pinned IP but verifies TLS against the original hostname.
+    """
+
+    def __init__(self, hostname: str):
+        super().__init__(context = _tls_ctx)
+        self._sni_hostname = hostname
+
+    def https_open(self, req):
+        return self.do_open(self._sni_connection, req)
+
+    def _sni_connection(self, host, **kwargs):
+        kwargs["context"] = _tls_ctx
+        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
@@ -215,33 +289,32 @@ def _fetch_page_text(
         return reason
 
     try:
-        import urllib.request
         from urllib.error import HTTPError as _HTTPError
         from urllib.parse import urljoin, urlunparse
 
-        # Disable auto-redirect so we can validate each hop for SSRF.
-        # urllib raises HTTPError for 3xx when the handler returns None,
-        # so we catch that and extract the Location header manually.
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
-        opener = urllib.request.build_opener(_NoRedirect)
-        max_bytes = max_chars * 4 + 1
+        max_bytes = _MAX_FETCH_BYTES
         current_url = url
         current_host = parsed.hostname
+        ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
             # Pin to the validated IP to prevent DNS rebinding.
             # Rewrite the URL to use the IP and set the Host header.
             cp = urlparse(current_url)
-            ip_netloc = f"{pinned_ip}:{cp.port}" if cp.port else pinned_ip
+            # Bracket IPv6 addresses so the netloc is valid in a URL.
+            ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+            ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
             pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+
+            opener = urllib.request.build_opener(
+                _NoRedirect,
+                _SNIHTTPSHandler(current_host),
+            )
 
             req = urllib.request.Request(
                 pinned_url,
                 headers = {
-                    "User-Agent": "UnslothStudio/1.0",
+                    "User-Agent": ua,
                     "Host": current_host,
                 },
             )
@@ -522,6 +595,12 @@ def _check_code_safety(code: str) -> str | None:
     """
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
+        # SyntaxError from ast.parse -- let these through so the subprocess
+        # produces a normal Python traceback instead of a misleading
+        # "unsafe code detected" message.
+        if info.get("error"):
+            return None
+
         reasons = [
             item.get("description", "") for item in info.get("signal_tampering", [])
         ]
@@ -565,6 +644,17 @@ def _python_exec(
 
     tmp_path = None
     workdir = _get_workdir(session_id)
+    # Snapshot image mtimes so we detect both new and overwritten files.
+    _before: dict[str, int] = {}
+    if os.path.isdir(workdir):
+        for _name in os.listdir(workdir):
+            if os.path.splitext(_name)[1].lower() in _IMAGE_EXTS:
+                _p = os.path.join(workdir, _name)
+                if os.path.isfile(_p):
+                    try:
+                        _before[_name] = os.stat(_p).st_mtime_ns
+                    except OSError:
+                        pass
     try:
         fd, tmp_path = tempfile.mkstemp(
             suffix = ".py", prefix = "studio_exec_", dir = workdir
@@ -600,7 +690,29 @@ def _python_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        return _truncate(result) if result.strip() else "(no output)"
+        result = _truncate(result) if result.strip() else "(no output)"
+
+        # Detect new or overwritten image files and append sentinel for frontend
+        if session_id and os.path.isdir(workdir):
+            new_images = []
+            for _name in os.listdir(workdir):
+                if os.path.splitext(_name)[1].lower() not in _IMAGE_EXTS:
+                    continue
+                _p = os.path.join(workdir, _name)
+                if not os.path.isfile(_p):
+                    continue
+                try:
+                    _mtime = os.stat(_p).st_mtime_ns
+                except OSError:
+                    continue
+                if _name not in _before or _mtime != _before[_name]:
+                    new_images.append(_name)
+            if new_images:
+                import json as _json
+
+                result += f"\n__IMAGES__:{_json.dumps(sorted(new_images))}"
+
+        return result
 
     except Exception as e:
         return f"Execution error: {e}"

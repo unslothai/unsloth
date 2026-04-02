@@ -496,6 +496,10 @@ def LlamaAttention_fast_forward_inference(
     # ensure correct shape
     if position_ids.dim() == 1:
         position_ids = position_ids[:, None]
+    # Transformers 5.x generate() accumulates position_ids as [batch, full_seq_len]
+    # across decode steps. In single-token inference we only need the last position.
+    if position_ids.shape[-1] > 1:
+        position_ids = position_ids[:, -1:]
     position_ids = position_ids.to(Qn.device)
 
     if rotary_seq_len is None:
@@ -2341,8 +2345,8 @@ class FastLlamaModel:
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
-        preferred_attn_impl = (
-            prefer_flex_attn_if_supported(model_function, model_config) or "eager"
+        preferred_attn_impl = determine_attention_implementation(
+            model_function, model_config
         )
 
         has_rope_scaling = False
@@ -2414,14 +2418,24 @@ class FastLlamaModel:
 
         raise_handler = RaiseUninitialized()
         if num_labels is not None:
+            # Transformers 5.x @strict config classes reject unexpected kwargs
+            # like num_labels and max_position_embeddings. Set on the config
+            # object directly and pass config= instead.
+            model_config.num_labels = num_labels
+            if max_position_embeddings is not None:
+                model_config.max_position_embeddings = max_position_embeddings
+            # Pop config-level attrs that would be rejected by @strict model init
+            for _cfg_key in ("id2label", "label2id", "rope_scaling"):
+                _cfg_val = kwargs.pop(_cfg_key, None)
+                if _cfg_val is not None:
+                    setattr(model_config, _cfg_key, _cfg_val)
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
+                config = model_config,
                 device_map = device_map,
                 # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                num_labels = num_labels,
                 # quantization_config     = bnb_config,
                 token = token,
-                max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
                 **kwargs,
