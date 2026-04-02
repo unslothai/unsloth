@@ -135,7 +135,7 @@ fn spawn_script(
     // spawned by the install script. Only clear inside AppImage — native installs
     // may need these for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
+    if std::env::var_os("APPIMAGE").is_some() {
         cmd.env_remove("LD_LIBRARY_PATH");
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");

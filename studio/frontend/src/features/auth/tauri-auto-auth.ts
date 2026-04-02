@@ -16,10 +16,10 @@ type TokenResponse = {
   must_change_password: boolean;
 };
 
-function generatePassword(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+/** Ask Rust to generate and persist a random desktop password. */
+async function generateAndStorePassword(): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("set_desktop_password");
 }
 
 async function login(username: string, password: string): Promise<TokenResponse> {
@@ -86,16 +86,15 @@ async function doTauriAutoAuth(): Promise<boolean> {
     const tokens = await login("unsloth", bootstrapPwd);
 
     if (tokens.must_change_password) {
-      const newPwd = generatePassword();
+      const newPwd = await generateAndStorePassword();
       const freshTokens = await changePassword(tokens.access_token, bootstrapPwd, newPwd);
       storeAuthTokens(freshTokens.access_token, freshTokens.refresh_token, false);
       setMustChangePassword(false);
-      await invoke("set_desktop_password", { password: newPwd });
     } else {
       // Bootstrap password already accepted (e.g. changed via CLI but no desktop_password yet)
       storeAuthTokens(tokens.access_token, tokens.refresh_token, false);
       setMustChangePassword(false);
-      await invoke("set_desktop_password", { password: bootstrapPwd });
+      await generateAndStorePassword();
     }
 
     return true;

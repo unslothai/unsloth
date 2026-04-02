@@ -181,7 +181,7 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown:
     // Only clear when running inside an AppImage — native .deb/.rpm installs may
     // need these env vars for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some() {
+    if std::env::var_os("APPIMAGE").is_some() {
         cmd.env_remove("LD_LIBRARY_PATH");
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
