@@ -540,21 +540,24 @@ def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
     """Normalize a source ref to a form that ``git clone --branch`` accepts.
 
     Fully qualified branch refs like ``refs/heads/main`` are stripped to
-    ``main``; pull refs like ``refs/pull/123/head`` are left as-is since
-    they are always fetched explicitly rather than cloned with ``--branch``.
+    ``main``; tag refs like ``refs/tags/b8508`` are stripped to ``b8508``.
+    Pull refs like ``refs/pull/123/head`` are left as-is since they are
+    always fetched explicitly rather than cloned with ``--branch``.
     """
     if not isinstance(ref, str) or not ref:
         return ref
     lowered = ref.lower()
     if ref_kind == "branch" and lowered.startswith("refs/heads/"):
         return ref.split("/", 2)[2]
+    if ref_kind == "tag" and lowered.startswith("refs/tags/"):
+        return ref.split("/", 2)[2]
     return ref
 
 
 def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]:
     return [
-        f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
         f"llama-{llama_tag}-bin-win-cuda-{runtime}-x64.zip",
+        f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
     ]
 
 
