@@ -73,6 +73,21 @@ def _has_mlx() -> bool:
         return False
 
 
+def _nvidia_smi_gpu_name() -> str | None:
+    """Query first GPU name via nvidia-smi for logging."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().splitlines()[0].strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def detect_hardware() -> DeviceType:
     """
     Detect the best available compute device and set the module-level DEVICE global.
@@ -98,6 +113,25 @@ def detect_hardware() -> DeviceType:
             device_name = torch.cuda.get_device_properties(0).name
             print(f"Hardware detected: CUDA — {device_name}")
             return DEVICE
+
+        # nvidia-smi fallback — GPU exists but torch can't use it
+        # (e.g., DGX Spark GB10 with mismatched PyTorch build)
+        try:
+            from .nvidia import get_physical_gpu_count
+            smi_count = get_physical_gpu_count()
+            if smi_count and smi_count > 0:
+                DEVICE = DeviceType.CUDA
+                CHAT_ONLY = False
+                gpu_name = _nvidia_smi_gpu_name() or f"{smi_count} GPU(s)"
+                print(
+                    f"Hardware detected: CUDA — {gpu_name} (nvidia-smi fallback)\n"
+                    f"  WARNING: torch.cuda.is_available() returned False.\n"
+                    f"  Training may fail. Install PyTorch with correct CUDA support:\n"
+                    f"  pip install torch --index-url https://download.pytorch.org/whl/cu130"
+                )
+                return DEVICE
+        except Exception as exc:
+            logger.debug("nvidia-smi fallback failed: %s", exc)
 
     # --- XPU: Intel GPU ---
     if _has_torch():

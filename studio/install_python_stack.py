@@ -24,6 +24,7 @@ from pathlib import Path
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
+IS_LINUX_AARCH64 = sys.platform == "linux" and platform.machine() == "aarch64"
 
 
 def _infer_no_torch() -> bool:
@@ -218,6 +219,9 @@ NO_TORCH_SKIP_PACKAGES = {
     "transformers-cfg",
 }
 
+# Packages needing PyTorch's CUDA index on aarch64 (no PyPI wheels exist).
+AARCH64_TORCH_INDEX_PACKAGES = {"torchcodec"}
+
 # -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -337,6 +341,9 @@ def pip_install(
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
+    if actual_req is not None and IS_LINUX_AARCH64 and AARCH64_TORCH_INDEX_PACKAGES:
+        actual_req = _filter_requirements(actual_req, AARCH64_TORCH_INDEX_PACKAGES)
+        temp_reqs.append(actual_req)
     req_args: list[str] = []
     if actual_req is not None:
         req_args = ["-r", str(actual_req)]
@@ -414,6 +421,8 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
+    if IS_LINUX_AARCH64 and not NO_TORCH:
+        base_total += 1  # torchcodec aarch64 step
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -553,6 +562,50 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "extras-no-deps.txt",
     )
+
+    # 3c. torchcodec from PyTorch CUDA index on aarch64 Linux (no PyPI wheels).
+    if IS_LINUX_AARCH64 and not NO_TORCH:
+        _progress("torchcodec (aarch64)")
+        # Detect CUDA version from installed PyTorch
+        cuda_ver = ""
+        try:
+            probe = subprocess.run(
+                [sys.executable, "-c",
+                 "import torch; v = torch.version.cuda; print(v if v else '')"],
+                capture_output = True, text = True, timeout = 10,
+            )
+            if probe.returncode == 0:
+                cuda_ver = probe.stdout.strip()
+        except Exception:
+            pass
+
+        if cuda_ver:
+            cu_tag = "cu" + cuda_ver.replace(".", "")
+            index_url = f"https://download.pytorch.org/whl/{cu_tag}"
+
+            # Verify wheel availability before installing (pip dry-run)
+            verify = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--dry-run",
+                 "--no-deps", "--extra-index-url", index_url, "torchcodec"],
+                capture_output = True, text = True,
+            )
+            if verify.returncode == 0:
+                pip_install(
+                    f"Installing torchcodec from PyTorch index ({cu_tag}, aarch64)",
+                    "--no-deps", "--no-cache-dir", "--upgrade",
+                    "--extra-index-url", index_url,
+                    "torchcodec",
+                )
+            else:
+                _safe_print(_dim(
+                    f"  torchcodec: no aarch64 wheel found for {cu_tag}. "
+                    f"Audio/video training may not work. "
+                    f"Try: pip install torchcodec --extra-index-url {index_url}"
+                ))
+        else:
+            _safe_print(_dim(
+                "  Skipping torchcodec on aarch64: no CUDA version detected from PyTorch"
+            ))
 
     # 4. Overrides (torchao, transformers) -- force-reinstall
     #    Skip entirely when torch is unavailable (e.g. Intel Mac GGUF-only mode)

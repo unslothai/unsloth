@@ -122,14 +122,27 @@ except ModuleNotFoundError:
 except:
     raise
 
-from unsloth_zoo.device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
-)
+try:
+    from unsloth_zoo.device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
+except NotImplementedError:
+    # unsloth_zoo raises NotImplementedError when no GPU detected;
+    # fall back to local device_type which has nvidia-smi fallback
+    # for platforms like DGX Spark where torch.cuda.is_available() is False
+    from .device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
 
 # Fix other issues
 from .import_fixes import (

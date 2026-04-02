@@ -25,6 +25,7 @@ __all__ = [
 import torch
 import functools
 import inspect
+import subprocess
 from unsloth_zoo.utils import Version
 
 
@@ -41,6 +42,26 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    # nvidia-smi fallback for platforms where torch CUDA detection fails
+    # (e.g., DGX Spark GB10 with sm_121 / CUDA 13.0 and mismatched PyTorch)
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import warnings
+            gpu_lines = result.stdout.strip().splitlines()
+            warnings.warn(
+                f"Unsloth: torch.cuda.is_available() returned False but nvidia-smi "
+                f"detected {len(gpu_lines)} GPU(s). Your PyTorch build may not support "
+                f"this GPU architecture. Consider installing PyTorch with the correct "
+                f"CUDA version: pip install torch --index-url "
+                f"https://download.pytorch.org/whl/cu130"
+            )
+            return "cuda"
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -69,7 +90,12 @@ if DEVICE_TYPE_TORCH == "hip":
 @functools.cache
 def get_device_count():
     if DEVICE_TYPE in ("cuda", "hip"):
-        return torch.cuda.device_count()
+        try:
+            count = torch.cuda.device_count()
+            return count if count > 0 else 1
+        except Exception:
+            # nvidia-smi fallback path: torch.cuda may not work
+            return 1
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
     else:
