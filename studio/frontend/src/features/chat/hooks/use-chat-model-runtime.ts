@@ -385,7 +385,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength } = useChatRuntimeStore.getState();
+            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, serverArgs } = useChatRuntimeStore.getState();
             // GGUF: use custom context length, or 0 = model's native context
             // Non-GGUF: use the Max Seq Length slider value
             const effectiveMaxSeqLength = customContextLength != null
@@ -401,6 +401,7 @@ export function useChatModelRuntime() {
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
               chat_template_override: chatTemplateOverride,
               cache_type_kv: kvCacheDtype,
+              server_args: ggufVariant ? (serverArgs || null) : null,
             });
 
             // If cancelled while loading, don't update UI to show

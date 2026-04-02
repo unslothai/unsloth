@@ -41,6 +41,8 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  /** Additional llama-server CLI arguments (GGUF only). Keys are arg names, values are arg values. */
+  server_args?: Record<string, string | number | boolean> | null;
 }
 
 export interface ValidateModelResponse {

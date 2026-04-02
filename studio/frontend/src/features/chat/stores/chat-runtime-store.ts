@@ -168,6 +168,7 @@ type ChatRuntimeStore = {
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
+  serverArgs: Record<string, string | number | boolean> | null;
   activeThreadId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -200,6 +201,7 @@ type ChatRuntimeStore = {
   setKvCacheDtype: (dtype: string | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
+  setServerArgs: (args: Record<string, string | number | boolean> | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
@@ -233,6 +235,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
+  serverArgs: null,
   activeThreadId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -305,6 +308,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
+      serverArgs: null,
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
@@ -329,6 +333,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
+  setServerArgs: (serverArgs) => set({ serverArgs }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
