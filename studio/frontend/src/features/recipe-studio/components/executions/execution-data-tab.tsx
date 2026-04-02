@@ -123,10 +123,10 @@ export function ExecutionDataTab({
       {execution.dataset.length === 0 ? (
         isExecutionInProgress(execution.status) ? (
           <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-            <div className="size-5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+            <div className="size-5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" role="status" aria-label="Generating data" />
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
-                Generating data&hellip;
+                Generating data…
               </p>
               <p className="text-xs text-muted-foreground/70">
                 Check the Overview tab for live terminal logs.
