@@ -168,6 +168,7 @@ export function useChatModelRuntime() {
     id: string;
     displayName: string;
     isDownloaded?: boolean;
+    isCachedLora?: boolean;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
@@ -339,7 +340,8 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora ? true : false);
-      const isLocal = modelId.startsWith("/") || modelId.startsWith("./") || /^[A-Za-z]:[\\/]/.test(modelId);
+      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
+      const isLocal = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
@@ -351,7 +353,7 @@ export function useChatModelRuntime() {
         .join(" ");
       setModelsError(null);
       setLoadToastDismissedState(false);
-      const loadInfo = { id: modelId, displayName, isDownloaded };
+      const loadInfo = { id: modelId, displayName, isDownloaded, isCachedLora };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
@@ -488,15 +490,16 @@ export function useChatModelRuntime() {
           }
         }
 
-        const toastTitle = isDownloaded ? "Starting model…" : "Loading model...";
+        const isCachedLoad = isDownloaded || isCachedLora;
+        const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const toastId = toast(
           null,
           {
             description: renderLoadDescription(
               toastTitle,
               loadingDescription,
-              isDownloaded ? null : 0,
-              isDownloaded ? null : "Preparing download",
+              isCachedLoad ? null : 0,
+              isCachedLoad ? null : "Preparing download",
               cancelLoading,
             ),
             duration: Infinity,
@@ -550,7 +553,7 @@ export function useChatModelRuntime() {
                   {
                     id: toastId,
                     description: renderLoadDescription(
-                      "Loading model…",
+                      "Downloading model…",
                       loadingDescription,
                       pct,
                       progressLabel,
@@ -576,7 +579,7 @@ export function useChatModelRuntime() {
               } else if (prog.progress >= 1 && hasShownProgress) {
                 setLoadProgress({
                   percent: 100,
-                  label: "Loading complete",
+                  label: "Download complete",
                   phase: "starting",
                 });
                 if (loadToastDismissedRef.current) {
@@ -587,9 +590,9 @@ export function useChatModelRuntime() {
                   id: toastId,
                   description: renderLoadDescription(
                     "Starting model…",
-                    "Loading complete. Starting inference engine.",
+                    "Download complete. Loading the model into memory.",
                     100,
-                    "Loading complete",
+                    "Download complete",
                     cancelLoading,
                   ),
                   duration: Infinity,
