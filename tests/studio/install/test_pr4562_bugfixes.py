@@ -372,9 +372,7 @@ class TestFetchJsonRetries:
         assert payload[0]["tag_name"] == "b8635"
         assert calls["count"] == 2
 
-    def test_github_releases_honors_max_pages(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_github_releases_honors_max_pages(self, monkeypatch: pytest.MonkeyPatch):
         seen_pages: list[int] = []
 
         def fake_fetch_json(url: str):
@@ -693,7 +691,10 @@ class TestSourceCodePatterns:
         content = SETUP_SH.read_text()
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
-        assert '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"' in content
+        assert (
+            '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"'
+            in content
+        )
         assert "--output-format json" in content
         assert "_RESOLVED_SOURCE_URL" in content
         assert "_RESOLVED_SOURCE_REF_KIND" in content
@@ -835,7 +836,10 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
-        assert '"--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp"' in content
+        assert (
+            '"--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp"'
+            in content
+        )
         assert '--output-format", "json"' in content
         assert "$ResolvedSourceUrl" in content
         assert "$ResolvedSourceRefKind" in content
@@ -873,8 +877,7 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         assert "Sort-Object Name | Select-Object -Last 1" not in content
         assert (
-            "Sort-Object { [version]($_.Name -replace '^v','') } -Descending"
-            in content
+            "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
         )
 
     def test_binary_env_linux_has_binary_parent(self):

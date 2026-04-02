@@ -103,9 +103,7 @@ DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     2,
     minimum = 1,
 )
-FORCE_COMPILE_DEFAULT_REF = os.environ.get(
-    "UNSLOTH_LLAMA_FORCE_COMPILE_REF", "main"
-)
+FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "main")
 
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-older": {
@@ -828,7 +826,9 @@ def fetch_json(url: str) -> Any:
             if exc.code == 403 and is_github_api_url(url):
                 hint = ""
                 if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
-                    hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+                    hint = (
+                        "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+                    )
                 raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
             raise
         if not data:
@@ -918,7 +918,9 @@ def download_file_verified(
     normalized_expected = normalize_sha256_digest(expected_sha256)
     if not normalized_expected:
         download_file(url, destination)
-        log(f"downloaded {label} without a published sha256; relying on install validation")
+        log(
+            f"downloaded {label} without a published sha256; relying on install validation"
+        )
         return
 
     for attempt in range(1, 3):
@@ -1317,7 +1319,9 @@ def resolve_simple_install_release_plans(
                 if host.is_linux and repo == "unslothai/llama.cpp":
                     plan = direct_linux_release_plan(release, host, repo, requested_tag)
                 else:
-                    plan = direct_upstream_release_plan(release, host, repo, requested_tag)
+                    plan = direct_upstream_release_plan(
+                        release, host, repo, requested_tag
+                    )
                 if plan is None:
                     continue
             except PrebuiltFallback as exc:
@@ -1345,7 +1349,9 @@ def resolve_simple_install_release_plans(
         return requested_tag, plans
     if last_error is not None:
         raise last_error
-    raise PrebuiltFallback(f"no installable published llama.cpp releases were found in {repo}")
+    raise PrebuiltFallback(
+        f"no installable published llama.cpp releases were found in {repo}"
+    )
 
 
 def normalized_requested_llama_tag(requested_tag: str | None) -> str:
