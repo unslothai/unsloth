@@ -1559,10 +1559,6 @@ class FastModel(FastBaseModel):
 
             if _clippable_linear_cls is not None:
                 from peft.tuners.lora.model import LoraModel as _LoraModel
-<<<<<<< HEAD
-
-=======
->>>>>>> 35ebf398 (fix: patch PEFT for Gemma4ClippableLinear in loader checkpoint path)
                 _original_car = _LoraModel._create_and_replace
 
                 def _patched_car(
