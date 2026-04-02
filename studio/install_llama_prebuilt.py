@@ -3726,10 +3726,32 @@ def apply_approved_hashes(
     attempts: Iterable[AssetChoice],
     checksums: ApprovedReleaseChecksums,
 ) -> list[AssetChoice]:
+    def approved_hash_for_attempt(attempt: AssetChoice) -> ApprovedArtifactHash | None:
+        approved = checksums.artifacts.get(attempt.name)
+        if approved is not None:
+            return approved
+        if (
+            isinstance(attempt.tag, str)
+            and attempt.tag
+            and attempt.tag != checksums.upstream_tag
+            and attempt.name.startswith("llama-")
+        ):
+            legacy_prefix = f"llama-{attempt.tag}-"
+            compatibility_prefix = f"llama-{checksums.upstream_tag}-"
+            compatibility_name = (
+                attempt.name.replace(legacy_prefix, compatibility_prefix, 1)
+                if attempt.name.startswith(legacy_prefix)
+                else attempt.name
+            )
+            approved = checksums.artifacts.get(compatibility_name)
+            if approved is not None:
+                return approved
+        return None
+
     approved_attempts: list[AssetChoice] = []
     missing_assets: list[str] = []
     for attempt in attempts:
-        approved = checksums.artifacts.get(attempt.name)
+        approved = approved_hash_for_attempt(attempt)
         if approved is None:
             missing_assets.append(attempt.name)
             continue
@@ -3783,11 +3805,9 @@ def selected_source_archive_metadata(
     checksums: ApprovedReleaseChecksums,
     llama_tag: str,
 ) -> tuple[str, str | None]:
-    source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
+    _source_repo, _source_ref, source_archive, _exact_source = preferred_source_archive(
         checksums, llama_tag
     )
-    if exact_source:
-        _ = (source_repo, source_ref)
     return source_archive.asset_name, source_archive.sha256
 
 

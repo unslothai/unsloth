@@ -475,6 +475,31 @@ class TestApplyApprovedHashes:
         assert len(result) == 1
         assert result[0].name == "a.tar.gz"
 
+    def test_upstream_asset_can_match_compatibility_tag_name(self):
+        choice = AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = "main",
+            name = "llama-main-bin-macos-arm64.tar.gz",
+            url = "https://x/llama-main-bin-macos-arm64.tar.gz",
+            source_label = "upstream",
+        )
+        checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = "r1",
+            upstream_tag = "b9000",
+            artifacts = {
+                "llama-b9000-bin-macos-arm64.tar.gz": ApprovedArtifactHash(
+                    asset_name = "llama-b9000-bin-macos-arm64.tar.gz",
+                    sha256 = "a" * 64,
+                    repo = UPSTREAM_REPO,
+                    kind = "macos-arm64-upstream",
+                )
+            },
+        )
+
+        result = apply_approved_hashes([choice], checksums)
+        assert result[0].expected_sha256 == "a" * 64
+
     def test_none_approved(self):
         c1 = self._choice("missing.tar.gz")
         checksums = make_checksums(["other.tar.gz"])
