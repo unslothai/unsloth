@@ -1,7 +1,7 @@
 use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
 use log::{error, info, warn};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 /// Check if unsloth is installed AND functional.
 /// Runs `unsloth -h` to verify the import chain works — a partial install
