@@ -104,7 +104,7 @@ export function ChatProvidersDialog({
     const entry = registryByType.get(providerType);
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
-      setSelectedModelIds([]);
+      setSelectedModelIds([...entry.default_models]);
       setManualModelIds("");
     } else if (entry) {
       setAvailableModels([]);

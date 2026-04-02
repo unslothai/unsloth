@@ -40,7 +40,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ],
         "supports_streaming": True,
         "supports_vision": True,
-        "supports_tool_calling": True,
+        "supports_tool_calling": False,
         "auth_header": "x-api-key",
         "auth_prefix": "",
         "extra_headers": {
