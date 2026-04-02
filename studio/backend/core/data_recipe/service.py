@@ -261,6 +261,21 @@ def create_data_designer(
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
 
+    # DataDesigner requires at least one model provider in its registry even
+    # when the pipeline contains no LLM columns.  Supply a lightweight stub
+    # so sampler/expression-only recipes can run without a real provider.
+    if not model_providers:
+        from data_designer.config.models import ModelProvider
+
+        model_providers = [
+            ModelProvider(
+                name = "_unused",
+                endpoint = "http://localhost",
+                provider_type = "openai",
+                api_key = "none",
+            )
+        ]
+
     return DataDesigner(
         artifact_path = artifact_path,
         model_providers = model_providers,

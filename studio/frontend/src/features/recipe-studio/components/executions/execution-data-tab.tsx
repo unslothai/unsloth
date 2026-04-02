@@ -12,6 +12,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
@@ -123,12 +124,12 @@ export function ExecutionDataTab({
       {execution.dataset.length === 0 ? (
         isExecutionInProgress(execution.status) ? (
           <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-            <div className="size-5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" role="status" aria-label="Generating data" />
+            <Spinner className="size-5" />
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
                 Generating data…
               </p>
-              <p className="text-xs text-muted-foreground/70">
+              <p className="text-xs text-muted-foreground">
                 Check the Overview tab for live terminal logs.
               </p>
             </div>
