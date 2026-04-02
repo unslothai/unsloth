@@ -298,7 +298,13 @@ pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(),
     // Extract the child and mark intentional stop.
     // We take the child OUT of the mutex so we don't hold the lock during the wait loop.
     let mut child = {
-        let mut proc = state.lock().map_err(|e| e.to_string())?;
+        let mut proc = match state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Backend state mutex poisoned, recovering for cleanup");
+                poisoned.into_inner()
+            }
+        };
         proc.intentional_stop = true;
         proc.child.take()
     };
