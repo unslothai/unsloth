@@ -19,7 +19,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
-_DEFAULT_LLAMA_TAG="master"
+_DEFAULT_LLAMA_TAG="latest"
 
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
