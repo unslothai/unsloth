@@ -795,9 +795,9 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         helper_idx = content.index("function Invoke-LlamaHelper")
         block = content[helper_idx : helper_idx + 1200]
-        assert '$previousErrorActionPreference = $ErrorActionPreference' in block
+        assert "$previousErrorActionPreference = $ErrorActionPreference" in block
         assert '$ErrorActionPreference = "Continue"' in block
-        assert '$ErrorActionPreference = $previousErrorActionPreference' in block
+        assert "$ErrorActionPreference = $previousErrorActionPreference" in block
 
     def test_setup_ps1_uses_local_tempfile_helper(self):
         """PS1 should not depend on New-TemporaryFile being available."""
