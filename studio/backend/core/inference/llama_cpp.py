@@ -52,11 +52,14 @@ _REPROMPT_MAX_CHARS = 2000
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
+
 # Model size extraction — lazy import to avoid pulling in transformers
 # at module level.  See PR description for the full explanation.
 def _extract_model_size_b(model_id: str):
     from utils.models import extract_model_size_b
+
     return extract_model_size_b(model_id)
+
 
 # ── Pre-compiled patterns for tool XML stripping ─────────────
 _TOOL_CLOSED_PATS = [
