@@ -1895,7 +1895,7 @@ def source_build_plan_for_release(
     source_ref = checkout_friendly_ref(
         source_ref_kind, resolved_source_ref or requested_source_ref
     )
-    if source_url and source_ref and source_ref_kind in {"tag", "branch", "pull"}:
+    if source_url and source_ref and source_ref_kind in {"tag", "branch", "pull", "commit"}:
         return SourceBuildPlan(
             source_url = source_url,
             source_ref = source_ref,
