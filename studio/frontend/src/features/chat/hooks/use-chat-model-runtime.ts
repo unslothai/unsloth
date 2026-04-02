@@ -295,8 +295,11 @@ export function useChatModelRuntime() {
     setLoadToastDismissedState(false);
     clearCheckpoint();
     if (tid != null) toast.dismiss(tid);
+    const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
     toast.info("Stopped loading model", {
-      description: "The current download may still finish in the background.",
+      description: isCachedOrLocal
+        ? undefined
+        : "The current download may still finish in the background.",
     });
     // Fire-and-forget: tell backend to stop, don't block UI
     unloadModel({ model_path: model.id }).catch(() => {});
