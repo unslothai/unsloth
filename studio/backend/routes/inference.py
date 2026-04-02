@@ -96,8 +96,10 @@ router = APIRouter()
 
 # Appended to tool-use nudge to discourage plan-without-action
 _TOOL_ACTION_NUDGE = (
-    " Always call tools directly."
+    " IMPORTANT: Always call tools directly -- never write code yourself."
     " Never describe what you plan to do -- just call the tool immediately."
+    " For any code request, call the python tool. For any factual question, call web_search."
+    " Do NOT output code blocks -- use the python tool instead."
 )
 
 # Regex for stripping leaked tool-call XML from assistant messages/stream
