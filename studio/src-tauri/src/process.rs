@@ -155,9 +155,13 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown:
         cmd.env_remove("PYTHONPATH");
     }
 
-    // On Windows, create a new process group so CTRL_BREAK_EVENT works,
-    // and suppress console windows so child processes (winget, npm, powershell)
-    // don't pop up visible terminals from the Tauri GUI app.
+    // On Windows, we use two complementary mechanisms:
+    // - CREATE_NEW_PROCESS_GROUP: enables CTRL_BREAK_EVENT for graceful shutdown
+    // - CREATE_NO_WINDOW: suppresses console windows from child processes
+    // - JobObject (below): ensures ALL children are killed when the job terminates
+    // These don't conflict — process groups handle signal routing,
+    // job objects handle lifecycle. Children can't escape the job object
+    // unless CREATE_BREAKAWAY_FROM_JOB is set (we don't set it).
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
