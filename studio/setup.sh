@@ -122,6 +122,45 @@ print_llama_error_log() {
     tail -n 120 "$log_file" | sed 's/^/   | /' >&2
 }
 
+installed_llama_prebuilt_release() {
+    local install_dir=${1:-}
+    local metadata_path="$install_dir/UNSLOTH_PREBUILT_INFO.json"
+    [ -f "$metadata_path" ] || return 0
+    python - "$metadata_path" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+repo = str(payload.get("published_repo") or "").strip()
+release_tag = str(payload.get("release_tag") or "").strip()
+llama_tag = str(payload.get("tag") or "").strip()
+if not repo or not release_tag:
+    raise SystemExit(0)
+
+message = f"installed release: {repo}@{release_tag}"
+if llama_tag and llama_tag != release_tag:
+    message += f" (tag {llama_tag})"
+print(message)
+PY
+}
+
+print_installed_llama_prebuilt_release() {
+    local install_dir=${1:-}
+    local installed_release
+    installed_release="$(installed_llama_prebuilt_release "$install_dir")"
+    if [ -n "$installed_release" ]; then
+        substep "$installed_release"
+    fi
+}
+
 # ── Banner ──
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
@@ -569,6 +608,7 @@ else
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
+        print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
         rm -f "$_PREBUILT_LOG"
     elif [ "$_PREBUILT_STATUS" -eq 3 ]; then

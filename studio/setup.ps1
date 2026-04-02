@@ -82,6 +82,31 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+function Get-InstalledLlamaPrebuiltRelease {
+    param([string]$InstallDir)
+
+    $metadataPath = Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json"
+    if (-not (Test-Path $metadataPath)) {
+        return $null
+    }
+
+    try {
+        $payload = Get-Content $metadataPath -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+
+    if (-not $payload.published_repo -or -not $payload.release_tag) {
+        return $null
+    }
+
+    $message = "installed release: $($payload.published_repo)@$($payload.release_tag)"
+    if ($payload.tag -and $payload.tag -ne $payload.release_tag) {
+        $message += " (tag $($payload.tag))"
+    }
+    return $message
+}
+
 # Find nvcc on PATH, CUDA_PATH, or standard toolkit dirs.
 # Returns the path to nvcc.exe, or $null if not found.
 function Find-Nvcc {
@@ -1756,6 +1781,10 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
                 step "llama.cpp" "prebuilt up to date and validated"
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
+            }
+            $installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir
+            if ($installedRelease) {
+                substep $installedRelease
             }
         } elseif ($prebuiltExit -eq 3) {
             step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"

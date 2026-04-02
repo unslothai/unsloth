@@ -662,6 +662,13 @@ class TestSourceCodePatterns:
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
+    def test_setup_sh_reports_installed_prebuilt_release(self):
+        """Shell wrapper should report the installed prebuilt release from metadata."""
+        content = SETUP_SH.read_text()
+        assert "UNSLOTH_PREBUILT_INFO.json" in content
+        assert "installed release:" in content
+        assert 'print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"' in content
+
     def test_setup_sh_macos_arm64_uses_metal_flags(self):
         """Apple Silicon source builds should explicitly enable Metal like upstream."""
         content = SETUP_SH.read_text()
@@ -766,6 +773,17 @@ class TestSourceCodePatterns:
         assert "--resolve-install-tag" not in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
+
+    def test_setup_ps1_reports_installed_prebuilt_release(self):
+        """PS1 wrapper should report the installed prebuilt release from metadata."""
+        content = SETUP_PS1.read_text()
+        assert "Get-InstalledLlamaPrebuiltRelease" in content
+        assert "UNSLOTH_PREBUILT_INFO.json" in content
+        assert "installed release:" in content
+        assert (
+            "$installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir"
+            in content
+        )
 
     def test_setup_ps1_source_build_uses_helper_latest_tag_only(self):
         """PS1 source fallback should only use helper latest-tag resolution."""
