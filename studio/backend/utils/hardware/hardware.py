@@ -125,7 +125,6 @@ def detect_hardware() -> DeviceType:
             smi_count = get_physical_gpu_count()
             if smi_count and smi_count > 0:
                 DEVICE = DeviceType.CUDA
-                CHAT_ONLY = False
                 gpu_name = _nvidia_smi_gpu_name() or f"{smi_count} GPU(s)"
                 print(
                     f"Hardware detected: CUDA — {gpu_name} (nvidia-smi fallback)\n"

@@ -26,6 +26,7 @@ import torch
 import functools
 import inspect
 import subprocess
+import warnings
 from unsloth_zoo.utils import Version
 
 
@@ -52,8 +53,6 @@ def get_device_type():
             timeout = 5,
         )
         if result.returncode == 0 and result.stdout.strip():
-            import warnings
-
             gpu_lines = result.stdout.strip().splitlines()
             warnings.warn(
                 f"Unsloth: torch.cuda.is_available() returned False but nvidia-smi "

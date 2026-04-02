@@ -585,7 +585,7 @@ def install_python_stack() -> int:
             pass
 
         if cuda_ver:
-            cu_tag = "cu" + cuda_ver.replace(".", "")
+            cu_tag = "cu" + "".join(cuda_ver.split(".")[:2])
             index_url = f"https://download.pytorch.org/whl/{cu_tag}"
 
             # Verify wheel availability before installing (pip dry-run)
@@ -597,7 +597,7 @@ def install_python_stack() -> int:
                     "install",
                     "--dry-run",
                     "--no-deps",
-                    "--extra-index-url",
+                    "--index-url",
                     index_url,
                     "torchcodec",
                 ],
@@ -610,7 +610,7 @@ def install_python_stack() -> int:
                     "--no-deps",
                     "--no-cache-dir",
                     "--upgrade",
-                    "--extra-index-url",
+                    "--index-url",
                     index_url,
                     "torchcodec",
                 )
