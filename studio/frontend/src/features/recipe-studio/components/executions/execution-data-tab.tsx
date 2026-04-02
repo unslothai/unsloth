@@ -121,7 +121,21 @@ export function ExecutionDataTab({
         </div>
       </div>
       {execution.dataset.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No rows returned.</p>
+        isExecutionInProgress(execution.status) ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <div className="size-5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-muted-foreground">
+                Generating data&hellip;
+              </p>
+              <p className="text-xs text-muted-foreground/70">
+                Check the Overview tab for live terminal logs.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">No rows returned.</p>
+        )
       ) : tableColumns.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           All columns hidden. Use Columns to show at least one.
