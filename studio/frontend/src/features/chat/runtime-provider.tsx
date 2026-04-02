@@ -47,9 +47,9 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "Solve the integral of x·sin(x), and verify it step by step",
   },
   {
-    title: "Draw an SVG of a cute sloth",
+    title: "Draw an SVG of a cute sloth & show the code",
     label: "SVG sloth",
-    prompt: "Draw an SVG of a cute sloth",
+    prompt: "Draw an SVG of a cute sloth & show the code",
   },
 ];
 
