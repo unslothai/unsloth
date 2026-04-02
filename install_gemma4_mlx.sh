@@ -132,8 +132,8 @@ step "install" "installing mlx, mlx-lm..."
 uv pip install --python "$_VENV_PY" -q mlx mlx-lm 2>/dev/null
 substep "done"
 
-TRANSFORMERS_WHL="transformers-5.5.0.dev0-py3-none-any.whl"
-TRANSFORMERS_GH="git+https://github.com/huggingface/transformers.git@v5.5-release"
+TRANSFORMERS_WHL="transformers-5.5.0-py3-none-any.whl"
+TRANSFORMERS_GH="git+https://github.com/huggingface/transformers.git@91b1ab1fdfa81a552644a92fbe3e8d88de40e167"
 
 step "install" "installing transformers>=5.5.0..."
 if uv pip install --python "$_VENV_PY" -q "$TRANSFORMERS_GH" 2>/dev/null; then
