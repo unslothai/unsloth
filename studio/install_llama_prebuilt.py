@@ -59,7 +59,6 @@ def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     return value
 
 
-APPROVED_PREBUILT_LLAMA_TAG = "b8508"
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
 DEFAULT_PUBLISHED_REPO = os.environ.get(
     "UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp"
@@ -151,6 +150,7 @@ class PublishedReleaseBundle:
     repo: str
     release_tag: str
     upstream_tag: str
+    manifest_sha256: str | None = None
     source_repo: str | None = None
     source_repo_url: str | None = None
     source_ref_kind: str | None = None
@@ -296,7 +296,7 @@ def is_busy_lock_error(exc: BaseException) -> bool:
 
 
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}")
+    print(f"[llama-prebuilt] {message}", file = sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -396,6 +396,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def normalize_sha256_digest(value: str | None) -> str | None:
     if not isinstance(value, str) or not value:
         return None
@@ -425,6 +429,20 @@ def normalize_source_commit(value: str | None) -> str | None:
     if any(ch not in "0123456789abcdef" for ch in normalized):
         return None
     return normalized
+
+
+def validate_schema_version(
+    payload: dict[str, Any], *, label: str
+) -> None:
+    schema_version = payload.get("schema_version")
+    if schema_version is None:
+        return
+    try:
+        normalized = int(schema_version)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{label} schema_version was not an integer") from exc
+    if normalized != 1:
+        raise RuntimeError(f"{label} schema_version={normalized} is unsupported")
 
 
 def repo_slug_from_source(value: str | None) -> str | None:
@@ -477,9 +495,16 @@ def infer_source_ref_kind(ref: str | None) -> str:
     ):
         return "branch"
     normalized_commit = normalize_source_commit(normalized)
-    if normalized_commit is not None and len(normalized_commit) == 40:
+    if normalized_commit is not None:
         return "commit"
     return "tag"
+
+
+def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]:
+    return [
+        f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
+        f"llama-{llama_tag}-bin-win-cuda-{runtime}-x64.zip",
+    ]
 
 
 def format_byte_count(num_bytes: float) -> str:
@@ -642,13 +667,23 @@ def download_bytes(
 
 
 def fetch_json(url: str) -> Any:
-    data = download_bytes(
-        url,
-        timeout = 30,
-        headers = github_api_headers(url)
-        if is_github_api_url(url)
-        else auth_headers(url),
-    )
+    try:
+        data = download_bytes(
+            url,
+            timeout = 30,
+            headers = github_api_headers(url)
+            if is_github_api_url(url)
+            else auth_headers(url),
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403 and is_github_api_url(url):
+            hint = ""
+            if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
+                hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+            raise RuntimeError(
+                f"GitHub API returned 403 for {url}{hint}"
+            ) from exc
+        raise
     if not data:
         raise RuntimeError(f"downloaded empty JSON payload from {url}")
     try:
@@ -1097,11 +1132,26 @@ def parse_published_release_bundle(
 
     # Mixed repos are filtered by an explicit release-side manifest rather than
     # by release tag or asset filename conventions.
-    manifest_payload = fetch_json(manifest_url)
+    manifest_bytes = download_bytes(
+        manifest_url,
+        timeout = 30,
+        headers = auth_headers(manifest_url),
+    )
+    manifest_sha256 = sha256_bytes(manifest_bytes)
+    try:
+        manifest_payload = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} was not valid JSON"
+        ) from exc
     if not isinstance(manifest_payload, dict):
         raise RuntimeError(
             f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} was not a JSON object"
         )
+    validate_schema_version(
+        manifest_payload,
+        label = f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} in {repo}@{release_tag}",
+    )
     component = manifest_payload.get("component")
     upstream_tag = manifest_payload.get("upstream_tag")
     source_repo = manifest_payload.get("source_repo")
@@ -1149,6 +1199,7 @@ def parse_published_release_bundle(
         repo = repo,
         release_tag = release_tag,
         upstream_tag = upstream_tag,
+        manifest_sha256 = manifest_sha256,
         source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
@@ -1180,6 +1231,10 @@ def parse_approved_release_checksums(
         raise RuntimeError(
             f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} was not a JSON object"
         )
+    validate_schema_version(
+        payload,
+        label = f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET}",
+    )
     if payload.get("component") != "llama.cpp":
         raise RuntimeError(
             f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} did not describe llama.cpp"
@@ -1547,6 +1602,12 @@ def validated_checksums_for_bundle(
     repo: str, bundle: PublishedReleaseBundle
 ) -> ApprovedReleaseChecksums:
     checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    manifest_hash = checksums.artifacts.get(bundle.manifest_asset_name)
+    if manifest_hash is not None and bundle.manifest_sha256 is not None:
+        if manifest_hash.sha256 != bundle.manifest_sha256:
+            raise PrebuiltFallback(
+                "published manifest checksum did not match the approved checksum asset"
+            )
     require_approved_source_hash(checksums, bundle.upstream_tag)
     return checksums
 
@@ -2150,25 +2211,31 @@ def windows_cuda_attempts(
     attempts: list[AssetChoice] = []
     for runtime_line in runtime_order:
         runtime = runtime_by_line[runtime_line]
-        upstream_name = f"llama-{llama_tag}-bin-win-cuda-{runtime}-x64.zip"
-        asset_url = upstream_assets.get(upstream_name)
-        if not asset_url:
+        selected_name = None
+        asset_url = None
+        for candidate_name in windows_cuda_upstream_asset_names(llama_tag, runtime):
+            asset_url = upstream_assets.get(candidate_name)
+            if asset_url:
+                selected_name = candidate_name
+                break
+        if not asset_url or not selected_name:
             selection_log.append(
-                f"windows_cuda_selection: skip missing asset {upstream_name}"
+                "windows_cuda_selection: skip missing assets "
+                + ",".join(windows_cuda_upstream_asset_names(llama_tag, runtime))
             )
             continue
         attempts.append(
             AssetChoice(
                 repo = UPSTREAM_REPO,
                 tag = llama_tag,
-                name = upstream_name,
+                name = selected_name,
                 url = asset_url,
                 source_label = "upstream",
                 install_kind = "windows-cuda",
                 runtime_line = runtime_line,
                 selection_log = list(selection_log)
                 + [
-                    f"windows_cuda_selection: selected {upstream_name} runtime={runtime}"
+                    f"windows_cuda_selection: selected {selected_name} runtime={runtime}"
                 ],
             )
         )
@@ -4439,28 +4506,68 @@ def parse_args() -> argparse.Namespace:
         nargs = "?",
         const = "latest",
         help = (
-            "Resolve the source-build fallback plan as tab-separated "
-            "<source_url>\\t<source_ref_kind>\\t<source_ref>."
+            "Resolve the source-build fallback plan."
         ),
     )
+    parser.add_argument(
+        "--output-format",
+        choices = ("plain", "json"),
+        default = "plain",
+        help = "Resolver output format. Defaults to plain.",
+    )
     return parser.parse_args()
+
+
+def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, sort_keys = True))
+        return
+    if "llama_tag" in payload:
+        print(payload["llama_tag"])
+        return
+    if {
+        "source_url",
+        "source_ref_kind",
+        "source_ref",
+    }.issubset(payload):
+        print(
+            "\t".join(
+                (
+                    str(payload["source_url"]),
+                    str(payload["source_ref_kind"]),
+                    str(payload["source_ref"]),
+                )
+            )
+        )
+        return
+    print(json.dumps(payload, sort_keys = True))
 
 
 def main() -> int:
     args = parse_args()
     if args.resolve_llama_tag is not None:
-        # Pass published_repo so the resolver prefers the Unsloth release tag
-        # (tested/approved) over the upstream ggml-org bleeding-edge tag.
-        print(resolve_requested_llama_tag(args.resolve_llama_tag, args.published_repo))
+        resolved = resolve_requested_llama_tag(args.resolve_llama_tag, args.published_repo)
+        emit_resolver_output(
+            {
+                "requested_tag": normalized_requested_llama_tag(args.resolve_llama_tag),
+                "llama_tag": resolved,
+            },
+            output_format = args.output_format,
+        )
         return EXIT_SUCCESS
 
     if args.resolve_install_tag is not None:
-        print(
-            resolve_requested_install_tag(
+        resolved = resolve_requested_install_tag(
                 args.resolve_install_tag,
                 args.published_release_tag or "",
                 args.published_repo,
             )
+        emit_resolver_output(
+            {
+                "requested_tag": normalized_requested_llama_tag(args.resolve_install_tag),
+                "llama_tag": resolved,
+            },
+            output_format = args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -4470,7 +4577,16 @@ def main() -> int:
             args.published_repo,
             args.published_release_tag or "",
         )
-        print("\t".join((plan.source_url, plan.source_ref_kind, plan.source_ref)))
+        emit_resolver_output(
+            {
+                "requested_tag": normalized_requested_llama_tag(args.resolve_source_build),
+                "source_url": plan.source_url,
+                "source_ref_kind": plan.source_ref_kind,
+                "source_ref": plan.source_ref,
+                "compatibility_upstream_tag": plan.compatibility_upstream_tag,
+            },
+            output_format = args.output_format,
+        )
         return EXIT_SUCCESS
 
     if not args.install_dir:

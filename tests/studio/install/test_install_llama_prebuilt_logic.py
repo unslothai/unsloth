@@ -509,7 +509,8 @@ def test_activate_install_tree_restores_existing_install_after_activation_failur
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
 
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
     assert "moving existing install to rollback path" in output
     assert "restored previous install from rollback path" in output
 
@@ -571,7 +572,8 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
 
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
     assert "rollback after failed activation also failed: restore failed" in output
     assert (
         "cleaning staging, install, and rollback paths before source build fallback"

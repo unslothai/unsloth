@@ -522,14 +522,22 @@ elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     # only when the source is the default ggml-org repo.
     if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
         _RESOLVE_TAG_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+        _RESOLVE_TAG_ARGS+=(--output-format json)
         if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
             _RESOLVE_TAG_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
         fi
         set +e
-        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
+        _RESOLVE_TAG_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
         _RESOLVE_UPSTREAM_STATUS=$?
         set -e
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+        if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
+            _RESOLVED_LLAMA_TAG="$(
+                printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))'
+            )"
+        else
+            _RESOLVED_LLAMA_TAG=""
+        fi
+        if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
             _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
         fi
     else
@@ -537,17 +545,22 @@ elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     fi
 else
     _RESOLVE_INSTALL_ARGS=(--resolve-install-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+    _RESOLVE_INSTALL_ARGS+=(--output-format json)
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _RESOLVE_INSTALL_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
     _RESOLVE_LLAMA_LOG="$(mktemp)"
     set +e
-    python "$SCRIPT_DIR/install_llama_prebuilt.py" \
-        "${_RESOLVE_INSTALL_ARGS[@]}" >"$_RESOLVE_LLAMA_LOG" 2>&1
+    _RESOLVE_INSTALL_JSON="$(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+            "${_RESOLVE_INSTALL_ARGS[@]}" 2>"$_RESOLVE_LLAMA_LOG"
+    )"
     _RESOLVE_LLAMA_STATUS=$?
     set -e
     if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
-        _RESOLVED_LLAMA_TAG="$(tail -n 1 "$_RESOLVE_LLAMA_LOG" | tr -d '\r')"
+        _RESOLVED_LLAMA_TAG="$(
+            printf '%s' "${_RESOLVE_INSTALL_JSON:-}" | python -c 'import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw).get("llama_tag","") if raw else "")'
+        )"
     else
         _RESOLVED_LLAMA_TAG=""
     fi
@@ -559,13 +572,21 @@ else
         # so the resolver prefers the latest usable Unsloth-published upstream tag
         # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
         _RESOLVE_FALLBACK_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+        _RESOLVE_FALLBACK_ARGS+=(--output-format json)
         if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
             _RESOLVE_FALLBACK_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
         fi
-        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_FALLBACK_ARGS[@]}" 2>/dev/null)"
+        _RESOLVE_FALLBACK_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_FALLBACK_ARGS[@]}" 2>/dev/null)"
         _RESOLVE_UPSTREAM_STATUS=$?
         set -e
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
+        if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "${_RESOLVE_FALLBACK_JSON:-}" ]; then
+            _RESOLVED_LLAMA_TAG="$(
+                printf '%s' "$_RESOLVE_FALLBACK_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))'
+            )"
+        else
+            _RESOLVED_LLAMA_TAG=""
+        fi
+        if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
             _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
         fi
         _NEED_LLAMA_SOURCE_BUILD=true
@@ -710,6 +731,7 @@ else
         if [ -z "$_LLAMA_PR" ]; then
             if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
                 _RESOLVE_SOURCE_ARGS=(--resolve-source-build "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+                _RESOLVE_SOURCE_ARGS+=(--output-format json)
                 if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
                     _RESOLVE_SOURCE_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
                 fi
@@ -718,9 +740,15 @@ else
                 _RESOLVE_SOURCE_STATUS=$?
                 set -e
                 if [ "$_RESOLVE_SOURCE_STATUS" -eq 0 ] && [ -n "$_SOURCE_BUILD_PLAN" ]; then
-                    IFS=$'\t' read -r _RESOLVED_SOURCE_URL _RESOLVED_SOURCE_REF_KIND _RESOLVED_SOURCE_REF <<EOF
-$_SOURCE_BUILD_PLAN
-EOF
+                    _RESOLVED_SOURCE_URL="$(
+                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_url",""))'
+                    )"
+                    _RESOLVED_SOURCE_REF_KIND="$(
+                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref_kind",""))'
+                    )"
+                    _RESOLVED_SOURCE_REF="$(
+                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref",""))'
+                    )"
                 fi
             fi
             if [ -z "$_RESOLVED_SOURCE_URL" ]; then
@@ -733,6 +761,7 @@ EOF
         verbose_substep "source build repo: $_RESOLVED_SOURCE_URL"
         verbose_substep "source build ref: ${_RESOLVED_SOURCE_REF:-latest} (${_RESOLVED_SOURCE_REF_KIND})"
         BUILD_OK=true
+        mkdir -p "$(dirname "$LLAMA_CPP_DIR")"
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
         if [ -n "$_LLAMA_PR" ]; then

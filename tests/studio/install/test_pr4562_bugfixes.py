@@ -597,6 +597,7 @@ class TestSourceCodePatterns:
         """Shell source fallback should consult the helper for repo/ref planning."""
         content = SETUP_SH.read_text()
         assert "--resolve-source-build" in content
+        assert "--output-format json" in content
         assert "_RESOLVED_SOURCE_URL" in content
         assert "_RESOLVED_SOURCE_REF_KIND" in content
         assert "_RESOLVED_SOURCE_REF" in content
@@ -606,6 +607,8 @@ class TestSourceCodePatterns:
         content = SETUP_SH.read_text()
         assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
+        assert 'tail -n 1 "$_RESOLVE_LLAMA_LOG"' not in content
+        assert "json.load" in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
@@ -711,6 +714,8 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
+        assert '--output-format", "json"' in content
+        assert "ConvertFrom-Json" in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
@@ -718,6 +723,7 @@ class TestSourceCodePatterns:
         """PS1 source fallback should consult the helper for repo/ref planning."""
         content = SETUP_PS1.read_text()
         assert "--resolve-source-build" in content
+        assert '--output-format", "json"' in content
         assert "$ResolvedSourceUrl" in content
         assert "$ResolvedSourceRefKind" in content
         assert "$ResolvedSourceRef" in content

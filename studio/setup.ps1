@@ -1636,12 +1636,16 @@ if ($LlamaPr) {
     # prebuilt release resolution. When building from a custom fork, the fork
     # may not carry upstream bNNNN tags.
     if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
-        $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+        $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveTagArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
         $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveTagArgs 2>$null
         $fallbackExit = $LASTEXITCODE
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
-            ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
+            try {
+                (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
+            } catch {
+                $RequestedLlamaTag
+            }
         } else {
             $RequestedLlamaTag
         }
@@ -1649,30 +1653,42 @@ if ($LlamaPr) {
         $ResolvedLlamaTag = $RequestedLlamaTag
     }
 } else {
-    $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+    $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
     if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveInstallArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-    $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveInstallArgs 2>&1
+    $resolveErrorLog = New-TemporaryFile
+    $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveInstallArgs 2>$resolveErrorLog
     $resolveExit = $LASTEXITCODE
-    $ResolvedLlamaTag = if ($resolveOutput) { ($resolveOutput | Select-Object -Last 1).ToString().Trim() } else { "" }
+    $ResolvedLlamaTag = if ($resolveOutput) {
+        try {
+            (($resolveOutput | Out-String) | ConvertFrom-Json).llama_tag
+        } catch {
+            ""
+        }
+    } else { "" }
     if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
         Write-Host ""
         substep "Failed to resolve a published llama.cpp release via $HelperReleaseRepo" "Yellow"
-        Write-LlamaFailureLog -Output ($resolveOutput | Out-String)
+        Write-LlamaFailureLog -Output (Get-Content -Raw $resolveErrorLog)
         # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
         # so the resolver prefers the latest usable Unsloth-published upstream tag
         # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-        $resolveFallbackArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+        $resolveFallbackArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveFallbackArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
         $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveFallbackArgs 2>$null
         $fallbackExit = $LASTEXITCODE
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
-            ($fallbackOutput | Select-Object -Last 1).ToString().Trim()
+            try {
+                (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
+            } catch {
+                $RequestedLlamaTag
+            }
         } else {
             $RequestedLlamaTag
         }
         $NeedLlamaSourceBuild = $true
         $SkipPrebuiltInstall = $true
     }
+    Remove-Item $resolveErrorLog -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""
@@ -1883,17 +1899,17 @@ if (-not $NeedLlamaSourceBuild) {
 
     if (-not $LlamaPr) {
         if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
-            $resolveSourceArgs = @("--resolve-source-build", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo)
+            $resolveSourceArgs = @("--resolve-source-build", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
             if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveSourceArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
             $sourcePlanOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveSourceArgs 2>$null
             $sourcePlanExit = $LASTEXITCODE
             if ($sourcePlanExit -eq 0 -and $sourcePlanOutput) {
-                $sourcePlanLine = ($sourcePlanOutput | Select-Object -Last 1).ToString().Trim()
-                $sourcePlanParts = $sourcePlanLine -split "`t", 3
-                if ($sourcePlanParts.Length -eq 3) {
-                    $ResolvedSourceUrl = $sourcePlanParts[0]
-                    $ResolvedSourceRefKind = $sourcePlanParts[1]
-                    $ResolvedSourceRef = $sourcePlanParts[2]
+                try {
+                    $sourcePlan = ($sourcePlanOutput | Out-String) | ConvertFrom-Json
+                    $ResolvedSourceUrl = $sourcePlan.source_url
+                    $ResolvedSourceRefKind = $sourcePlan.source_ref_kind
+                    $ResolvedSourceRef = $sourcePlan.source_ref
+                } catch {
                 }
             }
         }
@@ -1979,6 +1995,7 @@ if (-not $NeedLlamaSourceBuild) {
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
         $buildTmp = "$LlamaCppDir.build.$PID"
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path $LlamaCppDir -Parent)
         if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
         if ($LlamaPr) {
             $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$LlamaSource.git" $buildTmp }

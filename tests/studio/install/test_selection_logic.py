@@ -59,6 +59,8 @@ resolve_install_attempts = INSTALL_LLAMA_PREBUILT.resolve_install_attempts
 resolve_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_install_release_plans
 resolve_published_release = INSTALL_LLAMA_PREBUILT.resolve_published_release
 resolve_source_build_plan = INSTALL_LLAMA_PREBUILT.resolve_source_build_plan
+validated_checksums_for_bundle = INSTALL_LLAMA_PREBUILT.validated_checksums_for_bundle
+parse_approved_release_checksums = INSTALL_LLAMA_PREBUILT.parse_approved_release_checksums
 published_release_matches_request = (
     INSTALL_LLAMA_PREBUILT.published_release_matches_request
 )
@@ -66,6 +68,7 @@ exact_source_archive_logical_name = (
     INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name
 )
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
+windows_cuda_upstream_asset_names = INSTALL_LLAMA_PREBUILT.windows_cuda_upstream_asset_names
 env_int = INSTALL_LLAMA_PREBUILT.env_int
 
 
@@ -761,6 +764,89 @@ class TestSourceBuildPlanResolution:
         assert plan.source_url == "https://github.com/ggml-org/llama.cpp"
         assert plan.source_ref_kind == "branch"
         assert plan.source_ref == "main"
+
+
+class TestParseApprovedReleaseChecksums:
+    def test_rejects_wrong_component(self):
+        with pytest.raises(RuntimeError, match = "did not describe llama.cpp"):
+            parse_approved_release_checksums(
+                "repo/test",
+                "r1",
+                {
+                    "schema_version": 1,
+                    "component": "other",
+                    "release_tag": "r1",
+                    "upstream_tag": "b8508",
+                    "artifacts": {},
+                },
+            )
+
+    def test_rejects_mismatched_release_tag(self):
+        with pytest.raises(RuntimeError, match = "did not match pinned release tag"):
+            parse_approved_release_checksums(
+                "repo/test",
+                "r1",
+                {
+                    "schema_version": 1,
+                    "component": "llama.cpp",
+                    "release_tag": "r2",
+                    "upstream_tag": "b8508",
+                    "artifacts": {},
+                },
+            )
+
+    def test_rejects_bad_sha256(self):
+        with pytest.raises(RuntimeError, match = "valid sha256"):
+            parse_approved_release_checksums(
+                "repo/test",
+                "r1",
+                {
+                    "schema_version": 1,
+                    "component": "llama.cpp",
+                    "release_tag": "r1",
+                    "upstream_tag": "b8508",
+                    "artifacts": {
+                        "asset.tar.gz": {
+                            "sha256": "bad-digest",
+                        }
+                    },
+                },
+            )
+
+    def test_rejects_unsupported_schema_version(self):
+        with pytest.raises(RuntimeError, match = "schema_version=2 is unsupported"):
+            parse_approved_release_checksums(
+                "repo/test",
+                "r1",
+                {
+                    "schema_version": 2,
+                    "component": "llama.cpp",
+                    "release_tag": "r1",
+                    "upstream_tag": "b8508",
+                    "artifacts": {},
+                },
+            )
+
+
+class TestValidatedChecksumsForBundle:
+    def test_rejects_manifest_checksum_mismatch(self, monkeypatch):
+        bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
+        bundle.manifest_sha256 = "a" * 64
+        checksums = make_checksums_with_source([], release_tag = "r1", upstream_tag = "b8508")
+        checksums.artifacts[bundle.manifest_asset_name] = ApprovedArtifactHash(
+            asset_name = bundle.manifest_asset_name,
+            sha256 = "b" * 64,
+            repo = "unslothai/llama.cpp",
+            kind = "published-manifest",
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: checksums,
+        )
+
+        with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
+            validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
 
 # ===========================================================================
@@ -1586,10 +1672,13 @@ class TestResolveInstallReleasePlans:
 class TestWindowsCudaAttempts:
     TAG = "b8508"
 
-    def _upstream(self, *runtime_versions):
+    def _upstream(self, *runtime_versions, current_names: bool = False):
         assets = {}
         for rv in runtime_versions:
-            name = f"llama-{self.TAG}-bin-win-cuda-{rv}-x64.zip"
+            if current_names:
+                name = f"cudart-llama-bin-win-cuda-{rv}-x64.zip"
+            else:
+                name = f"llama-{self.TAG}-bin-win-cuda-{rv}-x64.zip"
             assets[name] = f"https://example.com/{name}"
         return assets
 
@@ -1653,6 +1742,15 @@ class TestWindowsCudaAttempts:
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 2
+
+    def test_current_upstream_names_are_supported(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.1", "12.4", current_names = True)
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert len(result) == 2
+        assert result[0].name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
+        assert result[1].name == "cudart-llama-bin-win-cuda-12.4-x64.zip"
 
 
 # ===========================================================================
