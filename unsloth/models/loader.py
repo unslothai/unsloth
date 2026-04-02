@@ -1533,6 +1533,47 @@ class FastModel(FastBaseModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
+
+            # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA
+            # on it directly.  Monkey-patch PEFT to target the inner .linear
+            # child instead (same patch as vision.py training path).
+            # See https://github.com/huggingface/peft/issues/3129
+            _clippable_linear_cls = None
+            try:
+                from transformers.models.gemma4.modeling_gemma4 import (
+                    Gemma4ClippableLinear as _clippable_linear_cls,
+                )
+            except ImportError:
+                pass
+
+            if _clippable_linear_cls is not None:
+                from peft.tuners.lora.model import LoraModel as _LoraModel
+                _original_car = _LoraModel._create_and_replace
+
+                def _patched_car(
+                    self,
+                    peft_config,
+                    adapter_name,
+                    target,
+                    target_name,
+                    parent,
+                    current_key = None,
+                    **kwargs,
+                ):
+                    if isinstance(target, _clippable_linear_cls):
+                        return _original_car(
+                            self, peft_config, adapter_name,
+                            target.linear, "linear", target,
+                            current_key = current_key, **kwargs,
+                        )
+                    return _original_car(
+                        self, peft_config, adapter_name,
+                        target, target_name, parent,
+                        current_key = current_key, **kwargs,
+                    )
+
+                _LoraModel._create_and_replace = _patched_car
+
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1541,6 +1582,11 @@ class FastModel(FastBaseModel):
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
             )
+
+            # Restore original PEFT method
+            if _clippable_linear_cls is not None:
+                _LoraModel._create_and_replace = _original_car
+
             # Patch it as well!
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
