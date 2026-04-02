@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 logger = get_logger(__name__)
+from utils.hardware import apply_gpu_ids
 
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
@@ -367,6 +368,8 @@ def run_training_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
+    apply_gpu_ids(config.get("resolved_gpu_ids"))
+
     model_name = config["model_name"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
@@ -683,6 +686,7 @@ def run_training_process(
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
+            gpu_ids = config.get("resolved_gpu_ids"),
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:
@@ -793,7 +797,7 @@ def run_training_process(
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
-            weight_decay = config.get("weight_decay", 0.01),
+            weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = True if is_cpt else config.get("packing", False),
             train_on_completions = False
@@ -1142,7 +1146,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
         "optim": config.get("optim", "adamw_8bit"),
-        "weight_decay": config.get("weight_decay", 0.01),
+        "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
     }
 

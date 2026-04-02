@@ -150,6 +150,8 @@ type ChatRuntimeStore = {
   modelsError: string | null;
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
+  ggufMaxContextLength: number | null;
+  ggufNativeContextLength: number | null;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
@@ -213,6 +215,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   modelsError: null,
   activeGgufVariant: null,
   ggufContextLength: null,
+  ggufMaxContextLength: null,
+  ggufNativeContextLength: null,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
   reasoningEnabled: true,
@@ -222,7 +226,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
-  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 10),
+  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 25),
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
@@ -287,6 +291,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: null,
       ggufContextLength: null,
+      ggufMaxContextLength: null,
+      ggufNativeContextLength: null,
       contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,

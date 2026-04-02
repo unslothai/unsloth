@@ -88,12 +88,20 @@ async def get_hardware_utilization(
     Get a live snapshot of GPU hardware utilization.
 
     Designed to be polled by the frontend during training.
-    Returns GPU utilization %, temperature, VRAM usage, and power draw
-    via nvidia-smi for maximum accuracy.
+    Returns live GPU memory usage information for the active backend.
     """
     from utils.hardware import get_gpu_utilization
 
     return get_gpu_utilization()
+
+
+@router.get("/hardware/visible")
+async def get_visible_hardware_utilization(
+    current_subject: str = Depends(get_current_subject),
+):
+    from utils.hardware import get_visible_gpu_utilization
+
+    return get_visible_gpu_utilization()
 
 
 @router.post("/start")
@@ -202,6 +210,7 @@ async def start_training(
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
             "trust_remote_code": request.trust_remote_code,
+            "gpu_ids": request.gpu_ids,
         }
 
         # Training page has no trust_remote_code toggle — the value comes from
@@ -269,6 +278,9 @@ async def start_training(
             error = None,
         )
 
+    except ValueError as e:
+        logger.warning("Rejected training GPU selection: %s", e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         logger.error(f"Error starting training: {e}", exc_info = True)
         raise HTTPException(
