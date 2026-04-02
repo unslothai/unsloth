@@ -67,7 +67,7 @@
   --sidebar-ring: oklch(0.6929 0.1396 166.5513);
   --destructive-foreground: oklch(1 0 0);
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
+  --font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
   --font-serif: Source Serif 4, serif;
   --font-mono: JetBrains Mono, monospace;
   --shadow-color: hsl(0 0% 0%);
@@ -159,7 +159,7 @@
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
+  --font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -375,17 +375,6 @@
   /* Chat: use the app sans stack for UI + prose. */
   .aui-thread-root {
     --font-heading: var(--font-sans);
-    font-family: var(--font-sans);
-  }
-
-  .aui-thread-root .font-medium,
-  .aui-thread-root .font-semibold,
-  .aui-thread-root .font-bold,
-  .aui-thread-root .font-heading {
-    font-family: var(--font-sans);
-  }
-
-  .aui-thread-root :where(h1, h2, h3, h4, h5, h6) {
     font-family: var(--font-sans);
   }
 
