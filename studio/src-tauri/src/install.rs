@@ -131,10 +131,6 @@ fn spawn_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Prevent Python from buffering stdout — avoids OSError on flush()
-    // when stdout is a pipe from a Windows GUI app.
-    cmd.env("PYTHONUNBUFFERED", "1");
-
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     // spawned by the install script. Only clear inside AppImage — native installs
     // may need these for custom CUDA or conda paths.
@@ -143,14 +139,6 @@ fn spawn_script(
         cmd.env_remove("LD_LIBRARY_PATH");
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
-    }
-
-    // On Windows, suppress console windows from child processes (winget, npm, etc.)
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     // Spawn in a process group so kill() terminates the entire tree
