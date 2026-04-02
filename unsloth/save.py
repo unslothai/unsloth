@@ -2533,12 +2533,15 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
-
     try:
         with subprocess.Popen(
-            command,
-            shell = True,
+            [
+                sys.executable,
+                "llama.cpp/convert-lora-to-ggml.py",
+                lora_directory_push,
+                output_file,
+                "llama",
+            ],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             bufsize = 1,
@@ -2550,7 +2553,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
                 print(line, end = "", flush = True)
             sp.wait()
             if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, command)
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
     except subprocess.CalledProcessError as e:
         print(f"Error: Conversion failed with return code {e.returncode}")
         return
@@ -2612,12 +2615,15 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     )
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
-
     try:
         with subprocess.Popen(
-            command,
-            shell = True,
+            [
+                sys.executable,
+                "llama.cpp/convert-lora-to-ggml.py",
+                save_directory,
+                output_file,
+                "llama",
+            ],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             bufsize = 1,
@@ -2629,7 +2635,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
                 print(line, end = "", flush = True)
             sp.wait()
             if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, command)
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
     except subprocess.CalledProcessError as e:
         print(f"Error: Conversion failed with return code {e.returncode}")
         return
