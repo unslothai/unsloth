@@ -569,10 +569,23 @@ function ThreadHistoryProvider({
           store.setContextUsage(savedUsage);
         }
 
+        // If any message has a stored parentId, reconstruct the tree
+        // so retries/regenerations load as branches instead of being
+        // unrolled into a flat list.  Fall back to fromArray for legacy
+        // threads that were saved before parentId was persisted.
+        const hasParentIds = msgs.some((m) => "parentId" in m);
+        if (hasParentIds) {
+          return {
+            messages: msgs.map((m) => ({
+              parentId: m.parentId ?? null,
+              message: toThreadMessage(m),
+            })),
+          };
+        }
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
 
-      async append({ message }: ExportedMessageRepositoryItem) {
+      async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
         const content = cloneContent(message.content);
         const attachments =
@@ -586,6 +599,7 @@ function ThreadHistoryProvider({
         await db.messages.put({
           id: message.id,
           threadId: remoteId,
+          parentId: parentId ?? null,
           role: message.role,
           content,
           ...(attachments.length > 0 && { attachments }),
