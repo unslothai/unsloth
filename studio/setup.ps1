@@ -1598,11 +1598,15 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { "latest" }
-$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
+# Force all installs to use mainline llama.cpp from ggml-org.
+# Previously: $HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
+$HelperReleaseRepo = "ggml-org/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
-$LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
+# Force mainline source -- no env var override.
+# Previously: $LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
+$LlamaSource = $DefaultLlamaSource
 if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $LlamaSource.Length - 4) }
 $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag

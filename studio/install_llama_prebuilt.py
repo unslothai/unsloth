@@ -60,9 +60,9 @@ def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
 
 
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
-DEFAULT_PUBLISHED_REPO = os.environ.get(
-    "UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp"
-)
+# Force all installs to use mainline llama.cpp from ggml-org.
+# Previously: DEFAULT_PUBLISHED_REPO = os.environ.get("UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp")
+DEFAULT_PUBLISHED_REPO = "ggml-org/llama.cpp"
 DEFAULT_PUBLISHED_TAG = os.environ.get("UNSLOTH_LLAMA_RELEASE_TAG")
 DEFAULT_PUBLISHED_MANIFEST_ASSET = os.environ.get(
     "UNSLOTH_LLAMA_RELEASE_MANIFEST_ASSET", "llama-prebuilt-manifest.json"
