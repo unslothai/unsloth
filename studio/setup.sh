@@ -532,7 +532,7 @@ elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
         set -e
         if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
             _RESOLVED_LLAMA_TAG="$(
-                printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))'
+                printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
             )"
         else
             _RESOLVED_LLAMA_TAG=""
@@ -559,7 +559,7 @@ else
     set -e
     if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
         _RESOLVED_LLAMA_TAG="$(
-            printf '%s' "${_RESOLVE_INSTALL_JSON:-}" | python -c 'import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw).get("llama_tag","") if raw else "")'
+            printf '%s' "${_RESOLVE_INSTALL_JSON:-}" | python -c 'import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw).get("llama_tag","") if raw else "")' 2>/dev/null || true
         )"
     else
         _RESOLVED_LLAMA_TAG=""
@@ -581,7 +581,7 @@ else
         set -e
         if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "${_RESOLVE_FALLBACK_JSON:-}" ]; then
             _RESOLVED_LLAMA_TAG="$(
-                printf '%s' "$_RESOLVE_FALLBACK_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))'
+                printf '%s' "$_RESOLVE_FALLBACK_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
             )"
         else
             _RESOLVED_LLAMA_TAG=""
@@ -741,13 +741,13 @@ else
                 set -e
                 if [ "$_RESOLVE_SOURCE_STATUS" -eq 0 ] && [ -n "$_SOURCE_BUILD_PLAN" ]; then
                     _RESOLVED_SOURCE_URL="$(
-                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_url",""))'
+                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_url",""))' 2>/dev/null || true
                     )"
                     _RESOLVED_SOURCE_REF_KIND="$(
-                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref_kind",""))'
+                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref_kind",""))' 2>/dev/null || true
                     )"
                     _RESOLVED_SOURCE_REF="$(
-                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref",""))'
+                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref",""))' 2>/dev/null || true
                     )"
                 fi
             fi

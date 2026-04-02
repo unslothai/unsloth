@@ -536,6 +536,21 @@ def refs_match(candidate_ref: str | None, requested_ref: str | None) -> bool:
     return False
 
 
+def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
+    """Normalize a source ref to a form that ``git clone --branch`` accepts.
+
+    Fully qualified branch refs like ``refs/heads/main`` are stripped to
+    ``main``; pull refs like ``refs/pull/123/head`` are left as-is since
+    they are always fetched explicitly rather than cloned with ``--branch``.
+    """
+    if not isinstance(ref, str) or not ref:
+        return ref
+    lowered = ref.lower()
+    if ref_kind == "branch" and lowered.startswith("refs/heads/"):
+        return ref.split("/", 2)[2]
+    return ref
+
+
 def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]:
     return [
         f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
@@ -1646,7 +1661,11 @@ def validated_checksums_for_bundle(
             raise PrebuiltFallback(
                 "published manifest checksum did not match the approved checksum asset"
             )
-    require_approved_source_hash(checksums, bundle.upstream_tag)
+    # Accept bundles that carry only an exact-commit source archive
+    # (e.g. llama.cpp-source-commit-<sha>.tar.gz) without requiring the
+    # legacy llama.cpp-source-<upstream_tag>.tar.gz entry.
+    if exact_source_archive_hash(checksums) is None:
+        require_approved_source_hash(checksums, bundle.upstream_tag)
     return checksums
 
 
@@ -1870,7 +1889,9 @@ def source_build_plan_for_release(
             resolved_source_ref = resolved_source_ref,
             source_commit = source_commit,
         )
-    source_ref = resolved_source_ref or requested_source_ref
+    source_ref = checkout_friendly_ref(
+        source_ref_kind, resolved_source_ref or requested_source_ref
+    )
     if source_url and source_ref and source_ref_kind in {"tag", "branch", "pull"}:
         return SourceBuildPlan(
             source_url = source_url,
@@ -1913,10 +1934,12 @@ def resolve_source_build_plan(
             return source_build_plan_for_release(release)
         except Exception:
             pass
+        inferred_kind = infer_source_ref_kind(normalized_requested)
         return SourceBuildPlan(
             source_url = "https://github.com/ggml-org/llama.cpp",
-            source_ref = normalized_requested,
-            source_ref_kind = infer_source_ref_kind(normalized_requested),
+            source_ref = checkout_friendly_ref(inferred_kind, normalized_requested)
+            or normalized_requested,
+            source_ref_kind = inferred_kind,
             compatibility_upstream_tag = normalized_requested,
         )
 
