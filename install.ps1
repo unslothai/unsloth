@@ -934,7 +934,7 @@ shell.Run cmd, 0, False
         }
     }
 
-    # ── Hotfix: patch install_python_stack.py for Windows GUI stdout ──
+    # Hotfix: patch install_python_stack.py for Windows GUI stdout
     # The PyPI version crashes with OSError when stdout is piped from a GUI app.
     # Copy our fixed version (bundled by Tauri) over the installed one.
     # Remove this block once PyPI ships the fix from commit 18c5aae7.
@@ -944,6 +944,8 @@ shell.Run cmd, 0, False
         if ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
             Copy-Item $fixedPy $target -Force
             substep "patched install_python_stack.py (stdout fix)"
+        } else {
+            Write-Host "[WARN] Could not patch install_python_stack.py (bundled file or target dir missing)" -ForegroundColor Yellow
         }
     }
 
