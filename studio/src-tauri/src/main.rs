@@ -80,8 +80,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "quit" => {
                 let install_state = app.state::<crate::install::InstallState>();
                 let _ = crate::install::stop_install(&install_state);
+                let shutdown = app.state::<crate::process::ShutdownFlag>();
                 let state = app.state::<crate::process::BackendState>();
-                let _ = crate::process::stop_backend(&state);
+                let _ = crate::process::stop_backend(&state, &shutdown);
                 app.exit(0);
             }
             _ => {}
@@ -124,6 +125,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(install::new_install_state())
         .manage(new_backend_state())
+        .manage(process::new_shutdown_flag())
         .invoke_handler(tauri::generate_handler![
             commands::check_install_status,
             commands::start_install,
@@ -158,7 +160,10 @@ fn main() {
                     let _ = install::stop_install(&install_state);
                 }
                 if let Some(backend_state) = app.try_state::<process::BackendState>() {
-                    let _ = process::stop_backend(&backend_state);
+                    let shutdown = app
+                        .try_state::<process::ShutdownFlag>()
+                        .expect("ShutdownFlag must be managed");
+                    let _ = process::stop_backend(&backend_state, &shutdown);
                 }
             }
         });
