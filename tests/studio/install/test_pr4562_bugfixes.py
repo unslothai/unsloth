@@ -778,6 +778,34 @@ class TestSourceCodePatterns:
         assert "$ResolvedSourceRefKind" in content
         assert "$ResolvedSourceRef" in content
 
+    def test_setup_ps1_prebuilt_install_disables_native_error_abort(self):
+        """PS1 prebuilt install should not abort setup on helper stderr."""
+        content = SETUP_PS1.read_text()
+        install_idx = content.index("& python @prebuiltArgs 2>&1")
+        block = content[max(0, install_idx - 800) : install_idx + 800]
+        assert "$PSNativeCommandUseErrorActionPreference = $false" in block
+        assert "$restoreNativeErrorPreference = $true" in block
+        assert (
+            "$PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference"
+            in block
+        )
+
+    def test_setup_ps1_helper_disables_error_action_abort(self):
+        """Helper resolution should suppress terminating NativeCommandError on PS 5.1."""
+        content = SETUP_PS1.read_text()
+        helper_idx = content.index("function Invoke-LlamaHelper")
+        block = content[helper_idx : helper_idx + 1200]
+        assert "$previousErrorActionPreference = $ErrorActionPreference" in block
+        assert '$ErrorActionPreference = "Continue"' in block
+        assert "$ErrorActionPreference = $previousErrorActionPreference" in block
+
+    def test_setup_ps1_uses_local_tempfile_helper(self):
+        """PS1 should not depend on New-TemporaryFile being available."""
+        content = SETUP_PS1.read_text()
+        assert "function New-UnslothTemporaryFile" in content
+        assert "$resolveErrorLog = New-UnslothTemporaryFile" in content
+        assert "$resolveErrorLog = New-TemporaryFile" not in content
+
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
         content = MODULE_PATH.read_text()

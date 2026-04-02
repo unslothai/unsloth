@@ -483,18 +483,21 @@ _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 # Force all installs to use mainline llama.cpp from ggml-org.
-# Previously: _HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
 _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
-# Force mainline source -- no env var override.
-# Previously: _LLAMA_SOURCE="${UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}}"
+# Force mainline source -- no env var override for now.
 _LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"
 _LLAMA_SOURCE="${_LLAMA_SOURCE%.git}"  # normalize: strip trailing .git
 _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
 _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
 _RESOLVED_SOURCE_REF_KIND="tag"
+
+if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+    _NEED_LLAMA_SOURCE_BUILD=true
+    _SKIP_PREBUILT_INSTALL=true
+fi
 
 # Non-default source URL forces source build (fork has different code than prebuilt).
 if [ "$_LLAMA_SOURCE" != "https://github.com/ggml-org/llama.cpp" ]; then
@@ -527,7 +530,9 @@ elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     # the prebuilt release resolution entirely. When building from a custom
     # fork, the fork may not carry upstream bNNNN tags, so resolve the tag
     # only when the source is the default ggml-org repo.
-    if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
+    if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+        _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+    elif [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
         _RESOLVE_TAG_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
         _RESOLVE_TAG_ARGS+=(--output-format json)
         if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then

@@ -71,6 +71,12 @@ function Refresh-Environment {
     $env:Path = "$machinePath;$userPath"
 }
 
+# PowerShell 5.1 compatibility helper: avoid relying on New-TemporaryFile.
+function New-UnslothTemporaryFile {
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    return Get-Item -LiteralPath $tempPath
+}
+
 # Find nvcc on PATH, CUDA_PATH, or standard toolkit dirs.
 # Returns the path to nvcc.exe, or $null if not found.
 function Find-Nvcc {
@@ -1599,19 +1605,66 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-# Force all installs to use mainline llama.cpp from ggml-org.
-# Previously: $HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
 $HelperReleaseRepo = "ggml-org/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
-# Force mainline source -- no env var override.
-# Previously: $LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
 $LlamaSource = $DefaultLlamaSource
 if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $LlamaSource.Length - 4) }
 $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
+
+if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+    $NeedLlamaSourceBuild = $true
+    $SkipPrebuiltInstall = $true
+}
+
+function Invoke-LlamaHelper {
+    param(
+        [string[]]$Arguments,
+        [string]$StderrPath = $null
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $null
+    $restoreNativeErrorPreference = $false
+    $ErrorActionPreference = "Continue"
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreference = $true
+    }
+
+    try {
+        # Capture all output (stdout + stderr) so that PowerShell does not
+        # convert stderr lines into visible ErrorRecord objects.  Separate
+        # stdout from stderr afterwards.
+        $allOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $stdoutLines = @()
+        $stderrLines = @()
+        foreach ($line in $allOutput) {
+            if ($line -is [System.Management.Automation.ErrorRecord]) {
+                $stderrLines += $line.ToString()
+            } else {
+                $stdoutLines += $line
+            }
+        }
+        if ($StderrPath -and $stderrLines.Count -gt 0) {
+            $stderrLines | Out-File -FilePath $StderrPath -Encoding utf8
+        }
+        return [pscustomobject]@{
+            Output = $stdoutLines
+            ExitCode = $exitCode
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($restoreNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+}
 
 if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
     step "llama.cpp" "custom source: $LlamaSource -- forcing source build" "Yellow"
@@ -1640,11 +1693,14 @@ if ($LlamaPr) {
     # Custom source or other override already forced source build; skip the
     # prebuilt release resolution. When building from a custom fork, the fork
     # may not carry upstream bNNNN tags.
-    if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
+    if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+        $ResolvedLlamaTag = $RequestedLlamaTag
+    } elseif ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
         $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveTagArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveTagArgs 2>$null
-        $fallbackExit = $LASTEXITCODE
+        $fallbackResult = Invoke-LlamaHelper -Arguments $resolveTagArgs
+        $fallbackOutput = $fallbackResult.Output
+        $fallbackExit = $fallbackResult.ExitCode
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
             try {
                 (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
@@ -1660,9 +1716,10 @@ if ($LlamaPr) {
 } else {
     $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
     if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveInstallArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-    $resolveErrorLog = New-TemporaryFile
-    $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveInstallArgs 2>$resolveErrorLog
-    $resolveExit = $LASTEXITCODE
+    $resolveErrorLog = New-UnslothTemporaryFile
+    $resolveResult = Invoke-LlamaHelper -Arguments $resolveInstallArgs -StderrPath $resolveErrorLog
+    $resolveOutput = $resolveResult.Output
+    $resolveExit = $resolveResult.ExitCode
     $ResolvedLlamaTag = if ($resolveOutput) {
         try {
             (($resolveOutput | Out-String) | ConvertFrom-Json).llama_tag
@@ -1679,8 +1736,9 @@ if ($LlamaPr) {
         # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
         $resolveFallbackArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveFallbackArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveFallbackArgs 2>$null
-        $fallbackExit = $LASTEXITCODE
+        $fallbackResult = Invoke-LlamaHelper -Arguments $resolveFallbackArgs
+        $fallbackOutput = $fallbackResult.Output
+        $fallbackExit = $fallbackResult.ExitCode
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
             try {
                 (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
@@ -1723,16 +1781,29 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        if ($script:UnslothVerbose) {
-            # Show live output in verbose mode while still capturing for error log
-            $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
-            & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
-            $prebuiltExit = $LASTEXITCODE
-            $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
-            Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
-        } else {
-            $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
-            $prebuiltExit = $LASTEXITCODE
+        $previousNativeErrorPreference = $null
+        $restoreNativeErrorPreference = $false
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+            $restoreNativeErrorPreference = $true
+        }
+        try {
+            if ($script:UnslothVerbose) {
+                # Show live output in verbose mode while still capturing for error log
+                $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
+                & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
+                $prebuiltExit = $LASTEXITCODE
+                $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
+                Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
+            } else {
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltExit = $LASTEXITCODE
+            }
+        } finally {
+            if ($restoreNativeErrorPreference) {
+                $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+            }
         }
         $ErrorActionPreference = $prevEAPPrebuilt
 
@@ -1847,7 +1918,10 @@ if (Test-Path $LlamaServerBin) {
 if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
+} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+    # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
+    # tag is "master" (a moving target), always rebuild so the binary picks
+    # up new model architecture support (e.g. Gemma 4).
     Write-Host ""
     step "llama.cpp" "already built"
 } elseif (-not $HasCmakeForBuild) {
@@ -1906,8 +1980,9 @@ if (-not $NeedLlamaSourceBuild) {
         if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
             $resolveSourceArgs = @("--resolve-source-build", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
             if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveSourceArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-            $sourcePlanOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveSourceArgs 2>$null
-            $sourcePlanExit = $LASTEXITCODE
+            $sourcePlanResult = Invoke-LlamaHelper -Arguments $resolveSourceArgs
+            $sourcePlanOutput = $sourcePlanResult.Output
+            $sourcePlanExit = $sourcePlanResult.ExitCode
             if ($sourcePlanExit -eq 0 -and $sourcePlanOutput) {
                 try {
                     $sourcePlan = ($sourcePlanOutput | Out-String) | ConvertFrom-Json

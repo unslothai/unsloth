@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import random
+import re
 import shutil
 import site
 import socket
@@ -559,6 +560,33 @@ def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]
         f"llama-{llama_tag}-bin-win-cuda-{runtime}-x64.zip",
         f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
     ]
+
+
+def windows_cuda_asset_aliases(
+    asset_name: str,
+    *,
+    compatibility_tag: str | None = None,
+) -> list[str]:
+    aliases: list[str] = []
+    legacy_match = re.fullmatch(
+        r"llama-(?P<tag>[^/]+)-bin-win-cuda-(?P<runtime>\d+\.\d+)-x64\.zip",
+        asset_name,
+    )
+    if legacy_match:
+        runtime = legacy_match.group("runtime")
+        aliases.append(f"cudart-llama-bin-win-cuda-{runtime}-x64.zip")
+        if compatibility_tag:
+            aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-x64.zip")
+        return aliases
+
+    current_match = re.fullmatch(
+        r"cudart-llama-bin-win-cuda-(?P<runtime>\d+\.\d+)-x64\.zip",
+        asset_name,
+    )
+    if current_match and compatibility_tag:
+        runtime = current_match.group("runtime")
+        aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-x64.zip")
+    return aliases
 
 
 def format_byte_count(num_bytes: float) -> str:
@@ -3867,9 +3895,7 @@ def apply_approved_hashes(
     checksums: ApprovedReleaseChecksums,
 ) -> list[AssetChoice]:
     def approved_hash_for_attempt(attempt: AssetChoice) -> ApprovedArtifactHash | None:
-        approved = checksums.artifacts.get(attempt.name)
-        if approved is not None:
-            return approved
+        candidate_names = [attempt.name]
         if (
             isinstance(attempt.tag, str)
             and attempt.tag
@@ -3883,7 +3909,19 @@ def apply_approved_hashes(
                 if attempt.name.startswith(legacy_prefix)
                 else attempt.name
             )
-            approved = checksums.artifacts.get(compatibility_name)
+            candidate_names.append(compatibility_name)
+        candidate_names.extend(
+            windows_cuda_asset_aliases(
+                attempt.name,
+                compatibility_tag = checksums.upstream_tag,
+            )
+        )
+        seen_names: set[str] = set()
+        for candidate_name in candidate_names:
+            if candidate_name in seen_names:
+                continue
+            seen_names.add(candidate_name)
+            approved = checksums.artifacts.get(candidate_name)
             if approved is not None:
                 return approved
         return None
