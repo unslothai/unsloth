@@ -712,7 +712,6 @@ shell.Run cmd, 0, False
         $ErrorActionPreference = $prevEAP2
         if ($torchOk) {
             substep "legacy environment is healthy -- migrating..."
-            $hadCuda = & $OldPy -c "import torch; print(torch.cuda.is_available())" 2>$null
             Move-Item -Path $OldVenv -Destination $VenvDir -Force
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
@@ -863,12 +862,6 @@ shell.Run cmd, 0, False
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return
             }
-        }
-        # Warn if CUDA was lost during migration
-        $hasCuda = & $VenvPython -c "import torch; print(torch.cuda.is_available())" 2>$null
-        if ($hadCuda -eq "True" -and $hasCuda -ne "True") {
-            substep "WARNING: CUDA was available before migration but not after" "Yellow"
-            substep "GPU training may not work. Consider reinstalling PyTorch." "Yellow"
         }
     } elseif ($TorchIndexUrl) {
         if ($SkipTorch) {
