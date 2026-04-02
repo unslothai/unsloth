@@ -60,7 +60,7 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 _tokenizer_class_cache: dict[str, bool] = {}
 
 # Versions
-TRANSFORMERS_5_VERSION = "5.5.0.dev0"
+TRANSFORMERS_5_VERSION = "5.5.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
