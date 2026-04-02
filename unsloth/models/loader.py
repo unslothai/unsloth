@@ -1407,8 +1407,14 @@ class FastModel(FastBaseModel):
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        # If num_labels is set, use AutoModelForSequenceClassification
+        _num_labels = kwargs.get("num_labels", None)
         if auto_model is None:
-            if is_vlm:
+            if _num_labels is not None:
+                from transformers import AutoModelForSequenceClassification
+
+                auto_model = AutoModelForSequenceClassification
+            elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.
                 # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
                 # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.

@@ -228,7 +228,9 @@ def apply_unsloth_gradient_checkpointing(
 # Mllama: BlockMask Q_LEN!=KV_LEN ValueError on decode.
 # NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
 # Gemma3N: timm vision wrappers don't support flex_attention.
-_FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h")
+# ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
+# access on some GPU architectures (B200). Falls back to eager safely.
+_FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 
 
@@ -796,7 +798,16 @@ model_architectures = [
     "falcon_h1",
 ]
 
+# Transformers 5.x uses class-level annotations with @strict, @auto_docstring,
+# and interval() in config classes. exec(inspect.getsource(...)) fails because
+# those symbols are not in scope. Skip the exec-based config patching for 5.x
+# since those configs already use rope_parameters (the v5 replacement for
+# rope_scaling).
+_skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
+
 for model_name in model_architectures:
+    if _skip_config_exec_patch:
+        break
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
@@ -830,9 +841,12 @@ for model_name in model_architectures:
         if Version(transformers_version) <= Version("4.42.4"):
             config = patch_mistral_nemo_config(config)
 
-    exec(config, globals())
-    exec(f"import {config_filepath}", globals())
-    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+    try:
+        exec(config, globals())
+        exec(f"import {config_filepath}", globals())
+        exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+    except Exception:
+        continue
 # =============================================
 
 # =============================================
