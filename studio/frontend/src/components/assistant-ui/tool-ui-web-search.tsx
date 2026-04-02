@@ -23,6 +23,7 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
+const RE_WWW = /^www\./;
 
 /** Parse the backend's "Title: ...\nURL: ...\nSnippet: ...\n---" format into structured sources. */
 function parseSearchResults(raw: string): ParsedSource[] {
@@ -57,9 +58,9 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   let displayDomain = "";
   if (url) {
     try {
-      displayDomain = new URL(url).hostname.replace(/^www\./, "");
+      displayDomain = new URL(url).hostname.replace(RE_WWW, "");
     } catch {
-      displayDomain = url.length > 40 ? url.slice(0, 40) + "…" : url;
+      displayDomain = url.length > 40 ? `${url.slice(0, 40)}…` : url;
     }
   }
   const isRunning = status?.type === "running";
