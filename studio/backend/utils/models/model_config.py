@@ -5,7 +5,6 @@
 Model and LoRA configuration handling
 """
 
-from transformers import AutoConfig
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import (
@@ -422,6 +421,7 @@ def load_model_config(
     """
     Load model config with optional authentication control.
     """
+    from transformers import AutoConfig
 
     if token:
         # Explicit token provided - use it
