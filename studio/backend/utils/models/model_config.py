@@ -31,6 +31,37 @@ import yaml
 
 logger = get_logger(__name__)
 
+# ── Model size extraction ────────────────────────────────────
+import re as _re
+
+_MODEL_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+# MoE active-parameter pattern: matches "A3B", "A3.5B", etc.
+_ACTIVE_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+
+
+def extract_model_size_b(model_id: str) -> float | None:
+    """Extract model size in billions from a model identifier.
+
+    Prefers MoE active-parameter notation (e.g. ``A3B`` in
+    ``Qwen3.5-35B-A3B``) over the total parameter count.
+    Handles both ``B`` (billions) and ``M`` (millions) suffixes.
+    """
+    mid = (model_id or "").lower()
+    active = _ACTIVE_SIZE_RE.search(mid)
+    if active:
+        val = float(active.group(1))
+        return val / 1000.0 if active.group(2).lower() == "m" else val
+    size = _MODEL_SIZE_RE.search(mid)
+    if not size:
+        return None
+    val = float(size.group(1))
+    return val / 1000.0 if size.group(2).lower() == "m" else val
+
+
 # Model name mapping: maps all equivalent model names to their canonical YAML config file
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
 # Based on the model mapper provided - canonical filename is based on the first model name in the mapper
