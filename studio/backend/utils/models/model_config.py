@@ -34,7 +34,9 @@ logger = get_logger(__name__)
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
-_MODEL_SIZE_RE = _re.compile(r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
+_MODEL_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
 # MoE active-parameter pattern: matches "A3B", "A3.5B", etc.
 _ACTIVE_SIZE_RE = _re.compile(
     r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE

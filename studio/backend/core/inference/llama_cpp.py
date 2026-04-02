@@ -1332,7 +1332,7 @@ class LlamaCppBackend:
                 if "qwen3.5" in mid:
                     size_val = _extract_model_size_b(mid)
                     if size_val is not None and size_val < 9:
-                            thinking_default = False
+                        thinking_default = False
                 self._reasoning_default = thinking_default
                 cmd.extend(
                     [
@@ -2647,29 +2647,29 @@ class LlamaCppBackend:
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
-                            conversation.append({
-                                "role": "assistant",
-                                "content": _stripped,
-                            })
-                            conversation.append({
-                                "role": "user",
-                                "content": (
-                                    "Please use the available tools to complete "
-                                    "the task instead of describing what to do."
-                                ),
-                            })
+                            conversation.append(
+                                {
+                                    "role": "assistant",
+                                    "content": _stripped,
+                                }
+                            )
+                            conversation.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Please use the available tools to complete "
+                                        "the task instead of describing what to do."
+                                    ),
+                                }
+                            )
                             # Accumulate tokens and timing from this iteration
                             _fu_r = _iter_usage or {}
                             _accumulated_completion_tokens += _fu_r.get(
                                 "completion_tokens", 0
                             )
                             _it_r = _iter_timings or {}
-                            _accumulated_predicted_ms += _it_r.get(
-                                "predicted_ms", 0
-                            )
-                            _accumulated_predicted_n += _it_r.get(
-                                "predicted_n", 0
-                            )
+                            _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _it_r.get("predicted_n", 0)
                             yield {"type": "status", "text": ""}
                             continue
 

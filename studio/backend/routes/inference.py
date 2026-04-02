@@ -1110,9 +1110,7 @@ async def openai_chat_completions(
             _is_small_model = _model_size_b is not None and _model_size_b < 9
 
             if _is_small_model:
-                _web_tips = (
-                    "Do not repeat the same search query."
-                )
+                _web_tips = "Do not repeat the same search query."
             else:
                 _web_tips = (
                     "When you search and find a relevant URL in the results, "
