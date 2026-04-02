@@ -576,9 +576,7 @@ def windows_cuda_asset_aliases(
         runtime = legacy_match.group("runtime")
         aliases.append(f"cudart-llama-bin-win-cuda-{runtime}-x64.zip")
         if compatibility_tag:
-            aliases.append(
-                f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-x64.zip"
-            )
+            aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-x64.zip")
         return aliases
 
     current_match = re.fullmatch(

@@ -387,11 +387,11 @@ class TestSourcePatternsSh:
         assert "UNSLOTH_LLAMA_PR_FORCE" in self.content
 
     def test_source_env_override_removed(self):
-        assert 'UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}' not in self.content
+        assert "UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}" not in self.content
         assert '_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"' in self.content
 
     def test_release_repo_override_removed(self):
-        assert 'UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp' not in self.content
+        assert "UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp" not in self.content
         assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
@@ -460,11 +460,14 @@ class TestSourcePatternsPs1:
         assert "$env:UNSLOTH_LLAMA_PR_FORCE" in self.content
 
     def test_source_env_override_removed(self):
-        assert '$LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE)' not in self.content
-        assert '$LlamaSource = $DefaultLlamaSource' in self.content
+        assert "$LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE)" not in self.content
+        assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
-        assert '$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)' not in self.content
+        assert (
+            "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)"
+            not in self.content
+        )
         assert '$HelperReleaseRepo = "ggml-org/llama.cpp"' in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
