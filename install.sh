@@ -934,6 +934,7 @@ E = D @ C
 torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
 " >/dev/null 2>&1; then
         echo "✅ Legacy environment is healthy — migrating..."
+        _had_cuda=$("$STUDIO_HOME/.venv/bin/python" -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "")
         mv "$STUDIO_HOME/.venv" "$VENV_DIR"
         echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
         _MIGRATED=true
@@ -1084,6 +1085,12 @@ if [ "$_MIGRATED" = true ]; then
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+    fi
+    # Warn if CUDA was lost during migration
+    _has_cuda=$("$_VENV_PY" -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "")
+    if [ "$_had_cuda" = "True" ] && [ "$_has_cuda" != "True" ]; then
+        substep "WARNING: CUDA was available before migration but not after" "Yellow"
+        substep "GPU training may not work. Consider reinstalling PyTorch." "Yellow"
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
