@@ -85,7 +85,7 @@ export function buildTrainingStartPayload(
     weight_decay: config.weightDecay,
     random_seed: config.randomSeed,
     // CPT: enable packing by default for raw-text pretraining (more efficient)
-    packing: isEmbedding ? false : isCpt ? true : config.packing,
+    packing: isEmbedding ? false : (isCpt ? true : config.packing),
     optim: config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
@@ -97,7 +97,7 @@ export function buildTrainingStartPayload(
     use_rslora: config.loraVariant === "rslora",
     use_loftq: config.loraVariant === "loftq",
     // CPT always trains on full sequences (no chat format masking)
-    train_on_completions: isEmbedding || isCpt ? false : config.trainOnCompletions,
+    train_on_completions: (isEmbedding || isCpt) ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
