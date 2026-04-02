@@ -1585,18 +1585,19 @@ class FastModel(FastBaseModel):
 
                 _LoraModel._create_and_replace = _patched_car
 
-            model = PeftModel.from_pretrained(
-                model,
-                old_model_name,
-                token = token,
-                revision = revision,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
-            )
-
-            # Restore original PEFT method
-            if _clippable_linear_cls is not None:
-                _LoraModel._create_and_replace = _original_car
+            try:
+                model = PeftModel.from_pretrained(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    is_trainable = True,
+                    trust_remote_code = trust_remote_code,
+                )
+            finally:
+                # Always restore original PEFT method, even if loading fails
+                if _clippable_linear_cls is not None:
+                    _LoraModel._create_and_replace = _original_car
 
             # Patch it as well!
             model = FastBaseModel.post_patch_model(
