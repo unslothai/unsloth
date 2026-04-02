@@ -20,7 +20,7 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-const extractDomain = (url: string): string => {
+export const extractDomain = (url: string): string => {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {

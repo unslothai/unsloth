@@ -6,7 +6,7 @@
 import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
 import { GlobeIcon, LoaderIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
-import { Source, SourceIcon, SourceTitle } from "./sources";
+import { Source, SourceIcon, SourceTitle, extractDomain } from "./sources";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -23,7 +23,6 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
-const RE_WWW = /^www\./;
 
 /** Parse the backend's "Title: ...\nURL: ...\nSnippet: ...\n---" format into structured sources. */
 function parseSearchResults(raw: string): ParsedSource[] {
@@ -53,16 +52,9 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const query = (args as { query?: string })?.query ?? "";
-  const url = (args as { url?: string })?.url ?? "";
+  const url = ((args as { url?: string })?.url ?? "").trim();
   const isUrlFetch = !!url;
-  let displayDomain = "";
-  if (url) {
-    try {
-      displayDomain = new URL(url).hostname.replace(RE_WWW, "");
-    } catch {
-      displayDomain = url.length > 40 ? `${url.slice(0, 40)}…` : url;
-    }
-  }
+  const displayDomain = isUrlFetch ? (extractDomain(url) || url) : "";
   const isRunning = status?.type === "running";
   const sources = result
     ? parseSearchResults(
