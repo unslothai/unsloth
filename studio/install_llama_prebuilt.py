@@ -500,6 +500,45 @@ def infer_source_ref_kind(ref: str | None) -> str:
     return "tag"
 
 
+def normalized_ref_aliases(ref: str | None) -> set[str]:
+    if not isinstance(ref, str):
+        return set()
+    normalized = ref.strip()
+    if not normalized:
+        return set()
+    aliases = {normalized}
+    lowered = normalized.lower()
+    commit = normalize_source_commit(normalized)
+    if commit is not None:
+        aliases.add(commit)
+    if lowered.startswith("refs/heads/"):
+        aliases.add(normalized.split("/", 2)[2])
+    elif "/" not in normalized and infer_source_ref_kind(normalized) == "branch":
+        aliases.add(f"refs/heads/{normalized}")
+    if lowered.startswith("refs/pull/"):
+        aliases.add(normalized.removeprefix("refs/"))
+    elif lowered.startswith("pull/"):
+        aliases.add(f"refs/{normalized}")
+    return aliases
+
+
+def refs_match(candidate_ref: str | None, requested_ref: str | None) -> bool:
+    candidate_aliases = normalized_ref_aliases(candidate_ref)
+    requested_aliases = normalized_ref_aliases(requested_ref)
+    if not candidate_aliases or not requested_aliases:
+        return False
+    if candidate_aliases & requested_aliases:
+        return True
+    candidate_commit = normalize_source_commit(candidate_ref)
+    requested_commit = normalize_source_commit(requested_ref)
+    if candidate_commit and requested_commit:
+        return (
+            candidate_commit.startswith(requested_commit)
+            or requested_commit.startswith(candidate_commit)
+        )
+    return False
+
+
 def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]:
     return [
         f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
@@ -1617,13 +1656,15 @@ def published_release_matches_request(
 ) -> bool:
     if requested_ref == "latest":
         return True
-    candidates = {
+    for candidate in (
         bundle.upstream_tag,
         bundle.requested_source_ref,
         bundle.resolved_source_ref,
         bundle.source_commit,
-    }
-    return requested_ref in {value for value in candidates if value}
+    ):
+        if refs_match(candidate, requested_ref):
+            return True
+    return False
 
 
 def resolve_published_release(
@@ -1740,6 +1781,7 @@ def iter_resolved_published_releases(
 def resolve_requested_llama_tag(
     requested_tag: str | None,
     published_repo: str = "",
+    published_release_tag: str = "",
 ) -> str:
     """Resolve a llama.cpp tag for source-build fallback.
 
@@ -1767,6 +1809,7 @@ def resolve_requested_llama_tag(
             return resolve_published_release(
                 "latest",
                 published_repo,
+                published_release_tag,
             ).bundle.upstream_tag
         except Exception:
             pass
@@ -4546,7 +4589,11 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
 def main() -> int:
     args = parse_args()
     if args.resolve_llama_tag is not None:
-        resolved = resolve_requested_llama_tag(args.resolve_llama_tag, args.published_repo)
+        resolved = resolve_requested_llama_tag(
+            args.resolve_llama_tag,
+            args.published_repo,
+            args.published_release_tag or "",
+        )
         emit_resolver_output(
             {
                 "requested_tag": normalized_requested_llama_tag(args.resolve_llama_tag),

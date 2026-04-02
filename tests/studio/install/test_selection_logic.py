@@ -673,7 +673,17 @@ class TestSourceBuildPlanResolution:
         )
         assert published_release_matches_request(bundle, "main") is True
         assert published_release_matches_request(bundle, "refs/heads/main") is True
+        assert published_release_matches_request(bundle, "a" * 12) is True
         assert published_release_matches_request(bundle, "a" * 40) is True
+
+    def test_matches_pull_ref_aliases(self):
+        bundle = make_release(
+            [],
+            requested_source_ref = "refs/pull/123/head",
+            resolved_source_ref = "pull/123/head",
+        )
+        assert published_release_matches_request(bundle, "refs/pull/123/head") is True
+        assert published_release_matches_request(bundle, "pull/123/head") is True
 
     def test_prefers_exact_source_commit_when_available(self, monkeypatch):
         commit = "a" * 40

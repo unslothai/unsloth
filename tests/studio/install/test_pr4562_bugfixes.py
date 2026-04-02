@@ -296,6 +296,56 @@ class TestResolveRequestedLlamaTag:
 
         assert resolve_requested_llama_tag("latest", "unslothai/llama.cpp") == "b8999"
 
+    def test_latest_with_published_release_tag_passes_pin_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        captured = {}
+
+        def fake_resolve(requested_tag, published_repo, published_release_tag = ""):
+            captured["requested_tag"] = requested_tag
+            captured["published_repo"] = published_repo
+            captured["published_release_tag"] = published_release_tag
+            return MOD.ResolvedPublishedRelease(
+                bundle = PublishedReleaseBundle(
+                    repo = published_repo,
+                    release_tag = published_release_tag,
+                    upstream_tag = "b9001",
+                    assets = {},
+                    manifest_asset_name = "llama-prebuilt-manifest.json",
+                    artifacts = [],
+                    selection_log = [],
+                ),
+                checksums = ApprovedReleaseChecksums(
+                    repo = published_repo,
+                    release_tag = published_release_tag,
+                    upstream_tag = "b9001",
+                    artifacts = {
+                        source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                            asset_name = source_archive_logical_name("b9001"),
+                            sha256 = "a" * 64,
+                            repo = "ggml-org/llama.cpp",
+                            kind = "upstream-source",
+                        )
+                    },
+                ),
+            )
+
+        monkeypatch.setattr(MOD, "resolve_published_release", fake_resolve)
+
+        assert (
+            resolve_requested_llama_tag(
+                "latest",
+                "unslothai/llama.cpp",
+                "llama-prebuilt-main",
+            )
+            == "b9001"
+        )
+        assert captured == {
+            "requested_tag": "latest",
+            "published_repo": "unslothai/llama.cpp",
+            "published_release_tag": "llama-prebuilt-main",
+        }
+
 
 # =========================================================================
 # TEST GROUP C: setup.sh logic (bash subprocess tests)
