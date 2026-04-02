@@ -14,9 +14,12 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 #
 #   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
+#   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
+#                             "master" = bleeding-edge, "bNNNN" = specific tag)
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
+_DEFAULT_LLAMA_TAG="master"
 
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
@@ -478,7 +481,7 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
-_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-latest}"
+_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 # Force all installs to use mainline llama.cpp from ggml-org.
 # Previously: _HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
 _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
