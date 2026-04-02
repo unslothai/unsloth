@@ -581,8 +581,9 @@ def install_python_stack() -> int:
             )
             if probe.returncode == 0:
                 cuda_ver = probe.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            if VERBOSE:
+                _safe_print(_dim(f"  CUDA detection failed: {e}"))
 
         if cuda_ver:
             cu_tag = "cu" + "".join(cuda_ver.split(".")[:2])
@@ -597,6 +598,7 @@ def install_python_stack() -> int:
                     "install",
                     "--dry-run",
                     "--no-deps",
+                    "--ignore-installed",
                     "--index-url",
                     index_url,
                     "torchcodec",
