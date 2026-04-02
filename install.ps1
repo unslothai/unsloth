@@ -939,7 +939,9 @@ shell.Run cmd, 0, False
     # Copy our fixed version (bundled by Tauri) over the installed one.
     # Remove this block once PyPI ships the fix from commit 18c5aae7.
     if ($TauriMode) {
-        $fixedPy = Join-Path $PSScriptRoot "install_python_stack.py"
+        $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
+        $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
+        $fixedPy = Join-Path $scriptDir "install_python_stack.py"
         $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
         if ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
             Copy-Item $fixedPy $target -Force
