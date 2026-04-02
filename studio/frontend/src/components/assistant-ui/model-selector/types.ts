@@ -20,6 +20,8 @@ export interface LoraModelOption extends ModelOption {
 export interface ExternalModelOption extends ModelOption {
   providerId: string;
   providerName: string;
+  /** Registry key (e.g. openai, gemini) for provider branding. */
+  providerType: string;
 }
 
 export interface ModelSelectorChangeMeta {

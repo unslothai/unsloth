@@ -204,6 +204,16 @@ async def test_provider(
     )
 
     try:
+        if info.get("model_list_mode") == "curated":
+            await client.verify_models_endpoint_lightweight()
+            return ProviderTestResult(
+                success = True,
+                message = (
+                    "Connected successfully. Full model list is not fetched for this provider — "
+                    "use suggestions and manual model IDs in the dialog."
+                ),
+                models_count = None,
+            )
         models = await client.list_models()
         return ProviderTestResult(
             success = True,
@@ -249,6 +259,17 @@ async def list_provider_models(
             status_code = 400,
             detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
         )
+
+    if info.get("model_list_mode") == "curated":
+        return [
+            ProviderModelInfo(
+                id = m,
+                display_name = m,
+                context_length = None,
+                owned_by = None,
+            )
+            for m in info.get("default_models", [])
+        ]
 
     base_url = payload.base_url or info["base_url"]
     client = ExternalProviderClient(

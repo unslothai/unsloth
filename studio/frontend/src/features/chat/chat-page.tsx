@@ -692,6 +692,7 @@ export function ChatPage(): ReactElement {
           name: model,
           providerId: provider.id,
           providerName: provider.name,
+          providerType: provider.providerType,
         })),
       ),
     [externalProviders],

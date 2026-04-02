@@ -14,7 +14,6 @@ Requires a running Unsloth Studio server. Configure via environment variables:
     export OPENAI_API_KEY="sk-..."
     export MISTRAL_API_KEY="..."
     export GOOGLE_API_KEY="..."
-    export COHERE_API_KEY="..."
     export TOGETHER_API_KEY="..."
     export FIREWORKS_API_KEY="..."
     export PERPLEXITY_API_KEY="..."
@@ -44,10 +43,12 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "openai": ("OPENAI_API_KEY", "gpt-4o-mini"),
     "mistral": ("MISTRAL_API_KEY", "mistral-small-2506"),
     "gemini": ("GEMINI_API_KEY", "gemini-3-flash-preview"),
-    "cohere": ("COHERE_API_KEY", "command-a-03-2025"),
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
     "anthropic": ("ANTHROPIC_API_KEY", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_API_KEY", "deepseek-chat"),
+    "huggingface": ("HUGGINGFACE_API_KEY", "meta-llama/Llama-3.3-70B-Instruct"),
+    "kimi": ("MOONSHOT_API_KEY", "moonshot-v1-8k"),
+    "qwen": ("DASHSCOPE_API_KEY", "qwen-turbo"),
 }
 
 PROVIDER_KEYS: dict[str, str] = {
@@ -243,8 +244,8 @@ class TestPublicKey:
 
 
 class TestRegistry:
-    def test_registry_returns_9_providers(self, auth_headers: dict[str, str]):
-        """GET /api/providers/registry returns all 7 supported providers."""
+    def test_registry_returns_all_providers(self, auth_headers: dict[str, str]):
+        """GET /api/providers/registry returns all supported providers."""
         resp = requests.get(
             _url("/api/providers/registry"),
             headers = auth_headers,
@@ -253,15 +254,15 @@ class TestRegistry:
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
         assert (
-            len(providers) == 7
-        ), f"Expected 7 providers, got {len(providers)}: {providers}"
+            len(providers) == 9
+        ), f"Expected 9 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
             print(f"  {p['provider_type']:<12} {p['base_url']}")
 
     def test_registry_has_expected_types(self, auth_headers: dict[str, str]):
-        """All 7 provider_type values are present in the registry."""
+        """All expected provider_type values are present in the registry."""
         resp = requests.get(
             _url("/api/providers/registry"),
             headers = auth_headers,
@@ -284,8 +285,10 @@ class TestRegistry:
                 "display_name",
                 "base_url",
                 "default_models",
+                "model_list_mode",
             ):
                 assert field in entry, f"Missing field '{field}' in entry: {entry}"
+            assert entry["model_list_mode"] in ("remote", "curated")
             assert isinstance(entry["default_models"], list)
             assert len(entry["default_models"]) > 0
 

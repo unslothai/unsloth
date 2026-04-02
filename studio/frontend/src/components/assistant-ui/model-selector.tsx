@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
+import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -89,6 +90,9 @@ function ModelSelectorTrigger({
         {isLoaded && (
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
+        {currentModel?.icon ? (
+          <span className="flex shrink-0 items-center">{currentModel.icon}</span>
+        ) : null}
         <span className={isLoaded ? "text-foreground" : "text-muted-foreground"}>
           {currentModel?.name ?? "Select model..."}
         </span>
@@ -272,6 +276,13 @@ export function ModelSelector({
       all.set(externalModel.id, {
         ...externalModel,
         description: `External · ${externalModel.providerName}`,
+        icon: (
+          <ApiProviderLogo
+            providerType={externalModel.providerType}
+            className="size-4"
+            title={externalModel.providerName}
+          />
+        ),
       });
     }
     return all;
@@ -393,8 +404,13 @@ function ExternalModelPicker({
           ) : (
             grouped.map((group) => (
               <div key={group.providerId}>
-                <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  {group.providerName}
+                <div className="flex items-center gap-2 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <ApiProviderLogo
+                    providerType={group.models[0]?.providerType}
+                    className="size-3.5"
+                    title={group.providerName}
+                  />
+                  <span className="min-w-0 truncate">{group.providerName}</span>
                 </div>
                 {group.models.map((model) => (
                   <button

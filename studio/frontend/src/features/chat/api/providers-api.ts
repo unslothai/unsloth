@@ -11,6 +11,8 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
+  /** remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only */
+  model_list_mode?: "remote" | "curated";
 }
 
 export interface ProviderConfig {

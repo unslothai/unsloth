@@ -36,7 +36,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { motion } from "motion/react";
+import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -61,6 +61,10 @@ import {
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
+/** Matches index.css --ease-out-quart / navbar layout motion */
+const STUDIO_LAYOUT_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
+const STUDIO_LAYOUT_DURATION_S = 0.2;
+
 export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
   hideComposer,
   hideWelcome,
@@ -72,30 +76,32 @@ export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
         ["--thread-max-width" as string]: "44rem",
       }}
     >
-      <ThreadPrimitive.Viewport
-        className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
-      >
-        {!hideWelcome && (
-          <AuiIf condition={({ thread }) => thread.isEmpty}>
-            <ThreadWelcome hideComposer={hideComposer} />
-          </AuiIf>
-        )}
+      <LayoutGroup>
+        <ThreadPrimitive.Viewport
+          className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll motion-safe:scroll-smooth px-4 pt-4"
+        >
+          {!hideWelcome && (
+            <AuiIf condition={({ thread }) => thread.isEmpty}>
+              <ThreadWelcome hideComposer={hideComposer} />
+            </AuiIf>
+          )}
 
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            EditComposer,
-            AssistantMessage,
-          }}
-        />
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage,
+              EditComposer,
+              AssistantMessage,
+            }}
+          />
 
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
-          <ThreadScrollToBottom />
-          <AuiIf condition={({ thread }) => !thread.isEmpty}>
-            {!hideComposer && <ComposerAnimated />}
-          </AuiIf>
-        </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
+          <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 z-20 mt-auto flex w-full flex-col gap-4 overflow-visible bg-background pb-4 md:pb-4">
+            <ThreadScrollToBottom />
+            <AuiIf condition={({ thread }) => !thread.isEmpty}>
+              {!hideComposer && <ComposerAnimated />}
+            </AuiIf>
+          </ThreadPrimitive.ViewportFooter>
+        </ThreadPrimitive.Viewport>
+      </LayoutGroup>
     </ThreadPrimitive.Root>
   );
 };
@@ -219,11 +225,20 @@ const GeneratingSpinner: FC = () => {
 };
 
 const ComposerAnimated: FC = () => {
+  const reduceMotion = useReducedMotion();
   return (
     <motion.div
-      layout={true}
+      layout={!reduceMotion}
       layoutId="composer"
-      transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
+      transition={{
+        layout: reduceMotion
+          ? { duration: 0 }
+          : {
+              type: "tween",
+              duration: STUDIO_LAYOUT_DURATION_S,
+              ease: STUDIO_LAYOUT_EASE,
+            },
+      }}
       className="mx-auto w-full max-w-(--thread-max-width)"
     >
       <Composer />
