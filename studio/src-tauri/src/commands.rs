@@ -66,6 +66,18 @@ pub async fn start_server(
     port: u16,
 ) -> Result<(), String> {
     info!("start_server command called with port {}", port);
+
+    // Check for existing backend (e.g., CLI user already running `unsloth studio`)
+    if let Some(existing_port) = find_existing_server().await {
+        info!("Found existing backend on port {}, reusing", existing_port);
+        {
+            let mut proc = state.lock().map_err(|e| e.to_string())?;
+            proc.port = Some(existing_port);
+        }
+        let _ = app.emit("server-port", existing_port);
+        return Ok(());
+    }
+
     process::start_backend(&app, &state, port, &shutdown)?;
 
     // Spawn health watchdog — detects deadlocks and hangs that stdout-based
