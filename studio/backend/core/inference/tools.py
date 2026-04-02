@@ -26,6 +26,10 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
+
+# Strict raster-image allowlist for sandbox file serving.
+# No .svg (XSS risk via embedded scripts), no .html, no .pdf.
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
 
@@ -591,6 +595,12 @@ def _check_code_safety(code: str) -> str | None:
     """
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
+        # SyntaxError from ast.parse -- let these through so the subprocess
+        # produces a normal Python traceback instead of a misleading
+        # "unsafe code detected" message.
+        if info.get("error"):
+            return None
+
         reasons = [
             item.get("description", "") for item in info.get("signal_tampering", [])
         ]
@@ -634,6 +644,7 @@ def _python_exec(
 
     tmp_path = None
     workdir = _get_workdir(session_id)
+    _before = set(os.listdir(workdir)) if os.path.isdir(workdir) else set()
     try:
         fd, tmp_path = tempfile.mkstemp(
             suffix = ".py", prefix = "studio_exec_", dir = workdir
@@ -669,7 +680,20 @@ def _python_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        return _truncate(result) if result.strip() else "(no output)"
+        result = _truncate(result) if result.strip() else "(no output)"
+
+        # Detect newly created image files and append sentinel for frontend
+        if session_id:
+            _after = set(os.listdir(workdir)) if os.path.isdir(workdir) else set()
+            new_images = sorted(
+                f for f in (_after - _before)
+                if os.path.splitext(f)[1].lower() in _IMAGE_EXTS
+            )
+            if new_images:
+                import json as _json
+                result += f"\n__IMAGES__:{_json.dumps(new_images)}"
+
+        return result
 
     except Exception as e:
         return f"Execution error: {e}"

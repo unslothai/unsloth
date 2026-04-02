@@ -635,7 +635,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
               const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
               if (idx !== -1) {
-                toolCallParts[idx] = { ...toolCallParts[idx], result: toolEvent.result as string };
+                const rawResult = (toolEvent.result as string) ?? "";
+                const imgMarker = "\n__IMAGES__:";
+                const imgIdx = rawResult.indexOf(imgMarker);
+                let parsedResult: string | { text: string; images: string[]; sessionId: string };
+                if (imgIdx !== -1) {
+                  const text = rawResult.slice(0, imgIdx);
+                  const sessionId = unstable_threadId || "";
+                  try {
+                    const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
+                    parsedResult = { text, images, sessionId };
+                  } catch {
+                    parsedResult = rawResult;
+                  }
+                } else {
+                  parsedResult = rawResult;
+                }
+                toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
               }
             }
             // Yield cumulative state so tool UI updates (tools first, text after)

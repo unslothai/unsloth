@@ -4,6 +4,7 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
 import { CheckIcon, CodeIcon, CopyIcon, LoaderIcon } from "lucide-react";
@@ -14,6 +15,12 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+
+interface StructuredResult {
+  text: string;
+  images: string[];
+  sessionId: string;
+}
 
 const MAX_DISPLAY = 10_000;
 const COPY_RESET_MS = 2000;
@@ -84,6 +91,16 @@ function HighlightedCode({ code: source, language }: { code: string; language: s
   );
 }
 
+function isStructuredResult(val: unknown): val is StructuredResult {
+  return (
+    typeof val === "object" &&
+    val !== null &&
+    "text" in val &&
+    "images" in val &&
+    "sessionId" in val
+  );
+}
+
 const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
@@ -92,12 +109,24 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const code = (args as { code?: string })?.code ?? "";
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
-  const output =
-    typeof result === "string"
-      ? result
-      : result
-        ? JSON.stringify(result, null, 2)
-        : "";
+
+  let output: string;
+  let images: string[] = [];
+  let sessionId = "";
+
+  if (isStructuredResult(result)) {
+    output = result.text;
+    images = result.images;
+    sessionId = result.sessionId;
+  } else if (typeof result === "string") {
+    output = result;
+  } else if (result) {
+    output = JSON.stringify(result, null, 2);
+  } else {
+    output = "";
+  }
+
+  const authToken = getAuthToken();
 
   return (
     <ToolFallbackRoot>
@@ -133,6 +162,21 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
               </pre>
             </div>
           ) : null}
+
+          {/* Images from Python tool execution */}
+          {images.length > 0 && sessionId && (
+            <div className="mt-2 flex flex-col gap-2">
+              {images.map((filename) => (
+                <img
+                  key={filename}
+                  src={`/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}${authToken ? `?token=${encodeURIComponent(authToken)}` : ""}`}
+                  alt={filename}
+                  loading="lazy"
+                  className="max-w-full rounded border border-border"
+                />
+              ))}
+            </div>
+          )}
         </div>
       </ToolFallbackContent>
     </ToolFallbackRoot>
