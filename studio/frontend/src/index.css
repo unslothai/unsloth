@@ -384,9 +384,7 @@
     font-family: var(--font-mono), ui-monospace, monospace;
   }
 
-  .aui-thread-root p code,
-  .aui-thread-root li code,
-  .aui-thread-root td code {
+  .aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
     font-family: var(--font-mono), ui-monospace, monospace;
   }
 
