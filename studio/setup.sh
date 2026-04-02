@@ -459,8 +459,8 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     # at runtime (slow, ~10-15s), we pre-install into a separate directory.
     # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
     mkdir -p "$VENV_T5_DIR"
-    run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
+    run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.5.0"
+    run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
     step "transformers" "5.x pre-installed"
