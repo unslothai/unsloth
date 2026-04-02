@@ -1965,8 +1965,9 @@ if (-not $NeedLlamaSourceBuild) {
         if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
             $resolveSourceArgs = @("--resolve-source-build", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
             if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveSourceArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-            $sourcePlanOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveSourceArgs 2>$null
-            $sourcePlanExit = $LASTEXITCODE
+            $sourcePlanResult = Invoke-LlamaHelper -Arguments $resolveSourceArgs
+            $sourcePlanOutput = $sourcePlanResult.Output
+            $sourcePlanExit = $sourcePlanResult.ExitCode
             if ($sourcePlanExit -eq 0 -and $sourcePlanOutput) {
                 try {
                     $sourcePlan = ($sourcePlanOutput | Out-String) | ConvertFrom-Json
