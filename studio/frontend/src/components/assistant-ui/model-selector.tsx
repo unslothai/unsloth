@@ -139,7 +139,26 @@ function ModelSelectorContent({
       )}
     >
       {chatOnly ? (
-        <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+        hasExternal ? (
+          <Tabs defaultValue="hub" className="w-full">
+            <TabsList className="mb-2 w-full">
+              <TabsTrigger value="hub">Hub models</TabsTrigger>
+              <TabsTrigger value="external">External</TabsTrigger>
+            </TabsList>
+            <TabsContent value="hub" className="m-0">
+              <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+            </TabsContent>
+            <TabsContent value="external" className="m-0">
+              <ExternalModelPicker
+                externalModels={externalModels}
+                value={value}
+                onSelect={onSelect}
+              />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+        )
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
