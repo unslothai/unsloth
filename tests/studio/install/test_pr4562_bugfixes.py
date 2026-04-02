@@ -6,7 +6,7 @@ Tests cover:
   - Bug 2: Source-build fallback ignores pinned tag (both .sh and .ps1)
   - Bug 3: Unix fallback deletes install before checking prerequisites
   - Bug 4: Linux LD_LIBRARY_PATH missing build/bin
-  - "latest" tag resolution fallback chain (helper -> raw)
+  - "latest" tag resolution fallback chain (helper only)
   - Cross-platform binary_env (Linux, macOS, Windows)
   - Edge cases: malformed JSON, empty responses, env overrides
 
@@ -295,6 +295,56 @@ class TestResolveRequestedLlamaTag:
         monkeypatch.setattr(MOD, "latest_upstream_release_tag", lambda: "b7777")
 
         assert resolve_requested_llama_tag("latest", "unslothai/llama.cpp") == "b8999"
+
+    def test_latest_with_published_release_tag_passes_pin_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        captured = {}
+
+        def fake_resolve(requested_tag, published_repo, published_release_tag = ""):
+            captured["requested_tag"] = requested_tag
+            captured["published_repo"] = published_repo
+            captured["published_release_tag"] = published_release_tag
+            return MOD.ResolvedPublishedRelease(
+                bundle = PublishedReleaseBundle(
+                    repo = published_repo,
+                    release_tag = published_release_tag,
+                    upstream_tag = "b9001",
+                    assets = {},
+                    manifest_asset_name = "llama-prebuilt-manifest.json",
+                    artifacts = [],
+                    selection_log = [],
+                ),
+                checksums = ApprovedReleaseChecksums(
+                    repo = published_repo,
+                    release_tag = published_release_tag,
+                    upstream_tag = "b9001",
+                    artifacts = {
+                        source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                            asset_name = source_archive_logical_name("b9001"),
+                            sha256 = "a" * 64,
+                            repo = "ggml-org/llama.cpp",
+                            kind = "upstream-source",
+                        )
+                    },
+                ),
+            )
+
+        monkeypatch.setattr(MOD, "resolve_published_release", fake_resolve)
+
+        assert (
+            resolve_requested_llama_tag(
+                "latest",
+                "unslothai/llama.cpp",
+                "llama-prebuilt-main",
+            )
+            == "b9001"
+        )
+        assert captured == {
+            "requested_tag": "latest",
+            "published_repo": "unslothai/llama.cpp",
+            "published_release_tag": "llama-prebuilt-main",
+        }
 
 
 # =========================================================================
@@ -586,18 +636,29 @@ class TestSourceCodePatterns:
         content = SETUP_SH.read_text()
         assert "_CLONE_ARGS=(git clone --depth 1)" in content
         assert (
-            '_CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")' in content
-        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_LLAMA_TAG"
+            '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
+        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_SOURCE_REF"
         # Verify the guard: --branch is only used when tag is not "latest"
         assert (
-            '_RESOLVED_LLAMA_TAG" != "latest"' in content
+            '_RESOLVED_SOURCE_REF" != "latest"' in content
         ), "Should guard against literal 'latest' tag"
+
+    def test_setup_sh_source_build_uses_helper_resolution(self):
+        """Shell source fallback should consult the helper for repo/ref planning."""
+        content = SETUP_SH.read_text()
+        assert "--resolve-source-build" in content
+        assert "--output-format json" in content
+        assert "_RESOLVED_SOURCE_URL" in content
+        assert "_RESOLVED_SOURCE_REF_KIND" in content
+        assert "_RESOLVED_SOURCE_REF" in content
 
     def test_setup_sh_latest_resolution_uses_helper_only(self):
         """Shell fallback should rely on helper output, not raw GitHub API tag_name."""
         content = SETUP_SH.read_text()
         assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
+        assert 'tail -n 1 "$_RESOLVE_LLAMA_LOG"' not in content
+        assert "json.load" in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
@@ -677,7 +738,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_clone_uses_branch_tag(self):
         """PS1 clone should use --branch with the resolved tag."""
         content = SETUP_PS1.read_text()
-        assert "--branch" in content and "$ResolvedLlamaTag" in content
+        assert "--branch" in content and "$ResolvedSourceRef" in content
         # The old commented-out line should be gone
         assert "# git clone --depth 1 --branch" not in content
 
@@ -703,8 +764,47 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         assert "--resolve-install-tag" in content
         assert "--resolve-llama-tag" in content
+        assert '--output-format", "json"' in content
+        assert "ConvertFrom-Json" in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
+
+    def test_setup_ps1_source_build_uses_helper_resolution(self):
+        """PS1 source fallback should consult the helper for repo/ref planning."""
+        content = SETUP_PS1.read_text()
+        assert "--resolve-source-build" in content
+        assert '--output-format", "json"' in content
+        assert "$ResolvedSourceUrl" in content
+        assert "$ResolvedSourceRefKind" in content
+        assert "$ResolvedSourceRef" in content
+
+    def test_setup_ps1_prebuilt_install_disables_native_error_abort(self):
+        """PS1 prebuilt install should not abort setup on helper stderr."""
+        content = SETUP_PS1.read_text()
+        install_idx = content.index("& python @prebuiltArgs 2>&1")
+        block = content[max(0, install_idx - 800) : install_idx + 800]
+        assert "$PSNativeCommandUseErrorActionPreference = $false" in block
+        assert "$restoreNativeErrorPreference = $true" in block
+        assert (
+            "$PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference"
+            in block
+        )
+
+    def test_setup_ps1_helper_disables_error_action_abort(self):
+        """Helper resolution should suppress terminating NativeCommandError on PS 5.1."""
+        content = SETUP_PS1.read_text()
+        helper_idx = content.index("function Invoke-LlamaHelper")
+        block = content[helper_idx : helper_idx + 1200]
+        assert "$previousErrorActionPreference = $ErrorActionPreference" in block
+        assert '$ErrorActionPreference = "Continue"' in block
+        assert "$ErrorActionPreference = $previousErrorActionPreference" in block
+
+    def test_setup_ps1_uses_local_tempfile_helper(self):
+        """PS1 should not depend on New-TemporaryFile being available."""
+        content = SETUP_PS1.read_text()
+        assert "function New-UnslothTemporaryFile" in content
+        assert "$resolveErrorLog = New-UnslothTemporaryFile" in content
+        assert "$resolveErrorLog = New-TemporaryFile" not in content
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
