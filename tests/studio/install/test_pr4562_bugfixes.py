@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -370,6 +371,25 @@ class TestFetchJsonRetries:
         assert isinstance(payload, list)
         assert payload[0]["tag_name"] == "b8635"
         assert calls["count"] == 2
+
+    def test_github_releases_honors_max_pages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        seen_pages: list[int] = []
+
+        def fake_fetch_json(url: str):
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            page = int(params["page"][0])
+            seen_pages.append(page)
+            return [{"tag_name": f"b{page:04d}"} for _ in range(100)]
+
+        monkeypatch.setattr(MOD, "fetch_json", fake_fetch_json)
+
+        releases = MOD.github_releases("ggml-org/llama.cpp", max_pages = 2)
+
+        assert seen_pages == [1, 2]
+        assert len(releases) == 200
 
 
 # =========================================================================
@@ -847,6 +867,15 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text()
         assert "function New-UnslothTemporaryFile" in content
         assert "$resolveErrorLog = New-TemporaryFile" not in content
+
+    def test_setup_ps1_find_nvcc_uses_version_sort_for_latest_toolkit(self):
+        """The unconstrained nvcc fallback should not sort toolkit dirs lexicographically."""
+        content = SETUP_PS1.read_text()
+        assert "Sort-Object Name | Select-Object -Last 1" not in content
+        assert (
+            "Sort-Object { [version]($_.Name -replace '^v','') } -Descending"
+            in content
+        )
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""

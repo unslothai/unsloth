@@ -159,7 +159,9 @@ function Find-Nvcc {
 
     # 3. Scan standard toolkit directory
     if (Test-Path $toolkitBase) {
-        $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
+        $latest = Get-ChildItem -Directory $toolkitBase | Where-Object {
+            $_.Name -match '^v(\d+)\.(\d+)'
+        } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending | Select-Object -First 1
         if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
             return (Join-Path $latest.FullName 'bin\nvcc.exe')
         }

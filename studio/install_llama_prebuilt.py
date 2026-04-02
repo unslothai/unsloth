@@ -90,6 +90,11 @@ RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
 HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 JSON_FETCH_ATTEMPTS = 3
+DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES = env_int(
+    "UNSLOTH_LLAMA_GITHUB_RELEASE_SCAN_MAX_PAGES",
+    5,
+    minimum = 1,
+)
 SERVER_PORT_BIND_ATTEMPTS = 3
 SERVER_BIND_RETRY_WINDOW_SECONDS = 5.0
 TTY_PROGRESS_START_DELAY_SECONDS = 0.5
@@ -969,7 +974,12 @@ def github_release(repo: str, tag: str) -> dict[str, Any]:
     return payload
 
 
-def github_releases(repo: str, *, per_page: int = 100) -> list[dict[str, Any]]:
+def github_releases(
+    repo: str,
+    *,
+    per_page: int = 100,
+    max_pages: int = 0,
+) -> list[dict[str, Any]]:
     releases: list[dict[str, Any]] = []
     page = 1
     while True:
@@ -983,6 +993,8 @@ def github_releases(repo: str, *, per_page: int = 100) -> list[dict[str, Any]]:
         if len(payload) < per_page:
             break
         page += 1
+        if max_pages > 0 and page > max_pages:
+            break
     return releases
 
 
@@ -1027,7 +1039,9 @@ def iter_release_payloads_by_time(
 
     releases = [
         release
-        for release in github_releases(repo)
+        for release in github_releases(
+            repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+        )
         if isinstance(release, dict)
         and not release.get("draft")
         and not release.get("prerelease")
@@ -1844,7 +1858,7 @@ def iter_published_release_bundles(
     releases = (
         [github_release(repo, published_release_tag)]
         if published_release_tag
-        else github_releases(repo)
+        else github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     )
     for release in releases:
         if not published_release_tag and (
@@ -2078,7 +2092,9 @@ def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str 
 
 
 def iter_upstream_releases() -> Iterable[dict[str, Any]]:
-    for release in github_releases(UPSTREAM_REPO):
+    for release in github_releases(
+        UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+    ):
         if release.get("draft") or release.get("prerelease"):
             continue
         yield release
