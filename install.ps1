@@ -870,10 +870,8 @@ shell.Run cmd, 0, False
                     $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
-        } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth $DefaultUnslothPkg $DefaultZooPkg }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth $DefaultUnslothPkg $DefaultZooPkg }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth --upgrade-package unsloth-zoo $DefaultUnslothPkg $DefaultZooPkg }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -891,22 +889,16 @@ shell.Run cmd, 0, False
     } else {
         # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
         substep "installing unsloth (this may take a few minutes)..."
+        $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth --upgrade-package unsloth-zoo $DefaultUnslothPkg $DefaultZooPkg --torch-backend=auto }
+        if ($baseInstallExit -ne 0) {
+            Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
+            return
+        }
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython $DefaultZooPkg $DefaultUnslothPkg --torch-backend=auto }
-            if ($baseInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
-                return
-            }
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
-                return
-            }
-        } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython $DefaultUnslothPkg $DefaultZooPkg --torch-backend=auto }
-            if ($baseInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return
             }
         }

@@ -68,6 +68,12 @@ for arg in "$@"; do
     esac
 done
 
+# Honor --package override: if the user passed a custom package name,
+# use it instead of the maintainer default for the unsloth install target.
+if [ "$PACKAGE_NAME" != "unsloth" ]; then
+    _DEFAULT_UNSLOTH_PKG="$PACKAGE_NAME"
+fi
+
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
 fi
@@ -1089,22 +1095,24 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
+            --upgrade-package unsloth --upgrade-package unsloth-zoo "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
+            --upgrade-package unsloth --upgrade-package unsloth-zoo "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$_DEFAULT_ZOO_PKG" "$_DEFAULT_UNSLOTH_PKG" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth --upgrade-package unsloth-zoo "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth --upgrade-package unsloth-zoo "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG" --torch-backend=auto
     fi
 fi
 
