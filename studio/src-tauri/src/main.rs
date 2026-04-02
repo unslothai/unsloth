@@ -146,7 +146,11 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide window instead of closing (keep tray running)
+                // Hide window instead of closing — this is a tray app.
+                // Processes keep running so the backend stays available.
+                // Full cleanup happens via:
+                //   - Tray "Quit" menu item (explicit user action)
+                //   - RunEvent::Exit handler (OS shutdown, SIGTERM, etc.)
                 let _ = window.hide();
                 api.prevent_close();
             }
