@@ -570,9 +570,14 @@ def install_python_stack() -> int:
         cuda_ver = ""
         try:
             probe = subprocess.run(
-                [sys.executable, "-c",
-                 "import torch; v = torch.version.cuda; print(v if v else '')"],
-                capture_output = True, text = True, timeout = 10,
+                [
+                    sys.executable,
+                    "-c",
+                    "import torch; v = torch.version.cuda; print(v if v else '')",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 10,
             )
             if probe.returncode == 0:
                 cuda_ver = probe.stdout.strip()
@@ -585,27 +590,44 @@ def install_python_stack() -> int:
 
             # Verify wheel availability before installing (pip dry-run)
             verify = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--dry-run",
-                 "--no-deps", "--extra-index-url", index_url, "torchcodec"],
-                capture_output = True, text = True,
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--dry-run",
+                    "--no-deps",
+                    "--extra-index-url",
+                    index_url,
+                    "torchcodec",
+                ],
+                capture_output = True,
+                text = True,
             )
             if verify.returncode == 0:
                 pip_install(
                     f"Installing torchcodec from PyTorch index ({cu_tag}, aarch64)",
-                    "--no-deps", "--no-cache-dir", "--upgrade",
-                    "--extra-index-url", index_url,
+                    "--no-deps",
+                    "--no-cache-dir",
+                    "--upgrade",
+                    "--extra-index-url",
+                    index_url,
                     "torchcodec",
                 )
             else:
-                _safe_print(_dim(
-                    f"  torchcodec: no aarch64 wheel found for {cu_tag}. "
-                    f"Audio/video training may not work. "
-                    f"Try: pip install torchcodec --extra-index-url {index_url}"
-                ))
+                _safe_print(
+                    _dim(
+                        f"  torchcodec: no aarch64 wheel found for {cu_tag}. "
+                        f"Audio/video training may not work. "
+                        f"Try: pip install torchcodec --extra-index-url {index_url}"
+                    )
+                )
         else:
-            _safe_print(_dim(
-                "  Skipping torchcodec on aarch64: no CUDA version detected from PyTorch"
-            ))
+            _safe_print(
+                _dim(
+                    "  Skipping torchcodec on aarch64: no CUDA version detected from PyTorch"
+                )
+            )
 
     # 4. Overrides (torchao, transformers) -- force-reinstall
     #    Skip entirely when torch is unavailable (e.g. Intel Mac GGUF-only mode)

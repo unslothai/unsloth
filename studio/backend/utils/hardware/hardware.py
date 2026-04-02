@@ -77,9 +77,12 @@ def _nvidia_smi_gpu_name() -> str | None:
     """Query first GPU name via nvidia-smi for logging."""
     try:
         import subprocess
+
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().splitlines()[0].strip()
@@ -118,6 +121,7 @@ def detect_hardware() -> DeviceType:
         # (e.g., DGX Spark GB10 with mismatched PyTorch build)
         try:
             from .nvidia import get_physical_gpu_count
+
             smi_count = get_physical_gpu_count()
             if smi_count and smi_count > 0:
                 DEVICE = DeviceType.CUDA

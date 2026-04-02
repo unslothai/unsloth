@@ -47,10 +47,13 @@ def get_device_type():
     try:
         result = subprocess.run(
             ["nvidia-smi", "-L"],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if result.returncode == 0 and result.stdout.strip():
             import warnings
+
             gpu_lines = result.stdout.strip().splitlines()
             warnings.warn(
                 f"Unsloth: torch.cuda.is_available() returned False but nvidia-smi "
