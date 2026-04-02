@@ -1599,15 +1599,20 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
+$HelperReleaseRepo = "ggml-org/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
-$LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
+$LlamaSource = $DefaultLlamaSource
 if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $LlamaSource.Length - 4) }
 $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
+
+if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+    $NeedLlamaSourceBuild = $true
+    $SkipPrebuiltInstall = $true
+}
 
 function Invoke-LlamaHelper {
     param(
@@ -1667,7 +1672,9 @@ if ($LlamaPr) {
     # Custom source or other override already forced source build; skip the
     # prebuilt release resolution. When building from a custom fork, the fork
     # may not carry upstream bNNNN tags.
-    if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
+    if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+        $ResolvedLlamaTag = $RequestedLlamaTag
+    } elseif ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
         $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveTagArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
         $fallbackResult = Invoke-LlamaHelper -Arguments $resolveTagArgs
@@ -1753,16 +1760,29 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        if ($script:UnslothVerbose) {
-            # Show live output in verbose mode while still capturing for error log
-            $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
-            & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
-            $prebuiltExit = $LASTEXITCODE
-            $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
-            Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
-        } else {
-            $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
-            $prebuiltExit = $LASTEXITCODE
+        $previousNativeErrorPreference = $null
+        $restoreNativeErrorPreference = $false
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+            $restoreNativeErrorPreference = $true
+        }
+        try {
+            if ($script:UnslothVerbose) {
+                # Show live output in verbose mode while still capturing for error log
+                $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
+                & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
+                $prebuiltExit = $LASTEXITCODE
+                $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
+                Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
+            } else {
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltExit = $LASTEXITCODE
+            }
+        } finally {
+            if ($restoreNativeErrorPreference) {
+                $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+            }
         }
         $ErrorActionPreference = $prevEAPPrebuilt
 

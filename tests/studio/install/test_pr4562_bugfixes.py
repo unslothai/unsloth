@@ -778,6 +778,18 @@ class TestSourceCodePatterns:
         assert "$ResolvedSourceRefKind" in content
         assert "$ResolvedSourceRef" in content
 
+    def test_setup_ps1_prebuilt_install_disables_native_error_abort(self):
+        """PS1 prebuilt install should not abort setup on helper stderr."""
+        content = SETUP_PS1.read_text()
+        install_idx = content.index('& python @prebuiltArgs 2>&1')
+        block = content[max(0, install_idx - 800) : install_idx + 800]
+        assert "$PSNativeCommandUseErrorActionPreference = $false" in block
+        assert "$restoreNativeErrorPreference = $true" in block
+        assert (
+            "$PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference"
+            in block
+        )
+
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
         content = MODULE_PATH.read_text()
