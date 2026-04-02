@@ -47,6 +47,8 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "qwen3.5",  # Qwen3.5 family (35B-A3B, etc.)
     "qwen3-next",  # Qwen3-Next and variants
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
+    "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
+    "gemma4",  # Gemma-4 alternate naming
 )
 
 # Tokenizer classes that only exist in transformers>=5.x
@@ -58,7 +60,7 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 _tokenizer_class_cache: dict[str, bool] = {}
 
 # Versions
-TRANSFORMERS_5_VERSION = "5.3.0"
+TRANSFORMERS_5_VERSION = "5.5.0.dev0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 
 # Pre-installed directory for transformers 5.x — created by setup.sh / setup.ps1
@@ -258,7 +260,7 @@ def _purge_modules() -> int:
 
 _VENV_T5_PACKAGES = (
     f"transformers=={TRANSFORMERS_5_VERSION}",
-    "huggingface_hub==1.7.1",
+    "huggingface_hub==1.8.0",
     "hf_xet==1.4.2",
     "tiktoken",
 )

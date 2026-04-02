@@ -537,6 +537,15 @@ try:
 except:
     pass
 
+# Gemma4 It is strongly recommended to train Gemma4 models with the `eager`
+try:
+    from transformers.models.gemma4.modeling_gemma4 import logger as gemma4_logger
+
+    gemma4_logger.addFilter(HideLoggingMessage("strongly recommended"))
+    del gemma4_logger
+except:
+    pass
+
 # Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
 try:
     from huggingface_hub.file_download import logger as hub_logger
@@ -1930,6 +1939,18 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
             if _has_ccm and _inner.training:
                 inputs["token_type_ids"] = torch.zeros_like(inputs["input_ids"])
+    # Gemma4 uses mm_token_type_ids (not token_type_ids) for VLM masking
+    if "mm_token_type_ids" not in inputs and "input_ids" in inputs:
+        _inner = model
+        for _attr in ("base_model", "model", "model"):
+            _inner = getattr(_inner, _attr, _inner)
+        if getattr(getattr(_inner, "config", None), "model_type", "") in ("gemma4",):
+            import sys as _sys
+
+            _mod = _sys.modules.get(type(_inner).__module__)
+            _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
+            if _has_ccm and _inner.training:
+                inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
 
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
