@@ -168,6 +168,7 @@ export function useChatModelRuntime() {
     id: string;
     displayName: string;
     isDownloaded?: boolean;
+    isCachedLora?: boolean;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
@@ -294,8 +295,11 @@ export function useChatModelRuntime() {
     setLoadToastDismissedState(false);
     clearCheckpoint();
     if (tid != null) toast.dismiss(tid);
+    const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
     toast.info("Stopped loading model", {
-      description: "The current download may still finish in the background.",
+      description: isCachedOrLocal
+        ? undefined
+        : "The current download may still finish in the background.",
     });
     // Fire-and-forget: tell backend to stop, don't block UI
     unloadModel({ model_path: model.id }).catch(() => {});
@@ -339,20 +343,24 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora ? true : false);
+      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
+      const isLocal = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(modelId);
+      const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
+        !isDownloaded && isCachedLora ? "Loading trained model into memory." : null,
       ]
         .filter(Boolean)
         .join(" ");
       setModelsError(null);
       setLoadToastDismissedState(false);
-      const loadInfo = { id: modelId, displayName, isDownloaded };
+      const loadInfo = { id: modelId, displayName, isDownloaded, isCachedLora };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
-        isDownloaded
+        isDownloaded || isCachedLora
           ? { percent: null, label: null, phase: "starting" }
           : { percent: 0, label: "Preparing download", phase: "downloading" },
       );
@@ -485,15 +493,16 @@ export function useChatModelRuntime() {
           }
         }
 
-        const toastTitle = isDownloaded ? "Starting model…" : "Downloading model…";
+        const isCachedLoad = isDownloaded || isCachedLora;
+        const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const toastId = toast(
           null,
           {
             description: renderLoadDescription(
               toastTitle,
               loadingDescription,
-              isDownloaded ? null : 0,
-              isDownloaded ? null : "Preparing download",
+              isCachedLoad ? null : 0,
+              isCachedLoad ? null : "Preparing download",
               cancelLoading,
             ),
             duration: Infinity,
@@ -511,7 +520,7 @@ export function useChatModelRuntime() {
 
         // Poll download progress for non-cached models (GGUF and non-GGUF)
         let progressInterval: ReturnType<typeof setInterval> | null = null;
-        if (!isDownloaded) {
+        if (!isDownloaded && !isCachedLora) {
           const expectedBytes =
             typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
           let hasShownProgress = false;
