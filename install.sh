@@ -927,7 +927,7 @@ fi
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
-    run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION" --clear
 fi
 
 # Guard against Python 3.13.8 torch import bug on Apple Silicon
