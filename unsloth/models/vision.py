@@ -787,6 +787,15 @@ class FastBaseModel:
         if not fast_inference:
             # Prevent load_in_fp8 from being forwarded into HF internal model loading
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
+            # Transformers 5.x @strict config classes reject unexpected kwargs.
+            # Move config-level attributes onto the config object directly.
+            _num_labels = kwargs.pop("num_labels", None)
+            if _num_labels is not None:
+                model_config.num_labels = _num_labels
+            for _cfg_key in ("id2label", "label2id", "max_position_embeddings"):
+                _cfg_val = kwargs.pop(_cfg_key, None)
+                if _cfg_val is not None:
+                    setattr(model_config, _cfg_key, _cfg_val)
             model = auto_model.from_pretrained(
                 model_name,
                 config = model_config,

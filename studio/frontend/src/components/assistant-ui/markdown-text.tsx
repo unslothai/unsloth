@@ -409,7 +409,7 @@ const MarkdownTextImpl = () => {
   }
 
   return (
-    <div data-status={status.type}>
+    <div data-status={status.type} className="min-w-0 max-w-full">
       <Streamdown
         mode="streaming"
         isAnimating={status.type === "running"}

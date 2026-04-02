@@ -21,6 +21,9 @@ import threading
 
 import re as _re
 
+# Model size extraction (shared with core/inference/llama_cpp.py)
+from utils.models import extract_model_size_b as _extract_model_size_b
+
 
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
@@ -89,6 +92,12 @@ import numpy as np
 from datetime import date as _date
 
 router = APIRouter()
+
+# Appended to tool-use nudge to discourage plan-without-action
+_TOOL_ACTION_NUDGE = (
+    " Always call tools directly."
+    " Never describe what you plan to do -- just call the tool immediately."
+)
 
 # Regex for stripping leaked tool-call XML from assistant messages/stream
 _TOOL_XML_RE = _re.compile(
@@ -163,6 +172,7 @@ async def load_model(
                     inference = inference_config,
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
+                    native_context_length = llama_backend.native_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     chat_template = llama_backend.chat_template,
@@ -298,6 +308,7 @@ async def load_model(
                 inference = inference_config,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
+                native_context_length = llama_backend.native_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_tools = llama_backend.supports_tools,
@@ -637,6 +648,7 @@ async def get_status(
                 supports_tools = llama_backend.supports_tools,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
+                native_context_length = llama_backend.native_context_length,
             )
 
         # Otherwise, report Unsloth backend status
@@ -1092,12 +1104,20 @@ async def openai_chat_completions(
 
             _date_line = f"The current date is {_date.today().isoformat()}."
 
-            _web_tips = (
-                "When you search and find a relevant URL in the results, "
-                "fetch its full content by calling web_search with the url parameter. "
-                "Do not repeat the same search query. If a search returns "
-                "no useful results, try rephrasing or fetching a result URL directly."
-            )
+            # Small models (<9B) struggle with multi-step search plans,
+            # so simplify the web tips to avoid plan-then-stall behavior.
+            _model_size_b = _extract_model_size_b(model_name)
+            _is_small_model = _model_size_b is not None and _model_size_b < 9
+
+            if _is_small_model:
+                _web_tips = "Do not repeat the same search query."
+            else:
+                _web_tips = (
+                    "When you search and find a relevant URL in the results, "
+                    "fetch its full content by calling web_search with the url parameter. "
+                    "Do not repeat the same search query. If a search returns "
+                    "no useful results, try rephrasing or fetching a result URL directly."
+                )
             _code_tips = (
                 "Use code execution for math, calculations, data processing, "
                 "or to parse and analyze information from tool results."
@@ -1129,6 +1149,7 @@ async def openai_chat_completions(
                 _nudge = ""
 
             if _nudge:
+                _nudge += _TOOL_ACTION_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
@@ -1205,7 +1226,14 @@ async def openai_chat_completions(
                             break
 
                         if event["type"] == "status":
+                            # Empty status marks an iteration boundary
+                            # in the GGUF tool loop (e.g. after a
+                            # re-prompt).  Reset the cumulative cursor
+                            # so the next assistant turn streams cleanly.
+                            if not event["text"]:
+                                prev_text = ""
                             # Emit tool status as a custom SSE event
+                            # (including empty ones to clear UI badges)
                             status_data = json.dumps(
                                 {
                                     "type": "tool_status",
