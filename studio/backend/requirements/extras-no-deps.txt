@@ -11,6 +11,6 @@ git+https://github.com/meta-pytorch/OpenEnv.git
 # executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
 sentence_transformers==5.2.0
-transformers>=4.57.6
+transformers==4.57.6
 pytorch_tokenizers
 kernels
