@@ -29,6 +29,15 @@ def test_check_dataset_format_detects_preference_dataset():
     assert result["requires_manual_mapping"] is False
 
 
+def test_check_dataset_format_requires_review_when_prompt_is_missing():
+    dataset = Dataset.from_list([{"chosen": " blue.", "rejected": " green."}])
+
+    result = check_dataset_format(dataset)
+
+    assert result["detected_format"] == "unknown"
+    assert result["requires_manual_mapping"] is True
+
+
 def test_format_dataset_auto_preserves_preference_dataset():
     result = format_dataset(_preference_dataset(), format_type = "auto")
 

@@ -3222,6 +3222,11 @@ class UnslothTrainer:
                     )
                     dpo_tokenizer = self.tokenizer.tokenizer
 
+                max_length = training_args.get("max_seq_length", 2048)
+                max_prompt_length = training_args.get("max_prompt_length")
+                if max_prompt_length is None:
+                    max_prompt_length = max(1, max_length // 2)
+
                 dpo_config_args = {
                     "per_device_train_batch_size": training_args.get("batch_size", 2),
                     "gradient_accumulation_steps": training_args.get(
@@ -3238,10 +3243,8 @@ class UnslothTrainer:
                     "report_to": _build_report_targets(training_args),
                     "include_num_input_tokens_seen": True,
                     "dataset_num_proc": config_args["dataset_num_proc"],
-                    "max_length": training_args.get("max_seq_length", 2048),
-                    "max_prompt_length": max(
-                        1, training_args.get("max_seq_length", 2048) // 2
-                    ),
+                    "max_length": max_length,
+                    "max_prompt_length": max_prompt_length,
                     "optim": optim_value,
                     "lr_scheduler_type": lr_scheduler_type_value,
                     "remove_unused_columns": False,

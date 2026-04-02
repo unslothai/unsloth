@@ -34,9 +34,9 @@ def detect_dataset_format(dataset):
     """
     column_names = set(next(iter(dataset)).keys())
 
-    # Check for preference datasets first. These are fed directly into DPO-style
-    # trainers and should not fall through into chat-role mapping.
-    preference_columns = {"chosen", "rejected"}
+    # Check for preference datasets first. Keep auto-detection strict so
+    # partially compatible tables still go through manual mapping/review.
+    preference_columns = {"prompt", "chosen", "rejected"}
     if preference_columns.issubset(column_names):
         return {
             "format": "preference",
