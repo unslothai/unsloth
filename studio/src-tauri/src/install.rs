@@ -141,6 +141,14 @@ fn spawn_script(
         cmd.env_remove("PYTHONPATH");
     }
 
+    // Suppress console window from install subprocess on Windows
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
     // Spawn in a process group so kill() terminates the entire tree
     // (bash/powershell + all subprocesses like uv, cmake, pip)
     let mut wrap = CommandWrap::from(cmd);
