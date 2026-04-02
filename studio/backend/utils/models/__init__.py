@@ -19,6 +19,7 @@ from .model_config import (
     get_base_model_from_lora,
     load_model_config,
     list_gguf_variants,
+    extract_model_size_b,
     MODEL_NAME_MAPPING,
     UI_STATUS_INDICATORS,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "get_base_model_from_lora",
     "load_model_config",
     "list_gguf_variants",
+    "extract_model_size_b",
     "MODEL_NAME_MAPPING",
     "UI_STATUS_INDICATORS",
     "scan_checkpoints",
