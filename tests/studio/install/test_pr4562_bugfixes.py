@@ -6,7 +6,7 @@ Tests cover:
   - Bug 2: Source-build fallback ignores pinned tag (both .sh and .ps1)
   - Bug 3: Unix fallback deletes install before checking prerequisites
   - Bug 4: Linux LD_LIBRARY_PATH missing build/bin
-  - "latest" tag resolution fallback chain (helper -> raw)
+  - "latest" tag resolution fallback chain (helper only)
   - Cross-platform binary_env (Linux, macOS, Windows)
   - Edge cases: malformed JSON, empty responses, env overrides
 
@@ -586,12 +586,20 @@ class TestSourceCodePatterns:
         content = SETUP_SH.read_text()
         assert "_CLONE_ARGS=(git clone --depth 1)" in content
         assert (
-            '_CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")' in content
-        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_LLAMA_TAG"
+            '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
+        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_SOURCE_REF"
         # Verify the guard: --branch is only used when tag is not "latest"
         assert (
-            '_RESOLVED_LLAMA_TAG" != "latest"' in content
+            '_RESOLVED_SOURCE_REF" != "latest"' in content
         ), "Should guard against literal 'latest' tag"
+
+    def test_setup_sh_source_build_uses_helper_resolution(self):
+        """Shell source fallback should consult the helper for repo/ref planning."""
+        content = SETUP_SH.read_text()
+        assert "--resolve-source-build" in content
+        assert "_RESOLVED_SOURCE_URL" in content
+        assert "_RESOLVED_SOURCE_REF_KIND" in content
+        assert "_RESOLVED_SOURCE_REF" in content
 
     def test_setup_sh_latest_resolution_uses_helper_only(self):
         """Shell fallback should rely on helper output, not raw GitHub API tag_name."""
@@ -677,7 +685,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_clone_uses_branch_tag(self):
         """PS1 clone should use --branch with the resolved tag."""
         content = SETUP_PS1.read_text()
-        assert "--branch" in content and "$ResolvedLlamaTag" in content
+        assert "--branch" in content and "$ResolvedSourceRef" in content
         # The old commented-out line should be gone
         assert "# git clone --depth 1 --branch" not in content
 
@@ -705,6 +713,14 @@ class TestSourceCodePatterns:
         assert "--resolve-llama-tag" in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
+
+    def test_setup_ps1_source_build_uses_helper_resolution(self):
+        """PS1 source fallback should consult the helper for repo/ref planning."""
+        content = SETUP_PS1.read_text()
+        assert "--resolve-source-build" in content
+        assert "$ResolvedSourceUrl" in content
+        assert "$ResolvedSourceRefKind" in content
+        assert "$ResolvedSourceRef" in content
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""

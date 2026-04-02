@@ -58,6 +58,13 @@ resolve_requested_install_tag = INSTALL_LLAMA_PREBUILT.resolve_requested_install
 resolve_install_attempts = INSTALL_LLAMA_PREBUILT.resolve_install_attempts
 resolve_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_install_release_plans
 resolve_published_release = INSTALL_LLAMA_PREBUILT.resolve_published_release
+resolve_source_build_plan = INSTALL_LLAMA_PREBUILT.resolve_source_build_plan
+published_release_matches_request = (
+    INSTALL_LLAMA_PREBUILT.published_release_matches_request
+)
+exact_source_archive_logical_name = (
+    INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name
+)
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
 env_int = INSTALL_LLAMA_PREBUILT.env_int
 
@@ -110,6 +117,13 @@ def make_release(artifacts, **overrides):
         repo = "unslothai/llama.cpp",
         release_tag = "v1.0",
         upstream_tag = "b8508",
+        source_repo = None,
+        source_repo_url = None,
+        source_ref_kind = None,
+        requested_source_ref = None,
+        resolved_source_ref = None,
+        source_commit = None,
+        source_commit_short = None,
         assets = {a.asset_name: f"https://example.com/{a.asset_name}" for a in artifacts},
         manifest_asset_name = "llama-prebuilt-manifest.json",
         artifacts = artifacts,
@@ -124,7 +138,13 @@ def make_checksums(asset_names):
         repo = "unslothai/llama.cpp",
         release_tag = "v1.0",
         upstream_tag = "b8508",
+        source_repo = None,
+        source_repo_url = None,
+        source_ref_kind = None,
+        requested_source_ref = None,
+        resolved_source_ref = None,
         source_commit = None,
+        source_commit_short = None,
         artifacts = {
             name: ApprovedArtifactHash(
                 asset_name = name,
@@ -142,29 +162,52 @@ def make_checksums_with_source(
     *,
     release_tag = "v1.0",
     upstream_tag = "b8508",
+    source_repo = None,
+    source_repo_url = None,
+    source_ref_kind = None,
+    requested_source_ref = None,
+    resolved_source_ref = None,
+    source_commit = None,
 ):
+    artifacts = {
+        **{
+            name: ApprovedArtifactHash(
+                asset_name = name,
+                sha256 = "a" * 64,
+                repo = "unslothai/llama.cpp",
+                kind = "prebuilt",
+            )
+            for name in asset_names
+        },
+        source_archive_logical_name(upstream_tag): ApprovedArtifactHash(
+            asset_name = source_archive_logical_name(upstream_tag),
+            sha256 = "b" * 64,
+            repo = "ggml-org/llama.cpp",
+            kind = "upstream-source",
+        ),
+    }
+    normalized_source_commit = source_commit.lower() if isinstance(source_commit, str) else None
+    if normalized_source_commit:
+        artifacts[exact_source_archive_logical_name(normalized_source_commit)] = ApprovedArtifactHash(
+            asset_name = exact_source_archive_logical_name(normalized_source_commit),
+            sha256 = "c" * 64,
+            repo = source_repo or "example/custom-llama.cpp",
+            kind = "exact-source",
+        )
     return ApprovedReleaseChecksums(
         repo = "unslothai/llama.cpp",
         release_tag = release_tag,
         upstream_tag = upstream_tag,
-        source_commit = None,
-        artifacts = {
-            **{
-                name: ApprovedArtifactHash(
-                    asset_name = name,
-                    sha256 = "a" * 64,
-                    repo = "unslothai/llama.cpp",
-                    kind = "prebuilt",
-                )
-                for name in asset_names
-            },
-            source_archive_logical_name(upstream_tag): ApprovedArtifactHash(
-                asset_name = source_archive_logical_name(upstream_tag),
-                sha256 = "b" * 64,
-                repo = "ggml-org/llama.cpp",
-                kind = "upstream-source",
-            ),
-        },
+        source_repo = source_repo,
+        source_repo_url = source_repo_url,
+        source_ref_kind = source_ref_kind,
+        requested_source_ref = requested_source_ref,
+        resolved_source_ref = resolved_source_ref,
+        source_commit = normalized_source_commit,
+        source_commit_short = normalized_source_commit[:7]
+        if normalized_source_commit
+        else None,
+        artifacts = artifacts,
     )
 
 
@@ -535,6 +578,164 @@ class TestPublishedReleaseResolution:
                 "llama-prebuilt-latest",
                 "unslothai/llama.cpp",
             )
+
+    def test_request_matches_requested_source_ref(self, monkeypatch):
+        release = make_release(
+            [],
+            release_tag = "release-main",
+            upstream_tag = "b9000",
+            requested_source_ref = "main",
+            resolved_source_ref = "refs/heads/main",
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([release]),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: make_checksums_with_source(
+                [],
+                release_tag = release_tag,
+                upstream_tag = "b9000",
+                requested_source_ref = "main",
+                resolved_source_ref = "refs/heads/main",
+            ),
+        )
+
+        resolved = resolve_published_release("main", "unslothai/llama.cpp")
+        assert resolved.bundle.release_tag == "release-main"
+
+    def test_request_matches_source_commit(self, monkeypatch):
+        commit = "a" * 40
+        release = make_release(
+            [],
+            release_tag = "release-commit",
+            upstream_tag = "b9000",
+            source_commit = commit,
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_published_release_bundles",
+            lambda repo, published_release_tag = "": iter([release]),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: make_checksums_with_source(
+                [],
+                release_tag = release_tag,
+                upstream_tag = "b9000",
+                source_commit = commit,
+            ),
+        )
+
+        resolved = resolve_published_release(commit, "unslothai/llama.cpp")
+        assert resolved.bundle.release_tag == "release-commit"
+
+
+class TestSourceBuildPlanResolution:
+    def test_matches_request_by_non_tag_provenance(self):
+        bundle = make_release(
+            [],
+            requested_source_ref = "main",
+            resolved_source_ref = "refs/heads/main",
+            source_commit = "a" * 40,
+        )
+        assert published_release_matches_request(bundle, "main") is True
+        assert published_release_matches_request(bundle, "refs/heads/main") is True
+        assert published_release_matches_request(bundle, "a" * 40) is True
+
+    def test_prefers_exact_source_commit_when_available(self, monkeypatch):
+        commit = "a" * 40
+        resolved = INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+            bundle = make_release(
+                [],
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "refs/heads/main",
+                source_commit = commit,
+            ),
+            checksums = make_checksums_with_source(
+                [],
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "refs/heads/main",
+                source_commit = commit,
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "resolve_published_release",
+            lambda requested_tag, published_repo, published_release_tag = "": resolved,
+        )
+
+        plan = resolve_source_build_plan("main", "unslothai/llama.cpp")
+        assert plan.source_url == "https://github.com/example/custom-llama.cpp"
+        assert plan.source_ref_kind == "commit"
+        assert plan.source_ref == commit
+        assert plan.compatibility_upstream_tag == "b9000"
+
+    def test_uses_branch_provenance_without_exact_source_hash(self, monkeypatch):
+        resolved = INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+            bundle = make_release(
+                [],
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "main",
+            ),
+            checksums = make_checksums_with_source(
+                [],
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "main",
+                source_commit = None,
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "resolve_published_release",
+            lambda requested_tag, published_repo, published_release_tag = "": resolved,
+        )
+
+        plan = resolve_source_build_plan("main", "unslothai/llama.cpp")
+        assert plan.source_url == "https://github.com/example/custom-llama.cpp"
+        assert plan.source_ref_kind == "branch"
+        assert plan.source_ref == "main"
+        assert plan.compatibility_upstream_tag == "b9000"
+
+    def test_direct_main_request_without_published_release_uses_branch_kind(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "resolve_published_release",
+            lambda requested_tag, published_repo, published_release_tag = "": (_ for _ in ()).throw(
+                PrebuiltFallback("missing")
+            ),
+        )
+
+        plan = resolve_source_build_plan("main", "unslothai/llama.cpp")
+        assert plan.source_url == "https://github.com/ggml-org/llama.cpp"
+        assert plan.source_ref_kind == "branch"
+        assert plan.source_ref == "main"
 
 
 # ===========================================================================

@@ -485,6 +485,9 @@ _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
 _LLAMA_SOURCE="${UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}}"
 _LLAMA_SOURCE="${_LLAMA_SOURCE%.git}"  # normalize: strip trailing .git
+_RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+_RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+_RESOLVED_SOURCE_REF_KIND="tag"
 
 # Non-default source URL forces source build (fork has different code than prebuilt).
 if [ "$_LLAMA_SOURCE" != "https://github.com/ggml-org/llama.cpp" ]; then
@@ -507,6 +510,9 @@ if [ -n "$_LLAMA_PR" ]; then
     fi
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
+    _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+    _RESOLVED_SOURCE_REF="pr-$_LLAMA_PR"
+    _RESOLVED_SOURCE_REF_KIND="pull"
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
@@ -701,6 +707,31 @@ else
         step "llama.cpp" "skipped (git not found)" "$C_WARN"
         [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     else
+        if [ -z "$_LLAMA_PR" ]; then
+            if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
+                _RESOLVE_SOURCE_ARGS=(--resolve-source-build "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
+                if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+                    _RESOLVE_SOURCE_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+                fi
+                set +e
+                _SOURCE_BUILD_PLAN="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_SOURCE_ARGS[@]}" 2>/dev/null)"
+                _RESOLVE_SOURCE_STATUS=$?
+                set -e
+                if [ "$_RESOLVE_SOURCE_STATUS" -eq 0 ] && [ -n "$_SOURCE_BUILD_PLAN" ]; then
+                    IFS=$'\t' read -r _RESOLVED_SOURCE_URL _RESOLVED_SOURCE_REF_KIND _RESOLVED_SOURCE_REF <<EOF
+$_SOURCE_BUILD_PLAN
+EOF
+                fi
+            fi
+            if [ -z "$_RESOLVED_SOURCE_URL" ]; then
+                _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+            fi
+            if [ -z "$_RESOLVED_SOURCE_REF" ]; then
+                _RESOLVED_SOURCE_REF="$_RESOLVED_LLAMA_TAG"
+            fi
+        fi
+        verbose_substep "source build repo: $_RESOLVED_SOURCE_URL"
+        verbose_substep "source build ref: ${_RESOLVED_SOURCE_REF:-latest} (${_RESOLVED_SOURCE_REF_KIND})"
         BUILD_OK=true
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
@@ -715,12 +746,34 @@ else
                 run_quiet_no_exit "checkout PR #$_LLAMA_PR" \
                     git -C "$_BUILD_TMP" checkout "pr-$_LLAMA_PR" || BUILD_OK=false
             fi
+        elif [ "$_RESOLVED_SOURCE_REF_KIND" = "pull" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch source PR ref" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "$_RESOLVED_SOURCE_REF" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout source PR ref" \
+                    git -C "$_BUILD_TMP" checkout -B unsloth-llama-build FETCH_HEAD || BUILD_OK=false
+            fi
+        elif [ "$_RESOLVED_SOURCE_REF_KIND" = "commit" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch source commit" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "$_RESOLVED_SOURCE_REF" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout source commit" \
+                    git -C "$_BUILD_TMP" checkout -B unsloth-llama-build FETCH_HEAD || BUILD_OK=false
+            fi
         else
             _CLONE_ARGS=(git clone --depth 1)
-            if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-                _CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")
+            if [ "$_RESOLVED_SOURCE_REF" != "latest" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+                _CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")
             fi
-            _CLONE_ARGS+=("${_LLAMA_SOURCE}.git" "$_BUILD_TMP")
+            _CLONE_ARGS+=("${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP")
             run_quiet_no_exit "clone llama.cpp" \
                 "${_CLONE_ARGS[@]}" || BUILD_OK=false
         fi
