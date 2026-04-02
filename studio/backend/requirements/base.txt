@@ -1,3 +1,6 @@
 # Core unsloth packages
-unsloth-zoo
-unsloth
+# Temporarily install from git main instead of PyPI to pick up latest
+# fixes (Gemma 4 support, Studio patches).  Revert to package names
+# once the next PyPI release is cut.
+git+https://github.com/unslothai/unsloth_zoo.git
+git+https://github.com/unslothai/unsloth.git

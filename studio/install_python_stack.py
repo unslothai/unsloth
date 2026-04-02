@@ -42,6 +42,15 @@ def _infer_no_torch() -> bool:
 
 NO_TORCH = _infer_no_torch()
 
+# -- Maintainer-editable package defaults --------------------------------------
+# Temporarily install from git main instead of PyPI to pick up latest fixes
+# (Gemma 4 support, Studio patches).  Revert to PyPI package names once the
+# next release is cut.
+#   PyPI:  _DEFAULT_UNSLOTH_PKG = "unsloth"
+#          _DEFAULT_ZOO_PKG     = "unsloth-zoo"
+_DEFAULT_UNSLOTH_PKG = "git+https://github.com/unslothai/unsloth.git"
+_DEFAULT_ZOO_PKG = "git+https://github.com/unslothai/unsloth_zoo.git"
+
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
 # Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
@@ -471,11 +480,11 @@ def install_python_stack() -> int:
             "--no-cache-dir",
             "--no-deps",
             "--upgrade-package",
-            package_name,
+            "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            package_name,
-            "unsloth-zoo",
+            _DEFAULT_UNSLOTH_PKG,
+            _DEFAULT_ZOO_PKG,
         )
         pip_install(
             "Installing no-torch runtime deps",

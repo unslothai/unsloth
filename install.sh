@@ -32,6 +32,14 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
+# ── Maintainer-editable defaults ──
+# Temporarily install from git main instead of PyPI.
+# Revert to "unsloth>=2026.3.18" / "unsloth-zoo" once a new release is cut.
+#   _DEFAULT_UNSLOTH_PKG="unsloth>=2026.3.18"
+#   _DEFAULT_ZOO_PKG="unsloth-zoo"
+_DEFAULT_UNSLOTH_PKG="git+https://github.com/unslothai/unsloth.git"
+_DEFAULT_ZOO_PKG="git+https://github.com/unslothai/unsloth_zoo.git"
+
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
 PACKAGE_NAME="unsloth"
@@ -1040,7 +1048,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.18" unsloth-zoo
+            "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1048,7 +1056,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.3.18" unsloth-zoo
+            "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -1070,7 +1078,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.3.18" unsloth-zoo
+            "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1081,22 +1089,22 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.3.18" unsloth-zoo
+            --upgrade-package unsloth "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "$PACKAGE_NAME"
+            --upgrade-package unsloth "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG"
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.3.18" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$_DEFAULT_ZOO_PKG" "$_DEFAULT_UNSLOTH_PKG" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
     else
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$PACKAGE_NAME" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "$_DEFAULT_UNSLOTH_PKG" "$_DEFAULT_ZOO_PKG" --torch-backend=auto
     fi
 fi
 
