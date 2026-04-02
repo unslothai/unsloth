@@ -934,6 +934,19 @@ shell.Run cmd, 0, False
         }
     }
 
+    # ── Hotfix: patch install_python_stack.py for Windows GUI stdout ──
+    # The PyPI version crashes with OSError when stdout is piped from a GUI app.
+    # Copy our fixed version (bundled by Tauri) over the installed one.
+    # Remove this block once PyPI ships the fix from commit 18c5aae7.
+    if ($TauriMode) {
+        $fixedPy = Join-Path $PSScriptRoot "install_python_stack.py"
+        $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
+        if ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
+            Copy-Item $fixedPy $target -Force
+            substep "patched install_python_stack.py (stdout fix)"
+        }
+    }
+
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
@@ -968,14 +981,7 @@ shell.Run cmd, 0, False
     # and bypass the fast-path version check from PR #4667.
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
-    # In Tauri mode, Python's stdout may be an invalid handle (no console).
-    # Force unbuffered output and capture via PowerShell to prevent OSError on write/flush.
-    if ($TauriMode) {
-        $env:PYTHONUNBUFFERED = "1"
-        & $UnslothExe @studioArgs 2>&1 | ForEach-Object { Write-Host $_ }
-    } else {
-        & $UnslothExe @studioArgs
-    }
+    & $UnslothExe @studioArgs
     $setupExit = $LASTEXITCODE
     if ($setupExit -ne 0) {
         Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
