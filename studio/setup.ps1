@@ -27,9 +27,13 @@ $PackageDir = Split-Path -Parent $ScriptDir
 #  Change these in the GitHub-hosted script so users get updated defaults.
 #  User env vars always override these baked-in values.
 # --------------------------------------------------------------------------
+# Prefer "latest" over "master" -- "master" bypasses the prebuilt resolver
+# (no matching GitHub release), forces a source build, and causes HTTP 422
+# errors. Only use "master" temporarily when the latest release is missing
+# support for a new model architecture.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
-$DefaultLlamaTag = "b8637"
+$DefaultLlamaTag = "latest"
 
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')

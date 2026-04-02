@@ -16,10 +16,15 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
 #   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
 #                             "master" = bleeding-edge, "bNNNN" = specific tag)
+#                             Prefer "latest" over "master" -- "master" bypasses
+#                             the prebuilt resolver (no matching GitHub release),
+#                             forces a source build, and causes HTTP 422 errors.
+#                             Only use "master" temporarily when the latest release
+#                             is missing support for a new model architecture.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
-_DEFAULT_LLAMA_TAG="b8637"
+_DEFAULT_LLAMA_TAG="latest"
 
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
