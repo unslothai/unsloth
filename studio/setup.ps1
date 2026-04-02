@@ -1599,19 +1599,46 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-# Force all installs to use mainline llama.cpp from ggml-org.
-# Previously: $HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
-$HelperReleaseRepo = "ggml-org/llama.cpp"
+$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO) { $env:UNSLOTH_LLAMA_RELEASE_REPO } else { "unslothai/llama.cpp" }
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
-# Force mainline source -- no env var override.
-# Previously: $LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
-$LlamaSource = $DefaultLlamaSource
+$LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
 if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $LlamaSource.Length - 4) }
 $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
+
+function Invoke-LlamaHelper {
+    param(
+        [string[]]$Arguments,
+        [string]$StderrPath = $null
+    )
+
+    $previousNativeErrorPreference = $null
+    $restoreNativeErrorPreference = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreference = $true
+    }
+
+    try {
+        if ($StderrPath) {
+            $output = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>$StderrPath
+        } else {
+            $output = & python "$PSScriptRoot\install_llama_prebuilt.py" @Arguments 2>$null
+        }
+        return [pscustomobject]@{
+            Output = $output
+            ExitCode = $LASTEXITCODE
+        }
+    } finally {
+        if ($restoreNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+}
 
 if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
     step "llama.cpp" "custom source: $LlamaSource -- forcing source build" "Yellow"
@@ -1643,8 +1670,9 @@ if ($LlamaPr) {
     if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
         $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveTagArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveTagArgs 2>$null
-        $fallbackExit = $LASTEXITCODE
+        $fallbackResult = Invoke-LlamaHelper -Arguments $resolveTagArgs
+        $fallbackOutput = $fallbackResult.Output
+        $fallbackExit = $fallbackResult.ExitCode
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
             try {
                 (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
@@ -1661,8 +1689,9 @@ if ($LlamaPr) {
     $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
     if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveInstallArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
     $resolveErrorLog = New-TemporaryFile
-    $resolveOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveInstallArgs 2>$resolveErrorLog
-    $resolveExit = $LASTEXITCODE
+    $resolveResult = Invoke-LlamaHelper -Arguments $resolveInstallArgs -StderrPath $resolveErrorLog
+    $resolveOutput = $resolveResult.Output
+    $resolveExit = $resolveResult.ExitCode
     $ResolvedLlamaTag = if ($resolveOutput) {
         try {
             (($resolveOutput | Out-String) | ConvertFrom-Json).llama_tag
@@ -1679,8 +1708,9 @@ if ($LlamaPr) {
         # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
         $resolveFallbackArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveFallbackArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-        $fallbackOutput = & python "$PSScriptRoot\install_llama_prebuilt.py" @resolveFallbackArgs 2>$null
-        $fallbackExit = $LASTEXITCODE
+        $fallbackResult = Invoke-LlamaHelper -Arguments $resolveFallbackArgs
+        $fallbackOutput = $fallbackResult.Output
+        $fallbackExit = $fallbackResult.ExitCode
         $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
             try {
                 (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag

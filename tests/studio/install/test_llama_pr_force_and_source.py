@@ -425,11 +425,11 @@ class TestSourcePatternsSh:
         assert "ggml-org/llama.cpp.git" not in pr_block
 
     def test_clone_urls_parameterized_tag_path(self):
-        """Non-PR clone path uses ${_LLAMA_SOURCE}.git, not hardcoded URL."""
+        """Non-PR clone path uses the resolved source URL, not a hardcoded URL."""
         # Find the non-PR clone line (after _CLONE_ARGS)
         idx = self.content.index("_CLONE_ARGS=(git clone --depth 1)")
         block = self.content[idx : idx + 400]
-        assert '"${_LLAMA_SOURCE}.git"' in block
+        assert '"${_RESOLVED_SOURCE_URL}.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
 
     def test_custom_source_forces_build(self):
@@ -487,10 +487,10 @@ class TestSourcePatternsPs1:
         assert "ggml-org/llama.cpp.git" not in pr_block
 
     def test_clone_urls_parameterized_tag_path(self):
-        """Non-PR clone path uses $LlamaSource.git, not hardcoded URL."""
+        """Non-PR clone path uses the resolved source URL, not a hardcoded URL."""
         clone_args_idx = self.content.index('$cloneArgs = @("clone"')
         block = self.content[clone_args_idx : clone_args_idx + 400]
-        assert '"$LlamaSource.git"' in block
+        assert '"$ResolvedSourceUrl.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
 
     def test_custom_source_forces_build(self):
