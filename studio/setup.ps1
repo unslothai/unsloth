@@ -29,7 +29,7 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # --------------------------------------------------------------------------
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
-$DefaultLlamaTag = "b8637"
+$DefaultLlamaTag = "latest"
 
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
