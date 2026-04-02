@@ -349,7 +349,6 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
     fi
     cd "$SCRIPT_DIR"
 fi
-fi  # end _LLAMA_ONLY frontend guard
 
 # ── Python venv + deps ──
 STUDIO_HOME="$HOME/.unsloth/studio"
