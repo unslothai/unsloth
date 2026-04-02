@@ -99,6 +99,19 @@ fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
     })
 }
 
+/// Check if the installed unsloth CLI supports --api-only by probing --help output.
+fn supports_api_only(bin: &std::path::Path) -> bool {
+    let output = std::process::Command::new(bin)
+        .args(["studio", "--help"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match output {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).contains("--api-only"),
+        Err(_) => false,
+    }
+}
+
 /// Spawn the backend process and wire up stdout/stderr reader threads.
 pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown: &ShutdownFlag) -> Result<(), String> {
     let bin = resolve_backend_binary()?;
@@ -116,17 +129,13 @@ pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown:
         proc.intentional_stop = false;
     }
 
-    // --api-only skips frontend serving (Tauri has its own) and enables:
-    // 1. TAURI_PORT= output for port discovery
-    // 2. Tighter Tauri-only CORS in main.py
-    //
-    // TODO(production): Once --api-only is published to PyPI, change this to:
-    //   let use_api_only = true;
-    // This will enable instant port discovery via TAURI_PORT= and restrict
-    // CORS to Tauri origins only. Currently gated to dev because the PyPI
-    // version doesn't have the flag yet — production falls back to port
-    // scanning (2s slower) and allows broader CORS.
-    let use_api_only = cfg!(debug_assertions);
+    // In dev, always use --api-only (local code has it).
+    // In production, probe the binary to check if the PyPI version supports it.
+    let use_api_only = if cfg!(debug_assertions) {
+        true
+    } else {
+        supports_api_only(&bin)
+    };
 
     info!(
         "Starting backend: {:?} studio {}-H 127.0.0.1 -p {}",
