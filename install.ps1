@@ -943,7 +943,15 @@ shell.Run cmd, 0, False
         $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
         $fixedPy = Join-Path $scriptDir "install_python_stack.py"
         $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
-        if ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
+        if ((Test-Path $fixedPy) -and (Test-Path $target)) {
+            $installed = Get-Content $target -Raw
+            if ($installed -notmatch 'except OSError') {
+                Copy-Item $fixedPy $target -Force
+                substep "patched install_python_stack.py (stdout fix)"
+            } else {
+                substep "install_python_stack.py already has stdout fix"
+            }
+        } elseif ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
             Copy-Item $fixedPy $target -Force
             substep "patched install_python_stack.py (stdout fix)"
         } else {
