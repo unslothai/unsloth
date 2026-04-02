@@ -1548,6 +1548,7 @@ class FastModel(FastBaseModel):
 
             if _clippable_linear_cls is not None:
                 from peft.tuners.lora.model import LoraModel as _LoraModel
+
                 _original_car = _LoraModel._create_and_replace
 
                 def _patched_car(
@@ -1562,14 +1563,24 @@ class FastModel(FastBaseModel):
                 ):
                     if isinstance(target, _clippable_linear_cls):
                         return _original_car(
-                            self, peft_config, adapter_name,
-                            target.linear, "linear", target,
-                            current_key = current_key, **kwargs,
+                            self,
+                            peft_config,
+                            adapter_name,
+                            target.linear,
+                            "linear",
+                            target,
+                            current_key = current_key,
+                            **kwargs,
                         )
                     return _original_car(
-                        self, peft_config, adapter_name,
-                        target, target_name, parent,
-                        current_key = current_key, **kwargs,
+                        self,
+                        peft_config,
+                        adapter_name,
+                        target,
+                        target_name,
+                        parent,
+                        current_key = current_key,
+                        **kwargs,
                     )
 
                 _LoraModel._create_and_replace = _patched_car
