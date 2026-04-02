@@ -1763,7 +1763,7 @@ async def serve_sandbox_file(
         path = file_path,
         media_type = media_type,
         headers = {
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )

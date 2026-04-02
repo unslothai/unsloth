@@ -644,7 +644,17 @@ def _python_exec(
 
     tmp_path = None
     workdir = _get_workdir(session_id)
-    _before = set(os.listdir(workdir)) if os.path.isdir(workdir) else set()
+    # Snapshot image mtimes so we detect both new and overwritten files.
+    _before: dict[str, int] = {}
+    if os.path.isdir(workdir):
+        for _name in os.listdir(workdir):
+            if os.path.splitext(_name)[1].lower() in _IMAGE_EXTS:
+                _p = os.path.join(workdir, _name)
+                if os.path.isfile(_p):
+                    try:
+                        _before[_name] = os.stat(_p).st_mtime_ns
+                    except OSError:
+                        pass
     try:
         fd, tmp_path = tempfile.mkstemp(
             suffix = ".py", prefix = "studio_exec_", dir = workdir
@@ -682,18 +692,25 @@ def _python_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         result = _truncate(result) if result.strip() else "(no output)"
 
-        # Detect newly created image files and append sentinel for frontend
-        if session_id:
-            _after = set(os.listdir(workdir)) if os.path.isdir(workdir) else set()
-            new_images = sorted(
-                f
-                for f in (_after - _before)
-                if os.path.splitext(f)[1].lower() in _IMAGE_EXTS
-            )
+        # Detect new or overwritten image files and append sentinel for frontend
+        if session_id and os.path.isdir(workdir):
+            new_images = []
+            for _name in os.listdir(workdir):
+                if os.path.splitext(_name)[1].lower() not in _IMAGE_EXTS:
+                    continue
+                _p = os.path.join(workdir, _name)
+                if not os.path.isfile(_p):
+                    continue
+                try:
+                    _mtime = os.stat(_p).st_mtime_ns
+                except OSError:
+                    continue
+                if _name not in _before or _mtime != _before[_name]:
+                    new_images.append(_name)
             if new_images:
                 import json as _json
 
-                result += f"\n__IMAGES__:{_json.dumps(new_images)}"
+                result += f"\n__IMAGES__:{_json.dumps(sorted(new_images))}"
 
         return result
 

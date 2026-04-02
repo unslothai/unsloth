@@ -571,15 +571,24 @@ function ThreadHistoryProvider({
 
         // If any message has a stored parentId, reconstruct the tree
         // so retries/regenerations load as branches instead of being
-        // unrolled into a flat list.  Fall back to fromArray for legacy
-        // threads that were saved before parentId was persisted.
+        // unrolled into a flat list.  For mixed legacy/new threads
+        // (old messages without parentId + new messages with), infer
+        // sequential parents for old messages to preserve the chain.
+        // Fall back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => "parentId" in m);
         if (hasParentIds) {
+          let previousId: string | null = null;
           return {
-            messages: msgs.map((m) => ({
-              parentId: m.parentId ?? null,
-              message: toThreadMessage(m),
-            })),
+            messages: msgs.map((m) => {
+              const parentId = "parentId" in m
+                ? (m.parentId ?? null)
+                : previousId;
+              previousId = m.id;
+              return {
+                parentId,
+                message: toThreadMessage(m),
+              };
+            }),
           };
         }
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));

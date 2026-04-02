@@ -637,7 +637,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               if (idx !== -1) {
                 const rawResult = (toolEvent.result as string) ?? "";
                 const imgMarker = "\n__IMAGES__:";
-                const imgIdx = rawResult.indexOf(imgMarker);
+                const imgIdx = rawResult.lastIndexOf(imgMarker);
                 let parsedResult: string | { text: string; images: string[]; sessionId: string };
                 if (imgIdx !== -1) {
                   const text = rawResult.slice(0, imgIdx);

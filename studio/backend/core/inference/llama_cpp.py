@@ -2910,7 +2910,7 @@ class LlamaCppBackend:
                     # tool_end so the frontend can extract image paths).
                     _result_content = result
                     if "\n__IMAGES__:" in _result_content:
-                        _result_content = _result_content.split("\n__IMAGES__:")[0]
+                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
                     if _is_error:
                         _result_content = (
                             _result_content + "\n\nThe tool call encountered an issue. "
