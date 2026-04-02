@@ -698,7 +698,7 @@ async def get_server_args(
     """Return the active llama-server command arguments (API key redacted)."""
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
-        raise HTTPException(status_code=400, detail="No model loaded")
+        raise HTTPException(status_code = 400, detail = "No model loaded")
     return {"server_args": llama_backend.server_args_used}
 
 

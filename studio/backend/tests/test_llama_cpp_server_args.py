@@ -86,11 +86,11 @@ class TestServerArgsRoute(unittest.TestCase):
         with patch.object(
             inference_route,
             "get_llama_cpp_backend",
-            return_value=SimpleNamespace(is_loaded=False),
+            return_value = SimpleNamespace(is_loaded = False),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.get_server_args(current_subject="test-user")
+                    inference_route.get_server_args(current_subject = "test-user")
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
@@ -103,12 +103,12 @@ class TestServerArgsRoute(unittest.TestCase):
         with patch.object(
             inference_route,
             "get_llama_cpp_backend",
-            return_value=SimpleNamespace(
-                is_loaded=True, server_args_used=["llama-server", "--threads", "8"]
+            return_value = SimpleNamespace(
+                is_loaded = True, server_args_used = ["llama-server", "--threads", "8"]
             ),
         ):
             result = asyncio.run(
-                inference_route.get_server_args(current_subject="test-user")
+                inference_route.get_server_args(current_subject = "test-user")
             )
 
         self.assertEqual(result, {"server_args": ["llama-server", "--threads", "8"]})
@@ -119,18 +119,18 @@ class TestServerArgsRoute(unittest.TestCase):
         )
 
         request = LoadRequest(
-            model_path="unsloth/test",
-            server_args={"flash-attn": "off", "threads": 8},
+            model_path = "unsloth/test",
+            server_args = {"flash-attn": "off", "threads": 8},
         )
         model_config = SimpleNamespace(
-            is_gguf=True,
-            gguf_hf_repo=None,
-            gguf_file="/tmp/test.gguf",
-            gguf_mmproj_file=None,
-            gguf_variant=None,
-            identifier="unsloth/test",
-            display_name="unsloth/test",
-            is_vision=False,
+            is_gguf = True,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/test",
+            display_name = "unsloth/test",
+            is_vision = False,
         )
 
         class DummyLlamaBackend:
@@ -165,31 +165,31 @@ class TestServerArgsRoute(unittest.TestCase):
             patch.object(
                 inference_route.ModelConfig,
                 "from_identifier",
-                return_value=model_config,
+                return_value = model_config,
             ),
             patch.object(
                 inference_route,
                 "get_llama_cpp_backend",
-                return_value=dummy_llama,
+                return_value = dummy_llama,
             ),
             patch.object(
                 inference_route,
                 "get_inference_backend",
-                return_value=SimpleNamespace(active_model_name=None),
+                return_value = SimpleNamespace(active_model_name = None),
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value=SimpleNamespace(current_checkpoint=None),
+                return_value = SimpleNamespace(current_checkpoint = None),
             ),
-            patch.object(inference_route, "load_inference_config", return_value={}),
+            patch.object(inference_route, "load_inference_config", return_value = {}),
             patch.object(
                 inference_route,
                 "load_model_defaults",
-                return_value={"server_args": {"flash-attn": "on"}},
+                return_value = {"server_args": {"flash-attn": "on"}},
             ),
         ):
             result = asyncio.run(
-                inference_route.load_model(request, current_subject="test-user")
+                inference_route.load_model(request, current_subject = "test-user")
             )
 
         self.assertEqual(

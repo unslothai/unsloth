@@ -37,29 +37,29 @@ def _install_structlog_stub() -> None:
         return _DummyLogger()
 
     structlog_stub = types.SimpleNamespace(
-        BoundLogger=type("BoundLogger", (), {}),
-        get_logger=_get_logger,
-        configure=lambda *args, **kwargs: None,
-        make_filtering_bound_logger=lambda *args, **kwargs: _get_logger,
-        PrintLoggerFactory=lambda *args, **kwargs: None,
-        processors=types.SimpleNamespace(
-            TimeStamper=lambda *args, **kwargs: None,
-            add_log_level=lambda *args, **kwargs: None,
-            JSONRenderer=lambda *args, **kwargs: None,
-            format_exc_info=lambda *args, **kwargs: None,
+        BoundLogger = type("BoundLogger", (), {}),
+        get_logger = _get_logger,
+        configure = lambda *args, **kwargs: None,
+        make_filtering_bound_logger = lambda *args, **kwargs: _get_logger,
+        PrintLoggerFactory = lambda *args, **kwargs: None,
+        processors = types.SimpleNamespace(
+            TimeStamper = lambda *args, **kwargs: None,
+            add_log_level = lambda *args, **kwargs: None,
+            JSONRenderer = lambda *args, **kwargs: None,
+            format_exc_info = lambda *args, **kwargs: None,
         ),
-        contextvars=types.SimpleNamespace(
-            merge_contextvars=lambda *args, **kwargs: None,
+        contextvars = types.SimpleNamespace(
+            merge_contextvars = lambda *args, **kwargs: None,
         ),
-        dev=types.SimpleNamespace(
-            ConsoleRenderer=lambda *args, **kwargs: None,
+        dev = types.SimpleNamespace(
+            ConsoleRenderer = lambda *args, **kwargs: None,
         ),
-        stdlib=types.SimpleNamespace(
-            add_log_level=lambda *args, **kwargs: None,
-            filter_by_level=lambda *args, **kwargs: None,
-            PositionalArgumentsFormatter=lambda *args, **kwargs: None,
-            ProcessorFormatter=types.SimpleNamespace(
-                wrap_for_formatter=lambda *args, **kwargs: None,
+        stdlib = types.SimpleNamespace(
+            add_log_level = lambda *args, **kwargs: None,
+            filter_by_level = lambda *args, **kwargs: None,
+            PositionalArgumentsFormatter = lambda *args, **kwargs: None,
+            ProcessorFormatter = types.SimpleNamespace(
+                wrap_for_formatter = lambda *args, **kwargs: None,
             ),
         ),
     )

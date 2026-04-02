@@ -1612,6 +1612,7 @@ class LlamaCppBackend:
             return False
         token_str = str(token)
         import re
+
         return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", token_str))
 
     def _remove_conflicting_server_args(
@@ -1651,7 +1652,7 @@ class LlamaCppBackend:
         if not isinstance(server_args, dict):
             logger.warning(
                 "Ignoring non-dict server_args",
-                server_args_type=type(server_args).__name__,
+                server_args_type = type(server_args).__name__,
             )
             return []
 
@@ -1662,7 +1663,7 @@ class LlamaCppBackend:
                 logger.warning("Ignoring empty llama-server arg key")
                 continue
             if key in self._SERVER_ARG_BLOCKLIST:
-                logger.warning("Ignoring blocked llama-server arg", arg=key)
+                logger.warning("Ignoring blocked llama-server arg", arg = key)
                 continue
 
             flag = f"-{key}" if len(key) == 1 else f"--{key}"
@@ -1681,7 +1682,7 @@ class LlamaCppBackend:
             extra_args.extend([flag, str(value)])
 
         if extra_args:
-            logger.info("Applying additional llama-server args", extra_args=extra_args)
+            logger.info("Applying additional llama-server args", extra_args = extra_args)
         return extra_args
 
     @staticmethod

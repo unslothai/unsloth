@@ -50,7 +50,7 @@ class LoadRequest(BaseModel):
     )
     server_args: Optional[Dict[str, Any]] = Field(
         None,
-        description=(
+        description = (
             "Additional or override arguments to pass to llama-server. "
             "Keys are argument names (with or without leading dashes), "
             "values are the argument values. Use true/false for flags. "
@@ -58,6 +58,7 @@ class LoadRequest(BaseModel):
             "Blocked args (managed internally): --host, --port, -m/--model, --hf, --mmproj."
         ),
     )
+
 
 class UnloadRequest(BaseModel):
     """Request to unload a model"""
@@ -174,8 +175,9 @@ class LoadResponse(BaseModel):
     )
     server_args_used: Optional[List[str]] = Field(
         None,
-        description="The actual command-line arguments passed to llama-server (API key redacted)",
+        description = "The actual command-line arguments passed to llama-server (API key redacted)",
     )
+
 
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
