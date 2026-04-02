@@ -45,8 +45,8 @@ _INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-_MAX_REPROMPTS = 1
-_REPROMPT_MAX_CHARS = 500
+_MAX_REPROMPTS = 3
+_REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
@@ -810,7 +810,9 @@ class LlamaCppBackend:
                 # Detect tool calling support from chat template
                 tool_markers = [
                     "{%- if tools %}",
+                    "{%- if tools -%}",
                     "{% if tools %}",
+                    "{% if tools -%}",
                     '"role" == "tool"',
                     "'role' == 'tool'",
                     'message.role == "tool"',
@@ -2657,8 +2659,9 @@ class LlamaCppBackend:
                                 {
                                     "role": "user",
                                     "content": (
-                                        "Please use the available tools to complete "
-                                        "the task instead of describing what to do."
+                                        "STOP. Do NOT write code or explain. "
+                                        "You MUST call a tool NOW. "
+                                        "Call web_search or python immediately."
                                     ),
                                 }
                             )
