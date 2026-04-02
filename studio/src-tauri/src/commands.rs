@@ -1,5 +1,5 @@
 use crate::install;
-use crate::process::{self, BackendState};
+use crate::process::{self, BackendState, ShutdownFlag};
 use log::{error, info, warn};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -62,17 +62,19 @@ pub async fn check_install_status() -> bool {
 pub async fn start_server(
     app: AppHandle,
     state: tauri::State<'_, BackendState>,
+    shutdown: tauri::State<'_, ShutdownFlag>,
     port: u16,
 ) -> Result<(), String> {
     info!("start_server command called with port {}", port);
-    process::start_backend(&app, &state, port)?;
+    process::start_backend(&app, &state, port, &shutdown)?;
 
     // Spawn health watchdog — detects deadlocks and hangs that stdout-based
     // crash detection misses (process alive, pipe open, but not responding).
     let watchdog_state = state.inner().clone();
+    let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
     tokio::spawn(async move {
-        health_watchdog(watchdog_app, watchdog_state).await;
+        health_watchdog(watchdog_app, watchdog_state, watchdog_shutdown).await;
     });
 
     Ok(())
@@ -82,9 +84,12 @@ pub async fn start_server(
 /// Sends SIGTERM to the process group, which triggers uvicorn's graceful
 /// shutdown (same codepath as /api/shutdown). Falls back to SIGKILL after 5s.
 #[tauri::command]
-pub fn stop_server(state: tauri::State<'_, BackendState>) -> Result<(), String> {
+pub fn stop_server(
+    state: tauri::State<'_, BackendState>,
+    shutdown: tauri::State<'_, ShutdownFlag>,
+) -> Result<(), String> {
     info!("stop_server command called");
-    process::stop_backend(&state)
+    process::stop_backend(&state, &shutdown)
 }
 
 /// Check if a healthy Unsloth backend is running on the given port.
@@ -222,7 +227,9 @@ pub fn install_system_packages(_packages: Vec<String>) -> Result<(), String> {
 /// then pings /api/health every 15s. After 3 consecutive failures (45s)
 /// with the process still alive, emits `server-crashed` so the frontend
 /// can offer a restart.
-async fn health_watchdog(app: AppHandle, state: BackendState) {
+async fn health_watchdog(app: AppHandle, state: BackendState, shutdown: ShutdownFlag) {
+    use std::sync::atomic::Ordering;
+
     // Give the backend time to start up
     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
@@ -231,16 +238,21 @@ async fn health_watchdog(app: AppHandle, state: BackendState) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
 
-        let (port, intentional_stop, has_child) = {
+        if shutdown.load(Ordering::SeqCst) {
+            info!("Health watchdog: shutdown flag set, exiting");
+            break;
+        }
+
+        let (port, has_child) = {
             let proc = match state.lock() {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            (proc.port, proc.intentional_stop, proc.child.is_some())
+            (proc.port, proc.child.is_some())
         };
 
-        // Stop watching if the backend was intentionally stopped or is gone
-        if intentional_stop || !has_child {
+        // Stop watching if the backend is gone
+        if !has_child {
             info!("Health watchdog: backend stopped, exiting");
             break;
         }
@@ -262,7 +274,7 @@ async fn health_watchdog(app: AppHandle, state: BackendState) {
                 if consecutive_failures >= 3 {
                     error!("Health watchdog: backend unresponsive for 45s, killing and declaring dead");
                     // Kill the zombie process so retry can start fresh
-                    let _ = process::stop_backend(&state);
+                    let _ = process::stop_backend(&state, &shutdown);
                     let _ = app.emit("server-crashed", ());
                     break;
                 }

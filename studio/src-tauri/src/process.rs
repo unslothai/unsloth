@@ -4,6 +4,7 @@ use regex::Regex;
 use std::collections::VecDeque;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -28,9 +29,14 @@ impl Default for BackendProcess {
 }
 
 pub type BackendState = Arc<Mutex<BackendProcess>>;
+pub type ShutdownFlag = Arc<AtomicBool>;
 
 pub fn new_backend_state() -> BackendState {
     Arc::new(Mutex::new(BackendProcess::default()))
+}
+
+pub fn new_shutdown_flag() -> ShutdownFlag {
+    Arc::new(AtomicBool::new(false))
 }
 
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
@@ -94,8 +100,10 @@ fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
 }
 
 /// Spawn the backend process and wire up stdout/stderr reader threads.
-pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16) -> Result<(), String> {
+pub fn start_backend(app: &AppHandle, state: &BackendState, port: u16, shutdown: &ShutdownFlag) -> Result<(), String> {
     let bin = resolve_backend_binary()?;
+
+    shutdown.store(false, Ordering::SeqCst);
 
     // Reset state
     {
@@ -284,7 +292,9 @@ fn read_output_stream<R: std::io::Read>(
 /// Graceful shutdown of the backend process and its entire subprocess tree.
 /// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL to group
 /// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> kill job object
-pub fn stop_backend(state: &BackendState) -> Result<(), String> {
+pub fn stop_backend(state: &BackendState, shutdown: &ShutdownFlag) -> Result<(), String> {
+    shutdown.store(true, Ordering::SeqCst);
+
     // Extract the child and mark intentional stop.
     // We take the child OUT of the mutex so we don't hold the lock during the wait loop.
     let mut child = {
