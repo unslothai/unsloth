@@ -1722,6 +1722,7 @@ async def serve_sandbox_file(
             detail = "Missing authentication token",
         )
     from fastapi.security import HTTPAuthorizationCredentials
+
     creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
     await get_current_subject(creds)
 

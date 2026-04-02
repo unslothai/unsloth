@@ -686,11 +686,13 @@ def _python_exec(
         if session_id:
             _after = set(os.listdir(workdir)) if os.path.isdir(workdir) else set()
             new_images = sorted(
-                f for f in (_after - _before)
+                f
+                for f in (_after - _before)
                 if os.path.splitext(f)[1].lower() in _IMAGE_EXTS
             )
             if new_images:
                 import json as _json
+
                 result += f"\n__IMAGES__:{_json.dumps(new_images)}"
 
         return result
