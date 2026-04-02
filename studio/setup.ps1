@@ -34,6 +34,7 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
+$DefaultLlamaForceCompileRef = "main"
 
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
@@ -1618,6 +1619,7 @@ if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $L
 $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
+$ResolvedLlamaTag = $RequestedLlamaTag
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
@@ -1693,78 +1695,15 @@ if ($LlamaPr) {
     $ResolvedSourceRefKind = "pull"
     $NeedLlamaSourceBuild = $true
     $SkipPrebuiltInstall = $true
-} elseif ($SkipPrebuiltInstall) {
-    # Custom source or other override already forced source build; skip the
-    # prebuilt release resolution. When building from a custom fork, the fork
-    # may not carry upstream bNNNN tags.
-    if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
-        $ResolvedLlamaTag = $RequestedLlamaTag
-    } elseif ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
-        $resolveTagArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
-        if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveTagArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-        $fallbackResult = Invoke-LlamaHelper -Arguments $resolveTagArgs
-        $fallbackOutput = $fallbackResult.Output
-        $fallbackExit = $fallbackResult.ExitCode
-        $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
-            try {
-                (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
-            } catch {
-                $RequestedLlamaTag
-            }
-        } else {
-            $RequestedLlamaTag
-        }
-    } else {
-        $ResolvedLlamaTag = $RequestedLlamaTag
-    }
-} else {
-    $resolveInstallArgs = @("--resolve-install-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
-    if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveInstallArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-    $resolveErrorLog = New-UnslothTemporaryFile
-    $resolveResult = Invoke-LlamaHelper -Arguments $resolveInstallArgs -StderrPath $resolveErrorLog
-    $resolveOutput = $resolveResult.Output
-    $resolveExit = $resolveResult.ExitCode
-    $ResolvedLlamaTag = if ($resolveOutput) {
-        try {
-            (($resolveOutput | Out-String) | ConvertFrom-Json).llama_tag
-        } catch {
-            ""
-        }
-    } else { "" }
-    if ($resolveExit -ne 0 -or [string]::IsNullOrWhiteSpace($ResolvedLlamaTag)) {
-        Write-Host ""
-        substep "Failed to resolve a published llama.cpp release via $HelperReleaseRepo" "Yellow"
-        Write-LlamaFailureLog -Output (Get-Content -Raw $resolveErrorLog)
-        # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-        # so the resolver prefers the latest usable Unsloth-published upstream tag
-        # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-        $resolveFallbackArgs = @("--resolve-llama-tag", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
-        if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveFallbackArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-        $fallbackResult = Invoke-LlamaHelper -Arguments $resolveFallbackArgs
-        $fallbackOutput = $fallbackResult.Output
-        $fallbackExit = $fallbackResult.ExitCode
-        $ResolvedLlamaTag = if ($fallbackExit -eq 0 -and $fallbackOutput) {
-            try {
-                (($fallbackOutput | Out-String) | ConvertFrom-Json).llama_tag
-            } catch {
-                $RequestedLlamaTag
-            }
-        } else {
-            $RequestedLlamaTag
-        }
-        $NeedLlamaSourceBuild = $true
-        $SkipPrebuiltInstall = $true
-    }
-    Remove-Item $resolveErrorLog -Force -ErrorAction SilentlyContinue
 }
-
-Write-Host ""
-substep "Resolved llama.cpp release tag: $ResolvedLlamaTag"
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
+} elseif ($SkipPrebuiltInstall) {
+    Write-Host ""
+    substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
@@ -1778,7 +1717,8 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
             "--llama-tag", $RequestedLlamaTag,
-            "--published-repo", $HelperReleaseRepo
+            "--published-repo", $HelperReleaseRepo,
+            "--simple-policy"
         )
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
@@ -1981,24 +1921,43 @@ if (-not $NeedLlamaSourceBuild) {
     }
 
     if (-not $LlamaPr) {
-        if ($LlamaSource -eq "https://github.com/ggml-org/llama.cpp") {
-            $resolveSourceArgs = @("--resolve-source-build", $RequestedLlamaTag, "--published-repo", $HelperReleaseRepo, "--output-format", "json")
-            if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { $resolveSourceArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG) }
-            $sourcePlanResult = Invoke-LlamaHelper -Arguments $resolveSourceArgs
-            $sourcePlanOutput = $sourcePlanResult.Output
-            $sourcePlanExit = $sourcePlanResult.ExitCode
-            if ($sourcePlanExit -eq 0 -and $sourcePlanOutput) {
-                try {
-                    $sourcePlan = ($sourcePlanOutput | Out-String) | ConvertFrom-Json
-                    $ResolvedSourceUrl = $sourcePlan.source_url
-                    $ResolvedSourceRefKind = $sourcePlan.source_ref_kind
-                    $ResolvedSourceRef = $sourcePlan.source_ref
-                } catch {
+        $ResolvedSourceUrl = $LlamaSource
+        if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+            if ($RequestedLlamaTag -eq "latest") {
+                $ResolvedSourceRef = if ($env:UNSLOTH_LLAMA_FORCE_COMPILE_REF) {
+                    $env:UNSLOTH_LLAMA_FORCE_COMPILE_REF
+                } else {
+                    $DefaultLlamaForceCompileRef
                 }
+                $ResolvedSourceRefKind = "branch"
+            } else {
+                $ResolvedSourceRef = $RequestedLlamaTag
+                $ResolvedSourceRefKind = "tag"
             }
+        } elseif ($RequestedLlamaTag -eq "latest") {
+            $resolveTagArgs = @("--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp", "--output-format", "json")
+            $resolveTagResult = Invoke-LlamaHelper -Arguments $resolveTagArgs
+            $resolveTagOutput = $resolveTagResult.Output
+            $resolveTagExit = $resolveTagResult.ExitCode
+            if ($resolveTagExit -eq 0 -and $resolveTagOutput) {
+                try {
+                    $ResolvedSourceRef = (($resolveTagOutput | Out-String) | ConvertFrom-Json).llama_tag
+                } catch {
+                    $ResolvedSourceRef = ""
+                }
+            } else {
+                $ResolvedSourceRef = ""
+            }
+            if ([string]::IsNullOrWhiteSpace($ResolvedSourceRef)) {
+                $ResolvedSourceRef = "latest"
+            }
+            $ResolvedSourceRefKind = "tag"
+        } else {
+            $ResolvedSourceRef = $RequestedLlamaTag
+            $ResolvedSourceRefKind = "tag"
         }
         if ([string]::IsNullOrWhiteSpace($ResolvedSourceUrl)) { $ResolvedSourceUrl = $LlamaSource }
-        if ([string]::IsNullOrWhiteSpace($ResolvedSourceRef)) { $ResolvedSourceRef = $ResolvedLlamaTag }
+        if ([string]::IsNullOrWhiteSpace($ResolvedSourceRef)) { $ResolvedSourceRef = $RequestedLlamaTag }
     }
 
     # -- Step A: Clone or pull llama.cpp --

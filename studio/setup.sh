@@ -25,6 +25,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
 _DEFAULT_LLAMA_TAG="latest"
+_DEFAULT_LLAMA_FORCE_COMPILE_REF="main"
 
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
@@ -487,26 +488,23 @@ _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
-# Force all installs to use mainline llama.cpp from ggml-org.
-_HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+_HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+else
+    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
+fi
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
-
+_SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
-# Force mainline source -- no env var override for now.
 _LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"
 _LLAMA_SOURCE="${_LLAMA_SOURCE%.git}"  # normalize: strip trailing .git
 _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
 _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
 _RESOLVED_SOURCE_REF_KIND="tag"
+_RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
 
 if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
-    _NEED_LLAMA_SOURCE_BUILD=true
-    _SKIP_PREBUILT_INSTALL=true
-fi
-
-# Non-default source URL forces source build (fork has different code than prebuilt).
-if [ "$_LLAMA_SOURCE" != "https://github.com/ggml-org/llama.cpp" ]; then
-    step "llama.cpp" "custom source: $_LLAMA_SOURCE -- forcing source build" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
 fi
@@ -530,149 +528,67 @@ if [ -n "$_LLAMA_PR" ]; then
     _RESOLVED_SOURCE_REF_KIND="pull"
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
-elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
-    # Custom source or other override already forced source build; skip
-    # the prebuilt release resolution entirely. When building from a custom
-    # fork, the fork may not carry upstream bNNNN tags, so resolve the tag
-    # only when the source is the default ggml-org repo.
-    if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
-        _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-    elif [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
-        _RESOLVE_TAG_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-        _RESOLVE_TAG_ARGS+=(--output-format json)
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _RESOLVE_TAG_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        set +e
-        _RESOLVE_TAG_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
-        _RESOLVE_UPSTREAM_STATUS=$?
-        set -e
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
-            _RESOLVED_LLAMA_TAG="$(
-                printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
-            )"
-        else
-            _RESOLVED_LLAMA_TAG=""
-        fi
-        if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-        fi
-    else
-        _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-    fi
-else
-    _RESOLVE_INSTALL_ARGS=(--resolve-install-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-    _RESOLVE_INSTALL_ARGS+=(--output-format json)
-    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-        _RESOLVE_INSTALL_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-    fi
-    _RESOLVE_LLAMA_LOG="$(mktemp)"
-    set +e
-    _RESOLVE_INSTALL_JSON="$(
-        python "$SCRIPT_DIR/install_llama_prebuilt.py" \
-            "${_RESOLVE_INSTALL_ARGS[@]}" 2>"$_RESOLVE_LLAMA_LOG"
-    )"
-    _RESOLVE_LLAMA_STATUS=$?
-    set -e
-    if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
-        _RESOLVED_LLAMA_TAG="$(
-            printf '%s' "${_RESOLVE_INSTALL_JSON:-}" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
-        )"
-    else
-        _RESOLVED_LLAMA_TAG=""
-    fi
-    if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-        step "llama.cpp" "failed to resolve a published llama.cpp release via $_HELPER_RELEASE_REPO" "$C_WARN"
-        print_llama_error_log "$_RESOLVE_LLAMA_LOG"
-        set +e
-        # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-        # so the resolver prefers the latest usable Unsloth-published upstream tag
-        # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-        _RESOLVE_FALLBACK_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-        _RESOLVE_FALLBACK_ARGS+=(--output-format json)
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _RESOLVE_FALLBACK_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        _RESOLVE_FALLBACK_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_FALLBACK_ARGS[@]}" 2>/dev/null)"
-        _RESOLVE_UPSTREAM_STATUS=$?
-        set -e
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -eq 0 ] && [ -n "${_RESOLVE_FALLBACK_JSON:-}" ]; then
-            _RESOLVED_LLAMA_TAG="$(
-                printf '%s' "$_RESOLVE_FALLBACK_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
-            )"
-        else
-            _RESOLVED_LLAMA_TAG=""
-        fi
-        if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-        fi
-        _NEED_LLAMA_SOURCE_BUILD=true
-        _SKIP_PREBUILT_INSTALL=true
-    fi
-    rm -f "$_RESOLVE_LLAMA_LOG"
 fi
 
-substep "resolved llama.cpp tag: $_RESOLVED_LLAMA_TAG"
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
 if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
+elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
+    substep "prebuilt install skipped -- falling back to source build"
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
-    if [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
-        substep "prebuilt tag resolution failed -- falling back to source build"
+    _PREBUILT_CMD=(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py"
+        --install-dir "$LLAMA_CPP_DIR"
+        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --published-repo "$_HELPER_RELEASE_REPO"
+        --simple-policy
+    )
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+    fi
+    _PREBUILT_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+        _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
-        _PREBUILT_CMD=(
-            python "$SCRIPT_DIR/install_llama_prebuilt.py"
-            --install-dir "$LLAMA_CPP_DIR"
-            --llama-tag "$_REQUESTED_LLAMA_TAG"
-            --published-repo "$_HELPER_RELEASE_REPO"
-        )
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        _PREBUILT_LOG="$(mktemp)"
-        set +e
-        if _is_verbose; then
-            "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
-            _PREBUILT_STATUS=${PIPESTATUS[0]}
-        else
-            "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
-            _PREBUILT_STATUS=$?
-        fi
-        set -e
+        "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
+        _PREBUILT_STATUS=$?
+    fi
+    set -e
 
-        if [ "$_PREBUILT_STATUS" -eq 0 ]; then
-            if grep -Fq "already matches" "$_PREBUILT_LOG"; then
-                step "llama.cpp" "prebuilt up to date and validated"
-            else
-                step "llama.cpp" "prebuilt installed and validated"
-            fi
-            verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
-            rm -f "$_PREBUILT_LOG"
-        elif [ "$_PREBUILT_STATUS" -eq 3 ]; then
-            step "llama.cpp" "install blocked by active llama.cpp process" "$C_WARN"
-            print_llama_error_log "$_PREBUILT_LOG"
-            rm -f "$_PREBUILT_LOG"
-            if [ -d "$LLAMA_CPP_DIR" ]; then
-                substep "existing install was restored"
-            fi
-            substep "close Studio or other llama.cpp users and retry"
-            exit 3
+    if [ "$_PREBUILT_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_PREBUILT_LOG"; then
+            step "llama.cpp" "prebuilt up to date and validated"
         else
-            step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
-            print_llama_error_log "$_PREBUILT_LOG"
-            rm -f "$_PREBUILT_LOG"
-            if [ -d "$LLAMA_CPP_DIR" ]; then
-                substep "prebuilt update failed; existing install restored"
-            fi
-            substep "falling back to source build"
-            _NEED_LLAMA_SOURCE_BUILD=true
+            step "llama.cpp" "prebuilt installed and validated"
         fi
+        verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
+        rm -f "$_PREBUILT_LOG"
+    elif [ "$_PREBUILT_STATUS" -eq 3 ]; then
+        step "llama.cpp" "install blocked by active llama.cpp process" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored"
+        fi
+        substep "close Studio or other llama.cpp users and retry"
+        exit 3
+    else
+        step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "prebuilt update failed; existing install restored"
+        fi
+        substep "falling back to source build"
+        _NEED_LLAMA_SOURCE_BUILD=true
     fi
 fi
 
@@ -746,33 +662,41 @@ else
         [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     else
         if [ -z "$_LLAMA_PR" ]; then
-            if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
-                _RESOLVE_SOURCE_ARGS=(--resolve-source-build "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-                _RESOLVE_SOURCE_ARGS+=(--output-format json)
-                if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-                    _RESOLVE_SOURCE_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+            _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+            if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+                if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+                    _RESOLVED_SOURCE_REF="${UNSLOTH_LLAMA_FORCE_COMPILE_REF:-${_DEFAULT_LLAMA_FORCE_COMPILE_REF}}"
+                    _RESOLVED_SOURCE_REF_KIND="branch"
+                else
+                    _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+                    _RESOLVED_SOURCE_REF_KIND="tag"
                 fi
+            elif [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+                _RESOLVE_TAG_ARGS=(--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp" --output-format json)
                 set +e
-                _SOURCE_BUILD_PLAN="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_SOURCE_ARGS[@]}" 2>/dev/null)"
-                _RESOLVE_SOURCE_STATUS=$?
+                _RESOLVE_TAG_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
+                _RESOLVE_TAG_STATUS=$?
                 set -e
-                if [ "$_RESOLVE_SOURCE_STATUS" -eq 0 ] && [ -n "$_SOURCE_BUILD_PLAN" ]; then
-                    _RESOLVED_SOURCE_URL="$(
-                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_url",""))' 2>/dev/null || true
-                    )"
-                    _RESOLVED_SOURCE_REF_KIND="$(
-                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref_kind",""))' 2>/dev/null || true
-                    )"
+                if [ "$_RESOLVE_TAG_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
                     _RESOLVED_SOURCE_REF="$(
-                        printf '%s' "$_SOURCE_BUILD_PLAN" | python -c 'import json,sys; print(json.load(sys.stdin).get("source_ref",""))' 2>/dev/null || true
+                        printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
                     )"
+                else
+                    _RESOLVED_SOURCE_REF=""
                 fi
+                if [ -z "$_RESOLVED_SOURCE_REF" ]; then
+                    _RESOLVED_SOURCE_REF="latest"
+                fi
+                _RESOLVED_SOURCE_REF_KIND="tag"
+            else
+                _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+                _RESOLVED_SOURCE_REF_KIND="tag"
             fi
             if [ -z "$_RESOLVED_SOURCE_URL" ]; then
                 _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
             fi
             if [ -z "$_RESOLVED_SOURCE_REF" ]; then
-                _RESOLVED_SOURCE_REF="$_RESOLVED_LLAMA_TAG"
+                _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
             fi
         fi
         verbose_substep "source build repo: $_RESOLVED_SOURCE_URL"
