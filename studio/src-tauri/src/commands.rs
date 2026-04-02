@@ -75,13 +75,12 @@ pub async fn start_server(
             proc.port = Some(existing_port);
         }
         let _ = app.emit("server-port", existing_port);
-        return Ok(());
+    } else {
+        process::start_backend(&app, &state, port, &shutdown)?;
     }
 
-    process::start_backend(&app, &state, port, &shutdown)?;
-
-    // Spawn health watchdog — detects deadlocks and hangs that stdout-based
-    // crash detection misses (process alive, pipe open, but not responding).
+    // Spawn health watchdog for both owned and reused backends — detects
+    // deadlocks and hangs that stdout-based crash detection misses.
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();
     let watchdog_app = app.clone();
