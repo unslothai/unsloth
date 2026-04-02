@@ -19,7 +19,10 @@ def _assert_safe_ggml_calls(calls: list[ast.Call]) -> None:
     popen_calls = []
     for call in calls:
         if isinstance(call.func, ast.Attribute) and call.func.attr == "Popen":
-            if isinstance(call.func.value, ast.Name) and call.func.value.id == "subprocess":
+            if (
+                isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "subprocess"
+            ):
                 popen_calls.append(call)
 
     assert popen_calls, "Expected at least one subprocess.Popen call"
@@ -31,7 +34,10 @@ def _assert_safe_ggml_calls(calls: list[ast.Call]) -> None:
         argv = call.args[0]
         if isinstance(argv, ast.List) and len(argv.elts) >= 2:
             second_arg = argv.elts[1]
-            if isinstance(second_arg, ast.Constant) and second_arg.value == "llama.cpp/convert-lora-to-ggml.py":
+            if (
+                isinstance(second_arg, ast.Constant)
+                and second_arg.value == "llama.cpp/convert-lora-to-ggml.py"
+            ):
                 ggml_calls.append(call)
 
     assert ggml_calls, "Expected the GGML conversion subprocess call"
@@ -48,7 +54,9 @@ def _assert_safe_ggml_calls(calls: list[ast.Call]) -> None:
 
         assert call.args, "subprocess.Popen must receive argv as a positional argument"
         argv = call.args[0]
-        assert isinstance(argv, ast.List), "subprocess.Popen must be called with an argv list"
+        assert isinstance(
+            argv, ast.List
+        ), "subprocess.Popen must be called with an argv list"
         assert len(argv.elts) == 5, "GGML conversion argv should have five elements"
 
         second_arg = argv.elts[1]
