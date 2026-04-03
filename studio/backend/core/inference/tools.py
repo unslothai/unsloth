@@ -868,14 +868,39 @@ def _check_signal_escape_patterns(code: str):
                 shell_func = self.shell_exec_aliases.get(func.id)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
+                # Expand **kwargs dicts to inspect their keys
+                expanded_kwargs: dict[str, ast.AST] = {}
+                has_opaque_kwargs = False
+                for kw in node.keywords:
+                    if kw.arg is not None:
+                        expanded_kwargs[kw.arg] = kw.value
+                    elif isinstance(kw.value, ast.Dict):
+                        for k, v in zip(kw.value.keys, kw.value.values):
+                            key = _extract_string_from_node(k) if k else None
+                            if key is not None:
+                                expanded_kwargs[key] = v
+                    else:
+                        has_opaque_kwargs = True
+
                 cmd_kw_values = [
-                    kw.value
-                    for kw in node.keywords
-                    if kw.arg in _CMD_KWARGS or kw.arg is None  # **kwargs
+                    v for k, v in expanded_kwargs.items()
+                    if k in _CMD_KWARGS
                 ]
                 all_call_args = list(node.args) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
-                if blocked_in_args:
+
+                if has_opaque_kwargs:
+                    # Can't inspect dynamic **kwargs -- flag as unsafe
+                    shell_escapes.append(
+                        {
+                            "type": "shell_escape_dynamic",
+                            "line": node.lineno,
+                            "description": (
+                                f"{shell_func}() called with dynamic **kwargs"
+                            ),
+                        }
+                    )
+                elif blocked_in_args:
                     shell_escapes.append(
                         {
                             "type": "shell_escape",
@@ -888,10 +913,9 @@ def _check_signal_escape_patterns(code: str):
                     )
                 else:
                     # Only flag dynamic args for functions that interpret
-                    # strings as shell commands, or when shell=True is set.
-                    # List-based subprocess calls with shell=False (the
-                    # default) do not pass through a shell, so a dynamic
-                    # list variable is not a shell escape vector.
+                    # strings as shell commands, or when shell= might be
+                    # enabled.  Treat any non-literal-False shell= value
+                    # as potentially True (conservative).
                     _STRING_SHELL_FUNCS = frozenset(
                         {
                             "os.system",
@@ -903,13 +927,15 @@ def _check_signal_escape_patterns(code: str):
                             "subprocess.getstatusoutput",
                         }
                     )
-                    shell_kwarg_true = any(
-                        kw.arg == "shell"
-                        and isinstance(kw.value, ast.Constant)
-                        and kw.value.value is True
-                        for kw in node.keywords
+                    shell_node = expanded_kwargs.get("shell")
+                    shell_safe = (
+                        shell_node is None
+                        or (
+                            isinstance(shell_node, ast.Constant)
+                            and shell_node.value is False
+                        )
                     )
-                    if shell_func in _STRING_SHELL_FUNCS or shell_kwarg_true:
+                    if shell_func in _STRING_SHELL_FUNCS or not shell_safe:
 
                         def _is_safe_literal(n):
                             if _extract_string_from_node(n) is not None:
@@ -951,7 +977,12 @@ def _check_signal_escape_patterns(code: str):
                     }
                 )
             elif isinstance(node.type, ast.Name):
-                if node.type.id in ("TimeoutError", "BaseException", "Exception"):
+                # Only flag BaseException and TimeoutError, NOT Exception.
+                # except Exception does not catch SystemExit or
+                # KeyboardInterrupt, so it cannot suppress timeout
+                # enforcement.  Flagging Exception causes false positives
+                # on normal error-handling patterns.
+                if node.type.id in ("TimeoutError", "BaseException"):
                     exception_catching.append(
                         {
                             "type": f"catches_{node.type.id}_in_loop",
@@ -962,7 +993,7 @@ def _check_signal_escape_patterns(code: str):
             elif isinstance(node.type, ast.Tuple):
                 for elt in node.type.elts:
                     if isinstance(elt, ast.Name):
-                        if elt.id in ("TimeoutError", "BaseException", "Exception"):
+                        if elt.id in ("TimeoutError", "BaseException"):
                             exception_catching.append(
                                 {
                                     "type": f"catches_{elt.id}_in_loop",
