@@ -110,6 +110,9 @@ export function validateUsedProviders(
     if (!usedProviders.has(provider.name)) {
       continue;
     }
+    if (provider.is_local) {
+      continue;
+    }
     if (!provider.endpoint.trim()) {
       errors.push(`Model provider ${provider.name}: endpoint is required.`);
     }
