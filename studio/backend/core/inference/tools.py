@@ -118,13 +118,12 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # 2. Regex: catch blocked words at shell command boundaries
     #    (semicolons, pipes, &&, ||, backticks, $(), <(), subshells, newlines)
+    #    Uses a single combined pattern for all blocked words.
     lowered = command.lower()
-    for word in _BLOCKED_COMMANDS:
-        pattern = (
-            rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?{re.escape(word)}\b"
-        )
-        if re.search(pattern, lowered):
-            blocked.add(word)
+    if _BLOCKED_COMMANDS:
+        words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        pattern = rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?({words_alt})\b"
+        blocked.update(re.findall(pattern, lowered))
 
     # 3. Check for nested shell invocations (bash -c 'sudo whoami').
     #    When a token is an argument to a shell -c flag, scan its words
@@ -174,12 +173,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
     # Deduplicate while preserving order
-    seen = set()
-    deduped = []
-    for p in path_entries:
-        if p and p not in seen:
-            seen.add(p)
-            deduped.append(p)
+    deduped = list(dict.fromkeys(p for p in path_entries if p))
 
     env = {
         "PATH": os.pathsep.join(deduped),
@@ -700,6 +694,10 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
+    # Keyword argument names that carry command content (as opposed to
+    # control flags like check=True, text=True, capture_output=True).
+    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
         found = set()
@@ -839,9 +837,6 @@ def _check_signal_escape_patterns(code: str):
                 shell_func = self.shell_exec_aliases.get(func.id)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                # Only inspect keyword args that carry command content, not
-                # control flags like check=True, text=True, capture_output=True.
-                _CMD_KWARGS = {"args", "command", "executable", "path", "file"}
                 cmd_kw_values = [
                     kw.value
                     for kw in node.keywords
