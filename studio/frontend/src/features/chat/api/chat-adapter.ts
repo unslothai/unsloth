@@ -645,7 +645,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 let parsedResult: string | { text: string; images: string[]; sessionId: string };
                 if (imgIdx !== -1) {
                   const text = rawResult.slice(0, imgIdx);
-                  const sessionId = resolvedThreadId || "";
+                  // Fall back to "_default" to match the backend sandbox directory
+                  // used when no session_id is provided (see tools.py _get_workdir).
+                  const sessionId = resolvedThreadId || "_default";
                   try {
                     const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
                     parsedResult = { text, images, sessionId };
