@@ -112,7 +112,10 @@ def _has_rocm_gpu() -> bool:
         # rocminfo: look for "Name: gfxNNNN" indicating an actual GPU agent
         (["rocminfo"], lambda out: "gfx" in out.lower()),
         # amd-smi list: require "GPU: <number>" data rows, not just a header
-        (["amd-smi", "list"], lambda out: bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", out))),
+        (
+            ["amd-smi", "list"],
+            lambda out: bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", out)),
+        ),
     ):
         exe = shutil.which(cmd[0])
         if not exe:
