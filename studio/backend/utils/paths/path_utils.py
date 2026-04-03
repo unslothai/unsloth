@@ -136,7 +136,11 @@ def _hf_hub_cache_dir() -> Path:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         return Path(HF_HUB_CACHE)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "Could not read huggingface_hub HF_HUB_CACHE, using default hub path: %s",
+            exc,
+        )
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
