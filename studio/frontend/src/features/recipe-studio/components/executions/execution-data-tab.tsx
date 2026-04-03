@@ -12,6 +12,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
@@ -121,7 +122,21 @@ export function ExecutionDataTab({
         </div>
       </div>
       {execution.dataset.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No rows returned.</p>
+        isExecutionInProgress(execution.status) ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <Spinner className="size-5" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-muted-foreground">
+                Generating data…
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Check the Overview tab for live terminal logs.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">No rows returned.</p>
+        )
       ) : tableColumns.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           All columns hidden. Use Columns to show at least one.

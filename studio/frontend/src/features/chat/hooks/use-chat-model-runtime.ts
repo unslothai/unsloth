@@ -250,6 +250,7 @@ export function useChatModelRuntime() {
         const ggufNativeContextLength = statusRes.is_gguf
           ? (statusRes.native_context_length ?? null)
           : null;
+        const currentSpecType = statusRes.speculative_type ?? null;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
@@ -257,6 +258,8 @@ export function useChatModelRuntime() {
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,
+          speculativeType: currentSpecType,
+          loadedSpeculativeType: currentSpecType,
         });
 
         // Set reasoning default for Qwen3.5 small models
@@ -393,7 +396,7 @@ export function useChatModelRuntime() {
               previousWasUnloaded = true;
             }
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength } = useChatRuntimeStore.getState();
+            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
             // GGUF: use custom context length, or 0 = model's native context
             // Non-GGUF: use the Max Seq Length slider value
             const effectiveMaxSeqLength = customContextLength != null
@@ -409,6 +412,7 @@ export function useChatModelRuntime() {
               trust_remote_code: paramsBeforeLoad.trustRemoteCode ?? false,
               chat_template_override: chatTemplateOverride,
               cache_type_kv: kvCacheDtype,
+              speculative_type: speculativeType,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -431,6 +435,7 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
+            const loadedSpec = loadResponse.speculative_type ?? null;
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -457,6 +462,8 @@ export function useChatModelRuntime() {
               codeToolsEnabled: loadResponse.supports_tools ?? false,
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              speculativeType: loadedSpec,
+              loadedSpeculativeType: loadedSpec,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,

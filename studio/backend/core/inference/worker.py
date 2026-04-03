@@ -145,6 +145,8 @@ def _get_hf_download_state(
         blobs_dirs: list[Path] = []
 
         if model_names:
+            from utils.paths import resolve_cached_repo_id_case
+
             for name in model_names:
                 if not name:
                     continue
@@ -154,6 +156,7 @@ def _get_hf_download_state(
                 # relative paths, and Windows paths.
                 if name.startswith(("/", ".", "~")) or "\\" in name:
                     continue
+                name = resolve_cached_repo_id_case(name)
                 # HF cache dir format: models--org--name (slashes -> --)
                 cache_dir_name = "models--" + name.replace("/", "--")
                 blobs_dir = cache / cache_dir_name / "blobs"

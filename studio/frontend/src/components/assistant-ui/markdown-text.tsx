@@ -106,20 +106,27 @@ function getCodeFilename(language: string | null) {
 function isSvgFence(codeFence: CodeFence): boolean {
   const lang = codeFence.language?.toLowerCase() ?? "";
   if (lang === "svg") return true;
-  if ((lang === "xml" || lang === "html") && codeFence.source.trimStart().startsWith("<svg")) return true;
+  if (lang === "xml" || lang === "html") {
+    const trimmed = codeFence.source.trimStart();
+    // Match <svg directly or <?xml ...?> followed by <svg
+    if (trimmed.startsWith("<svg")) return true;
+    if (trimmed.startsWith("<?xml") && trimmed.includes("<svg")) return true;
+  }
   return false;
 }
 
 function isHtmlFence(codeFence: CodeFence): boolean {
   const lang = codeFence.language?.toLowerCase() ?? "";
-  return lang === "html" && !codeFence.source.trimStart().startsWith("<svg");
+  return lang === "html" && !isSvgFence(codeFence);
 }
 
 const UNSAFE_SVG_RE = /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
 function sanitizeSvg(source: string): string | null {
   if (UNSAFE_SVG_RE.test(source)) return null;
-  return source;
+  // Strip XML declaration (<?xml ...?>) -- not needed for data URI
+  // rendering and can cause issues with some renderers.
+  return source.replace(/^\s*<\?xml[^?]*\?>\s*/i, "");
 }
 
 function SvgPreview({ source }: { source: string }) {
