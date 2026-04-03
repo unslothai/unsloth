@@ -26,14 +26,17 @@ import { NameField } from "../shared/name-field";
 type ModelConfigDialogProps = {
   config: ModelConfig;
   providerOptions: string[];
+  localProviderNames: Set<string>;
   onUpdate: (patch: Partial<ModelConfig>) => void;
 };
 
 export function ModelConfigDialog({
   config,
   providerOptions,
+  localProviderNames,
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
+  const isLinkedToLocal = localProviderNames.has(config.provider);
   const [optionalOpen, setOptionalOpen] = useState(false);
   const modelId = `${config.id}-model`;
   const providerId = `${config.id}-provider`;
@@ -84,7 +87,17 @@ export function ModelConfigDialog({
             filteredItems={providerOptions}
             filter={null}
             value={config.provider || null}
-            onValueChange={(value) => updateField("provider", value ?? "")}
+            onValueChange={(value) => {
+              const selectedProvider = value ?? "";
+              const isLocal = localProviderNames.has(selectedProvider);
+              if (isLocal && !config.model.trim()) {
+                onUpdate({ provider: selectedProvider, model: "local" });
+              } else if (!isLocal && config.model === "local") {
+                onUpdate({ provider: selectedProvider, model: "" });
+              } else {
+                updateField("provider", selectedProvider);
+              }
+            }}
             onInputValueChange={(value) => {
               providerInputRef.current = value;
             }}
@@ -124,12 +137,12 @@ export function ModelConfigDialog({
         <FieldLabel
           label="Model ID"
           htmlFor={modelId}
-          hint="The exact model name sent to the connection."
+          hint={isLinkedToLocal ? "Uses the model loaded in Chat. Any value works here." : "The exact model name sent to the connection."}
         />
         <Input
           id={modelId}
           className="nodrag"
-          placeholder="gpt-4o-mini"
+          placeholder={isLinkedToLocal ? "local" : "gpt-4o-mini"}
           value={config.model}
           onChange={(event) => updateField("model", event.target.value)}
         />
