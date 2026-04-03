@@ -83,7 +83,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     #    (semicolons, pipes, &&, ||, backticks, $(), <(), newlines)
     lowered = command.lower()
     for word in _BLOCKED_COMMANDS:
-        pattern = rf"(?:^|[;&|`\n]\s*|[$]\(\s*|<\(\s*){re.escape(word)}\b"
+        pattern = rf"(?:^|[;&|`\n]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?{re.escape(word)}\b"
         if re.search(pattern, lowered):
             blocked.add(word)
 
@@ -100,8 +100,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             # The next token(s) are the shell command string
             for j in range(i + 1, len(tokens)):
                 for word in tokens[j].lower().split():
-                    if word in _BLOCKED_COMMANDS:
-                        blocked.add(word)
+                    base = os.path.basename(word)
+                    if base in _BLOCKED_COMMANDS:
+                        blocked.add(base)
 
     return blocked
 
@@ -642,9 +643,7 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
             strs = _extract_strings_from_list(arg)
             for s in strs:
-                base = os.path.basename(s).lower()
-                if base in _BLOCKED_COMMANDS:
-                    found.add(base)
+                found |= _find_blocked_commands(s)
         return found
 
     class SignalEscapeVisitor(ast.NodeVisitor):
@@ -762,7 +761,8 @@ def _check_signal_escape_patterns(code: str):
                         shell_func = f"subprocess.{func.attr}"
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                blocked_in_args = _check_args_for_blocked(node.args)
+                all_call_args = list(node.args) + [kw.value for kw in node.keywords]
+                blocked_in_args = _check_args_for_blocked(all_call_args)
                 if blocked_in_args:
                     shell_escapes.append(
                         {
@@ -775,10 +775,18 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
                 else:
+                    def _is_safe_literal(n):
+                        if _extract_string_from_node(n) is not None:
+                            return True
+                        if isinstance(n, ast.List):
+                            return all(
+                                _extract_string_from_node(e) is not None
+                                for e in n.elts
+                            )
+                        return False
+
                     has_non_literal = any(
-                        _extract_string_from_node(a) is None
-                        and not isinstance(a, ast.List)
-                        for a in node.args
+                        not _is_safe_literal(a) for a in all_call_args
                     )
                     if has_non_literal:
                         shell_escapes.append(
