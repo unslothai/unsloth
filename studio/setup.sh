@@ -506,8 +506,22 @@ _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
+
+# Apply manifest: install from git main instead of PyPI when directed.
+# Must be evaluated BEFORE the PyPI version check so the fast-path
+# does not suppress the git-main install.
+_MANIFEST_FORCE_GIT=false
+if [ "$MANIFEST_UNSLOTH_SOURCE" = "main" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+    export STUDIO_UNSLOTH_GIT_REF="${MANIFEST_UNSLOTH_GITHUB_REF:-main}"
+    _MANIFEST_FORCE_GIT=true
+    substep "manifest override: installing unsloth from git@${STUDIO_UNSLOTH_GIT_REF}"
+fi
+
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
-if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+if [ "$_MANIFEST_FORCE_GIT" != true ] && \
+   [ "$_SKIP_VERSION_CHECK" != true ] && \
+   [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && \
+   [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 from importlib.metadata import version
@@ -529,11 +543,6 @@ print(version('$_PKG_NAME'))
 fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
-    # Apply manifest: install from git main instead of PyPI when directed
-    if [ "$MANIFEST_UNSLOTH_SOURCE" = "main" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
-        export STUDIO_UNSLOTH_GIT_REF="${MANIFEST_UNSLOTH_GITHUB_REF:-main}"
-        substep "manifest override: installing unsloth from git@${STUDIO_UNSLOTH_GIT_REF}"
-    fi
     install_python_stack
 
     # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
@@ -1039,7 +1048,8 @@ else
 }
 fi  # end _SKIP_GGUF_BUILD check
 
-# ── Write install timestamp ──
+# ── Write install timestamp (only when python deps were actually updated) ──
+if [ "$_SKIP_PYTHON_DEPS" = false ]; then
 _STUDIO_INFO_DIR="$HOME/.unsloth/studio"
 mkdir -p "$_STUDIO_INFO_DIR"
 python - "$_STUDIO_INFO_DIR/UNSLOTH_STUDIO_INFO.json" <<'PY' 2>/dev/null || true
@@ -1067,6 +1077,7 @@ existing["unsloth_source"] = os.environ.get("STUDIO_UNSLOTH_GIT_REF", "pypi")
 info_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 PY
 verbose_substep "wrote install info to $_STUDIO_INFO_DIR/UNSLOTH_STUDIO_INFO.json"
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

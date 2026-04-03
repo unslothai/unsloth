@@ -534,13 +534,21 @@ def install_python_stack() -> int:
                 f"git+https://github.com/unslothai/unsloth.git@{_git_ref}",
                 constrain = False,
             )
-            pip_install(
-                "Updating remaining base packages",
-                "--no-cache-dir",
-                "--upgrade-package",
-                "unsloth-zoo",
-                req = REQ_ROOT / "base.txt",
+            # Filter out "unsloth" from base.txt so pip does not
+            # revert the git install back to the PyPI wheel.
+            _base_no_unsloth = _filter_requirements(
+                REQ_ROOT / "base.txt", {"unsloth"}
             )
+            try:
+                pip_install(
+                    "Updating remaining base packages",
+                    "--no-cache-dir",
+                    "--upgrade-package",
+                    "unsloth-zoo",
+                    req = _base_no_unsloth,
+                )
+            finally:
+                _base_no_unsloth.unlink(missing_ok = True)
         else:
             # Update path: upgrade only unsloth + unsloth-zoo while preserving
             # existing torch/CUDA installations.  Torch is pre-installed by

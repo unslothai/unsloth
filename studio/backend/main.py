@@ -225,9 +225,12 @@ async def health_check():
 @app.get("/api/update-check")
 async def update_check():
     """Return cached update status from the remote manifest (unauthenticated)."""
-    from utils.update_check import get_update_status
+    from utils.update_check import fetch_and_cache_update_status, get_update_status
 
     s = get_update_status()
+    if not s.manifest_fetched:
+        # Background thread may not have finished yet -- fetch inline.
+        s = fetch_and_cache_update_status()
     return {
         "critical": s.critical,
         "announcement_badge": s.announcement_badge,
