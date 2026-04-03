@@ -1042,7 +1042,11 @@ def iter_release_payloads_by_time(
         yield github_release(repo, published_release_tag)
         return
 
-    if requested_tag and requested_tag != "latest" and is_release_tag_like(requested_tag):
+    if (
+        requested_tag
+        and requested_tag != "latest"
+        and is_release_tag_like(requested_tag)
+    ):
         try:
             yield github_release(repo, requested_tag)
         except Exception:
@@ -1323,7 +1327,9 @@ def resolve_simple_install_release_plans(
     last_error: PrebuiltFallback | None = None
 
     try:
-        releases = iter_release_payloads_by_time(repo, published_release_tag, requested_tag)
+        releases = iter_release_payloads_by_time(
+            repo, published_release_tag, requested_tag
+        )
         for release in releases:
             try:
                 if host.is_linux and repo == "unslothai/llama.cpp":
