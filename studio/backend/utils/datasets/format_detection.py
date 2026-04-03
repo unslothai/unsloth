@@ -34,29 +34,7 @@ def detect_dataset_format(dataset):
     """
     column_names = set(next(iter(dataset)).keys())
 
-    # Check for chat-based columns first so a dataset that also carries
-    # preference metadata (prompt/chosen/rejected) is not misclassified.
-    chat_column = None
-    if "messages" in column_names:
-        chat_column = "messages"
-    elif "conversations" in column_names:
-        chat_column = "conversations"
-    elif "texts" in column_names:
-        chat_column = "texts"
-
-    # Check for preference datasets. Keep auto-detection strict so
-    # partially compatible tables still go through manual mapping/review.
-    # Only classify as preference when there is no explicit chat column.
-    preference_columns = {"chosen", "rejected"}
-    if preference_columns.issubset(column_names) and chat_column is None:
-        return {
-            "format": "preference",
-            "chat_column": None,
-            "needs_standardization": False,
-            "sample_keys": [],
-        }
-
-    # Check for Alpaca
+    # Check Alpaca first (most specific column names).
     alpaca_columns = {"instruction", "output"}
     if alpaca_columns.issubset(column_names):
         return {
@@ -65,6 +43,27 @@ def detect_dataset_format(dataset):
             "needs_standardization": False,
             "sample_keys": [],
         }
+
+    # Check for preference datasets (chosen + rejected).
+    # Runs before chat detection so datasets with both preference columns
+    # and auxiliary chat metadata (e.g. messages) are correctly routed to DPO.
+    preference_columns = {"chosen", "rejected"}
+    if preference_columns.issubset(column_names):
+        return {
+            "format": "preference",
+            "chat_column": None,
+            "needs_standardization": False,
+            "sample_keys": [],
+        }
+
+    # Check for chat-based formats (messages or conversations)
+    chat_column = None
+    if "messages" in column_names:
+        chat_column = "messages"
+    elif "conversations" in column_names:
+        chat_column = "conversations"
+    elif "texts" in column_names:
+        chat_column = "texts"
 
     if chat_column:
         # Inspect the structure to determine if ShareGPT or ChatML

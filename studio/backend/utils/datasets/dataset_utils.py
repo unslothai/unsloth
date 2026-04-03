@@ -1216,6 +1216,8 @@ def format_and_template_dataset(
                 "final_format": dataset_info["final_format"],
                 "chat_column": dataset_info.get("chat_column"),
                 "is_vlm": False,
+                "is_image": dataset_info.get("is_image", False),
+                "multimodal_info": dataset_info.get("multimodal_info"),
                 "success": True,
                 "requires_manual_mapping": dataset_info.get(
                     "requires_manual_mapping", False
