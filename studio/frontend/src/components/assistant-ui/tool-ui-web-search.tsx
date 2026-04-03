@@ -6,7 +6,7 @@
 import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
 import { GlobeIcon, LoaderIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
-import { Source, SourceIcon, SourceTitle, extractDomain } from "./sources";
+import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -54,18 +54,16 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const query = (args as { query?: string })?.query ?? "";
   const url = ((args as { url?: string })?.url ?? "").trim();
   const isUrlFetch = !!url;
-  const displayDomain = isUrlFetch
-    ? (() => {
-        const d = extractDomain(url);
-        if (d && d !== url) return d;
-        if (!url.includes("://")) {
-          const prefixed = `https://${url}`;
-          const d2 = extractDomain(prefixed);
-          if (d2 && d2 !== prefixed) return d2;
-        }
-        return "";
-      })()
-    : "";
+  const displayDomain = (() => {
+    if (!url) return "";
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      return parsed.hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  })();
   const isRunning = status?.type === "running";
   const sources = result
     ? parseSearchResults(
