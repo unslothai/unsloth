@@ -2834,8 +2834,17 @@ class LlamaCppBackend:
                     if tool_name == "web_search":
                         _ws_url = (arguments.get("url") or "").strip()
                         if _ws_url:
-                            _ws_host = urlparse(_ws_url).hostname or _ws_url
-                            status_text = f"Reading: {_ws_host}"
+                            _candidate = (
+                                _ws_url
+                                if "://" in _ws_url
+                                else f"https://{_ws_url}"
+                            )
+                            _ws_host = urlparse(_candidate).hostname
+                            status_text = (
+                                f"Reading: {_ws_host}"
+                                if _ws_host
+                                else "Reading page..."
+                            )
                         else:
                             status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":

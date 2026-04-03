@@ -54,7 +54,18 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const query = (args as { query?: string })?.query ?? "";
   const url = ((args as { url?: string })?.url ?? "").trim();
   const isUrlFetch = !!url;
-  const displayDomain = isUrlFetch ? (extractDomain(url) || url) : "";
+  const displayDomain = isUrlFetch
+    ? (() => {
+        const d = extractDomain(url);
+        if (d && d !== url) return d;
+        if (!url.includes("://")) {
+          const prefixed = `https://${url}`;
+          const d2 = extractDomain(prefixed);
+          if (d2 && d2 !== prefixed) return d2;
+        }
+        return "";
+      })()
+    : "";
   const isRunning = status?.type === "running";
   const sources = result
     ? parseSearchResults(
@@ -80,7 +91,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={
           isUrlFetch
-            ? `Read ${displayDomain}`
+            ? displayDomain ? `Read ${displayDomain}` : "Read page"
             : query
               ? `Searched "${query}"`
               : "Web Search"
@@ -94,7 +105,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
             <LoaderIcon className="size-3.5 animate-spin" />
             <span>
               {isUrlFetch
-                ? <>Reading {displayDomain}&hellip;</>
+                ? <>Reading {displayDomain || "page"}&hellip;</>
                 : <>Searching for &ldquo;{query}&rdquo;&hellip;</>
               }
             </span>
