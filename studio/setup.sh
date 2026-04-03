@@ -1062,7 +1062,8 @@ else
 fi  # end _SKIP_GGUF_BUILD check
 
 # ── Write install timestamp (only when python deps were actually updated) ──
-if [ "$_SKIP_PYTHON_DEPS" = false ]; then
+# Guard against uninitialized _SKIP_PYTHON_DEPS in llama-only mode.
+if [ "$_LLAMA_ONLY" != "1" ] && [ "${_SKIP_PYTHON_DEPS:-true}" = false ]; then
 _STUDIO_INFO_DIR="$HOME/.unsloth/studio"
 mkdir -p "$_STUDIO_INFO_DIR"
 python - "$_STUDIO_INFO_DIR/UNSLOTH_STUDIO_INFO.json" <<'PY' 2>/dev/null || true

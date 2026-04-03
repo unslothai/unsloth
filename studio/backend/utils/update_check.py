@@ -94,7 +94,10 @@ def fetch_and_cache_update_status() -> UpdateStatus:
     if isinstance(announcement, dict):
         status.announcement_badge = announcement.get("badge") or None
         status.announcement_message = announcement.get("message") or None
-        status.announcement_url = announcement.get("url") or None
+        _url = announcement.get("url") or None
+        # Only allow http/https URLs to prevent javascript: or data: injection.
+        if _url and _url.startswith(("https://", "http://")):
+            status.announcement_url = _url
 
     _cached_status = status
     return status
