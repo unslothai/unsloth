@@ -110,7 +110,8 @@ def _has_rocm_gpu() -> bool:
 
     for cmd, check_fn in (
         # rocminfo: look for "Name: gfxNNNN" indicating an actual GPU agent
-        (["rocminfo"], lambda out: "gfx" in out.lower()),
+        # rocminfo: look for "Name: gfxNNNN" with nonzero first digit (gfx000 is the CPU agent)
+        (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
         # amd-smi list: require "GPU: <number>" data rows, not just a header
         (
             ["amd-smi", "list"],

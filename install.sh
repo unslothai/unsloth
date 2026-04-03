@@ -998,10 +998,10 @@ get_torch_index_url() {
         # First confirm an actual AMD GPU is present (not just ROCm tools installed)
         _has_rocm_gpu=false
         if command -v rocminfo >/dev/null 2>&1 && \
-           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/{found=1} END{exit !found}'; then
+           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
             _has_rocm_gpu=true
         elif command -v amd-smi >/dev/null 2>&1 && \
-             amd-smi list 2>/dev/null | awk 'NR>1 && NF{found=1} END{exit !found}'; then
+             amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[]/{ found=1 } END{ exit !found }'; then
             _has_rocm_gpu=true
         fi
         if [ "$_has_rocm_gpu" != true ]; then
@@ -1158,10 +1158,10 @@ case "$TORCH_INDEX_URL" in
         _amd_gpu_here=false
         _amd_gpu_radeon=false
         if command -v rocminfo >/dev/null 2>&1 && \
-           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/{found=1} END{exit !found}'; then
+           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
             _amd_gpu_here=true
         elif command -v amd-smi >/dev/null 2>&1 && \
-             amd-smi list 2>/dev/null | awk 'NR>1 && NF{found=1} END{exit !found}'; then
+             amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[]/{ found=1 } END{ exit !found }'; then
             _amd_gpu_here=true
         fi
         if [ "$_amd_gpu_here" = true ] && command -v rocminfo >/dev/null 2>&1 && \
