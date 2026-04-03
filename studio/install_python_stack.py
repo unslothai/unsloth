@@ -174,13 +174,15 @@ def _ensure_rocm_torch() -> None:
         print("   ROCm detected but version unreadable -- skipping torch reinstall")
         return
 
-    # Skip if torch is already GPU-enabled (HIP or CUDA)
+    # Skip if torch already links against HIP (ROCm is already working).
+    # Do NOT skip for CUDA-only builds since they are unusable on AMD-only hosts
+    # (the NVIDIA check above already handled mixed AMD+NVIDIA setups).
     try:
         probe = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                "import torch; v=torch.version; print(getattr(v,'hip','') or getattr(v,'cuda','') or '')",
+                "import torch; print(getattr(torch.version,'hip','') or '')",
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -189,7 +191,7 @@ def _ensure_rocm_torch() -> None:
     except (OSError, subprocess.TimeoutExpired):
         probe = None
     if probe is not None and probe.returncode == 0 and probe.stdout.decode().strip():
-        return  # torch already GPU-enabled
+        return  # torch already has HIP/ROCm backend
 
     # Select best matching wheel tag (newest ROCm version <= installed)
     tag = next(
@@ -751,10 +753,15 @@ def install_python_stack() -> int:
     # Detect and warn so users know manual steps are needed for GPU training.
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
         # Validate actual AMD GPU presence (not just tool existence)
+        import re as _re_win
+
+        def _win_amd_smi_has_gpu(stdout: str) -> bool:
+            return bool(_re_win.search(r"(?im)^gpu\s*:\s*\d", stdout))
+
         _win_amd_gpu = False
-        for _wcmd, _wmarker in (
-            (["hipinfo"], "gcnarchname"),
-            (["amd-smi", "list"], "gpu"),
+        for _wcmd, _check_fn in (
+            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
+            (["amd-smi", "list"], _win_amd_smi_has_gpu),
         ):
             _wexe = shutil.which(_wcmd[0])
             if not _wexe:
@@ -769,7 +776,7 @@ def install_python_stack() -> int:
                 )
             except Exception:
                 continue
-            if _wr.returncode == 0 and _wmarker in _wr.stdout.lower():
+            if _wr.returncode == 0 and _check_fn(_wr.stdout):
                 _win_amd_gpu = True
                 break
         if _win_amd_gpu:
