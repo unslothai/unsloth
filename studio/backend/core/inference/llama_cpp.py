@@ -2835,9 +2835,7 @@ class LlamaCppBackend:
                         _ws_url = (arguments.get("url") or "").strip()
                         if _ws_url:
                             _candidate = (
-                                _ws_url
-                                if "://" in _ws_url
-                                else f"https://{_ws_url}"
+                                _ws_url if "://" in _ws_url else f"https://{_ws_url}"
                             )
                             _ws_host = urlparse(_candidate).hostname
                             status_text = (
