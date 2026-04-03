@@ -592,6 +592,9 @@ export function ChatPage(): ReactElement {
   }, []);
   const handleNewCompare = useCallback(() => {
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, []);
 
