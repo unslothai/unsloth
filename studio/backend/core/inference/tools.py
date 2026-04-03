@@ -881,11 +881,17 @@ def _check_signal_escape_patterns(code: str):
                     # List-based subprocess calls with shell=False (the
                     # default) do not pass through a shell, so a dynamic
                     # list variable is not a shell escape vector.
-                    _STRING_SHELL_FUNCS = frozenset({
-                        "os.system", "os.popen", "os.popen2", "os.popen3",
-                        "os.popen4", "subprocess.getoutput",
-                        "subprocess.getstatusoutput",
-                    })
+                    _STRING_SHELL_FUNCS = frozenset(
+                        {
+                            "os.system",
+                            "os.popen",
+                            "os.popen2",
+                            "os.popen3",
+                            "os.popen4",
+                            "subprocess.getoutput",
+                            "subprocess.getstatusoutput",
+                        }
+                    )
                     shell_kwarg_true = any(
                         kw.arg == "shell"
                         and isinstance(kw.value, ast.Constant)
