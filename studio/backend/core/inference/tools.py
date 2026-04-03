@@ -135,13 +135,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
-        is_unix_c = (
-            tok_lower == "-c"
-            or (
-                tok_lower.startswith("-")
-                and tok_lower.endswith("c")
-                and not tok_lower.startswith("--")
-            )
+        is_unix_c = tok_lower == "-c" or (
+            tok_lower.startswith("-")
+            and tok_lower.endswith("c")
+            and not tok_lower.startswith("--")
         )
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
