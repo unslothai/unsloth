@@ -14,6 +14,8 @@ import os
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import random
+import re
+import shlex
 import ssl
 import subprocess
 import sys
@@ -31,7 +33,108 @@ _EXEC_TIMEOUT = 300  # 5 minutes
 # No .svg (XSS risk via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
-_BASH_BLOCKED_WORDS = {"rm", "sudo", "dd", "chmod", "mkfs", "shutdown", "reboot"}
+_BLOCKED_COMMANDS = frozenset({
+    "rm", "sudo", "su", "dd", "chmod", "chown", "mkfs",
+    "shutdown", "reboot", "passwd", "mount", "umount",
+    "fdisk", "kill", "killall", "pkill",
+})
+
+
+def _find_blocked_commands(command: str) -> set[str]:
+    """Detect blocked commands using shlex tokenization and regex scanning.
+
+    Catches: full paths (/usr/bin/sudo), quoted strings ("sudo"),
+    split-quotes (su""do), backslash escapes (\\rm), and command-position
+    words after ;, |, &&, $().
+    """
+    blocked = set()
+
+    # 1. shlex tokenization (handles quotes, escapes, concatenation)
+    try:
+        tokens = shlex.split(command) if sys.platform != "win32" \
+            else shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+
+    for token in tokens:
+        base = os.path.basename(token).lower()
+        if base in _BLOCKED_COMMANDS:
+            blocked.add(base)
+        # Also check words within multi-word tokens (e.g. from nested quoting:
+        # bash -c 'sudo whoami' -> shlex gives ["bash", "-c", "sudo whoami"])
+        for word in base.split():
+            if word in _BLOCKED_COMMANDS:
+                blocked.add(word)
+
+    # 2. Regex: catch blocked words at shell command boundaries
+    #    (semicolons, pipes, &&, ||, backticks, $(), newlines)
+    lowered = command.lower()
+    for word in _BLOCKED_COMMANDS:
+        pattern = rf'(?:^|[;&|`\n]\s*|[$]\(\s*){re.escape(word)}\b'
+        if re.search(pattern, lowered):
+            blocked.add(word)
+
+    return blocked
+
+
+def _build_safe_env(workdir: str) -> dict[str, str]:
+    """Build a minimal, credential-free environment for sandboxed subprocesses.
+
+    Strips HF_TOKEN, WANDB_API_KEY, AWS_*, GH_TOKEN, LD_PRELOAD, DYLD_*, etc.
+    """
+    if sys.platform == "win32":
+        sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+        safe_path = sysroot + r"\system32;" + sysroot
+    else:
+        safe_path = "/usr/local/bin:/usr/bin:/bin"
+
+    env = {
+        "PATH": safe_path,
+        "HOME": workdir,
+        "TMPDIR": workdir,
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "TERM": "dumb",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    # Windows needs SystemRoot for Python/subprocess to work
+    if sys.platform == "win32":
+        env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+    return env
+
+
+def _sandbox_preexec():
+    """Pre-exec hook: drop privilege escalation ability and set resource limits.
+
+    On Linux, applies PR_SET_NO_NEW_PRIVS so sudo/su/pkexec fail at the
+    kernel level. On Linux and macOS, sets RLIMIT_NPROC and RLIMIT_FSIZE.
+    No-op on Windows (use creationflags instead).
+    """
+    if sys.platform == "linux":
+        try:
+            import ctypes
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            # PR_SET_NO_NEW_PRIVS = 38, arg2 = 1 (enable)
+            libc.prctl(38, 1, 0, 0, 0)
+        except (OSError, AttributeError):
+            pass  # Not available (container, old kernel, etc.)
+
+    if sys.platform != "win32":
+        try:
+            import resource
+            # Limit number of child processes (prevents fork bombs)
+            resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+            # Limit file size to 100MB (prevents disk filling)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
+        except (ValueError, OSError):
+            pass
+
+
+def _get_shell_cmd(command: str) -> list[str]:
+    """Return the platform-appropriate shell invocation for a command string."""
+    if sys.platform == "win32":
+        return ["cmd", "/c", command]
+    return ["bash", "-c", command]
+
 
 # Per-session working directories so each chat thread gets its own sandbox.
 # Falls back to a shared ~/studio_sandbox/ for API callers without a session_id.
@@ -428,6 +531,7 @@ def _check_signal_escape_patterns(code: str):
 
     signal_tampering = []
     exception_catching = []
+    shell_escapes = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -445,10 +549,55 @@ def _check_signal_escape_patterns(code: str):
             return full_name in names
         return False
 
+    # Dangerous os/subprocess functions that can execute shell commands
+    _SHELL_EXEC_FUNCS = frozenset({
+        "os.system", "os.popen", "os.popen2", "os.popen3", "os.popen4",
+        "os.execl", "os.execle", "os.execlp", "os.execlpe",
+        "os.execv", "os.execve", "os.execvp", "os.execvpe",
+        "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
+        "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+        "subprocess.run", "subprocess.call", "subprocess.check_call",
+        "subprocess.check_output", "subprocess.Popen",
+        "subprocess.getoutput", "subprocess.getstatusoutput",
+    })
+
+    def _extract_string_from_node(node):
+        """Extract a plain string value from an AST node, if it is a constant."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    def _extract_strings_from_list(node):
+        """Extract string elements from an AST List node."""
+        if isinstance(node, ast.List):
+            parts = []
+            for elt in node.elts:
+                s = _extract_string_from_node(elt)
+                if s is not None:
+                    parts.append(s)
+            return parts
+        return []
+
+    def _check_args_for_blocked(args_nodes):
+        """Check if any call arguments contain blocked commands."""
+        found = set()
+        for arg in args_nodes:
+            s = _extract_string_from_node(arg)
+            if s is not None:
+                found |= _find_blocked_commands(s)
+            strs = _extract_strings_from_list(arg)
+            for s in strs:
+                base = os.path.basename(s).lower()
+                if base in _BLOCKED_COMMANDS:
+                    found.add(base)
+        return found
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
             self.signal_aliases = {"signal"}
+            self.os_aliases = {"os"}
+            self.subprocess_aliases = {"subprocess"}
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -457,6 +606,10 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
+                elif alias.name == "os":
+                    self.os_aliases.add(alias.asname or "os")
+                elif alias.name == "subprocess":
+                    self.subprocess_aliases.add(alias.asname or "subprocess")
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -474,6 +627,10 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
+            elif node.module == "os":
+                self.os_aliases.add("os")
+            elif node.module == "subprocess":
+                self.subprocess_aliases.add("subprocess")
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -538,6 +695,44 @@ def _check_signal_escape_patterns(code: str):
                             "description": "Modifies signal mask (may block SIGALRM)",
                         }
                     )
+
+            # --- Shell escape detection ---
+            # Resolve the fully qualified function name for os.*/subprocess.*
+            shell_func = None
+            if isinstance(func, ast.Attribute):
+                if isinstance(func.value, ast.Name):
+                    if func.value.id in self.os_aliases:
+                        shell_func = f"os.{func.attr}"
+                    elif func.value.id in self.subprocess_aliases:
+                        shell_func = f"subprocess.{func.attr}"
+
+            if shell_func and shell_func in _SHELL_EXEC_FUNCS:
+                blocked_in_args = _check_args_for_blocked(node.args)
+                if blocked_in_args:
+                    shell_escapes.append({
+                        "type": "shell_escape",
+                        "line": node.lineno,
+                        "description": (
+                            f"{shell_func}() invokes blocked command(s): "
+                            f"{', '.join(sorted(blocked_in_args))}"
+                        ),
+                    })
+                else:
+                    has_non_literal = any(
+                        _extract_string_from_node(a) is None
+                        and not isinstance(a, ast.List)
+                        for a in node.args
+                    )
+                    if has_non_literal:
+                        shell_escapes.append({
+                            "type": "shell_escape_dynamic",
+                            "line": node.lineno,
+                            "description": (
+                                f"{shell_func}() called with non-literal argument "
+                                f"(potential shell escape)"
+                            ),
+                        })
+
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
@@ -580,10 +775,15 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    is_safe = len(signal_tampering) == 0 and len(exception_catching) == 0
+    is_safe = (
+        len(signal_tampering) == 0
+        and len(exception_catching) == 0
+        and len(shell_escapes) == 0
+    )
     return is_safe, {
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
+        "shell_escapes": shell_escapes,
         "warnings": warnings,
     }
 
@@ -604,10 +804,15 @@ def _check_code_safety(code: str) -> str | None:
         reasons = [
             item.get("description", "") for item in info.get("signal_tampering", [])
         ]
-        return (
-            f"Error: unsafe code detected ({'; '.join(reasons)}). "
-            f"Please remove signal manipulation from your code."
-        )
+        shell_reasons = [
+            item.get("description", "") for item in info.get("shell_escapes", [])
+        ]
+        all_reasons = [r for r in reasons + shell_reasons if r]
+        if all_reasons:
+            return (
+                f"Error: unsafe code detected ({'; '.join(all_reasons)}). "
+                f"Please remove signal manipulation or shell command execution from your code."
+            )
 
     return None
 
@@ -662,12 +867,21 @@ def _python_exec(
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
-        proc = subprocess.Popen(
-            [sys.executable, tmp_path],
+        safe_env = _build_safe_env(workdir)
+        popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             cwd = workdir,
+            env = safe_env,
+        )
+        if sys.platform != "win32":
+            popen_kwargs["preexec_fn"] = _sandbox_preexec
+        else:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        proc = subprocess.Popen(
+            [sys.executable, tmp_path], **popen_kwargs
         )
 
         # Spawn cancel watcher if we have a cancel event
@@ -734,21 +948,27 @@ def _bash_exec(
     if not command or not command.strip():
         return "No command provided."
 
-    # Block dangerous commands
-    tokens = set(command.lower().split())
-    blocked = tokens & _BASH_BLOCKED_WORDS
+    # Block dangerous commands (shlex + regex based)
+    blocked = _find_blocked_commands(command)
     if blocked:
         return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
 
     try:
         workdir = _get_workdir(session_id)
-        proc = subprocess.Popen(
-            ["bash", "-c", command],
+        safe_env = _build_safe_env(workdir)
+        popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             cwd = workdir,
+            env = safe_env,
         )
+        if sys.platform != "win32":
+            popen_kwargs["preexec_fn"] = _sandbox_preexec
+        else:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
 
         if cancel_event is not None:
             watcher = threading.Thread(
