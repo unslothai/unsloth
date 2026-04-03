@@ -822,7 +822,8 @@ def _check_signal_escape_patterns(code: str):
                 # control flags like check=True, text=True, capture_output=True.
                 _CMD_KWARGS = {"args", "command", "executable", "path", "file"}
                 cmd_kw_values = [
-                    kw.value for kw in node.keywords
+                    kw.value
+                    for kw in node.keywords
                     if kw.arg in _CMD_KWARGS or kw.arg is None  # **kwargs
                 ]
                 all_call_args = list(node.args) + cmd_kw_values
