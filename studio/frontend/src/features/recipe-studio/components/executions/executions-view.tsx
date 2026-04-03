@@ -341,12 +341,16 @@ export function ExecutionsView({
   }, [selectedExecution]);
 
   useEffect(() => {
+    setDetailTab("data");
+  }, [selectedExecution?.id]);
+
+  useEffect(() => {
     if (!terminalRef.current) {
       return;
     }
     shouldStickTerminalToBottomRef.current = true;
     terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-  }, [selectedExecution?.id]);
+  }, [detailTab, selectedExecution?.id]);
 
   useEffect(() => {
     if (!terminalRef.current) {
