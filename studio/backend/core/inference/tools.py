@@ -33,7 +33,7 @@ _EXEC_TIMEOUT = 300  # 5 minutes
 # No .svg (XSS risk via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
-_BLOCKED_COMMANDS = frozenset(
+_BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
         "sudo",
@@ -52,6 +52,21 @@ _BLOCKED_COMMANDS = frozenset(
         "killall",
         "pkill",
     }
+)
+_BLOCKED_COMMANDS_WIN = frozenset(
+    {
+        "rmdir",
+        "takeown",
+        "icacls",
+        "runas",
+        "powershell",
+        "pwsh",
+    }
+)
+_BLOCKED_COMMANDS = (
+    _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
+    if sys.platform == "win32"
+    else _BLOCKED_COMMANDS_COMMON
 )
 
 
@@ -114,21 +129,47 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Strips HF_TOKEN, WANDB_API_KEY, AWS_*, GH_TOKEN, LD_PRELOAD, DYLD_*, etc.
+    Preserves the active Python interpreter and virtualenv directories in PATH
+    so that pip, uv, and packages installed in the Studio runtime remain
+    accessible.
     """
+    # Start with the directory containing the running Python interpreter
+    # so that subprocess calls to 'python', 'pip', etc. resolve to the
+    # same environment the Studio server is running in.
+    exe_dir = os.path.dirname(sys.executable)
+    path_entries = [exe_dir] if exe_dir else []
+
+    # If a virtualenv is active, include its bin/Scripts directory.
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        venv_bin = os.path.join(venv, "Scripts" if sys.platform == "win32" else "bin")
+        if venv_bin not in path_entries:
+            path_entries.append(venv_bin)
+
     if sys.platform == "win32":
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
-        safe_path = sysroot + r"\system32;" + sysroot
+        path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
-        safe_path = "/usr/local/bin:/usr/bin:/bin"
+        path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
+
+    # Deduplicate while preserving order
+    seen = set()
+    deduped = []
+    for p in path_entries:
+        if p and p not in seen:
+            seen.add(p)
+            deduped.append(p)
 
     env = {
-        "PATH": safe_path,
+        "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
         "TMPDIR": workdir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
     }
+    if venv:
+        env["VIRTUAL_ENV"] = venv
     # Windows needs SystemRoot for Python/subprocess to work
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
@@ -610,6 +651,8 @@ def _check_signal_escape_patterns(code: str):
             "os.spawnve",
             "os.spawnvp",
             "os.spawnvpe",
+            "os.posix_spawn",
+            "os.posix_spawnp",
             "subprocess.run",
             "subprocess.call",
             "subprocess.check_call",
@@ -627,8 +670,8 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     def _extract_strings_from_list(node):
-        """Extract string elements from an AST List node."""
-        if isinstance(node, ast.List):
+        """Extract string elements from an AST List or Tuple node."""
+        if isinstance(node, (ast.List, ast.Tuple)):
             parts = []
             for elt in node.elts:
                 s = _extract_string_from_node(elt)
@@ -655,6 +698,9 @@ def _check_signal_escape_patterns(code: str):
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
             self.subprocess_aliases = {"subprocess"}
+            # Maps bare function names to their fully-qualified form
+            # for from-import tracking (e.g. "system" -> "os.system")
+            self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -684,10 +730,16 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
-            elif node.module == "os":
-                self.os_aliases.add("os")
-            elif node.module == "subprocess":
-                self.subprocess_aliases.add("subprocess")
+            elif node.module in ("os", "subprocess"):
+                if node.module == "os":
+                    self.os_aliases.add("os")
+                else:
+                    self.subprocess_aliases.add("subprocess")
+                # Track from-imports of dangerous functions
+                for alias in node.names:
+                    fq = f"{node.module}.{alias.name}"
+                    if fq in _SHELL_EXEC_FUNCS:
+                        self.shell_exec_aliases[alias.asname or alias.name] = fq
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -762,6 +814,9 @@ def _check_signal_escape_patterns(code: str):
                         shell_func = f"os.{func.attr}"
                     elif func.value.id in self.subprocess_aliases:
                         shell_func = f"subprocess.{func.attr}"
+            elif isinstance(func, ast.Name):
+                # Check from-import aliases: from os import system; system(...)
+                shell_func = self.shell_exec_aliases.get(func.id)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 all_call_args = list(node.args) + [kw.value for kw in node.keywords]
@@ -782,7 +837,7 @@ def _check_signal_escape_patterns(code: str):
                     def _is_safe_literal(n):
                         if _extract_string_from_node(n) is not None:
                             return True
-                        if isinstance(n, ast.List):
+                        if isinstance(n, (ast.List, ast.Tuple)):
                             return all(
                                 _extract_string_from_node(e) is not None for e in n.elts
                             )
