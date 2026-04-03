@@ -65,8 +65,9 @@ def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
-# Force all installs to use mainline llama.cpp from ggml-org.
-# Previously: DEFAULT_PUBLISHED_REPO = os.environ.get("UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp")
+# Default published repo for prebuilt release resolution. Linux uses
+# Unsloth prebuilts; setup.sh/setup.ps1 pass --published-repo explicitly
+# for macOS/Windows to override with ggml-org/llama.cpp when needed.
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 DEFAULT_PUBLISHED_TAG = os.environ.get("UNSLOTH_LLAMA_RELEASE_TAG")
 DEFAULT_PUBLISHED_MANIFEST_ASSET = os.environ.get(
@@ -1033,10 +1034,19 @@ def release_time_sort_key(release: dict[str, Any]) -> tuple[str, int]:
 
 
 def iter_release_payloads_by_time(
-    repo: str, published_release_tag: str = ""
+    repo: str,
+    published_release_tag: str = "",
+    requested_tag: str = "",
 ) -> Iterable[dict[str, Any]]:
     if published_release_tag:
         yield github_release(repo, published_release_tag)
+        return
+
+    if requested_tag and requested_tag != "latest" and is_release_tag_like(requested_tag):
+        try:
+            yield github_release(repo, requested_tag)
+        except Exception:
+            pass
         return
 
     releases = [
@@ -1313,7 +1323,7 @@ def resolve_simple_install_release_plans(
     last_error: PrebuiltFallback | None = None
 
     try:
-        releases = iter_release_payloads_by_time(repo, published_release_tag)
+        releases = iter_release_payloads_by_time(repo, published_release_tag, requested_tag)
         for release in releases:
             try:
                 if host.is_linux and repo == "unslothai/llama.cpp":
