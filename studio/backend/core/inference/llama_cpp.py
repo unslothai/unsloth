@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Generator, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -2270,7 +2271,7 @@ class LlamaCppBackend:
         Agentic loop: let the model call tools, execute them, and continue.
 
         Yields dicts with:
-          {"type": "status", "text": "Searching: ..."}   -- tool status updates
+          {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
@@ -2837,7 +2838,18 @@ class LlamaCppBackend:
                         arguments = raw_args
 
                     if tool_name == "web_search":
-                        status_text = f"Searching: {arguments.get('query', '')}"
+                        _ws_url = (arguments.get("url") or "").strip()
+                        if _ws_url:
+                            _parsed = urlparse(_ws_url)
+                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
+                                _ws_host = _parsed.hostname
+                                if _ws_host.startswith("www."):
+                                    _ws_host = _ws_host[4:]
+                                status_text = f"Reading: {_ws_host}"
+                            else:
+                                status_text = "Reading page..."
+                        else:
+                            status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
                         preview = (
                             (arguments.get("code") or "").strip().split("\n")[0][:60]
