@@ -534,19 +534,36 @@ def install_python_stack() -> int:
                 f"git+https://github.com/unslothai/unsloth.git@{_git_ref}",
                 constrain = False,
             )
-            # Filter out "unsloth" from base.txt so pip does not
-            # revert the git install back to the PyPI wheel.
-            _base_no_unsloth = _filter_requirements(REQ_ROOT / "base.txt", {"unsloth"})
+            # Install remaining base deps (unsloth-zoo etc.) but exclude
+            # the "unsloth" line so pip does not revert the git checkout
+            # back to the PyPI wheel.  We match "unsloth" exactly (not
+            # "unsloth-zoo") by checking for a version specifier or EOL
+            # immediately after the package name.
+            import re as _re
+
+            _base_lines = (REQ_ROOT / "base.txt").read_text(
+                encoding = "utf-8"
+            ).splitlines(keepends = True)
+            _base_filtered = [
+                ln
+                for ln in _base_lines
+                if not _re.match(r"^\s*unsloth\s*([<>=!~;\[#]|$)", ln.strip())
+            ]
+            _base_tmp = tempfile.NamedTemporaryFile(
+                mode = "w", suffix = ".txt", delete = False, encoding = "utf-8",
+            )
+            _base_tmp.writelines(_base_filtered)
+            _base_tmp.close()
             try:
                 pip_install(
                     "Updating remaining base packages",
                     "--no-cache-dir",
                     "--upgrade-package",
                     "unsloth-zoo",
-                    req = _base_no_unsloth,
+                    req = Path(_base_tmp.name),
                 )
             finally:
-                _base_no_unsloth.unlink(missing_ok = True)
+                Path(_base_tmp.name).unlink(missing_ok = True)
         else:
             # Update path: upgrade only unsloth + unsloth-zoo while preserving
             # existing torch/CUDA installations.  Torch is pre-installed by
