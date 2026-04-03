@@ -424,7 +424,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Capture the thread ID once at the start so it stays stable even if
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
-        unstable_threadId ?? runtime.activeThreadId ?? undefined;
+        (unstable_threadId ?? runtime.activeThreadId) || undefined;
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
