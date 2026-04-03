@@ -2835,10 +2835,7 @@ class LlamaCppBackend:
                         _ws_url = (arguments.get("url") or "").strip()
                         if _ws_url:
                             _parsed = urlparse(_ws_url)
-                            if (
-                                _parsed.scheme in ("http", "https")
-                                and _parsed.hostname
-                            ):
+                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
                                 _ws_host = _parsed.hostname
                                 if _ws_host.startswith("www."):
                                     _ws_host = _ws_host[4:]
