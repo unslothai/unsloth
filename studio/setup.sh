@@ -44,14 +44,27 @@ MANIFEST_ANNOUNCEMENT_URL=""
 _fetch_manifest() {
     local _raw
     _raw=$(curl -fsSL --max-time 8 "$_MANIFEST_URL" 2>/dev/null) || return 0
-    MANIFEST_UNSLOTH_SOURCE=$(printf '%s' "$_raw" | python -c "import sys,json; print(json.load(sys.stdin).get('unsloth_source',''))" 2>/dev/null || true)
-    MANIFEST_UNSLOTH_GITHUB_REF=$(printf '%s' "$_raw" | python -c "import sys,json; print(json.load(sys.stdin).get('unsloth_github_ref','main'))" 2>/dev/null || true)
-    MANIFEST_LLAMA_CPP_SOURCE=$(printf '%s' "$_raw" | python -c "import sys,json; print(json.load(sys.stdin).get('llama_cpp_source',''))" 2>/dev/null || true)
-    MANIFEST_LLAMA_CPP_TAG=$(printf '%s' "$_raw" | python -c "import sys,json; print(json.load(sys.stdin).get('llama_cpp_tag',''))" 2>/dev/null || true)
-    MANIFEST_CRITICAL_TIME=$(printf '%s' "$_raw" | python -c "import sys,json; print(json.load(sys.stdin).get('CRITICAL_TIME','') or '')" 2>/dev/null || true)
-    MANIFEST_ANNOUNCEMENT_MESSAGE=$(printf '%s' "$_raw" | python -c "import sys,json; a=json.load(sys.stdin).get('announcement') or {}; print(a.get('message',''))" 2>/dev/null || true)
-    MANIFEST_ANNOUNCEMENT_BADGE=$(printf '%s' "$_raw" | python -c "import sys,json; a=json.load(sys.stdin).get('announcement') or {}; print(a.get('badge',''))" 2>/dev/null || true)
-    MANIFEST_ANNOUNCEMENT_URL=$(printf '%s' "$_raw" | python -c "import sys,json; a=json.load(sys.stdin).get('announcement') or {}; print(a.get('url',''))" 2>/dev/null || true)
+    # Parse all manifest fields in a single Python invocation to avoid
+    # spawning 8 separate processes (each adds ~50ms startup overhead).
+    eval "$(printf '%s' "$_raw" | python -c "
+import sys, json, shlex
+try:
+    m = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+a = m.get('announcement') or {}
+for k, v in [
+    ('MANIFEST_UNSLOTH_SOURCE',        m.get('unsloth_source', '')),
+    ('MANIFEST_UNSLOTH_GITHUB_REF',    m.get('unsloth_github_ref', 'main')),
+    ('MANIFEST_LLAMA_CPP_SOURCE',      m.get('llama_cpp_source', '')),
+    ('MANIFEST_LLAMA_CPP_TAG',         m.get('llama_cpp_tag', '')),
+    ('MANIFEST_CRITICAL_TIME',         m.get('CRITICAL_TIME', '') or ''),
+    ('MANIFEST_ANNOUNCEMENT_MESSAGE',  a.get('message', '')),
+    ('MANIFEST_ANNOUNCEMENT_BADGE',    a.get('badge', '')),
+    ('MANIFEST_ANNOUNCEMENT_URL',      a.get('url', '')),
+]:
+    print(f'{k}={shlex.quote(str(v))}')
+" 2>/dev/null)" || true
     substep "manifest: source=${MANIFEST_UNSLOTH_SOURCE:-pypi} llama=${MANIFEST_LLAMA_CPP_SOURCE:-default}@${MANIFEST_LLAMA_CPP_TAG:-default}"
 }
 

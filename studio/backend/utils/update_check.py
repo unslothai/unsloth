@@ -21,9 +21,12 @@ import calendar
 import json
 import time
 import urllib.request
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 _MANIFEST_URL = (
     "https://raw.githubusercontent.com/unslothai/unsloth/main/"
@@ -64,6 +67,7 @@ def fetch_and_cache_update_status() -> UpdateStatus:
         with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT) as resp:
             manifest = json.loads(resp.read().decode("utf-8"))
     except Exception:
+        _log.debug("manifest fetch failed", exc_info = True)
         return _cached_status
 
     status = UpdateStatus(manifest_fetched = True)
@@ -79,11 +83,11 @@ def fetch_and_cache_update_status() -> UpdateStatus:
                     info = json.loads(_STUDIO_INFO_PATH.read_text(encoding = "utf-8"))
                     installed_ts = _parse_iso_utc(info.get("installed_at_utc", ""))
                 except Exception:
-                    pass
+                    _log.debug("failed to read studio info", exc_info = True)
             if installed_ts < critical_ts:
                 status.critical = True
         except Exception:
-            pass
+            _log.debug("critical time comparison failed", exc_info = True)
 
     # -- Announcement --
     announcement = manifest.get("announcement")
