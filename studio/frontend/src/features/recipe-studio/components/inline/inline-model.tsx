@@ -15,6 +15,15 @@ type InlineModelProps = {
 
 export function InlineModel(props: InlineModelProps): ReactElement {
   if (props.config.kind === "model_provider") {
+    if (props.config.is_local) {
+      return (
+        <div className="flex items-center gap-2 px-1 py-0.5">
+          <span className="text-xs font-medium text-muted-foreground">
+            Local model (Chat)
+          </span>
+        </div>
+      );
+    }
     return (
       <div className="grid gap-3 sm:grid-cols-2">
         <InlineField label="Endpoint">
