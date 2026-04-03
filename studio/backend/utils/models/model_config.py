@@ -159,6 +159,38 @@ MODEL_NAME_MAPPING = {
         "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
         "google/gemma-3n-E4B",
     ],
+    "unsloth_gemma-4-31B-it.yaml": [
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ],
+    "unsloth_gemma-4-26B-A4B-it.yaml": [
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ],
+    "unsloth_gemma-4-E2B-it.yaml": [
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ],
+    "unsloth_gemma-4-E4B-it.yaml": [
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ],
+    "unsloth_gemma-4-31B.yaml": [
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ],
+    "unsloth_gemma-4-26B-A4B.yaml": [
+        "unsloth/gemma-4-26B-A4B",
+        "google/gemma-4-26B-A4B",
+    ],
+    "unsloth_gemma-4-E2B.yaml": [
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ],
+    "unsloth_gemma-4-E4B.yaml": [
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
+    ],
     "unsloth_gpt-oss-20b.yaml": [
         "openai/gpt-oss-20b",
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
