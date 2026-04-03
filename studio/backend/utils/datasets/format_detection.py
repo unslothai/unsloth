@@ -58,7 +58,7 @@ def detect_dataset_format(dataset):
 
     # Check for Alpaca
     alpaca_columns = {"instruction", "output"}
-    if alpaca_columns.issubset(column_names) and chat_column is None:
+    if alpaca_columns.issubset(column_names):
         return {
             "format": "alpaca",
             "chat_column": None,

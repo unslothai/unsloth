@@ -409,12 +409,15 @@ def _apply_user_mapping_preference(dataset, mapping: dict, batch_size: int = 100
     Returns:
         Dataset with chosen/rejected columns (and prompt when mapped).
     """
+    # Filter out __-prefixed metadata keys (e.g. __label_mapping, __system_prompt)
+    column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
+
     col_for: dict[str, str | None] = {
         "prompt": None,
         "chosen": None,
         "rejected": None,
     }
-    for col_name, role in mapping.items():
+    for col_name, role in column_roles.items():
         if role in col_for:
             col_for[role] = col_name
 
