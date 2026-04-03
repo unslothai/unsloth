@@ -265,7 +265,7 @@ class Attention(nn.Module):
         queries = self.q_norm(queries).transpose(0, 2, 1, 3)
         queries = self.rope(queries, offset=offset)
 
-        if self.is_kv_shared_layer and cache is not None and not cache.empty():
+        if self.is_kv_shared_layer and cache is not None and len(cache) > 0:
             keys, values = cache.state
         else:
             raw_keys = self.k_proj(x).reshape(
