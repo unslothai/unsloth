@@ -345,7 +345,7 @@ export function ExecutionsView({
   }, [selectedExecution?.id]);
 
   useEffect(() => {
-    if (!terminalRef.current) {
+    if (detailTab !== "overview" || !terminalRef.current) {
       return;
     }
     shouldStickTerminalToBottomRef.current = true;
