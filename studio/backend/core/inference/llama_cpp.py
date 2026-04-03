@@ -21,8 +21,8 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Generator, Optional
+from urllib.parse import urlparse
 
 import httpx
 
