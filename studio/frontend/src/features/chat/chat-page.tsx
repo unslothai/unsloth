@@ -592,6 +592,9 @@ export function ChatPage(): ReactElement {
   }, []);
   const handleNewCompare = useCallback(() => {
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, []);
 
@@ -619,6 +622,9 @@ export function ChatPage(): ReactElement {
   const enterCompare = useCallback(() => {
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, [view]);
 
@@ -626,9 +632,13 @@ export function ChatPage(): ReactElement {
     if (!viewBeforeCompare) return;
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
-    // Restore context usage from the active thread's last assistant message
+    // Restore context usage from the active thread's last assistant message.
+    // Use the thread ID from the saved view rather than the store, because
+    // activeThreadId may have been cleared on compare entry.
     const store = useChatRuntimeStore.getState();
-    const threadId = store.activeThreadId;
+    const threadId =
+      ("threadId" in viewBeforeCompare ? viewBeforeCompare.threadId : null) ??
+      store.activeThreadId;
     if (threadId) {
       void db.messages
         .where("threadId")
@@ -735,6 +745,7 @@ export function ChatPage(): ReactElement {
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
           setView({ mode: "compare", pairId: crypto.randomUUID() });
+          useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");

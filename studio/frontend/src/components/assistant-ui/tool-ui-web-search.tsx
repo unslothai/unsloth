@@ -52,6 +52,18 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const query = (args as { query?: string })?.query ?? "";
+  const url = ((args as { url?: string })?.url ?? "").trim();
+  const isUrlFetch = !!url;
+  const displayDomain = (() => {
+    if (!url) return "";
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      return parsed.hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  })();
   const isRunning = status?.type === "running";
   const sources = result
     ? parseSearchResults(
@@ -75,7 +87,13 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
-        toolName={query ? `Searched "${query}"` : "Web Search"}
+        toolName={
+          isUrlFetch
+            ? displayDomain ? `Read ${displayDomain}` : "Read page"
+            : query
+              ? `Searched "${query}"`
+              : "Web Search"
+        }
         status={status}
         icon={GlobeIcon}
       />
@@ -83,7 +101,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         {isRunning ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <LoaderIcon className="size-3.5 animate-spin" />
-            <span>Searching for &ldquo;{query}&rdquo;&hellip;</span>
+            <span>
+              {isUrlFetch
+                ? <>Reading {displayDomain || "page"}&hellip;</>
+                : <>Searching for &ldquo;{query}&rdquo;&hellip;</>
+              }
+            </span>
           </div>
         ) : sources.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">

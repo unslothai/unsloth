@@ -65,9 +65,10 @@ def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
-# Force all installs to use mainline llama.cpp from ggml-org.
-# Previously: DEFAULT_PUBLISHED_REPO = os.environ.get("UNSLOTH_LLAMA_RELEASE_REPO", "unslothai/llama.cpp")
-DEFAULT_PUBLISHED_REPO = "ggml-org/llama.cpp"
+# Default published repo for prebuilt release resolution. Linux uses
+# Unsloth prebuilts; setup.sh/setup.ps1 pass --published-repo explicitly
+# for macOS/Windows to override with ggml-org/llama.cpp when needed.
+DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 DEFAULT_PUBLISHED_TAG = os.environ.get("UNSLOTH_LLAMA_RELEASE_TAG")
 DEFAULT_PUBLISHED_MANIFEST_ASSET = os.environ.get(
     "UNSLOTH_LLAMA_RELEASE_MANIFEST_ASSET", "llama-prebuilt-manifest.json"
@@ -89,6 +90,12 @@ GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
 HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
+JSON_FETCH_ATTEMPTS = 3
+DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES = env_int(
+    "UNSLOTH_LLAMA_GITHUB_RELEASE_SCAN_MAX_PAGES",
+    5,
+    minimum = 1,
+)
 SERVER_PORT_BIND_ATTEMPTS = 3
 SERVER_BIND_RETRY_WINDOW_SECONDS = 5.0
 TTY_PROGRESS_START_DELAY_SECONDS = 0.5
@@ -97,6 +104,58 @@ DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     2,
     minimum = 1,
 )
+FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
+
+DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
+    "cuda12-older": {
+        "runtime_line": "cuda12",
+        "coverage_class": "older",
+        "supported_sms": ["70", "75", "80", "86", "89"],
+        "min_sm": 70,
+        "max_sm": 89,
+        "rank": 10,
+    },
+    "cuda12-newer": {
+        "runtime_line": "cuda12",
+        "coverage_class": "newer",
+        "supported_sms": ["86", "89", "90", "100", "120"],
+        "min_sm": 86,
+        "max_sm": 120,
+        "rank": 20,
+    },
+    "cuda12-portable": {
+        "runtime_line": "cuda12",
+        "coverage_class": "portable",
+        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "120"],
+        "min_sm": 70,
+        "max_sm": 120,
+        "rank": 30,
+    },
+    "cuda13-older": {
+        "runtime_line": "cuda13",
+        "coverage_class": "older",
+        "supported_sms": ["75", "80", "86", "89"],
+        "min_sm": 75,
+        "max_sm": 89,
+        "rank": 40,
+    },
+    "cuda13-newer": {
+        "runtime_line": "cuda13",
+        "coverage_class": "newer",
+        "supported_sms": ["86", "89", "90", "100", "120"],
+        "min_sm": 86,
+        "max_sm": 120,
+        "rank": 50,
+    },
+    "cuda13-portable": {
+        "runtime_line": "cuda13",
+        "coverage_class": "portable",
+        "supported_sms": ["75", "80", "86", "89", "90", "100", "120"],
+        "min_sm": 75,
+        "max_sm": 120,
+        "rank": 60,
+    },
+}
 
 
 @dataclass
@@ -753,32 +812,48 @@ def download_bytes(
 
 
 def fetch_json(url: str) -> Any:
-    try:
-        data = download_bytes(
-            url,
-            timeout = 30,
-            headers = github_api_headers(url)
-            if is_github_api_url(url)
-            else auth_headers(url),
-        )
-    except urllib.error.HTTPError as exc:
-        if exc.code == 403 and is_github_api_url(url):
-            hint = ""
-            if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
-                hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
-            raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
-        raise
-    if not data:
-        raise RuntimeError(f"downloaded empty JSON payload from {url}")
-    try:
-        payload = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"downloaded invalid JSON from {url}: {exc}") from exc
-    if not isinstance(payload, dict) and not isinstance(payload, list):
-        raise RuntimeError(
-            f"downloaded unexpected JSON type from {url}: {type(payload).__name__}"
-        )
-    return payload
+    attempts = JSON_FETCH_ATTEMPTS if is_github_api_url(url) else 1
+    last_decode_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            data = download_bytes(
+                url,
+                timeout = 30,
+                headers = github_api_headers(url)
+                if is_github_api_url(url)
+                else auth_headers(url),
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 403 and is_github_api_url(url):
+                hint = ""
+                if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
+                    hint = (
+                        "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+                    )
+                raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
+            raise
+        if not data:
+            last_decode_exc = RuntimeError(f"downloaded empty JSON payload from {url}")
+        else:
+            try:
+                payload = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                last_decode_exc = RuntimeError(
+                    f"downloaded invalid JSON from {url}: {exc}"
+                )
+            else:
+                if not isinstance(payload, dict) and not isinstance(payload, list):
+                    raise RuntimeError(
+                        f"downloaded unexpected JSON type from {url}: {type(payload).__name__}"
+                    )
+                return payload
+        if attempt >= attempts:
+            assert last_decode_exc is not None
+            raise last_decode_exc
+        log(f"json fetch failed ({attempt}/{attempts}) for {url}; retrying")
+        sleep_backoff(attempt)
+    assert last_decode_exc is not None
+    raise last_decode_exc
 
 
 def download_file(url: str, destination: Path) -> None:
@@ -838,12 +913,16 @@ def download_file_verified(
     url: str,
     destination: Path,
     *,
-    expected_sha256: str,
+    expected_sha256: str | None,
     label: str,
 ) -> None:
     normalized_expected = normalize_sha256_digest(expected_sha256)
     if not normalized_expected:
-        raise PrebuiltFallback(f"{label} did not have a valid approved sha256")
+        download_file(url, destination)
+        log(
+            f"downloaded {label} without a published sha256; relying on install validation"
+        )
+        return
 
     for attempt in range(1, 3):
         download_file(url, destination)
@@ -898,7 +977,12 @@ def github_release(repo: str, tag: str) -> dict[str, Any]:
     return payload
 
 
-def github_releases(repo: str, *, per_page: int = 100) -> list[dict[str, Any]]:
+def github_releases(
+    repo: str,
+    *,
+    per_page: int = 100,
+    max_pages: int = 0,
+) -> list[dict[str, Any]]:
     releases: list[dict[str, Any]] = []
     page = 1
     while True:
@@ -912,6 +996,8 @@ def github_releases(repo: str, *, per_page: int = 100) -> list[dict[str, Any]]:
         if len(payload) < per_page:
             break
         page += 1
+        if max_pages > 0 and page > max_pages:
+            break
     return releases
 
 
@@ -923,6 +1009,372 @@ def latest_upstream_release_tag() -> str:
             f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
         )
     return tag
+
+
+def is_release_tag_like(value: str | None) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"b\d+", value.strip()))
+
+
+def release_time_sort_key(release: dict[str, Any]) -> tuple[str, int]:
+    published_at = release.get("published_at")
+    created_at = release.get("created_at")
+    release_id = release.get("id")
+    timestamp = (
+        published_at
+        if isinstance(published_at, str) and published_at
+        else created_at
+        if isinstance(created_at, str) and created_at
+        else ""
+    )
+    try:
+        normalized_id = int(release_id)
+    except (TypeError, ValueError):
+        normalized_id = 0
+    return (timestamp, normalized_id)
+
+
+def iter_release_payloads_by_time(
+    repo: str,
+    published_release_tag: str = "",
+    requested_tag: str = "",
+) -> Iterable[dict[str, Any]]:
+    if published_release_tag:
+        yield github_release(repo, published_release_tag)
+        return
+
+    if (
+        requested_tag
+        and requested_tag != "latest"
+        and is_release_tag_like(requested_tag)
+    ):
+        try:
+            yield github_release(repo, requested_tag)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                log(
+                    f"release tag {requested_tag} not found in {repo}; scanning recent releases"
+                )
+            else:
+                raise
+        except Exception:
+            raise
+
+    releases = [
+        release
+        for release in github_releases(
+            repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+        )
+        if isinstance(release, dict)
+        and not release.get("draft")
+        and not release.get("prerelease")
+    ]
+    releases.sort(key = release_time_sort_key, reverse = True)
+    for release in releases:
+        yield release
+
+
+def direct_release_matches_request(
+    *, release_tag: str, llama_tag: str, requested_tag: str
+) -> bool:
+    if requested_tag == "latest":
+        return True
+    for candidate in (release_tag, llama_tag):
+        if refs_match(candidate, requested_tag):
+            return True
+    return False
+
+
+def synthetic_checksums_for_release(
+    repo: str, release_tag: str, upstream_tag: str
+) -> ApprovedReleaseChecksums:
+    return ApprovedReleaseChecksums(
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        artifacts = {},
+    )
+
+
+def parse_direct_linux_release_bundle(
+    repo: str, release: dict[str, Any]
+) -> PublishedReleaseBundle | None:
+    release_tag = release.get("tag_name")
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+
+    assets = release_asset_map(release)
+    artifacts: list[PublishedLlamaArtifact] = []
+    inferred_labels: list[str] = []
+
+    linux_asset_re = re.compile(
+        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-(?:cuda12|cuda13)-(?:older|newer|portable))\.tar\.gz$"
+    )
+    for asset_name in sorted(assets):
+        match = linux_asset_re.fullmatch(asset_name)
+        if not match:
+            continue
+        inferred_labels.append(match.group("label"))
+        target = match.group("target")
+        if target in {"linux-x64", "linux-x64-cpu"}:
+            artifacts.append(
+                PublishedLlamaArtifact(
+                    asset_name = asset_name,
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                )
+            )
+            continue
+
+        bundle_profile = target.removeprefix("linux-x64-")
+        profile = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
+        if profile is None:
+            continue
+        artifacts.append(
+            PublishedLlamaArtifact(
+                asset_name = asset_name,
+                install_kind = "linux-cuda",
+                runtime_line = str(profile["runtime_line"]),
+                coverage_class = str(profile["coverage_class"]),
+                supported_sms = [str(value) for value in profile["supported_sms"]],
+                min_sm = int(profile["min_sm"]),
+                max_sm = int(profile["max_sm"]),
+                bundle_profile = bundle_profile,
+                rank = int(profile["rank"]),
+            )
+        )
+
+    if not artifacts:
+        return None
+
+    upstream_tag = (
+        release_tag
+        if is_release_tag_like(release_tag)
+        else inferred_labels[0]
+        if len(set(inferred_labels)) == 1 and inferred_labels
+        else release_tag
+    )
+    selection_log = [
+        f"published_release: repo={repo}",
+        f"published_release: tag={release_tag}",
+        f"published_release: upstream_tag={upstream_tag}",
+        "published_release: direct_asset_scan=linux",
+    ]
+    return PublishedReleaseBundle(
+        repo = repo,
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        assets = assets,
+        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        artifacts = artifacts,
+        selection_log = selection_log,
+    )
+
+
+def direct_linux_release_plan(
+    release: dict[str, Any],
+    host: HostInfo,
+    repo: str,
+    requested_tag: str,
+) -> InstallReleasePlan | None:
+    bundle = parse_direct_linux_release_bundle(repo, release)
+    if bundle is None:
+        return None
+    if not direct_release_matches_request(
+        release_tag = bundle.release_tag,
+        llama_tag = bundle.upstream_tag,
+        requested_tag = requested_tag,
+    ):
+        return None
+
+    attempts: list[AssetChoice] = []
+    if host.has_usable_nvidia:
+        selection = linux_cuda_choice_from_release(host, bundle)
+        if selection is not None:
+            attempts.extend(selection.attempts)
+    cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+    if cpu_choice is not None:
+        attempts.append(cpu_choice)
+    if not attempts:
+        raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+    return InstallReleasePlan(
+        requested_tag = requested_tag,
+        llama_tag = bundle.upstream_tag,
+        release_tag = bundle.release_tag,
+        attempts = attempts,
+        approved_checksums = synthetic_checksums_for_release(
+            repo,
+            bundle.release_tag,
+            bundle.upstream_tag,
+        ),
+    )
+
+
+def direct_upstream_release_plan(
+    release: dict[str, Any],
+    host: HostInfo,
+    repo: str,
+    requested_tag: str,
+) -> InstallReleasePlan | None:
+    release_tag = release.get("tag_name")
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+    if not direct_release_matches_request(
+        release_tag = release_tag,
+        llama_tag = release_tag,
+        requested_tag = requested_tag,
+    ):
+        return None
+
+    assets = release_asset_map(release)
+    attempts: list[AssetChoice] = []
+    if host.is_windows and host.is_x86_64:
+        if host.has_usable_nvidia:
+            torch_preference = detect_torch_cuda_runtime_preference(host)
+            attempts.extend(
+                windows_cuda_attempts(
+                    host,
+                    release_tag,
+                    assets,
+                    torch_preference.runtime_line,
+                    torch_preference.selection_log,
+                )
+            )
+        cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
+        cpu_url = assets.get(cpu_asset)
+        if cpu_url:
+            attempts.append(
+                AssetChoice(
+                    repo = repo,
+                    tag = release_tag,
+                    name = cpu_asset,
+                    url = cpu_url,
+                    source_label = "upstream",
+                    install_kind = "windows-cpu",
+                )
+            )
+    elif host.is_macos and host.is_arm64:
+        asset_name = f"llama-{release_tag}-bin-macos-arm64.tar.gz"
+        asset_url = assets.get(asset_name)
+        if asset_url:
+            attempts.append(
+                AssetChoice(
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "macos-arm64",
+                )
+            )
+    elif host.is_macos and host.is_x86_64:
+        asset_name = f"llama-{release_tag}-bin-macos-x64.tar.gz"
+        asset_url = assets.get(asset_name)
+        if asset_url:
+            attempts.append(
+                AssetChoice(
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "macos-x64",
+                )
+            )
+    elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia:
+        asset_name = f"llama-{release_tag}-bin-ubuntu-x64.tar.gz"
+        asset_url = assets.get(asset_name)
+        if asset_url:
+            attempts.append(
+                AssetChoice(
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "linux-cpu",
+                )
+            )
+    if not attempts:
+        raise PrebuiltFallback("no compatible upstream prebuilt asset was found")
+    return InstallReleasePlan(
+        requested_tag = requested_tag,
+        llama_tag = release_tag,
+        release_tag = release_tag,
+        attempts = attempts,
+        approved_checksums = synthetic_checksums_for_release(
+            repo,
+            release_tag,
+            release_tag,
+        ),
+    )
+
+
+def resolve_simple_install_release_plans(
+    llama_tag: str,
+    host: HostInfo,
+    published_repo: str,
+    published_release_tag: str,
+    *,
+    max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
+) -> tuple[str, list[InstallReleasePlan]]:
+    repo = published_repo or DEFAULT_PUBLISHED_REPO
+    requested_tag = normalized_requested_llama_tag(llama_tag)
+    allow_older_release_fallback = (
+        requested_tag == "latest" and not published_release_tag
+    )
+    release_limit = max(1, max_release_fallbacks)
+    plans: list[InstallReleasePlan] = []
+    last_error: PrebuiltFallback | None = None
+
+    try:
+        releases = iter_release_payloads_by_time(
+            repo, published_release_tag, requested_tag
+        )
+        for release in releases:
+            try:
+                if host.is_linux and repo == "unslothai/llama.cpp":
+                    plan = direct_linux_release_plan(release, host, repo, requested_tag)
+                else:
+                    plan = direct_upstream_release_plan(
+                        release, host, repo, requested_tag
+                    )
+                if plan is None:
+                    continue
+            except PrebuiltFallback as exc:
+                last_error = exc
+                if not allow_older_release_fallback:
+                    raise
+                release_tag = release.get("tag_name") or "unknown"
+                log(
+                    "published release skipped for install planning: "
+                    f"{repo}@{release_tag} ({exc})"
+                )
+                continue
+
+            plans.append(plan)
+            if not allow_older_release_fallback or len(plans) >= release_limit:
+                break
+    except PrebuiltFallback:
+        raise
+    except Exception as exc:
+        raise PrebuiltFallback(
+            f"failed to inspect published releases in {repo}: {exc}"
+        ) from exc
+
+    if plans:
+        return requested_tag, plans
+    if last_error is not None:
+        raise last_error
+    raise PrebuiltFallback(
+        f"no installable published llama.cpp releases were found in {repo}"
+    )
 
 
 def normalized_requested_llama_tag(requested_tag: str | None) -> str:
@@ -1435,7 +1887,7 @@ def iter_published_release_bundles(
     releases = (
         [github_release(repo, published_release_tag)]
         if published_release_tag
-        else github_releases(repo)
+        else github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     )
     for release in releases:
         if not published_release_tag and (
@@ -1669,7 +2121,9 @@ def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str 
 
 
 def iter_upstream_releases() -> Iterable[dict[str, Any]]:
-    for release in github_releases(UPSTREAM_REPO):
+    for release in github_releases(
+        UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+    ):
         if release.get("draft") or release.get("prerelease"):
             continue
         yield release
@@ -2799,7 +3253,7 @@ def hydrate_source_tree(
     work_dir: Path,
     *,
     source_repo: str = UPSTREAM_REPO,
-    expected_sha256: str,
+    expected_sha256: str | None,
     source_label: str | None = None,
     exact_source: bool = False,
 ) -> None:
@@ -3231,10 +3685,6 @@ def install_from_archives(
 ) -> tuple[Path, Path]:
     main_archive = work_dir / choice.name
     log(f"downloading {choice.name} from {choice.source_label} release")
-    if not choice.expected_sha256:
-        raise PrebuiltFallback(
-            f"approved checksum was missing for selected asset {choice.name}"
-        )
     download_file_verified(
         choice.url,
         main_archive,
@@ -3962,7 +4412,7 @@ def require_approved_source_hash(
 
 def preferred_source_archive(
     checksums: ApprovedReleaseChecksums, llama_tag: str
-) -> tuple[str, str, ApprovedArtifactHash, bool]:
+) -> tuple[str, str, ApprovedArtifactHash | None, bool]:
     exact_source = exact_source_archive_hash(checksums)
     exact_repo = repo_slug_from_source(checksums.source_repo) or repo_slug_from_source(
         checksums.source_repo_url
@@ -3974,7 +4424,7 @@ def preferred_source_archive(
             exact_source,
             True,
         )
-    legacy = require_approved_source_hash(checksums, llama_tag)
+    legacy = checksums.artifacts.get(source_archive_logical_name(llama_tag))
     return (
         UPSTREAM_REPO,
         llama_tag,
@@ -3990,6 +4440,8 @@ def selected_source_archive_metadata(
     _source_repo, _source_ref, source_archive, _exact_source = preferred_source_archive(
         checksums, llama_tag
     )
+    if source_archive is None:
+        return source_archive_logical_name(llama_tag), None
     return source_archive.asset_name, source_archive.sha256
 
 
@@ -4153,8 +4605,6 @@ def expected_install_fingerprint(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
 ) -> str | None:
-    if not choice.expected_sha256:
-        return None
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
         llama_tag,
@@ -4352,7 +4802,7 @@ def validate_prebuilt_choice(
         install_dir,
         work_dir,
         source_repo = source_repo,
-        expected_sha256 = source_archive.sha256,
+        expected_sha256 = source_archive.sha256 if source_archive is not None else None,
         source_label = (
             f"llama.cpp source tree for {source_repo}@{source_ref}"
             if exact_source
@@ -4477,7 +4927,12 @@ def validate_prebuilt_attempts(
 
 
 def install_prebuilt(
-    install_dir: Path, llama_tag: str, published_repo: str, published_release_tag: str
+    install_dir: Path,
+    llama_tag: str,
+    published_repo: str,
+    published_release_tag: str,
+    *,
+    simple_policy: bool = False,
 ) -> None:
     host = detect_host()
     choice: AssetChoice | None = None
@@ -4491,12 +4946,20 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            requested_tag, release_plans = resolve_install_release_plans(
-                llama_tag,
-                host,
-                published_repo,
-                published_release_tag,
-            )
+            if simple_policy:
+                requested_tag, release_plans = resolve_simple_install_release_plans(
+                    llama_tag,
+                    host,
+                    published_repo,
+                    published_release_tag,
+                )
+            else:
+                requested_tag, release_plans = resolve_install_release_plans(
+                    llama_tag,
+                    host,
+                    published_repo,
+                    published_release_tag,
+                )
             if release_plans and existing_install_matches_plan(
                 install_dir, host, release_plans[0]
             ):
@@ -4599,6 +5062,11 @@ def parse_args() -> argparse.Namespace:
             "Published GitHub release tag to pin. By default, scan releases "
             "until a usable published llama.cpp release bundle is found."
         ),
+    )
+    parser.add_argument(
+        "--simple-policy",
+        action = "store_true",
+        help = "Use the simplified platform-specific prebuilt selection policy.",
     )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
@@ -4719,6 +5187,7 @@ def main() -> int:
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
+        simple_policy = args.simple_policy,
     )
     return EXIT_SUCCESS
 

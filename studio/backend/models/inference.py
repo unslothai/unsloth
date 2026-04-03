@@ -48,6 +48,10 @@ class LoadRequest(BaseModel):
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
     )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -163,6 +167,10 @@ class LoadResponse(BaseModel):
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
     )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -224,6 +232,10 @@ class InferenceStatusResponse(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
 
 
