@@ -248,12 +248,6 @@ async def load_model(
                 )
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
-            # Default to ngram-mod speculative decoding for non-vision GGUF
-            # models.  Zero VRAM cost, 10-40% speedup on structured text.
-            effective_spec_type = request.speculative_type
-            if effective_spec_type is None and not config.is_vision:
-                effective_spec_type = "ngram-mod"
-
             # Route to HF mode or local mode based on config
             # Run in a thread so the event loop stays free for progress
             # polling and other requests during the (potentially long)
@@ -270,7 +264,7 @@ async def load_model(
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
-                    speculative_type = effective_spec_type,
+                    speculative_type = request.speculative_type,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -283,7 +277,7 @@ async def load_model(
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
-                    speculative_type = effective_spec_type,
+                    speculative_type = request.speculative_type,
                 )
 
             if not success:
