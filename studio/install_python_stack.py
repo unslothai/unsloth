@@ -72,6 +72,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             )
             if result.returncode == 0:
                 import re
+
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
                     return int(m.group(1)), int(m.group(2))
