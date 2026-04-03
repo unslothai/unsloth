@@ -883,8 +883,7 @@ def _check_signal_escape_patterns(code: str):
                         has_opaque_kwargs = True
 
                 cmd_kw_values = [
-                    v for k, v in expanded_kwargs.items()
-                    if k in _CMD_KWARGS
+                    v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS
                 ]
                 all_call_args = list(node.args) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
@@ -928,12 +927,9 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
                     shell_node = expanded_kwargs.get("shell")
-                    shell_safe = (
-                        shell_node is None
-                        or (
-                            isinstance(shell_node, ast.Constant)
-                            and shell_node.value is False
-                        )
+                    shell_safe = shell_node is None or (
+                        isinstance(shell_node, ast.Constant)
+                        and shell_node.value is False
                     )
                     if shell_func in _STRING_SHELL_FUNCS or not shell_safe:
 
