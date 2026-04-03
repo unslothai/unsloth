@@ -48,7 +48,12 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
     if not local_indices:
         return
 
-    # Verify a model is loaded
+    # Verify a model is loaded.
+    # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
+    # or swapped after this check but before the recipe subprocess calls /v1.
+    # The inference endpoint returns a clear 400 in that case.
+    #
+    # Imports are deferred to avoid circular dependencies with inference modules.
     from routes.inference import get_llama_cpp_backend
     from core.inference import get_inference_backend
 
@@ -62,15 +67,18 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
             "No model loaded in Chat. Load a model first, then run the recipe."
         )
 
-    from auth.authentication import create_access_token
+    from auth.authentication import create_access_token  # deferred: avoids circular import
 
+    # Uses the "unsloth" admin subject. If the user changes their password,
+    # the JWT secret rotates and this token becomes invalid mid-run.
+    # Acceptable for v1 — recipes typically finish well within one session.
     token = create_access_token(
         subject="unsloth",
         expires_delta=timedelta(hours=24),
     )
 
     # Always use loopback — request.base_url may reflect a proxy or 0.0.0.0
-    from urllib.parse import urlparse
+    from urllib.parse import urlparse  # deferred: only needed for local providers
     parsed = urlparse(request_base_url)
     port = parsed.port or 8888
     endpoint = f"http://127.0.0.1:{port}/v1"

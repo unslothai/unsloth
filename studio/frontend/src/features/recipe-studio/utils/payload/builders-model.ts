@@ -32,7 +32,7 @@ export function buildModelProvider(
     // biome-ignore lint/style/useNamingConvention: api schema
     extra_body: extraBody ?? {},
     // biome-ignore lint/style/useNamingConvention: api schema
-    is_local: config.is_local || undefined,
+    is_local: config.is_local === true ? true : undefined,
   };
 }
 
