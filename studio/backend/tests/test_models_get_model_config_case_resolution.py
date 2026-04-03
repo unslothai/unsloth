@@ -8,6 +8,7 @@ import types
 # Keep this test runnable in lightweight environments where optional logging
 # deps are not installed.
 if "structlog" not in sys.modules:
+
     class _DummyLogger:
         def __getattr__(self, _name):
             return lambda *args, **kwargs: None
