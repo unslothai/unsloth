@@ -60,13 +60,13 @@ def fetch_and_cache_update_status() -> UpdateStatus:
     global _cached_status
 
     try:
-        req = urllib.request.Request(_MANIFEST_URL, method="GET")
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
+        req = urllib.request.Request(_MANIFEST_URL, method = "GET")
+        with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT) as resp:
             manifest = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return _cached_status
 
-    status = UpdateStatus(manifest_fetched=True)
+    status = UpdateStatus(manifest_fetched = True)
 
     # -- Critical time check --
     critical_time_str = manifest.get("CRITICAL_TIME")
@@ -76,9 +76,7 @@ def fetch_and_cache_update_status() -> UpdateStatus:
             installed_ts = 0.0
             if _STUDIO_INFO_PATH.is_file():
                 try:
-                    info = json.loads(
-                        _STUDIO_INFO_PATH.read_text(encoding="utf-8")
-                    )
+                    info = json.loads(_STUDIO_INFO_PATH.read_text(encoding = "utf-8"))
                     installed_ts = _parse_iso_utc(info.get("installed_at_utc", ""))
                 except Exception:
                     pass
