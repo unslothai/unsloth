@@ -113,16 +113,27 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     for token in tokens:
         base = os.path.basename(token).lower()
+        # Strip common Windows executable extensions so that
+        # runas.exe, shutdown.bat, etc. match the blocklist.
+        stem, ext = os.path.splitext(base)
+        if ext in {".exe", ".com", ".bat", ".cmd"}:
+            base = stem
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
 
     # 2. Regex: catch blocked words at shell command boundaries
     #    (semicolons, pipes, &&, ||, backticks, $(), <(), subshells, newlines)
     #    Uses a single combined pattern for all blocked words.
+    #    Handles optional Unix path prefix (/usr/bin/) and Windows drive
+    #    letter prefix (C:\Windows\...\).
     lowered = command.lower()
     if _BLOCKED_COMMANDS:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
-        pattern = rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?({words_alt})\b"
+        pattern = (
+            rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
+            rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+            rf"({words_alt})(?:\.(?:exe|com|bat|cmd))?\b"
+        )
         blocked.update(re.findall(pattern, lowered))
 
     # 3. Check for nested shell invocations (bash -c 'sudo whoami',
