@@ -93,7 +93,7 @@ class Gemma4RMSNorm(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         y = x.astype(mx.float32)
-        mean_squared = mx.mean(y * y, axis=-1, keepdims=True) + self.eps
+        mean_squared = mx.mean(y * y, axis = -1, keepdims = True) + self.eps
         y = y * mx.rsqrt(mean_squared)
         if self.with_scale:
             y = y * self.weight.astype(mx.float32)
@@ -106,7 +106,7 @@ class Float32RoPE(nn.Module):
         self.rope = rope
 
     def __call__(self, x: mx.array, offset: Union[int, mx.array] = 0) -> mx.array:
-        y = self.rope(x.astype(mx.float32), offset=offset)
+        y = self.rope(x.astype(mx.float32), offset = offset)
         return y.astype(x.dtype)
 
 
@@ -118,9 +118,9 @@ class MLP(nn.Module):
         use_double_wide_mlp = args.use_double_wide_mlp and is_kv_shared_layer
         hidden_dim = args.intermediate_size * (2 if use_double_wide_mlp else 1)
 
-        self.gate_proj = nn.Linear(args.hidden_size, hidden_dim, bias=False)
-        self.up_proj = nn.Linear(args.hidden_size, hidden_dim, bias=False)
-        self.down_proj = nn.Linear(hidden_dim, args.hidden_size, bias=False)
+        self.gate_proj = nn.Linear(args.hidden_size, hidden_dim, bias = False)
+        self.up_proj = nn.Linear(args.hidden_size, hidden_dim, bias = False)
+        self.down_proj = nn.Linear(hidden_dim, args.hidden_size, bias = False)
         self.act = ACT2FN[args.hidden_activation]
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -137,17 +137,15 @@ def build_rope(args: ModelArgs, layer_type: str, head_dim: int):
         rope_angles = int(partial_rotary_factor * head_dim // 2)
         # Use full head_dim RoPE but with zero inv_freq for NoPE dimensions,
         # matching HF's rotate_half pairing: (0, head_dim//2), (1, head_dim//2+1), ...
-        return Float32RoPE(
-            ProportionalRoPE(head_dim, rope_angles, base=rope_theta)
-        )
+        return Float32RoPE(ProportionalRoPE(head_dim, rope_angles, base = rope_theta))
 
     return Float32RoPE(
         initialize_rope(
-            dims=head_dim,
-            base=rope_theta,
-            traditional=False,
-            scaling_config=rope_config,
-            max_position_embeddings=args.max_position_embeddings,
+            dims = head_dim,
+            base = rope_theta,
+            traditional = False,
+            scaling_config = rope_config,
+            max_position_embeddings = args.max_position_embeddings,
         )
     )
 
@@ -166,12 +164,12 @@ class ProportionalRoPE(nn.Module):
         self.rope_angles = rope_angles
 
         inv_freq_rotated = 1.0 / (
-            base ** (mx.arange(0, 2 * rope_angles, 2, dtype=mx.float32) / head_dim)
+            base ** (mx.arange(0, 2 * rope_angles, 2, dtype = mx.float32) / head_dim)
         )
         nope_angles = head_dim // 2 - rope_angles
         if nope_angles > 0:
             self._inv_freq = mx.concatenate(
-                [inv_freq_rotated, mx.zeros(nope_angles, dtype=mx.float32)]
+                [inv_freq_rotated, mx.zeros(nope_angles, dtype = mx.float32)]
             )
         else:
             self._inv_freq = inv_freq_rotated
@@ -179,7 +177,7 @@ class ProportionalRoPE(nn.Module):
     def __call__(self, x: mx.array, offset: int = 0) -> mx.array:
         # x shape: (B, n_heads, L, head_dim)
         seq_len = x.shape[-2]
-        positions = mx.arange(offset, offset + seq_len, dtype=mx.float32)
+        positions = mx.arange(offset, offset + seq_len, dtype = mx.float32)
 
         # (L, head_dim//2)
         freqs = mx.outer(positions, self._inv_freq)
@@ -191,7 +189,7 @@ class ProportionalRoPE(nn.Module):
         half = self.head_dim // 2
         x1 = x[..., :half]
         x2 = x[..., half:]
-        out = mx.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
+        out = mx.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis = -1)
         return out
 
 
@@ -222,12 +220,12 @@ class Attention(nn.Module):
         self.q_proj = nn.Linear(
             args.hidden_size,
             self.n_heads * self.head_dim,
-            bias=args.attention_bias,
+            bias = args.attention_bias,
         )
         self.k_proj = nn.Linear(
             args.hidden_size,
             self.n_kv_heads * self.head_dim,
-            bias=args.attention_bias,
+            bias = args.attention_bias,
         )
         self.v_proj = (
             None
@@ -235,19 +233,19 @@ class Attention(nn.Module):
             else nn.Linear(
                 args.hidden_size,
                 self.n_kv_heads * self.head_dim,
-                bias=args.attention_bias,
+                bias = args.attention_bias,
             )
         )
         self.o_proj = nn.Linear(
             self.n_heads * self.head_dim,
             args.hidden_size,
-            bias=args.attention_bias,
+            bias = args.attention_bias,
         )
 
-        self.q_norm = Gemma4RMSNorm(self.head_dim, eps=args.rms_norm_eps)
-        self.k_norm = Gemma4RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+        self.q_norm = Gemma4RMSNorm(self.head_dim, eps = args.rms_norm_eps)
+        self.k_norm = Gemma4RMSNorm(self.head_dim, eps = args.rms_norm_eps)
         self.v_norm = Gemma4RMSNorm(
-            self.head_dim, eps=args.rms_norm_eps, with_scale=False
+            self.head_dim, eps = args.rms_norm_eps, with_scale = False
         )
         self.rope = build_rope(args, self.layer_type, self.head_dim)
 
@@ -261,9 +259,11 @@ class Attention(nn.Module):
         batch_size, seq_len, _ = x.shape
         offset = position_offset
 
-        queries = self.q_proj(x).reshape(batch_size, seq_len, self.n_heads, self.head_dim)
+        queries = self.q_proj(x).reshape(
+            batch_size, seq_len, self.n_heads, self.head_dim
+        )
         queries = self.q_norm(queries).transpose(0, 2, 1, 3)
-        queries = self.rope(queries, offset=offset)
+        queries = self.rope(queries, offset = offset)
 
         if self.is_kv_shared_layer and cache is not None and len(cache) > 0:
             keys, values = cache.state
@@ -280,7 +280,7 @@ class Attention(nn.Module):
             )
 
             keys = self.k_norm(raw_keys).transpose(0, 2, 1, 3)
-            keys = self.rope(keys, offset=offset)
+            keys = self.rope(keys, offset = offset)
 
             values = self.v_norm(raw_values).transpose(0, 2, 1, 3)
 
@@ -291,9 +291,9 @@ class Attention(nn.Module):
             queries,
             keys,
             values,
-            cache=cache,
-            scale=self.scale,
-            mask=mask,
+            cache = cache,
+            scale = self.scale,
+            mask = mask,
         )
         output = output.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
         return self.o_proj(output)
@@ -306,28 +306,28 @@ class TransformerBlock(nn.Module):
         self.self_attn = Attention(args, layer_idx)
         self.mlp = MLP(args, layer_idx)
 
-        self.input_layernorm = Gemma4RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.input_layernorm = Gemma4RMSNorm(args.hidden_size, eps = args.rms_norm_eps)
         self.post_attention_layernorm = Gemma4RMSNorm(
-            args.hidden_size, eps=args.rms_norm_eps
+            args.hidden_size, eps = args.rms_norm_eps
         )
         self.pre_feedforward_layernorm = Gemma4RMSNorm(
-            args.hidden_size, eps=args.rms_norm_eps
+            args.hidden_size, eps = args.rms_norm_eps
         )
         self.post_feedforward_layernorm = Gemma4RMSNorm(
-            args.hidden_size, eps=args.rms_norm_eps
+            args.hidden_size, eps = args.rms_norm_eps
         )
         self.layer_scalar = mx.ones((1,))
 
         if self.hidden_size_per_layer_input:
             self.act = ACT2FN[args.hidden_activation]
             self.per_layer_input_gate = nn.Linear(
-                args.hidden_size, args.hidden_size_per_layer_input, bias=False
+                args.hidden_size, args.hidden_size_per_layer_input, bias = False
             )
             self.per_layer_projection = nn.Linear(
-                args.hidden_size_per_layer_input, args.hidden_size, bias=False
+                args.hidden_size_per_layer_input, args.hidden_size, bias = False
             )
             self.post_per_layer_input_norm = Gemma4RMSNorm(
-                args.hidden_size, eps=args.rms_norm_eps
+                args.hidden_size, eps = args.rms_norm_eps
             )
 
     def __call__(
@@ -340,7 +340,7 @@ class TransformerBlock(nn.Module):
     ) -> mx.array:
         residual = x
         h = self.input_layernorm(x)
-        h = self.self_attn(h, mask, cache, position_offset=position_offset)
+        h = self.self_attn(h, mask, cache, position_offset = position_offset)
         h = self.post_attention_layernorm(h)
         h = residual + h
 
@@ -362,7 +362,7 @@ class TransformerBlock(nn.Module):
         return h * self.layer_scalar
 
 
-@partial(mx.compile, shapeless=True)
+@partial(mx.compile, shapeless = True)
 def logit_softcap(softcap, x):
     out = mx.tanh(x / softcap)
     out = out * softcap
@@ -373,7 +373,9 @@ class Gemma4Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         if args.enable_moe_block:
-            raise NotImplementedError("Gemma4 MoE layers are not implemented in mlx-lm.")
+            raise NotImplementedError(
+                "Gemma4 MoE layers are not implemented in mlx-lm."
+            )
 
         self.args = args
         self.vocab_size = args.vocab_size
@@ -389,10 +391,10 @@ class Gemma4Model(nn.Module):
 
         self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
         self.layers = [
-            TransformerBlock(args=args, layer_idx=i)
+            TransformerBlock(args = args, layer_idx = i)
             for i in range(args.num_hidden_layers)
         ]
-        self.norm = Gemma4RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.norm = Gemma4RMSNorm(args.hidden_size, eps = args.rms_norm_eps)
 
         if self.hidden_size_per_layer_input:
             self.embed_tokens_per_layer = nn.Embedding(
@@ -402,11 +404,11 @@ class Gemma4Model(nn.Module):
             self.per_layer_model_projection = nn.Linear(
                 args.hidden_size,
                 args.num_hidden_layers * args.hidden_size_per_layer_input,
-                bias=False,
+                bias = False,
             )
             self.per_layer_projection_norm = Gemma4RMSNorm(
                 args.hidden_size_per_layer_input,
-                eps=args.rms_norm_eps,
+                eps = args.rms_norm_eps,
             )
 
         concrete_layers = args.layer_types[: self.first_kv_shared_layer_idx]
@@ -423,8 +425,8 @@ class Gemma4Model(nn.Module):
                 self.layer_idx_to_cache_idx.append(i)
                 continue
 
-            shared_idx = len(concrete_layers) - 1 - concrete_layers[::-1].index(
-                layer_type
+            shared_idx = (
+                len(concrete_layers) - 1 - concrete_layers[::-1].index(layer_type)
             )
             self.layer_idx_to_cache_idx.append(shared_idx)
 
@@ -461,14 +463,14 @@ class Gemma4Model(nn.Module):
             exact_matches = mx.all(
                 input_embeddings[:, :, None, :]
                 == self.embed_tokens.weight[None, None, :, :] * self.embed_scale,
-                axis=-1,
+                axis = -1,
             )
-            if not mx.all(mx.sum(exact_matches, axis=-1) == 1):
+            if not mx.all(mx.sum(exact_matches, axis = -1) == 1):
                 raise ValueError(
                     "Gemma4 input embeddings must exactly match embed_tokens when "
                     "input ids are omitted."
                 )
-            input_ids = mx.argmax(exact_matches, axis=-1).astype(mx.int32)
+            input_ids = mx.argmax(exact_matches, axis = -1).astype(mx.int32)
 
         tokens = mx.where(
             input_ids < self.args.vocab_size_per_layer_input,
@@ -488,7 +490,8 @@ class Gemma4Model(nn.Module):
         per_layer_inputs: mx.array,
     ) -> mx.array:
         per_layer_projection = (
-            self.per_layer_model_projection(inputs_embeds) * self.per_layer_projection_scale
+            self.per_layer_model_projection(inputs_embeds)
+            * self.per_layer_projection_scale
         )
         per_layer_projection = per_layer_projection.reshape(
             *inputs_embeds.shape[:-1],
@@ -501,7 +504,7 @@ class Gemma4Model(nn.Module):
     def __call__(
         self,
         inputs: Optional[mx.array],
-        cache=None,
+        cache = None,
         input_embeddings: Optional[mx.array] = None,
     ) -> mx.array:
         if input_embeddings is None:
@@ -519,11 +522,15 @@ class Gemma4Model(nn.Module):
                 # Must create real caches so template layers store KV
                 # for shared layers to reuse — even without external cache
                 cache = []
-                for layer_type in self.args.layer_types[:self.first_kv_shared_layer_idx]:
+                for layer_type in self.args.layer_types[
+                    : self.first_kv_shared_layer_idx
+                ]:
                     if layer_type == "full_attention":
                         cache.append(KVCache())
                     else:
-                        cache.append(RotatingKVCache(max_size=self.args.sliding_window, keep=0))
+                        cache.append(
+                            RotatingKVCache(max_size = self.args.sliding_window, keep = 0)
+                        )
             else:
                 cache = [None] * self.num_hidden_layers
 
@@ -538,7 +545,7 @@ class Gemma4Model(nn.Module):
             else create_attention_mask(
                 h,
                 cache[self.first_sliding_idx],
-                window_size=self.args.sliding_window,
+                window_size = self.args.sliding_window,
             )
         )
         global_offset = (
@@ -561,13 +568,15 @@ class Gemma4Model(nn.Module):
             per_layer_input = (
                 None if per_layer_inputs is None else per_layer_inputs[:, :, i, :]
             )
-            cache_entry = None if cache is None else cache[self.layer_idx_to_cache_idx[i]]
+            cache_entry = (
+                None if cache is None else cache[self.layer_idx_to_cache_idx[i]]
+            )
             h = layer(
                 h,
-                mask=mask,
-                cache=cache_entry,
-                per_layer_input=per_layer_input,
-                position_offset=position_offset,
+                mask = mask,
+                cache = cache_entry,
+                per_layer_input = per_layer_input,
+                position_offset = position_offset,
             )
 
         return self.norm(h)
@@ -581,15 +590,15 @@ class Model(nn.Module):
         self.model = Gemma4Model(args)
         self.tie_word_embeddings = False
         self.final_logit_softcapping = args.final_logit_softcapping
-        self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+        self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias = False)
 
     def __call__(
         self,
         inputs: Optional[mx.array],
-        cache=None,
+        cache = None,
         input_embeddings: Optional[mx.array] = None,
     ) -> mx.array:
-        out = self.model(inputs, cache=cache, input_embeddings=input_embeddings)
+        out = self.model(inputs, cache = cache, input_embeddings = input_embeddings)
         if self.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
         else:
@@ -615,6 +624,6 @@ class Model(nn.Module):
                 caches.append(KVCache())
             else:
                 caches.append(
-                    RotatingKVCache(max_size=self.args.sliding_window, keep=0)
+                    RotatingKVCache(max_size = self.args.sliding_window, keep = 0)
                 )
         return caches
