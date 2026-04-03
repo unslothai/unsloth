@@ -29,6 +29,28 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
+# Pre-import modules used in _sandbox_preexec at module level so that
+# the preexec_fn closure does not trigger the import machinery in the
+# forked child (which can deadlock in multi-threaded servers).
+_libc = None
+if sys.platform == "linux":
+    try:
+        import ctypes
+        import ctypes.util
+
+        _libc_name = ctypes.util.find_library("c")
+        if _libc_name:
+            _libc = ctypes.CDLL(_libc_name, use_errno = True)
+    except (OSError, AttributeError):
+        pass
+
+_resource = None
+if sys.platform != "win32":
+    try:
+        import resource as _resource
+    except ImportError:
+        pass
+
 # Strict raster-image allowlist for sandbox file serving.
 # No .svg (XSS risk via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
@@ -181,26 +203,25 @@ def _sandbox_preexec():
     On Linux, applies PR_SET_NO_NEW_PRIVS so sudo/su/pkexec fail at the
     kernel level. On Linux and macOS, sets RLIMIT_NPROC and RLIMIT_FSIZE.
     No-op on Windows (use creationflags instead).
-    """
-    if sys.platform == "linux":
-        try:
-            import ctypes
 
-            libc = ctypes.CDLL("libc.so.6", use_errno = True)
+    All modules and handles are resolved at import time (module level) so
+    this function does not trigger Python imports in the forked child,
+    avoiding potential deadlocks in multi-threaded servers.
+    """
+    if _libc is not None:
+        try:
             # PR_SET_NO_NEW_PRIVS = 38, arg2 = 1 (enable)
-            libc.prctl(38, 1, 0, 0, 0)
+            _libc.prctl(38, 1, 0, 0, 0)
         except (OSError, AttributeError):
             pass  # Not available (container, old kernel, etc.)
 
-    if sys.platform != "win32":
+    if _resource is not None:
         try:
-            import resource
-
             # Limit number of child processes (prevents fork bombs)
-            resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+            _resource.setrlimit(_resource.RLIMIT_NPROC, (256, 256))
             # Limit file size to 100MB (prevents disk filling)
-            resource.setrlimit(
-                resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
+            _resource.setrlimit(
+                _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
             )
         except (ValueError, OSError):
             pass
