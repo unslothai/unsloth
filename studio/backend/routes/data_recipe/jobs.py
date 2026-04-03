@@ -69,7 +69,11 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
         expires_delta=timedelta(hours=24),
     )
 
-    endpoint = request_base_url.rstrip("/") + "/v1"
+    # Always use loopback — request.base_url may reflect a proxy or 0.0.0.0
+    from urllib.parse import urlparse
+    parsed = urlparse(request_base_url)
+    port = parsed.port or 8888
+    endpoint = f"http://127.0.0.1:{port}/v1"
 
     for i in local_indices:
         providers[i]["endpoint"] = endpoint

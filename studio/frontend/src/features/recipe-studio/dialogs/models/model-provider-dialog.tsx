@@ -56,7 +56,9 @@ export function ModelProviderDialog({
                 ? "border-primary/40 bg-primary/5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
-            onClick={() => onUpdate({ is_local: true })}
+            onClick={() =>
+              onUpdate({ is_local: true, endpoint: "", api_key: "", api_key_env: "" })
+            }
           >
             <p className="text-sm font-semibold text-foreground">
               Local model
