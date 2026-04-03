@@ -476,7 +476,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(unstable_threadId);
+      const useAdapter = await resolveUseAdapter(resolvedThreadId);
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
