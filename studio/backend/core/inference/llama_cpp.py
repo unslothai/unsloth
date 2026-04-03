@@ -1332,10 +1332,14 @@ class LlamaCppBackend:
                 if not is_vision:  # spec decoding disabled for vision models
                     cmd.extend(["--spec-type", speculative_type])
                     if speculative_type == "ngram-mod":
-                        cmd.extend([
-                            "--spec-ngram-size-n", "16",
-                            "--draft-max", "24",
-                        ])
+                        cmd.extend(
+                            [
+                                "--spec-ngram-size-n",
+                                "16",
+                                "--draft-max",
+                                "24",
+                            ]
+                        )
                     self._speculative_type = speculative_type
                 else:
                     self._speculative_type = None
