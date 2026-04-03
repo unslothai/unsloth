@@ -23,7 +23,56 @@ from models.data_recipe import (
     RecipePayload,
 )
 
+from datetime import timedelta
+
 router = APIRouter()
+
+
+def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> None:
+    """
+    Mutate recipe dict in-place: for any provider with is_local=True,
+    generate a 24h JWT and fill in the endpoint pointing at this server.
+    """
+    providers = recipe.get("model_providers")
+    if not providers:
+        return
+
+    has_local = any(p.get("is_local") for p in providers if isinstance(p, dict))
+    if not has_local:
+        return
+
+    # Verify a model is loaded
+    from routes.inference import get_llama_cpp_backend
+    from core.inference import get_inference_backend
+
+    llama = get_llama_cpp_backend()
+    model_loaded = llama.is_loaded
+    if not model_loaded:
+        backend = get_inference_backend()
+        model_loaded = bool(backend.active_model_name)
+    if not model_loaded:
+        raise ValueError(
+            "No model loaded in Chat. Load a model first, then run the recipe."
+        )
+
+    from auth.authentication import create_access_token
+
+    token = create_access_token(
+        subject="unsloth",
+        expires_delta=timedelta(hours=24),
+    )
+
+    endpoint = request_base_url.rstrip("/") + "/v1"
+
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        is_local = provider.pop("is_local", None)
+        if not is_local:
+            continue
+        provider["endpoint"] = endpoint
+        provider["api_key"] = token
+        provider["provider_type"] = "openai"
 
 
 def _normalize_run_name(value: Any) -> str | None:
@@ -40,7 +89,7 @@ def _normalize_run_name(value: Any) -> str | None:
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
-def create_job(payload: RecipePayload):
+def create_job(payload: RecipePayload, request: Request):
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
@@ -66,6 +115,11 @@ def create_job(payload: RecipePayload):
             raise HTTPException(
                 status_code = 400, detail = f"invalid run_config: {exc}"
             ) from exc
+
+    try:
+        _inject_local_providers(recipe, str(request.base_url))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     mgr = get_job_manager()
     try:
