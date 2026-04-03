@@ -92,7 +92,11 @@ def _find_blocked_commands(command: str) -> set[str]:
     #    for blocked commands.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     for i, token in enumerate(tokens):
-        if token == "-c" and i > 0 and os.path.basename(tokens[i - 1]).lower() in _SHELLS:
+        if (
+            token == "-c"
+            and i > 0
+            and os.path.basename(tokens[i - 1]).lower() in _SHELLS
+        ):
             # The next token(s) are the shell command string
             for j in range(i + 1, len(tokens)):
                 for word in tokens[j].lower().split():
