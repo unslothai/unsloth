@@ -157,24 +157,33 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["fallbacks"] += 1
         return model_name
 
-    if use_memo:
-        cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
-        if cached is not None:
-            _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
-            return cached
-
     cache_dir = _hf_hub_cache_dir()
     if not cache_dir.exists():
         _CACHE_CASE_RESOLUTION_STATS["fallbacks"] += 1
         return model_name
 
     expected_dir = f"models--{model_name.replace('/', '--')}"
+
+    # Always check the exact-case path first so a newly-appeared exact match
+    # wins over any previously memoized variant.
     exact_path = cache_dir / expected_dir
     if exact_path.exists():
         if use_memo:
             _CACHE_CASE_RESOLUTION_MEMO[model_name] = model_name
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
+
+    # Validate memoized entries still exist on disk before returning them.
+    # This prevents stale results when cache dirs are deleted/recreated.
+    if use_memo:
+        cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
+        if cached is not None:
+            cached_path = cache_dir / f"models--{cached.replace('/', '--')}"
+            if cached_path.is_dir():
+                _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
+                return cached
+            # Stale entry -- drop it and re-scan below.
+            _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
 
     expected_lower = expected_dir.lower()
     try:
