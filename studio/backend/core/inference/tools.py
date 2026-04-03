@@ -143,11 +143,16 @@ def _find_blocked_commands(command: str) -> set[str]:
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
-        # Look backwards past any flags to find the shell binary
+        # Look backwards past any flags to find the shell binary.
+        # On Unix, flags start with - (skip those). On Windows, flags
+        # start with / but so do absolute paths, so only skip short
+        # single-char /X flags (not /bin/bash style paths).
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
-            if prev.startswith("-") or prev.startswith("/"):
-                continue  # skip flags
+            if prev.startswith("-"):
+                continue  # skip Unix flags like --login, -l
+            if is_win_c and prev.startswith("/") and len(prev) <= 3:
+                continue  # skip Windows flags like /s, /q (not /bin/bash)
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
@@ -208,8 +213,12 @@ def _sandbox_preexec():
     """Pre-exec hook: drop privilege escalation ability and set resource limits.
 
     On Linux, applies PR_SET_NO_NEW_PRIVS so sudo/su/pkexec fail at the
-    kernel level. On Linux and macOS, sets RLIMIT_NPROC and RLIMIT_FSIZE.
+    kernel level. On Linux and macOS, sets RLIMIT_FSIZE.
     No-op on Windows (use creationflags instead).
+
+    Note: RLIMIT_NPROC is intentionally NOT set because Linux enforces it
+    per real UID, not per process tree, so it would starve the Studio
+    server and other sessions sharing the same user account.
 
     All modules and handles are resolved at import time (module level) so
     this function does not trigger Python imports in the forked child,
@@ -224,8 +233,6 @@ def _sandbox_preexec():
 
     if _resource is not None:
         try:
-            # Limit number of child processes (prevents fork bombs)
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (256, 256))
             # Limit file size to 100MB (prevents disk filling)
             _resource.setrlimit(
                 _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
@@ -869,30 +876,48 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
                 else:
-
-                    def _is_safe_literal(n):
-                        if _extract_string_from_node(n) is not None:
-                            return True
-                        if isinstance(n, (ast.List, ast.Tuple)):
-                            return all(
-                                _extract_string_from_node(e) is not None for e in n.elts
-                            )
-                        return False
-
-                    has_non_literal = any(
-                        not _is_safe_literal(a) for a in all_call_args
+                    # Only flag dynamic args for functions that interpret
+                    # strings as shell commands, or when shell=True is set.
+                    # List-based subprocess calls with shell=False (the
+                    # default) do not pass through a shell, so a dynamic
+                    # list variable is not a shell escape vector.
+                    _STRING_SHELL_FUNCS = frozenset({
+                        "os.system", "os.popen", "os.popen2", "os.popen3",
+                        "os.popen4", "subprocess.getoutput",
+                        "subprocess.getstatusoutput",
+                    })
+                    shell_kwarg_true = any(
+                        kw.arg == "shell"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is True
+                        for kw in node.keywords
                     )
-                    if has_non_literal:
-                        shell_escapes.append(
-                            {
-                                "type": "shell_escape_dynamic",
-                                "line": node.lineno,
-                                "description": (
-                                    f"{shell_func}() called with non-literal argument "
-                                    f"(potential shell escape)"
-                                ),
-                            }
+                    if shell_func in _STRING_SHELL_FUNCS or shell_kwarg_true:
+
+                        def _is_safe_literal(n):
+                            if _extract_string_from_node(n) is not None:
+                                return True
+                            if isinstance(n, (ast.List, ast.Tuple)):
+                                return all(
+                                    _extract_string_from_node(e) is not None
+                                    for e in n.elts
+                                )
+                            return False
+
+                        has_non_literal = any(
+                            not _is_safe_literal(a) for a in all_call_args
                         )
+                        if has_non_literal:
+                            shell_escapes.append(
+                                {
+                                    "type": "shell_escape_dynamic",
+                                    "line": node.lineno,
+                                    "description": (
+                                        f"{shell_func}() called with non-literal "
+                                        f"shell command (potential shell escape)"
+                                    ),
+                                }
+                            )
 
             self.generic_visit(node)
 
