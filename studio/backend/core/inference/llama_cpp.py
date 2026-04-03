@@ -109,6 +109,7 @@ class LlamaCppBackend:
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        self._speculative_type: Optional[str] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
@@ -197,6 +198,10 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def speculative_type(self) -> Optional[str]:
+        return self._speculative_type
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -1055,6 +1060,7 @@ class LlamaCppBackend:
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
+        speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
     ) -> bool:
@@ -1315,6 +1321,27 @@ class LlamaCppBackend:
             else:
                 self._cache_type_kv = None
 
+            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+            # ngram-mod is recommended: 4MB fixed hash, auto-resets on low
+            # acceptance, zero VRAM overhead.  Defaults tuned for mixed use
+            # (chat + code + reasoning):
+            #   --spec-ngram-size-n 16  (source warns if <16 for ngram-mod)
+            #   --draft-max 24          (middle ground: chat=16, code=32)
+            _valid_spec_types = {"ngram-simple", "ngram-mod"}
+            if speculative_type and speculative_type in _valid_spec_types:
+                if not is_vision:  # spec decoding disabled for vision models
+                    cmd.extend(["--spec-type", speculative_type])
+                    if speculative_type == "ngram-mod":
+                        cmd.extend([
+                            "--spec-ngram-size-n", "16",
+                            "--draft-max", "24",
+                        ])
+                    self._speculative_type = speculative_type
+                else:
+                    self._speculative_type = None
+            else:
+                self._speculative_type = None
+
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
@@ -1553,6 +1580,7 @@ class LlamaCppBackend:
             self._reasoning_always_on = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_heads = None
