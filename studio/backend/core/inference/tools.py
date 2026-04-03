@@ -99,9 +99,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             and i > 0
             and os.path.basename(tokens[i - 1]).lower() in _SHELLS
         ):
-            # The next token(s) are the shell command string
-            for j in range(i + 1, len(tokens)):
-                for word in tokens[j].lower().split():
+            # The next token is the shell command string; tokens after
+            # that are $0, $1, ... positional parameters (not commands).
+            if i + 1 < len(tokens):
+                for word in tokens[i + 1].lower().split():
                     base = os.path.basename(word)
                     if base in _BLOCKED_COMMANDS:
                         blocked.add(base)
