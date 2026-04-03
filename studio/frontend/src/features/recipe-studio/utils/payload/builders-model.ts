@@ -31,6 +31,8 @@ export function buildModelProvider(
     extra_headers: extraHeaders ?? {},
     // biome-ignore lint/style/useNamingConvention: api schema
     extra_body: extraBody ?? {},
+    // biome-ignore lint/style/useNamingConvention: api schema
+    is_local: config.is_local || undefined,
   };
 }
 
