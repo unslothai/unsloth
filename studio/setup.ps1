@@ -34,7 +34,7 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
-$DefaultLlamaForceCompileRef = "main"
+$DefaultLlamaForceCompileRef = "master"
 
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
@@ -1737,10 +1737,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     if (Test-Path $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
     }
-    if ($SkipPrebuiltInstall) {
-        substep "Skipping prebuilt install because prebuilt tag resolution failed -- falling back to source build" "Yellow"
-    } else {
-        $prebuiltArgs = @(
+    $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
             "--llama-tag", $RequestedLlamaTag,
@@ -1805,7 +1802,6 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
         }
-    }
 }
 
 # ==========================================================================

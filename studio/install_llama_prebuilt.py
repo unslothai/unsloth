@@ -104,7 +104,7 @@ DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     2,
     minimum = 1,
 )
-FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "main")
+FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-older": {
