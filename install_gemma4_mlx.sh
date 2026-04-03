@@ -133,8 +133,17 @@ uv pip install --python "$_VENV_PY" -q mlx mlx-lm 2>/dev/null
 substep "done"
 
 step "install" "installing transformers>=5.5.0..."
-uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null
-substep "done"
+if uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null; then
+    substep "installed from PyPI"
+else
+    substep "PyPI install failed (Python <3.10?), trying GitHub..."
+    if uv pip install --python "$_VENV_PY" -q "git+https://github.com/huggingface/transformers.git@v5.5-release" 2>/dev/null; then
+        substep "installed from huggingface/transformers v5.5-release"
+    else
+        step "warning" "could not install transformers>=5.5.0" "$C_WARN"
+        substep "tried: PyPI, huggingface/transformers v5.5-release"
+    fi
+fi
 
 # ── Find mlx-lm models directory ─────────────────────────────
 MLX_MODELS=$("$_VENV_PY" -c "import mlx_lm; print(mlx_lm.__path__[0])")/models
