@@ -230,7 +230,10 @@ async def update_check():
     s = get_update_status()
     if not s.manifest_fetched:
         # Background thread may not have finished yet -- fetch inline.
-        s = fetch_and_cache_update_status()
+        # Run in a thread to avoid blocking the async event loop.
+        import asyncio
+
+        s = await asyncio.to_thread(fetch_and_cache_update_status)
     return {
         "critical": s.critical,
         "announcement_badge": s.announcement_badge,
