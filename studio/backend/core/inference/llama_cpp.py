@@ -1322,24 +1322,22 @@ class LlamaCppBackend:
                 self._cache_type_kv = None
 
             # Speculative decoding (n-gram self-speculation, zero VRAM cost)
-            # ngram-mod is recommended: 4MB fixed hash, auto-resets on low
-            # acceptance, zero VRAM overhead.  Defaults tuned for mixed use
-            # (chat + code + reasoning):
-            #   --spec-ngram-size-n 16  (source warns if <16 for ngram-mod)
-            #   --draft-max 24          (middle ground: chat=16, code=32)
+            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+            # variable draft lengths.  Params from llama.cpp docs:
+            #   --spec-ngram-size-n 24  (small n not recommended)
+            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+            #     dense models can reduce these)
+            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
             _valid_spec_types = {"ngram-simple", "ngram-mod"}
             if speculative_type and speculative_type in _valid_spec_types:
                 if not is_vision:  # spec decoding disabled for vision models
                     cmd.extend(["--spec-type", speculative_type])
                     if speculative_type == "ngram-mod":
-                        cmd.extend(
-                            [
-                                "--spec-ngram-size-n",
-                                "16",
-                                "--draft-max",
-                                "24",
-                            ]
-                        )
+                        cmd.extend([
+                            "--spec-ngram-size-n", "24",
+                            "--draft-min", "48",
+                            "--draft-max", "64",
+                        ])
                     self._speculative_type = speculative_type
                 else:
                     self._speculative_type = None
