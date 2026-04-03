@@ -3511,17 +3511,19 @@ class UnslothTrainer:
             with open(config_path, "r") as f:
                 config = json.load(f)
 
-            # Determine the training method
-            if self._preference_training:
-                method = "dpo"
-            elif self.load_in_4bit:
+            # Determine the training method -- preserve qlora/lora for
+            # downstream inference loaders that key off this field.
+            if self.load_in_4bit:
                 method = "qlora"
             else:
                 method = "lora"
 
             config["unsloth_training_method"] = method
+            if self._preference_training:
+                config["unsloth_objective"] = "dpo"
             logger.info(
                 f"Patching adapter_config.json with unsloth_training_method='{method}'"
+                + (", unsloth_objective='dpo'" if self._preference_training else "")
             )
 
             with open(config_path, "w") as f:

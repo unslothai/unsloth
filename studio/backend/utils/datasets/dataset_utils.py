@@ -402,12 +402,12 @@ def _apply_user_mapping_preference(dataset, mapping: dict, batch_size: int = 100
     Apply user-provided column mapping to convert a dataset to preference format.
 
     Expected target roles:
-      - prompt (optional)
-      - chosen
-      - rejected
+      - prompt (optional -- omitted when unmapped so TRL can extract it)
+      - chosen (required)
+      - rejected (required)
 
     Returns:
-        Dataset with prompt/chosen/rejected columns.
+        Dataset with chosen/rejected columns (and prompt when mapped).
     """
     col_for: dict[str, str | None] = {
         "prompt": None,
@@ -418,19 +418,28 @@ def _apply_user_mapping_preference(dataset, mapping: dict, batch_size: int = 100
         if role in col_for:
             col_for[role] = col_name
 
+    # Validate that required columns are mapped
+    missing = [f for f in ("chosen", "rejected") if col_for[f] is None]
+    if missing:
+        raise ValueError(
+            "Preference mapping requires columns for: " + ", ".join(missing)
+        )
+
+    has_prompt = col_for["prompt"] is not None
+
     def _convert(examples):
         num = len(next(iter(examples.values())))
-        prompts, chosens, rejecteds = [], [], []
+        out: dict[str, list] = {"chosen": [], "rejected": []}
+        if has_prompt:
+            out["prompt"] = []
         for i in range(num):
-            for field, dest in (
-                ("prompt", prompts),
-                ("chosen", chosens),
-                ("rejected", rejecteds),
-            ):
-                col = col_for[field]
-                val = examples[col][i] if col and col in examples else ""
-                dest.append("" if val is None else str(val))
-        return {"prompt": prompts, "chosen": chosens, "rejected": rejecteds}
+            for field in ("chosen", "rejected"):
+                val = examples[col_for[field]][i]
+                out[field].append("" if val is None else val)
+            if has_prompt:
+                val = examples[col_for["prompt"]][i]
+                out["prompt"].append("" if val is None else val)
+        return out
 
     return dataset.map(
         _convert,
