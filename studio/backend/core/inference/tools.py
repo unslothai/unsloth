@@ -33,11 +33,26 @@ _EXEC_TIMEOUT = 300  # 5 minutes
 # No .svg (XSS risk via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MAX_OUTPUT_CHARS = 8000  # truncate long output
-_BLOCKED_COMMANDS = frozenset({
-    "rm", "sudo", "su", "dd", "chmod", "chown", "mkfs",
-    "shutdown", "reboot", "passwd", "mount", "umount",
-    "fdisk", "kill", "killall", "pkill",
-})
+_BLOCKED_COMMANDS = frozenset(
+    {
+        "rm",
+        "sudo",
+        "su",
+        "dd",
+        "chmod",
+        "chown",
+        "mkfs",
+        "shutdown",
+        "reboot",
+        "passwd",
+        "mount",
+        "umount",
+        "fdisk",
+        "kill",
+        "killall",
+        "pkill",
+    }
+)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -51,8 +66,11 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # 1. shlex tokenization (handles quotes, escapes, concatenation)
     try:
-        tokens = shlex.split(command) if sys.platform != "win32" \
-            else shlex.split(command, posix=False)
+        tokens = (
+            shlex.split(command)
+            if sys.platform != "win32"
+            else shlex.split(command, posix = False)
+        )
     except ValueError:
         tokens = command.split()
 
@@ -70,7 +88,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     #    (semicolons, pipes, &&, ||, backticks, $(), newlines)
     lowered = command.lower()
     for word in _BLOCKED_COMMANDS:
-        pattern = rf'(?:^|[;&|`\n]\s*|[$]\(\s*){re.escape(word)}\b'
+        pattern = rf"(?:^|[;&|`\n]\s*|[$]\(\s*){re.escape(word)}\b"
         if re.search(pattern, lowered):
             blocked.add(word)
 
@@ -112,7 +130,8 @@ def _sandbox_preexec():
     if sys.platform == "linux":
         try:
             import ctypes
-            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+            libc = ctypes.CDLL("libc.so.6", use_errno = True)
             # PR_SET_NO_NEW_PRIVS = 38, arg2 = 1 (enable)
             libc.prctl(38, 1, 0, 0, 0)
         except (OSError, AttributeError):
@@ -121,10 +140,13 @@ def _sandbox_preexec():
     if sys.platform != "win32":
         try:
             import resource
+
             # Limit number of child processes (prevents fork bombs)
             resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
             # Limit file size to 100MB (prevents disk filling)
-            resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
+            resource.setrlimit(
+                resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
+            )
         except (ValueError, OSError):
             pass
 
@@ -550,16 +572,38 @@ def _check_signal_escape_patterns(code: str):
         return False
 
     # Dangerous os/subprocess functions that can execute shell commands
-    _SHELL_EXEC_FUNCS = frozenset({
-        "os.system", "os.popen", "os.popen2", "os.popen3", "os.popen4",
-        "os.execl", "os.execle", "os.execlp", "os.execlpe",
-        "os.execv", "os.execve", "os.execvp", "os.execvpe",
-        "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
-        "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
-        "subprocess.run", "subprocess.call", "subprocess.check_call",
-        "subprocess.check_output", "subprocess.Popen",
-        "subprocess.getoutput", "subprocess.getstatusoutput",
-    })
+    _SHELL_EXEC_FUNCS = frozenset(
+        {
+            "os.system",
+            "os.popen",
+            "os.popen2",
+            "os.popen3",
+            "os.popen4",
+            "os.execl",
+            "os.execle",
+            "os.execlp",
+            "os.execlpe",
+            "os.execv",
+            "os.execve",
+            "os.execvp",
+            "os.execvpe",
+            "os.spawnl",
+            "os.spawnle",
+            "os.spawnlp",
+            "os.spawnlpe",
+            "os.spawnv",
+            "os.spawnve",
+            "os.spawnvp",
+            "os.spawnvpe",
+            "subprocess.run",
+            "subprocess.call",
+            "subprocess.check_call",
+            "subprocess.check_output",
+            "subprocess.Popen",
+            "subprocess.getoutput",
+            "subprocess.getstatusoutput",
+        }
+    )
 
     def _extract_string_from_node(node):
         """Extract a plain string value from an AST node, if it is a constant."""
@@ -709,14 +753,16 @@ def _check_signal_escape_patterns(code: str):
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 blocked_in_args = _check_args_for_blocked(node.args)
                 if blocked_in_args:
-                    shell_escapes.append({
-                        "type": "shell_escape",
-                        "line": node.lineno,
-                        "description": (
-                            f"{shell_func}() invokes blocked command(s): "
-                            f"{', '.join(sorted(blocked_in_args))}"
-                        ),
-                    })
+                    shell_escapes.append(
+                        {
+                            "type": "shell_escape",
+                            "line": node.lineno,
+                            "description": (
+                                f"{shell_func}() invokes blocked command(s): "
+                                f"{', '.join(sorted(blocked_in_args))}"
+                            ),
+                        }
+                    )
                 else:
                     has_non_literal = any(
                         _extract_string_from_node(a) is None
@@ -724,14 +770,16 @@ def _check_signal_escape_patterns(code: str):
                         for a in node.args
                     )
                     if has_non_literal:
-                        shell_escapes.append({
-                            "type": "shell_escape_dynamic",
-                            "line": node.lineno,
-                            "description": (
-                                f"{shell_func}() called with non-literal argument "
-                                f"(potential shell escape)"
-                            ),
-                        })
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape_dynamic",
+                                "line": node.lineno,
+                                "description": (
+                                    f"{shell_func}() called with non-literal argument "
+                                    f"(potential shell escape)"
+                                ),
+                            }
+                        )
 
             self.generic_visit(node)
 
@@ -880,9 +928,7 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(
-            [sys.executable, tmp_path], **popen_kwargs
-        )
+        proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
 
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
