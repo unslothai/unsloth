@@ -78,19 +78,26 @@ def _find_blocked_commands(command: str) -> set[str]:
         base = os.path.basename(token).lower()
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
-        # Also check words within multi-word tokens (e.g. from nested quoting:
-        # bash -c 'sudo whoami' -> shlex gives ["bash", "-c", "sudo whoami"])
-        for word in base.split():
-            if word in _BLOCKED_COMMANDS:
-                blocked.add(word)
 
     # 2. Regex: catch blocked words at shell command boundaries
-    #    (semicolons, pipes, &&, ||, backticks, $(), newlines)
+    #    (semicolons, pipes, &&, ||, backticks, $(), <(), newlines)
     lowered = command.lower()
     for word in _BLOCKED_COMMANDS:
-        pattern = rf"(?:^|[;&|`\n]\s*|[$]\(\s*){re.escape(word)}\b"
+        pattern = rf"(?:^|[;&|`\n]\s*|[$]\(\s*|<\(\s*){re.escape(word)}\b"
         if re.search(pattern, lowered):
             blocked.add(word)
+
+    # 3. Check for nested shell invocations (bash -c 'sudo whoami').
+    #    When a token is an argument to a shell -c flag, scan its words
+    #    for blocked commands.
+    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    for i, token in enumerate(tokens):
+        if token == "-c" and i > 0 and os.path.basename(tokens[i - 1]).lower() in _SHELLS:
+            # The next token(s) are the shell command string
+            for j in range(i + 1, len(tokens)):
+                for word in tokens[j].lower().split():
+                    if word in _BLOCKED_COMMANDS:
+                        blocked.add(word)
 
     return blocked
 
@@ -855,11 +862,14 @@ def _check_code_safety(code: str) -> str | None:
         shell_reasons = [
             item.get("description", "") for item in info.get("shell_escapes", [])
         ]
-        all_reasons = [r for r in reasons + shell_reasons if r]
+        exception_reasons = [
+            item.get("description", "") for item in info.get("exception_catching", [])
+        ]
+        all_reasons = [r for r in reasons + shell_reasons + exception_reasons if r]
         if all_reasons:
             return (
                 f"Error: unsafe code detected ({'; '.join(all_reasons)}). "
-                f"Please remove signal manipulation or shell command execution from your code."
+                f"Please remove unsafe patterns from your code."
             )
 
     return None
