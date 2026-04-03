@@ -83,7 +83,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     #    (semicolons, pipes, &&, ||, backticks, $(), <(), newlines)
     lowered = command.lower()
     for word in _BLOCKED_COMMANDS:
-        pattern = rf"(?:^|[;&|`\n]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?{re.escape(word)}\b"
+        pattern = (
+            rf"(?:^|[;&|`\n]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?{re.escape(word)}\b"
+        )
         if re.search(pattern, lowered):
             blocked.add(word)
 
@@ -775,13 +777,13 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
                 else:
+
                     def _is_safe_literal(n):
                         if _extract_string_from_node(n) is not None:
                             return True
                         if isinstance(n, ast.List):
                             return all(
-                                _extract_string_from_node(e) is not None
-                                for e in n.elts
+                                _extract_string_from_node(e) is not None for e in n.elts
                             )
                         return False
 
