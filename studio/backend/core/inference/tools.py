@@ -132,8 +132,16 @@ def _find_blocked_commands(command: str) -> set[str]:
     _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
-        is_unix_c = tok_lower == "-c" and i > 0 and os.path.basename(tokens[i - 1]).lower() in _SHELLS
-        is_win_c = tok_lower == "/c" and i > 0 and os.path.basename(tokens[i - 1]).lower() in _SHELLS_WIN
+        is_unix_c = (
+            tok_lower == "-c"
+            and i > 0
+            and os.path.basename(tokens[i - 1]).lower() in _SHELLS
+        )
+        is_win_c = (
+            tok_lower == "/c"
+            and i > 0
+            and os.path.basename(tokens[i - 1]).lower() in _SHELLS_WIN
+        )
         if (is_unix_c or is_win_c) and i + 1 < len(tokens):
             blocked |= _find_blocked_commands(tokens[i + 1])
 
