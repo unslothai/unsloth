@@ -72,9 +72,175 @@ __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
     "save_to_gguf",
+    "save_to_vllm_4bit",
     "patch_saving_functions",
     "create_huggingface_repo",
 ]
+
+
+# ---------------------------------------------------------------------------
+# vLLM 4-bit export via Intel Auto-Round
+# ---------------------------------------------------------------------------
+
+def save_to_vllm_4bit(
+    model_or_path,
+    tokenizer=None,
+    output_dir: str = "vllm_4bit_model",
+    export_format: str = "auto_awq",   # "auto_awq" | "auto_gptq" | "auto_round"
+    bits: int = 4,
+    group_size: int = 128,
+    sym: bool = True,
+    iters: int = 200,
+    nsamples: int = 128,
+    seqlen: int = 512,
+    dataset: str = "NeelNanda/pile-10k",
+    push_to_hub: bool = False,
+    repo_id: Optional[str] = None,
+    token: Optional[str] = None,
+    private: bool = False,
+):
+    """Export a model to a 4-bit quantized format compatible with vLLM.
+
+    Uses Intel Auto-Round (https://github.com/intel/auto-round) to perform
+    high-accuracy W4A16 quantization and saves as AWQ, GPTQ, or Auto-Round
+    format – all natively supported by vLLM >= 0.4.
+
+    Args:
+        model_or_path: An Unsloth/HuggingFace model object **or** a string
+            path to a local model directory or HF model ID.
+        tokenizer: Tokenizer for the model.  Required when ``model_or_path``
+            is a model object; ignored (loaded automatically) when it's a str.
+        output_dir:  Directory where the quantized model will be saved.
+        export_format: One of ``"auto_awq"``, ``"auto_gptq"``, or
+            ``"auto_round"`` (native Auto-Round kernel, best accuracy).
+        bits: Target bitwidth (default 4).
+        group_size: Quantisation group size (default 128).
+        sym: Use symmetric quantisation.
+        iters: Auto-Round optimisation iterations (0 = fast RTN mode).
+        nsamples: Calibration samples.
+        seqlen: Calibration sequence length.
+        dataset: HF dataset used for calibration.
+        push_to_hub: If True, upload the result to the HF Hub.
+        repo_id: HF Hub repository (``"username/model-name"``).
+        token: HF access token.
+        private: Create a private Hub repo.
+
+    Returns:
+        ``output_dir`` (str)
+
+    Raises:
+        ImportError: If ``auto-round`` is not installed.
+        RuntimeError: On quantisation failure.
+    """
+    try:
+        from auto_round import AutoRound
+    except ImportError as exc:
+        raise ImportError(
+            "Unsloth: auto-round is required for vLLM 4-bit export.\n"
+            "Install it with:  pip install auto-round\n"
+            "GitHub: https://github.com/intel/auto-round"
+        ) from exc
+
+    VALID_FORMATS = {"auto_awq", "auto_gptq", "auto_round"}
+    if export_format not in VALID_FORMATS:
+        raise ValueError(
+            f"Unsloth: export_format must be one of {VALID_FORMATS}, "
+            f"got '{export_format}'"
+        )
+
+    logger.warning_once(
+        f"Unsloth: Starting vLLM 4-bit export with Auto-Round "
+        f"(format={export_format}, bits={bits}, group_size={group_size}, iters={iters}). "
+        f"This may take 10–30 minutes for a 7B model."
+    )
+
+    import tempfile
+
+    # --- Resolve the model path -------------------------------------------
+    if isinstance(model_or_path, str):
+        model_name_or_path = model_or_path
+        # Auto-round can load the tokenizer itself in this case
+        ar_tokenizer = tokenizer  # may be None — auto-round handles it
+    else:
+        # It's an Unsloth / HF model object.  We need a path on disk.
+        # If it's a PEFT model, merge first.
+        local_model = model_or_path
+        if isinstance(local_model, (PeftModelForCausalLM, PeftModel)):
+            logger.warning_once(
+                "Unsloth: PEFT/LoRA model detected — merging adapters before "
+                "quantisation."
+            )
+            local_model = local_model.merge_and_unload()
+
+        # Save merged weights to a temporary location so Auto-Round can load them.
+        _tmp_dir = tempfile.mkdtemp(prefix="_unsloth_vllm4bit_tmp_")
+        logger.warning_once(
+            f"Unsloth: Saving merged 16-bit model to temporary dir: {_tmp_dir}"
+        )
+        local_model.save_pretrained(_tmp_dir)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(_tmp_dir)
+        del local_model
+        for _ in range(3):
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        model_name_or_path = _tmp_dir
+        ar_tokenizer = None  # auto-round will load from dir
+
+    # --- Run Auto-Round quantisation --------------------------------------
+    try:
+        ar = AutoRound(
+            model_name_or_path,
+            tokenizer=ar_tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=iters,
+            nsamples=nsamples,
+            seqlen=seqlen,
+            dataset=dataset,
+        )
+        ar.quantize_and_save(output_dir=output_dir, format=export_format)
+    finally:
+        # Clean up the temp merge dir if we created one
+        if not isinstance(model_or_path, str) and "_tmp_dir" in dir():
+            shutil.rmtree(_tmp_dir, ignore_errors=True)
+
+    logger.warning_once(
+        f"Unsloth: vLLM 4-bit model saved to '{output_dir}' "
+        f"(format={export_format}). "
+        "Load with vLLM:  vllm serve <path> --quantization awq  (or gptq)"
+    )
+
+    # --- Optional Hub push -----------------------------------------------
+    if push_to_hub:
+        if not repo_id:
+            raise ValueError(
+                "Unsloth: repo_id is required when push_to_hub=True."
+            )
+        if token is None:
+            token = get_token()
+        from huggingface_hub import HfApi
+
+        hf_api = HfApi(token=token)
+        hf_api.create_repo(
+            repo_id=repo_id,
+            private=private,
+            exist_ok=True,
+            repo_type="model",
+        )
+        hf_api.upload_folder(
+            folder_path=output_dir,
+            repo_id=repo_id,
+            repo_type="model",
+        )
+        logger.warning_once(
+            f"Unsloth: Uploaded quantized model to "
+            f"https://huggingface.co/{repo_id}"
+        )
+
+    return output_dir
 
 # llama.cpp specific targets - all takes 90s. Below takes 60s
 LLAMA_CPP_TARGETS = [

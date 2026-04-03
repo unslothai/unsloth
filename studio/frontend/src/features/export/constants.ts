@@ -3,7 +3,7 @@
 
 import type { TrainingMethod } from "@/types/training";
 
-export type ExportMethod = "merged" | "lora" | "gguf";
+export type ExportMethod = "merged" | "lora" | "gguf" | "vllm4bit";
 
 export const EXPORT_METHODS: {
   value: ExportMethod;
@@ -27,6 +27,14 @@ export const EXPORT_METHODS: {
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
   },
   {
+    value: "vllm4bit",
+    title: "4-bit (vLLM / Auto-Round)",
+    description: "High-accuracy AWQ/GPTQ 4-bit for vLLM deployment.",
+    tooltip:
+      "Uses Intel Auto-Round to quantize your model to W4A16. Best combination of speed, memory, and performance for vLLM.",
+    badge: "Recommended",
+  },
+  {
     value: "gguf",
     title: "GGUF / Llama.cpp",
     description: "Quantized formats for local AI runners.",
@@ -44,6 +52,12 @@ export const QUANT_OPTIONS = [
   { value: "q8_0", label: "Q8_0", size: "~8.2 GB" },
   { value: "f16", label: "F16", size: "~14.2 GB" },
   { value: "f32", label: "F32", size: "~28.4 GB" },
+];
+
+export const VLLM_QUANT_OPTIONS = [
+  { value: "auto_awq", label: "AWQ", desc: "Default for vLLM" },
+  { value: "auto_gptq", label: "GPTQ", desc: "Alternative 4-bit standard" },
+  { value: "auto_round", label: "Auto-Round", desc: "Native Intel format" },
 ];
 
 export function getEstimatedSize(
@@ -66,6 +80,9 @@ export function getEstimatedSize(
   }
   if (method === "lora") {
     return "~100 MB";
+  }
+  if (method === "vllm4bit") {
+    return "~4.1 GB";
   }
   return "—";
 }

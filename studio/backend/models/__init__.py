@@ -41,6 +41,7 @@ from .export import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    ExportVllm4bitRequest,
 )
 from .users import Token
 from .datasets import (
@@ -104,6 +105,7 @@ __all__ = [
     "ExportBaseModelRequest",
     "ExportGGUFRequest",
     "ExportLoRAAdapterRequest",
+    "ExportVllm4bitRequest",
     "Token",
     # Dataset schemas
     "CheckFormatRequest",

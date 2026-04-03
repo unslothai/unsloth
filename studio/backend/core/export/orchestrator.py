@@ -364,6 +364,46 @@ class ExportOrchestrator:
         except RuntimeError as exc:
             return False, str(exc)
 
+    def export_vllm_4bit(
+        self,
+        save_directory: str,
+        export_format: str = "auto_awq",
+        bits: int = 4,
+        group_size: int = 128,
+        iters: int = 200,
+        nsamples: int = 128,
+        dataset: str = "NeelNanda/pile-10k",
+        push_to_hub: bool = False,
+        repo_id: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        private: bool = False,
+    ) -> Tuple[bool, str]:
+        if not self._ensure_subprocess_alive():
+            return False, "Export subprocess is not running"
+
+        cmd = {
+            "type": "export",
+            "export_type": "vllm4bit",
+            "save_directory": save_directory,
+            "export_format": export_format,
+            "bits": bits,
+            "group_size": group_size,
+            "iters": iters,
+            "nsamples": nsamples,
+            "dataset": dataset,
+            "push_to_hub": push_to_hub,
+            "repo_id": repo_id,
+            "hf_token": hf_token,
+            "private": private,
+        }
+        self._send_cmd(cmd)
+
+        try:
+            resp = self._wait_response("export_vllm4bit_done", timeout=7200.0)
+            return resp.get("success", False), resp.get("message", "")
+        except RuntimeError as exc:
+            return False, str(exc)
+
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""
         if not self._ensure_subprocess_alive():

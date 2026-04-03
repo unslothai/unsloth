@@ -127,6 +127,27 @@ export async function exportLoRA(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+export async function exportVllm4bit(params: {
+  save_directory: string;
+  export_format?: string;
+  bits?: number;
+  group_size?: number;
+  iters?: number;
+  nsamples?: number;
+  dataset?: string;
+  push_to_hub?: boolean;
+  repo_id?: string | null;
+  hf_token?: string | null;
+  private?: boolean;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/export/vllm4bit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
 export async function cleanupExport(): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/cleanup", { method: "POST" });
   return parseJson<ExportOperationResponse>(response);

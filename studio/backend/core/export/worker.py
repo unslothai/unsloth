@@ -161,6 +161,20 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
             )
+        elif export_type == "vllm4bit":
+            success, message = backend.export_vllm_4bit(
+                save_directory = cmd.get("save_directory", ""),
+                export_format = cmd.get("export_format", "auto_awq"),
+                bits = cmd.get("bits", 4),
+                group_size = cmd.get("group_size", 128),
+                iters = cmd.get("iters", 200),
+                nsamples = cmd.get("nsamples", 128),
+                dataset = cmd.get("dataset", "NeelNanda/pile-10k"),
+                push_to_hub = cmd.get("push_to_hub", False),
+                repo_id = cmd.get("repo_id"),
+                hf_token = cmd.get("hf_token"),
+                private = cmd.get("private", False),
+            )
         else:
             success, message = False, f"Unknown export type: {export_type}"
 

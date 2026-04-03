@@ -61,6 +61,7 @@ import {
   exportGGUF,
   exportLoRA,
   exportMerged,
+  exportVllm4bit,
   fetchCheckpoints,
   loadCheckpoint,
 } from "./api/export-api";
@@ -70,6 +71,7 @@ import { QuantPicker } from "./components/quant-picker";
 import {
   type ExportMethod,
   GUIDE_STEPS,
+  VLLM_QUANT_OPTIONS,
   getEstimatedSize,
 } from "./constants";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -466,6 +468,16 @@ export function ExportPage() {
       } else if (exportMethod === "lora") {
         await exportLoRA({
           save_directory: saveDir,
+          push_to_hub: pushToHub,
+          repo_id: repoId,
+          hf_token: token,
+          private: privateRepo,
+        });
+      } else if (exportMethod === "vllm4bit") {
+        const fmt = quantLevels[0] || "auto_awq";
+        await exportVllm4bit({
+          save_directory: `${saveDir}-${fmt.replace('auto_', '')}`,
+          export_format: fmt,
           push_to_hub: pushToHub,
           repo_id: repoId,
           hf_token: token,
@@ -1030,6 +1042,39 @@ export function ExportPage() {
                 {exportMethod === "gguf" && (
                   <motion.div {...collapseAnim} className="overflow-visible">
                     <QuantPicker value={quantLevels} onChange={setQuantLevels} />
+                  </motion.div>
+                )}
+                {exportMethod === "vllm4bit" && (
+                  <motion.div {...collapseAnim} className="overflow-visible">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          4-bit Format
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 py-1 pl-1">
+                        {VLLM_QUANT_OPTIONS.map((opt) => {
+                          const active = quantLevels[0] === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => setQuantLevels([opt.value])}
+                              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-all ${
+                                active
+                                  ? "ring-primary bg-primary/10 text-foreground"
+                                  : "ring-border text-muted-foreground hover:text-foreground hover:ring-foreground/20"
+                              }`}
+                            >
+                              {opt.label}
+                              <span className="text-[10px] opacity-60">
+                                {opt.desc}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
