@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "unsloth_source": "pypi",
+  "unsloth_github_ref": "main",
+  "llama_cpp_source": "unslothai",
+  "llama_cpp_tag": "latest",
+  "CRITICAL_TIME": null,
+  "announcement": null
+}

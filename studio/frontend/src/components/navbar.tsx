@@ -36,6 +36,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useTrainingRuntimeStore } from "@/features/training";
+import { useUpdateCheck } from "@/hooks/use-update-check";
 import { usePlatformStore } from "@/config/env";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -127,10 +128,14 @@ function UpdateStudioInstructions({
   className,
   defaultShell,
   showTitle = true,
+  announcementMessage,
+  announcementUrl,
 }: {
   className?: string;
   defaultShell: UpdateShell;
   showTitle?: boolean;
+  announcementMessage?: string | null;
+  announcementUrl?: string | null;
 }): ReactElement {
   const [shell, setShell] = useState<UpdateShell>(defaultShell);
   const prefersReducedMotion = useReducedMotion();
@@ -148,6 +153,17 @@ function UpdateStudioInstructions({
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
+      {announcementMessage ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+          {announcementUrl ? (
+            <a href={announcementUrl} target="_blank" rel="noopener noreferrer" className="underline">
+              {announcementMessage}
+            </a>
+          ) : (
+            announcementMessage
+          )}
+        </div>
+      ) : null}
       <div
         className={cn(
           "flex items-center gap-3",
@@ -247,6 +263,11 @@ export function Navbar() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const defaultUpdateShell = getDefaultUpdateShell(deviceType);
+  const updateStatus = useUpdateCheck();
+
+  const updateBadgeText = updateStatus.critical
+    ? "Critical Update"
+    : updateStatus.announcementBadge ?? null;
 
   // Warn before closing the tab only when training is running (data loss risk).
   // We store the handler in a ref so removeUnloadHandler() can clean it up
@@ -434,17 +455,24 @@ export function Navbar() {
               <HoverCardTrigger asChild={true}>
                 <button
                   type="button"
-                  className="flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  className={cn(
+                    "flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors hover:bg-accent",
+                    updateBadgeText
+                      ? "text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                   aria-label="How to update Unsloth Studio"
                 >
                   <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
-                  Update
+                  {updateBadgeText ?? "Update"}
                 </button>
               </HoverCardTrigger>
               <HoverCardContent align="end" className="w-[22.5rem] p-0">
                 <UpdateStudioInstructions
                   className="p-4"
                   defaultShell={defaultUpdateShell}
+                  announcementMessage={updateStatus.announcementMessage}
+                  announcementUrl={updateStatus.announcementUrl}
                 />
               </HoverCardContent>
             </HoverCard>
@@ -555,17 +583,23 @@ export function Navbar() {
                 <Collapsible
                   open={mobileUpdateOpen}
                   onOpenChange={setMobileUpdateOpen}
-                  className="rounded-md border border-border"
+                  className={cn(
+                    "rounded-md border",
+                    updateBadgeText ? "border-amber-400 dark:border-amber-700" : "border-border",
+                  )}
                 >
                   <CollapsibleTrigger asChild={true}>
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                      className={cn(
+                        "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-accent",
+                        updateBadgeText ? "text-amber-600 dark:text-amber-400" : "text-foreground",
+                      )}
                       aria-label="Toggle update instructions"
                     >
                       <span className="flex items-center gap-2">
                         <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
-                        Update Unsloth Studio
+                        {updateBadgeText ?? "Update Unsloth Studio"}
                       </span>
                       <HugeiconsIcon
                         icon={ArrowRight01Icon}
@@ -580,6 +614,8 @@ export function Navbar() {
                     <UpdateStudioInstructions
                       defaultShell={defaultUpdateShell}
                       showTitle={false}
+                      announcementMessage={updateStatus.announcementMessage}
+                      announcementUrl={updateStatus.announcementUrl}
                     />
                   </CollapsibleContent>
                 </Collapsible>

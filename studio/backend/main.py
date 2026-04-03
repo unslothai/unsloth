@@ -118,6 +118,25 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
+    # Fetch remote update manifest in the background and print a terminal
+    # banner when a critical update or announcement is present.
+    def _check_updates():
+        try:
+            from utils.update_check import fetch_and_cache_update_status
+
+            status = fetch_and_cache_update_status()
+            if status.critical:
+                print("\n" + "=" * 60)
+                print("CRITICAL UPDATE AVAILABLE")
+                print("    Run `unsloth studio update` then restart Studio.")
+                print("=" * 60 + "\n")
+            elif status.announcement_message:
+                print(f"\n  [Update] {status.announcement_message}\n")
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _check_updates, daemon = True).start()
+
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
@@ -200,6 +219,21 @@ async def health_check():
         "service": "Unsloth UI Backend",
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
+    }
+
+
+@app.get("/api/update-check")
+async def update_check():
+    """Return cached update status from the remote manifest (unauthenticated)."""
+    from utils.update_check import get_update_status
+
+    s = get_update_status()
+    return {
+        "critical": s.critical,
+        "announcement_badge": s.announcement_badge,
+        "announcement_message": s.announcement_message,
+        "announcement_url": s.announcement_url,
+        "manifest_fetched": s.manifest_fetched,
     }
 
 

@@ -523,19 +523,38 @@ def install_python_stack() -> int:
             package_name,
         )
     else:
-        # Update path: upgrade only unsloth + unsloth-zoo while preserving
-        # existing torch/CUDA installations.  Torch is pre-installed by
-        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
-        _progress("base packages")
-        pip_install(
-            "Updating base packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
-        )
+        # Manifest override: install from git main instead of PyPI
+        _git_ref = os.environ.get("STUDIO_UNSLOTH_GIT_REF", "")
+        if _git_ref:
+            _progress("base packages (git)")
+            pip_install(
+                f"Installing unsloth from git@{_git_ref}",
+                "--no-cache-dir",
+                "--no-deps",
+                f"git+https://github.com/unslothai/unsloth.git@{_git_ref}",
+                constrain = False,
+            )
+            pip_install(
+                "Updating remaining base packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth-zoo",
+                req = REQ_ROOT / "base.txt",
+            )
+        else:
+            # Update path: upgrade only unsloth + unsloth-zoo while preserving
+            # existing torch/CUDA installations.  Torch is pre-installed by
+            # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+            _progress("base packages")
+            pip_install(
+                "Updating base packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth",
+                "--upgrade-package",
+                "unsloth-zoo",
+                req = REQ_ROOT / "base.txt",
+            )
 
     # 3. Extra dependencies
     _progress("unsloth extras")
