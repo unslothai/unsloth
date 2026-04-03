@@ -167,7 +167,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
     # Always check the exact-case path first so a newly-appeared exact match
     # wins over any previously memoized variant.
     exact_path = cache_dir / expected_dir
-    if exact_path.exists():
+    if exact_path.is_dir():
         if use_memo:
             _CACHE_CASE_RESOLUTION_MEMO[model_name] = model_name
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1

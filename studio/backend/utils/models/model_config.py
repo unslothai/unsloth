@@ -713,14 +713,8 @@ def _detect_audio_from_tokenizer(
 
     # 1) Check local HF cache first (works for gated/offline models)
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        cache_dir = Path(HF_HUB_CACHE)
         repo_dir = get_cache_path(model_name)
-        if repo_dir is None:
-            repo_dir_name = f"models--{model_name.replace('/', '--')}"
-            repo_dir = cache_dir / repo_dir_name
-        if repo_dir.exists():
+        if repo_dir is not None and repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
