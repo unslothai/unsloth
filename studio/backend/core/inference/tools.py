@@ -125,22 +125,17 @@ def _find_blocked_commands(command: str) -> set[str]:
         pattern = rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?({words_alt})\b"
         blocked.update(re.findall(pattern, lowered))
 
-    # 3. Check for nested shell invocations (bash -c 'sudo whoami').
-    #    When a token is an argument to a shell -c flag, scan its words
-    #    for blocked commands.
+    # 3. Check for nested shell invocations (bash -c 'sudo whoami',
+    #    cmd /c 'rmdir /s /q ...').  When a token is an argument to a
+    #    shell -c or /c flag, recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
-        if (
-            token == "-c"
-            and i > 0
-            and os.path.basename(tokens[i - 1]).lower() in _SHELLS
-        ):
-            # The next token is the shell command string; tokens after
-            # that are $0, $1, ... positional parameters (not commands).
-            # Recursively call _find_blocked_commands on the nested command
-            # to handle quotes, semicolons, and other shell syntax within it.
-            if i + 1 < len(tokens):
-                blocked |= _find_blocked_commands(tokens[i + 1])
+        tok_lower = token.lower()
+        is_unix_c = tok_lower == "-c" and i > 0 and os.path.basename(tokens[i - 1]).lower() in _SHELLS
+        is_win_c = tok_lower == "/c" and i > 0 and os.path.basename(tokens[i - 1]).lower() in _SHELLS_WIN
+        if (is_unix_c or is_win_c) and i + 1 < len(tokens):
+            blocked |= _find_blocked_commands(tokens[i + 1])
 
     return blocked
 
