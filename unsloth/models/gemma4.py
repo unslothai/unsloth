@@ -19,7 +19,7 @@ class ModelArgs(BaseModelArgs):
     @classmethod
     def from_dict(cls, params):
         if "text_config" not in params:
-            return cls(model_type=params["model_type"], text_config=params)
+            return cls(model_type = params["model_type"], text_config = params)
         return super().from_dict(params)
 
 
@@ -35,13 +35,13 @@ class Model(nn.Module):
     def __call__(
         self,
         inputs: mx.array,
-        cache=None,
+        cache = None,
         input_embeddings: Optional[mx.array] = None,
     ):
         return self.language_model(
             inputs,
-            cache=cache,
-            input_embeddings=input_embeddings,
+            cache = cache,
+            input_embeddings = input_embeddings,
         )
 
     def sanitize(self, weights):
