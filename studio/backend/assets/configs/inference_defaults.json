@@ -93,6 +93,14 @@
       "min_p": 0.0,
       "repetition_penalty": 1.0
     },
+    "gemma-4": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 0.0
+    },
     "gemma-3n": {
       "temperature": 1.0,
       "top_p": 0.95,
@@ -366,7 +374,7 @@
     "qwen2.5-coder", "qwen2.5-vl", "qwen2.5-omni", "qwen2.5-math", "qwen2.5",
     "qwen2-vl", "qwen2",
     "qwq",
-    "gemma-3n", "gemma-3", "medgemma", "gemma-2",
+    "gemma-4", "gemma-3n", "gemma-3", "medgemma", "gemma-2",
     "llama-4", "llama-3.3", "llama-3.2", "llama-3.1", "llama-3",
     "phi-4", "phi-3",
     "mistral-nemo", "mistral-small", "mistral-large", "magistral", "ministral",

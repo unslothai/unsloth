@@ -109,12 +109,13 @@ class InferenceOrchestrator:
         self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # GGUFs first, then hub models, then static fallbacks.
+        # Curated static defaults first (editorial picks like new models),
+        # then HF download-ranked models to backfill.
         # Send extras so the frontend still has 4 per category
         # after removing already-downloaded models.
         result: list[str] = []
         seen: set[str] = set()
-        for m in top_gguf + top_hub + self._static_models:
+        for m in self._static_models + top_gguf + top_hub:
             if m not in seen:
                 result.append(m)
                 seen.add(m)

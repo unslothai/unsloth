@@ -6,12 +6,22 @@
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
 @import "@fontsource-variable/figtree";
+@import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
 @import "tw-shimmer";
 @plugin "@toolwind/corner-shape";
 @source "../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
+
+@font-face {
+  font-family: "Hellix";
+  src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
+    url("/fonts/Hellix-SemiBold.woff") format("woff");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
   /* Animation timing */
@@ -57,7 +67,7 @@
   --sidebar-ring: oklch(0.6929 0.1396 166.5513);
   --destructive-foreground: oklch(1 0 0);
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: var(--font-sans);
+  --font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
   --font-serif: Source Serif 4, serif;
   --font-mono: JetBrains Mono, monospace;
   --shadow-color: hsl(0 0% 0%);
@@ -149,7 +159,7 @@
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: var(--font-sans);
+  --font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -364,17 +374,7 @@
 
   /* Chat: use the app sans stack for UI + prose. */
   .aui-thread-root {
-    font-family: var(--font-sans);
-  }
-
-  .aui-thread-root .font-medium,
-  .aui-thread-root .font-semibold,
-  .aui-thread-root .font-bold,
-  .aui-thread-root .font-heading {
-    font-family: var(--font-sans);
-  }
-
-  .aui-thread-root :where(h1, h2, h3, h4, h5, h6) {
+    --font-heading: var(--font-sans);
     font-family: var(--font-sans);
   }
 
