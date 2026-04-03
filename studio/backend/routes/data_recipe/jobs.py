@@ -37,8 +37,15 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
     if not providers:
         return
 
-    has_local = any(p.get("is_local") for p in providers if isinstance(p, dict))
-    if not has_local:
+    # Collect local providers and pop is_local from ALL dicts unconditionally
+    local_indices: list[int] = []
+    for i, provider in enumerate(providers):
+        if not isinstance(provider, dict):
+            continue
+        if provider.pop("is_local", None):
+            local_indices.append(i)
+
+    if not local_indices:
         return
 
     # Verify a model is loaded
@@ -64,15 +71,10 @@ def _inject_local_providers(recipe: dict[str, Any], request_base_url: str) -> No
 
     endpoint = request_base_url.rstrip("/") + "/v1"
 
-    for provider in providers:
-        if not isinstance(provider, dict):
-            continue
-        is_local = provider.pop("is_local", None)
-        if not is_local:
-            continue
-        provider["endpoint"] = endpoint
-        provider["api_key"] = token
-        provider["provider_type"] = "openai"
+    for i in local_indices:
+        providers[i]["endpoint"] = endpoint
+        providers[i]["api_key"] = token
+        providers[i]["provider_type"] = "openai"
 
 
 def _normalize_run_name(value: Any) -> str | None:
