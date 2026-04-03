@@ -52,18 +52,21 @@ try:
     m = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
+def s(v, default=''):
+    '''Convert to string, treating None/null as empty.'''
+    return str(v) if v is not None else default
 a = m.get('announcement') or {}
 for k, v in [
-    ('MANIFEST_UNSLOTH_SOURCE',        m.get('unsloth_source', '')),
-    ('MANIFEST_UNSLOTH_GITHUB_REF',    m.get('unsloth_github_ref', 'main')),
-    ('MANIFEST_LLAMA_CPP_SOURCE',      m.get('llama_cpp_source', '')),
-    ('MANIFEST_LLAMA_CPP_TAG',         m.get('llama_cpp_tag', '')),
-    ('MANIFEST_CRITICAL_TIME',         m.get('CRITICAL_TIME', '') or ''),
-    ('MANIFEST_ANNOUNCEMENT_MESSAGE',  a.get('message', '')),
-    ('MANIFEST_ANNOUNCEMENT_BADGE',    a.get('badge', '')),
-    ('MANIFEST_ANNOUNCEMENT_URL',      a.get('url', '')),
+    ('MANIFEST_UNSLOTH_SOURCE',        s(m.get('unsloth_source'))),
+    ('MANIFEST_UNSLOTH_GITHUB_REF',    s(m.get('unsloth_github_ref'), 'main')),
+    ('MANIFEST_LLAMA_CPP_SOURCE',      s(m.get('llama_cpp_source'))),
+    ('MANIFEST_LLAMA_CPP_TAG',         s(m.get('llama_cpp_tag'))),
+    ('MANIFEST_CRITICAL_TIME',         s(m.get('CRITICAL_TIME'))),
+    ('MANIFEST_ANNOUNCEMENT_MESSAGE',  s(a.get('message'))),
+    ('MANIFEST_ANNOUNCEMENT_BADGE',    s(a.get('badge'))),
+    ('MANIFEST_ANNOUNCEMENT_URL',      s(a.get('url'))),
 ]:
-    print(f'{k}={shlex.quote(str(v))}')
+    print(f'{k}={shlex.quote(v)}')
 " 2>/dev/null)" || true
     substep "manifest: source=${MANIFEST_UNSLOTH_SOURCE:-pypi} llama=${MANIFEST_LLAMA_CPP_SOURCE:-default}@${MANIFEST_LLAMA_CPP_TAG:-default}"
 }
@@ -590,8 +593,9 @@ else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
 
-# Apply manifest overrides for llama.cpp (only if user hasn't set env vars)
-if [ -n "$MANIFEST_LLAMA_CPP_SOURCE" ] && [ -z "${UNSLOTH_LLAMA_PUBLISHED_REPO:-}" ]; then
+# Apply manifest overrides for llama.cpp (only if user hasn't set env vars).
+# Skip on macOS -- macOS must use ggml-org (unslothai/llama.cpp has no macOS assets).
+if [ -n "$MANIFEST_LLAMA_CPP_SOURCE" ] && [ -z "${UNSLOTH_LLAMA_PUBLISHED_REPO:-}" ] && [ "$_HOST_SYSTEM" != "Darwin" ]; then
     if [ "$MANIFEST_LLAMA_CPP_SOURCE" = "ggml-org" ]; then
         _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
     elif [ "$MANIFEST_LLAMA_CPP_SOURCE" = "unslothai" ]; then
