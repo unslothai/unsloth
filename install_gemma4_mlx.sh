@@ -132,30 +132,9 @@ step "install" "installing mlx, mlx-lm..."
 uv pip install --python "$_VENV_PY" -q mlx mlx-lm 2>/dev/null
 substep "done"
 
-TRANSFORMERS_WHL="transformers-5.5.0-py3-none-any.whl"
-TRANSFORMERS_GH="git+https://github.com/huggingface/transformers.git@v5.5-release"
-
 step "install" "installing transformers>=5.5.0..."
-if uv pip install --python "$_VENV_PY" -q "$TRANSFORMERS_GH" 2>/dev/null; then
-    substep "installed from huggingface/transformers v5.5-release"
-elif uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null; then
-    substep "installed from PyPI"
-else
-    substep "not on PyPI, trying unsloth branch..."
-    _whl_tmp=$(mktemp -d)/"${TRANSFORMERS_WHL}"
-    if curl -fsSL "${REPO_URL}/${TRANSFORMERS_WHL}" -o "$_whl_tmp" 2>/dev/null && \
-       uv pip install --python "$_VENV_PY" -q "$_whl_tmp" 2>/dev/null; then
-        substep "installed from branch ${BRANCH}"
-    elif [ -f "./${TRANSFORMERS_WHL}" ]; then
-        substep "using local ./${TRANSFORMERS_WHL}"
-        uv pip install --python "$_VENV_PY" -q "./${TRANSFORMERS_WHL}"
-    else
-        rm -f "$_whl_tmp" 2>/dev/null
-        step "install" "skipping transformers — could not find >=5.5.0" "$C_WARN"
-        substep "tried: huggingface/transformers v5.5-release, PyPI, branch ${BRANCH}, local ./${TRANSFORMERS_WHL}"
-    fi
-    rm -f "$_whl_tmp" 2>/dev/null
-fi
+uv pip install --python "$_VENV_PY" -q "transformers>=5.5.0" 2>/dev/null
+substep "done"
 
 # ── Find mlx-lm models directory ─────────────────────────────
 MLX_MODELS=$("$_VENV_PY" -c "import mlx_lm; print(mlx_lm.__path__[0])")/models
