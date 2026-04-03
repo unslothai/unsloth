@@ -265,7 +265,9 @@ class Attention(nn.Module):
         queries = self.q_norm(queries).transpose(0, 2, 1, 3)
         queries = self.rope(queries, offset = offset)
 
-        _cache_not_empty = cache is not None and not (cache.empty() if hasattr(cache, "empty") else len(cache) == 0)
+        _cache_not_empty = cache is not None and not (
+            cache.empty() if hasattr(cache, "empty") else len(cache) == 0
+        )
         if self.is_kv_shared_layer and _cache_not_empty:
             keys, values = cache.state
         else:
