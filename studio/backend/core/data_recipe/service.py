@@ -272,7 +272,7 @@ def create_data_designer(
                 name = "_unused",
                 endpoint = "http://localhost",
                 provider_type = "openai",
-                api_key = "none",
+                api_key = None,
             )
         ]
 
