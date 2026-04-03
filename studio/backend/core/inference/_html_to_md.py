@@ -17,18 +17,26 @@ from html.parser import HTMLParser
 
 __all__ = ["html_to_markdown"]
 
-_SKIP_TAGS = frozenset({"script", "style", "head", "noscript", "svg", "math"})
+_SKIP_TAGS = frozenset(
+    {
+        "script",
+        "style",
+        "head",
+        "noscript",
+        "svg",
+        "math",
+        "nav",
+        "footer",
+    }
+)
 _BLOCK_TAGS = frozenset(
     {
         "p",
         "div",
         "section",
         "article",
-        "header",
-        "footer",
         "main",
         "aside",
-        "nav",
         "figure",
         "figcaption",
         "details",
