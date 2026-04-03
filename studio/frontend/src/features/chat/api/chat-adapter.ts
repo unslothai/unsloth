@@ -421,7 +421,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       let runtime = useChatRuntimeStore.getState();
-      let resolvedThreadId =
+      // Capture the thread ID once at the start so it stays stable even if
+      // the user switches chats while waiting for model load / auto-load.
+      const resolvedThreadId =
         unstable_threadId ?? runtime.activeThreadId ?? undefined;
 
       // Wait for in-progress model load to finish before inferring
@@ -443,7 +445,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
-      resolvedThreadId = unstable_threadId ?? runtime.activeThreadId ?? undefined;
       const { params } = runtime;
       const {
         supportsTools,
