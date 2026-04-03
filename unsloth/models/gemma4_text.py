@@ -54,10 +54,6 @@ class ModelArgs(BaseModelArgs):
     use_bidirectional_attention: Optional[str] = None
 
     def __post_init__(self):
-        if self.use_bidirectional_attention is not None:
-            raise NotImplementedError(
-                "Gemma4 bidirectional attention modes are not implemented in mlx-lm."
-            )
         if self.layer_types is None:
             self.layer_types = [
                 "sliding_attention" if (i + 1) % 6 else "full_attention"
