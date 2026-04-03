@@ -14,10 +14,12 @@ Run: pytest tests/studio/install/test_pr4562_bugfixes.py -v
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import textwrap
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -347,6 +349,47 @@ class TestResolveRequestedLlamaTag:
         }
 
 
+class TestFetchJsonRetries:
+    def test_fetch_json_retries_invalid_github_api_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        calls = {"count": 0}
+
+        def fake_download_bytes(url, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return b'{"incomplete":"payload'
+            return json.dumps([{"tag_name": "b8635"}]).encode("utf-8")
+
+        monkeypatch.setattr(MOD, "download_bytes", fake_download_bytes)
+        monkeypatch.setattr(MOD, "sleep_backoff", lambda _attempt: None)
+
+        payload = MOD.fetch_json(
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=100&page=1"
+        )
+
+        assert isinstance(payload, list)
+        assert payload[0]["tag_name"] == "b8635"
+        assert calls["count"] == 2
+
+    def test_github_releases_honors_max_pages(self, monkeypatch: pytest.MonkeyPatch):
+        seen_pages: list[int] = []
+
+        def fake_fetch_json(url: str):
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            page = int(params["page"][0])
+            seen_pages.append(page)
+            return [{"tag_name": f"b{page:04d}"} for _ in range(100)]
+
+        monkeypatch.setattr(MOD, "fetch_json", fake_fetch_json)
+
+        releases = MOD.github_releases("ggml-org/llama.cpp", max_pages = 2)
+
+        assert seen_pages == [1, 2]
+        assert len(releases) == 200
+
+
 # =========================================================================
 # TEST GROUP C: setup.sh logic (bash subprocess tests)
 # =========================================================================
@@ -643,24 +686,34 @@ class TestSourceCodePatterns:
             '_RESOLVED_SOURCE_REF" != "latest"' in content
         ), "Should guard against literal 'latest' tag"
 
-    def test_setup_sh_source_build_uses_helper_resolution(self):
-        """Shell source fallback should consult the helper for repo/ref planning."""
+    def test_setup_sh_source_build_uses_helper_latest_tag_only(self):
+        """Shell source fallback should only use helper latest-tag resolution."""
         content = SETUP_SH.read_text()
-        assert "--resolve-source-build" in content
+        assert "--resolve-source-build" not in content
+        assert "--resolve-install-tag" not in content
+        assert (
+            '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"'
+            in content
+        )
         assert "--output-format json" in content
         assert "_RESOLVED_SOURCE_URL" in content
         assert "_RESOLVED_SOURCE_REF_KIND" in content
         assert "_RESOLVED_SOURCE_REF" in content
 
-    def test_setup_sh_latest_resolution_uses_helper_only(self):
-        """Shell fallback should rely on helper output, not raw GitHub API tag_name."""
+    def test_setup_sh_prebuilt_install_uses_simple_policy_only(self):
+        """Shell prebuilt path should use the simplified helper install entrypoint."""
         content = SETUP_SH.read_text()
-        assert "--resolve-install-tag" in content
-        assert "--resolve-llama-tag" in content
-        assert 'tail -n 1 "$_RESOLVE_LLAMA_LOG"' not in content
-        assert "json.load" in content
+        assert "--simple-policy" in content
+        assert "--resolve-install-tag" not in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
+
+    def test_setup_sh_reports_installed_prebuilt_release(self):
+        """Shell wrapper should report the installed prebuilt release from metadata."""
+        content = SETUP_SH.read_text()
+        assert "UNSLOTH_PREBUILT_INFO.json" in content
+        assert "installed release:" in content
+        assert 'print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"' in content
 
     def test_setup_sh_macos_arm64_uses_metal_flags(self):
         """Apple Silicon source builds should explicitly enable Metal like upstream."""
@@ -759,20 +812,34 @@ class TestSourceCodePatterns:
                         f"Found 'git pull' in llama.cpp build section at line {i+1}"
                     )
 
-    def test_setup_ps1_latest_resolution_uses_helper_only(self):
-        """PS1 fallback should rely on helper output, not raw GitHub API tag_name."""
+    def test_setup_ps1_prebuilt_install_uses_simple_policy_only(self):
+        """PS1 prebuilt path should use the simplified helper install entrypoint."""
         content = SETUP_PS1.read_text()
-        assert "--resolve-install-tag" in content
-        assert "--resolve-llama-tag" in content
-        assert '--output-format", "json"' in content
-        assert "ConvertFrom-Json" in content
+        assert '"--simple-policy"' in content
+        assert "--resolve-install-tag" not in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
-    def test_setup_ps1_source_build_uses_helper_resolution(self):
-        """PS1 source fallback should consult the helper for repo/ref planning."""
+    def test_setup_ps1_reports_installed_prebuilt_release(self):
+        """PS1 wrapper should report the installed prebuilt release from metadata."""
         content = SETUP_PS1.read_text()
-        assert "--resolve-source-build" in content
+        assert "Get-InstalledLlamaPrebuiltRelease" in content
+        assert "UNSLOTH_PREBUILT_INFO.json" in content
+        assert "installed release:" in content
+        assert (
+            "$installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir"
+            in content
+        )
+
+    def test_setup_ps1_source_build_uses_helper_latest_tag_only(self):
+        """PS1 source fallback should only use helper latest-tag resolution."""
+        content = SETUP_PS1.read_text()
+        assert "--resolve-source-build" not in content
+        assert "--resolve-install-tag" not in content
+        assert (
+            '"--resolve-llama-tag", "latest", "--published-repo", "ggml-org/llama.cpp"'
+            in content
+        )
         assert '--output-format", "json"' in content
         assert "$ResolvedSourceUrl" in content
         assert "$ResolvedSourceRefKind" in content
@@ -794,17 +861,24 @@ class TestSourceCodePatterns:
         """Helper resolution should suppress terminating NativeCommandError on PS 5.1."""
         content = SETUP_PS1.read_text()
         helper_idx = content.index("function Invoke-LlamaHelper")
-        block = content[helper_idx : helper_idx + 1200]
+        block = content[helper_idx : helper_idx + 2200]
         assert "$previousErrorActionPreference = $ErrorActionPreference" in block
         assert '$ErrorActionPreference = "Continue"' in block
         assert "$ErrorActionPreference = $previousErrorActionPreference" in block
 
     def test_setup_ps1_uses_local_tempfile_helper(self):
-        """PS1 should not depend on New-TemporaryFile being available."""
+        """PS1 should not depend on New-TemporaryFile being available anywhere."""
         content = SETUP_PS1.read_text()
         assert "function New-UnslothTemporaryFile" in content
-        assert "$resolveErrorLog = New-UnslothTemporaryFile" in content
         assert "$resolveErrorLog = New-TemporaryFile" not in content
+
+    def test_setup_ps1_find_nvcc_uses_version_sort_for_latest_toolkit(self):
+        """The unconstrained nvcc fallback should not sort toolkit dirs lexicographically."""
+        content = SETUP_PS1.read_text()
+        assert "Sort-Object Name | Select-Object -Last 1" not in content
+        assert (
+            "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
+        )
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
