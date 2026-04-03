@@ -126,24 +126,37 @@ def _find_blocked_commands(command: str) -> set[str]:
         blocked.update(re.findall(pattern, lowered))
 
     # 3. Check for nested shell invocations (bash -c 'sudo whoami',
-    #    cmd /c 'rmdir /s /q ...').  When a token is an argument to a
-    #    shell -c or /c flag, recursively scan the nested command string.
+    #    bash -lc '...', bash --login -c '...', cmd /c '...').
+    #    When a -c or /c flag is found, look backwards for a shell name
+    #    (skipping intermediate flags like --login, -l, -x) and recursively
+    #    scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
+        # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
         is_unix_c = (
             tok_lower == "-c"
-            and i > 0
-            and os.path.basename(tokens[i - 1]).lower() in _SHELLS
+            or (
+                tok_lower.startswith("-")
+                and tok_lower.endswith("c")
+                and not tok_lower.startswith("--")
+            )
         )
-        is_win_c = (
-            tok_lower == "/c"
-            and i > 0
-            and os.path.basename(tokens[i - 1]).lower() in _SHELLS_WIN
-        )
-        if (is_unix_c or is_win_c) and i + 1 < len(tokens):
-            blocked |= _find_blocked_commands(tokens[i + 1])
+        is_win_c = tok_lower == "/c"
+        if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
+            continue
+        # Look backwards past any flags to find the shell binary
+        for j in range(i - 1, -1, -1):
+            prev = tokens[j]
+            if prev.startswith("-") or prev.startswith("/"):
+                continue  # skip flags
+            prev_base = os.path.basename(prev).lower()
+            if is_unix_c and prev_base in _SHELLS:
+                blocked |= _find_blocked_commands(tokens[i + 1])
+            elif is_win_c and prev_base in _SHELLS_WIN:
+                blocked |= _find_blocked_commands(tokens[i + 1])
+            break  # stop at first non-flag token
 
     return blocked
 
