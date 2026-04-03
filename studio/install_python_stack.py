@@ -112,7 +112,7 @@ def _has_rocm_gpu() -> bool:
         # rocminfo: look for "Name: gfxNNNN" indicating an actual GPU agent
         (["rocminfo"], lambda out: "gfx" in out.lower()),
         # amd-smi list: require "GPU: <number>" data rows, not just a header
-        (["amd-smi", "list"], lambda out: bool(re.search(r"(?im)^gpu\s*:\s*\d", out))),
+        (["amd-smi", "list"], lambda out: bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", out))),
     ):
         exe = shutil.which(cmd[0])
         if not exe:
@@ -756,7 +756,7 @@ def install_python_stack() -> int:
         import re as _re_win
 
         def _win_amd_smi_has_gpu(stdout: str) -> bool:
-            return bool(_re_win.search(r"(?im)^gpu\s*:\s*\d", stdout))
+            return bool(_re_win.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
 
         _win_amd_gpu = False
         for _wcmd, _check_fn in (

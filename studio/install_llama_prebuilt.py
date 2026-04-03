@@ -2553,7 +2553,7 @@ def detect_host() -> HostInfo:
 
     def _amd_smi_has_gpu(stdout: str) -> bool:
         """Check for 'GPU: <number>' data rows, not just a table header."""
-        return bool(_re.search(r"(?im)^gpu\s*:\s*\d", stdout))
+        return bool(_re.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
 
     has_rocm = False
     if is_linux:
