@@ -116,11 +116,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         ):
             # The next token is the shell command string; tokens after
             # that are $0, $1, ... positional parameters (not commands).
+            # Recursively call _find_blocked_commands on the nested command
+            # to handle quotes, semicolons, and other shell syntax within it.
             if i + 1 < len(tokens):
-                for word in tokens[i + 1].lower().split():
-                    base = os.path.basename(word)
-                    if base in _BLOCKED_COMMANDS:
-                        blocked.add(base)
+                blocked |= _find_blocked_commands(tokens[i + 1])
 
     return blocked
 
@@ -819,7 +818,14 @@ def _check_signal_escape_patterns(code: str):
                 shell_func = self.shell_exec_aliases.get(func.id)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                all_call_args = list(node.args) + [kw.value for kw in node.keywords]
+                # Only inspect keyword args that carry command content, not
+                # control flags like check=True, text=True, capture_output=True.
+                _CMD_KWARGS = {"args", "command", "executable", "path", "file"}
+                cmd_kw_values = [
+                    kw.value for kw in node.keywords
+                    if kw.arg in _CMD_KWARGS or kw.arg is None  # **kwargs
+                ]
+                all_call_args = list(node.args) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
                 if blocked_in_args:
                     shell_escapes.append(
