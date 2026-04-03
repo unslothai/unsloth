@@ -8,6 +8,8 @@ Hardware detection and GPU utilities
 from . import hardware as _hardware
 from .hardware import (
     DeviceType,
+    DEVICE,
+    CHAT_ONLY,
     detect_hardware,
     get_device,
     is_apple_silicon,
@@ -84,8 +86,8 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Resolve mutable module-level flags (DEVICE, CHAT_ONLY, IS_ROCM) at access
-    time so callers always see the current value after detect_hardware() runs."""
-    if name in {"DEVICE", "CHAT_ONLY", "IS_ROCM"}:
-        return getattr(_hardware, name)
+    """Resolve IS_ROCM at access time so callers always see the live value
+    after detect_hardware() runs (it flips the flag in hardware.py)."""
+    if name == "IS_ROCM":
+        return getattr(_hardware, "IS_ROCM")
     raise AttributeError(name)

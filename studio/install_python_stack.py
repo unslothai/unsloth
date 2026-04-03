@@ -106,9 +106,13 @@ def _detect_rocm_version() -> tuple[int, int] | None:
 
 def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
-    for cmd, marker in (
-        (["rocminfo"], "gfx"),
-        (["amd-smi", "list"], "gpu"),
+    import re
+
+    for cmd, check_fn in (
+        # rocminfo: look for "Name: gfxNNNN" indicating an actual GPU agent
+        (["rocminfo"], lambda out: "gfx" in out.lower()),
+        # amd-smi list: require "GPU: <number>" data rows, not just a header
+        (["amd-smi", "list"], lambda out: bool(re.search(r"(?im)^gpu\s*:\s*\d", out))),
     ):
         exe = shutil.which(cmd[0])
         if not exe:
@@ -124,7 +128,7 @@ def _has_rocm_gpu() -> bool:
         except Exception:
             continue
         if result.returncode == 0 and result.stdout.strip():
-            if marker in result.stdout.lower():
+            if check_fn(result.stdout):
                 return True
     return False
 

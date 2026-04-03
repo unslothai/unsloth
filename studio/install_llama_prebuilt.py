@@ -2549,11 +2549,17 @@ def detect_host() -> HostInfo:
             pass
 
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
+    import re as _re
+
+    def _amd_smi_has_gpu(stdout: str) -> bool:
+        """Check for 'GPU: <number>' data rows, not just a table header."""
+        return bool(_re.search(r"(?im)^gpu\s*:\s*\d", stdout))
+
     has_rocm = False
     if is_linux:
-        for _cmd, _marker in (
-            (["rocminfo"], "gfx"),
-            (["amd-smi", "list"], "gpu"),
+        for _cmd, _check in (
+            (["rocminfo"], lambda out: "gfx" in out.lower()),
+            (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
             if not _exe:
@@ -2563,14 +2569,14 @@ def detect_host() -> HostInfo:
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
-                if _marker in _result.stdout.lower():
+                if _check(_result.stdout):
                     has_rocm = True
                     break
     elif is_windows:
         # Windows: prefer active probes that validate GPU presence
-        for _cmd, _marker in (
-            (["hipinfo"], "gcnarchname"),
-            (["amd-smi", "list"], "gpu"),
+        for _cmd, _check in (
+            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
+            (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
             if not _exe:
@@ -2580,7 +2586,7 @@ def detect_host() -> HostInfo:
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
-                if _marker in _result.stdout.lower():
+                if _check(_result.stdout):
                     has_rocm = True
                     break
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
@@ -4750,10 +4756,21 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml*.dylib"],
             ["libmtmd*.dylib"],
         ]
+    if choice.install_kind == "linux-rocm":
+        return [
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu-*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-hip.so*"],
+        ]
     if choice.install_kind == "windows-cpu":
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
         return [["llama.dll"], ["ggml-cuda.dll"]]
+    if choice.install_kind == "windows-hip":
+        return [["llama.dll"], ["*hip*.dll"]]
     return []
 
 

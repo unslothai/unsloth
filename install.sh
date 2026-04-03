@@ -1263,12 +1263,16 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
                     "$TORCH_CONSTRAINT" torchvision torchaudio \
                     --index-url "$TORCH_INDEX_URL"
+                substep "installing bitsandbytes for AMD ROCm..."
+                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
             run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
                 "$TORCH_CONSTRAINT" torchvision torchaudio \
                 --index-url "$TORCH_INDEX_URL"
+            substep "installing bitsandbytes for AMD ROCm..."
+            run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
