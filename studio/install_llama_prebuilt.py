@@ -1052,7 +1052,9 @@ def iter_release_payloads_by_time(
             return
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                log(f"release tag {requested_tag} not found in {repo}; scanning recent releases")
+                log(
+                    f"release tag {requested_tag} not found in {repo}; scanning recent releases"
+                )
             else:
                 raise
         except Exception:
