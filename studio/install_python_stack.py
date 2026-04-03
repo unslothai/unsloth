@@ -541,16 +541,21 @@ def install_python_stack() -> int:
             # immediately after the package name.
             import re as _re
 
-            _base_lines = (REQ_ROOT / "base.txt").read_text(
-                encoding = "utf-8"
-            ).splitlines(keepends = True)
+            _base_lines = (
+                (REQ_ROOT / "base.txt")
+                .read_text(encoding = "utf-8")
+                .splitlines(keepends = True)
+            )
             _base_filtered = [
                 ln
                 for ln in _base_lines
                 if not _re.match(r"^\s*unsloth\s*([<>=!~;\[#]|$)", ln.strip())
             ]
             _base_tmp = tempfile.NamedTemporaryFile(
-                mode = "w", suffix = ".txt", delete = False, encoding = "utf-8",
+                mode = "w",
+                suffix = ".txt",
+                delete = False,
+                encoding = "utf-8",
             )
             _base_tmp.writelines(_base_filtered)
             _base_tmp.close()
