@@ -11,6 +11,8 @@ from utils.paths import (
     normalize_path,
     is_local_path,
     is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
     outputs_root,
     exports_root,
     resolve_output_dir,
@@ -714,8 +716,10 @@ def _detect_audio_from_tokenizer(
         from huggingface_hub.constants import HF_HUB_CACHE
 
         cache_dir = Path(HF_HUB_CACHE)
-        repo_dir_name = f"models--{model_name.replace('/', '--')}"
-        repo_dir = cache_dir / repo_dir_name
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is None:
+            repo_dir_name = f"models--{model_name.replace('/', '--')}"
+            repo_dir = cache_dir / repo_dir_name
         if repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
@@ -1627,11 +1631,18 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
 
-        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
-        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        # Preserve requested casing, but if a case-variant already exists in local HF cache,
+        # reuse that exact repo_id spelling to avoid one-time re-downloads after #2592.
         if not is_local:
-            identifier = identifier.lower()
-            path = path.lower()
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved_identifier,
+                    identifier,
+                )
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
@@ -1851,6 +1862,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        if not is_local:
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # --- Logic for Base Model and Vision Detection ---
         base_model = None
