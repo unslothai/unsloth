@@ -536,9 +536,7 @@ def install_python_stack() -> int:
             )
             # Filter out "unsloth" from base.txt so pip does not
             # revert the git install back to the PyPI wheel.
-            _base_no_unsloth = _filter_requirements(
-                REQ_ROOT / "base.txt", {"unsloth"}
-            )
+            _base_no_unsloth = _filter_requirements(REQ_ROOT / "base.txt", {"unsloth"})
             try:
                 pip_install(
                     "Updating remaining base packages",
