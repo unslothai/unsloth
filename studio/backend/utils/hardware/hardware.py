@@ -1356,8 +1356,13 @@ def apply_gpu_ids(gpu_ids) -> None:
         value = str(gpu_ids)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = value
+    # Keep ROCm visibility env vars in sync so _get_parent_visible_gpu_spec()
+    # picks up the narrowed set on AMD systems.
+    if IS_ROCM:
+        os.environ["HIP_VISIBLE_DEVICES"] = value
+        os.environ["ROCR_VISIBLE_DEVICES"] = value
     _visible_gpu_count = None
-    logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
+    logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm=%s)", value, IS_ROCM)
 
 
 def get_device_map(

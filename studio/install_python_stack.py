@@ -59,6 +59,25 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
+    # Try amd-smi version (outputs "... | ROCm version: X.Y.Z")
+    amd_smi = shutil.which("amd-smi")
+    if amd_smi:
+        try:
+            result = subprocess.run(
+                [amd_smi, "version"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0:
+                import re
+                m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
+                if m:
+                    return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+
     # Try hipconfig --version (outputs bare version like "6.3.21234.2")
     hipconfig = shutil.which("hipconfig")
     if hipconfig:

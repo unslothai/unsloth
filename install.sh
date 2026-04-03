@@ -1132,9 +1132,11 @@ _pick_radeon_wheel() {
                 base = $NF
                 sub(/[?#].*/, "", base)         # strip query / fragment
                 prefix = pkg "-"
-                suffix = "-" tag "-" tag "-linux_x86_64.whl"
+                # Match cpXY-cpXY or cpXY-abi3 with any linux x86_64 platform tag
+                # (linux_x86_64, manylinux_2_28_x86_64, manylinux2014_x86_64, etc.)
                 if (substr(base, 1, length(prefix)) == prefix &&
-                        substr(base, length(base) - length(suffix) + 1) == suffix)
+                        index(base, "-" tag "-") > 0 &&
+                        match(base, /x86_64\.whl$/))
                     print $0
             }' \
         | sort -V \
@@ -1247,22 +1249,26 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _tv_whl=$(_pick_radeon_wheel    "torchvision" 2>/dev/null) && _tv_arg="$_tv_whl"
                 _ta_whl=$(_pick_radeon_wheel    "torchaudio"  2>/dev/null) && _ta_arg="$_ta_whl"
                 _tri_whl=$(_pick_radeon_wheel   "triton"      2>/dev/null) && _tri_arg="$_tri_whl"
+                # Build install args; skip empty _tri_arg to avoid passing "" to uv
+                _radeon_pkgs="$_torch_arg $_tv_arg $_ta_arg"
+                [ -n "$_tri_arg" ] && _radeon_pkgs="$_tri_arg $_radeon_pkgs"
                 run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
                     --find-links "$_RADEON_BASE_URL" \
-                    "$_tri_arg" "$_torch_arg" "$_tv_arg" "$_ta_arg"
+                    $_radeon_pkgs
                 substep "installing bitsandbytes for AMD Radeon..."
                 run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" \
                     "bitsandbytes>=0.49.1"
             else
-                substep "[WARN] Radeon repo unavailable; falling back to CPU-only PyTorch" "$C_WARN"
+                substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                 run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
-                    "torch>=2.4,<2.11.0" "torchvision<0.26.0" "torchaudio<2.11.0" \
-                    --index-url "${TORCH_INDEX_URL%/*}/cpu"
+                    "$TORCH_CONSTRAINT" torchvision torchaudio \
+                    --index-url "$TORCH_INDEX_URL"
             fi
         else
-            substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to CPU-only PyTorch" "$C_WARN"
-            run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" "torchvision<0.26.0" "torchaudio<2.11.0" \
-                --index-url "${TORCH_INDEX_URL%/*}/cpu"
+            substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
+            run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --index-url "$TORCH_INDEX_URL"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
@@ -1277,7 +1283,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         esac
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
-    substep "installing unsloth (this may take a few minutes)..."    
+    substep "installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.

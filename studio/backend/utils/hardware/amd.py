@@ -82,13 +82,19 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if num is None:
         return None
 
-    # Explicit unit conversion
-    if "gib" in unit or "gb" in unit:
+    # Explicit unit conversion -- distinguish binary (GiB) from SI (GB)
+    if "gib" in unit:
         return num * 1024
-    if "mib" in unit or "mb" in unit:
+    if "gb" in unit:
+        return num * 1000
+    if "mib" in unit:
         return num
-    if "kib" in unit or "kb" in unit:
+    if "mb" in unit:
+        return num
+    if "kib" in unit:
         return num / 1024
+    if "kb" in unit:
+        return num / 1000
     if unit and (
         "b" in unit and "g" not in unit and "m" not in unit and "k" not in unit
     ):
