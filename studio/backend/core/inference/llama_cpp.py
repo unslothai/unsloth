@@ -1323,11 +1323,23 @@ class LlamaCppBackend:
 
             # Speculative decoding (n-gram self-speculation, zero VRAM cost)
             # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
-            # variable draft lengths.  Params from llama.cpp docs:
+            # variable draft lengths.  Helps most when the model repeats
+            # existing text (code refactoring, summarization, reasoning).
+            # For general chat with low repetition, overhead is ~5 ms.
+            #
+            # Benchmarks from llama.cpp PRs #18471, #19164:
+            #   Scenario                        | Without | With    | Speedup
+            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+            #
+            # Params from llama.cpp docs (docs/speculative.md):
             #   --spec-ngram-size-n 24  (small n not recommended)
             #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
             #     dense models can reduce these)
             # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
             _valid_spec_types = {"ngram-simple", "ngram-mod"}
             if speculative_type and speculative_type in _valid_spec_types:
                 if not is_vision:  # spec decoding disabled for vision models
