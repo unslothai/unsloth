@@ -80,11 +80,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             blocked.add(base)
 
     # 2. Regex: catch blocked words at shell command boundaries
-    #    (semicolons, pipes, &&, ||, backticks, $(), <(), newlines)
+    #    (semicolons, pipes, &&, ||, backticks, $(), <(), subshells, newlines)
     lowered = command.lower()
     for word in _BLOCKED_COMMANDS:
         pattern = (
-            rf"(?:^|[;&|`\n]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?{re.escape(word)}\b"
+            rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)(?:[\w./\\-]*/)?{re.escape(word)}\b"
         )
         if re.search(pattern, lowered):
             blocked.add(word)
