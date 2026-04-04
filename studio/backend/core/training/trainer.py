@@ -3244,11 +3244,14 @@ class UnslothTrainer:
                     "include_num_input_tokens_seen": True,
                     "dataset_num_proc": config_args["dataset_num_proc"],
                     "max_length": max_length,
-                    "max_prompt_length": max_prompt_length,
                     "optim": optim_value,
                     "lr_scheduler_type": lr_scheduler_type_value,
                     "remove_unused_columns": False,
                 }
+                # max_prompt_length was removed in TRL >= 1.0.0
+                import inspect as _inspect
+                if "max_prompt_length" in _inspect.signature(DPOConfig.__init__).parameters:
+                    dpo_config_args["max_prompt_length"] = max_prompt_length
                 if training_args.get("enable_tensorboard", False):
                     dpo_config_args["logging_dir"] = str(
                         resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
