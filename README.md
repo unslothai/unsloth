@@ -64,8 +64,9 @@ irm https://unsloth.ai/install.ps1 | iex
 
 #### Launch
 ```bash
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
+> For cloud VMs or LAN access, add `-H 0.0.0.0` to bind on all interfaces.
 
 #### Update
 To update, use the same install commands as above. Or run (does not work on Windows):
@@ -151,7 +152,7 @@ The below advanced instructions are for Unsloth Studio. For Unsloth Core advance
 git clone https://github.com/unslothai/unsloth
 cd unsloth
 ./install.sh --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
 Then to update :
 ```bash
@@ -164,7 +165,7 @@ git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
 Then to update :
 ```bash
@@ -177,11 +178,11 @@ git clone https://github.com/unslothai/unsloth
 cd unsloth
 git checkout nightly
 ./install.sh --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
 Then to launch every time:
 ```bash
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
 
 #### Nightly: Windows:
@@ -192,11 +193,11 @@ cd unsloth
 git checkout nightly
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
 Then to launch every time:
 ```bash
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio
 ```
 
 #### Uninstall
