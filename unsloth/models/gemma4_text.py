@@ -46,6 +46,9 @@ class ModelArgs(BaseModelArgs):
     num_kv_shared_layers: int = 0
     use_double_wide_mlp: bool = False
     enable_moe_block: bool = False
+    num_experts: Optional[int] = None
+    top_k_experts: Optional[int] = None
+    moe_intermediate_size: Optional[int] = None
     hidden_activation: str = "gelu_pytorch_tanh"
     tie_word_embeddings: bool = True
     final_logit_softcapping: Optional[float] = None
@@ -121,6 +124,77 @@ class MLP(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         return self.down_proj(self.act(self.gate_proj(x)) * self.up_proj(x))
+
+
+class Router(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.args = args
+        self.norm = Gemma4RMSNorm(
+            args.hidden_size, eps = args.rms_norm_eps, with_scale = False
+        )
+        self.proj = nn.Linear(args.hidden_size, args.num_experts, bias = False)
+        self.scale = mx.ones((args.hidden_size,))
+        self.per_expert_scale = mx.ones((args.num_experts,))
+        self._root_size = args.hidden_size**-0.5
+
+    def __call__(self, x: mx.array):
+        x = self.norm(x)
+        x = x * self._root_size
+        x = x * self.scale
+
+        expert_scores = self.proj(x)
+        router_probs = mx.softmax(expert_scores, axis = -1)
+
+        top_k_indices = mx.argpartition(
+            -expert_scores, kth = self.args.top_k_experts - 1, axis = -1
+        )[..., : self.args.top_k_experts]
+
+        top_k_weights = mx.take_along_axis(router_probs, top_k_indices, axis = -1)
+        top_k_weights = top_k_weights / mx.sum(top_k_weights, axis = -1, keepdims = True)
+        top_k_weights = top_k_weights * self.per_expert_scale[top_k_indices]
+        return top_k_indices, top_k_weights
+
+
+class GeGLU(nn.Module):
+    def __call__(self, x, gate):
+        return nn.gelu_approx(gate) * x
+
+
+class Experts(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        try:
+            from .switch_layers import SwitchGLU
+        except ImportError:
+            raise ImportError(
+                "Gemma4 MoE requires mlx-lm >= 0.31. Please upgrade: pip install -U mlx-lm"
+            )
+
+        self.switch_glu = SwitchGLU(
+            input_dims = args.hidden_size,
+            hidden_dims = args.moe_intermediate_size,
+            num_experts = args.num_experts,
+            activation = GeGLU(),
+            bias = False,
+        )
+
+    def __call__(
+        self,
+        x: mx.array,
+        top_k_indices: mx.array,
+        top_k_weights: mx.array,
+    ) -> mx.array:
+        B, S, H = x.shape
+        K = top_k_indices.shape[-1]
+
+        x_flat = x.reshape(B * S, H)
+        indices_flat = top_k_indices.reshape(B * S, K)
+
+        expert_out = self.switch_glu(x_flat, indices_flat)
+
+        weights = top_k_weights.reshape(B * S, K)[..., None]
+        return (expert_out * weights).sum(axis = -2).reshape(B, S, H)
 
 
 def build_rope(args: ModelArgs, layer_type: str, head_dim: int):
@@ -317,6 +391,21 @@ class TransformerBlock(nn.Module):
         )
         self.layer_scalar = mx.ones((1,))
 
+        # MoE
+        self.enable_moe = args.enable_moe_block
+        if self.enable_moe:
+            self.router = Router(args)
+            self.experts = Experts(args)
+            self.post_feedforward_layernorm_1 = Gemma4RMSNorm(
+                args.hidden_size, eps = args.rms_norm_eps
+            )
+            self.post_feedforward_layernorm_2 = Gemma4RMSNorm(
+                args.hidden_size, eps = args.rms_norm_eps
+            )
+            self.pre_feedforward_layernorm_2 = Gemma4RMSNorm(
+                args.hidden_size, eps = args.rms_norm_eps
+            )
+
         if self.hidden_size_per_layer_input:
             self.act = ACT2FN[args.hidden_activation]
             self.per_layer_input_gate = nn.Linear(
@@ -344,10 +433,24 @@ class TransformerBlock(nn.Module):
         h = residual + h
 
         residual = h
-        ff = self.pre_feedforward_layernorm(h)
-        ff = self.mlp(ff)
-        ff = self.post_feedforward_layernorm(ff)
-        h = residual + ff
+
+        if self.enable_moe:
+            h1 = self.pre_feedforward_layernorm(h)
+            h1 = self.mlp(h1)
+            h1 = self.post_feedforward_layernorm_1(h1)
+
+            top_k_indices, top_k_weights = self.router(h)
+            h2 = self.pre_feedforward_layernorm_2(h)
+            h2 = self.experts(h2, top_k_indices, top_k_weights)
+            h2 = self.post_feedforward_layernorm_2(h2)
+
+            h = h1 + h2
+        else:
+            h = self.pre_feedforward_layernorm(h)
+            h = self.mlp(h)
+
+        h = self.post_feedforward_layernorm(h)
+        h = residual + h
 
         if self.hidden_size_per_layer_input:
             residual = h
@@ -371,10 +474,6 @@ def logit_softcap(softcap, x):
 class Gemma4Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
-        if args.enable_moe_block:
-            raise NotImplementedError(
-                "Gemma4 MoE layers are not implemented in mlx-lm."
-            )
 
         self.args = args
         self.vocab_size = args.vocab_size
@@ -610,7 +709,34 @@ class Model(nn.Module):
         if "lm_head.weight" not in weights:
             self.tie_word_embeddings = True
             self.pop("lm_head")
-        return weights
+
+        sanitized = {}
+        for k, v in weights.items():
+            if "rotary_emb" in k:
+                continue
+
+            if k.endswith(".experts.down_proj"):
+                k = k.replace(
+                    ".experts.down_proj", ".experts.switch_glu.down_proj.weight"
+                )
+                sanitized[k] = v
+                continue
+
+            if k.endswith(".experts.gate_up_proj"):
+                gate_key = k.replace(
+                    ".experts.gate_up_proj", ".experts.switch_glu.gate_proj.weight"
+                )
+                up_key = k.replace(
+                    ".experts.gate_up_proj", ".experts.switch_glu.up_proj.weight"
+                )
+                v = v.swapaxes(-1, -2)
+                mid_dim = v.shape[-1] // 2
+                sanitized[gate_key] = v[..., :mid_dim].swapaxes(-1, -2)
+                sanitized[up_key] = v[..., mid_dim:].swapaxes(-1, -2)
+                continue
+
+            sanitized[k] = v
+        return sanitized
 
     @property
     def layers(self):
