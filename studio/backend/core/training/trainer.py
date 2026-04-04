@@ -3250,7 +3250,11 @@ class UnslothTrainer:
                 }
                 # max_prompt_length was removed in TRL >= 1.0.0
                 import inspect as _inspect
-                if "max_prompt_length" in _inspect.signature(DPOConfig.__init__).parameters:
+
+                if (
+                    "max_prompt_length"
+                    in _inspect.signature(DPOConfig.__init__).parameters
+                ):
                     dpo_config_args["max_prompt_length"] = max_prompt_length
                 if training_args.get("enable_tensorboard", False):
                     dpo_config_args["logging_dir"] = str(
