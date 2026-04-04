@@ -244,7 +244,7 @@ _shutdown_event = None
 
 
 def run_server(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
@@ -357,9 +357,33 @@ def run_server(
     return app
 
 
+def _make_argument_parser() -> "argparse.ArgumentParser":
+    """Build and return the ArgumentParser for standalone run.py execution.
+
+    Extracted from ``__main__`` so it can be imported and tested without
+    executing the full startup sequence.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
+    parser.add_argument(
+        "--host",
+        default = "127.0.0.1",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+    )
+    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
+    parser.add_argument(
+        "--frontend",
+        type = str,
+        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        help = "Path to frontend build",
+    )
+    parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    return parser
+
+
 # For direct execution (also invoked by CLI via os.execvp / subprocess)
 if __name__ == "__main__":
-    import argparse
     import signal
     import traceback
 
@@ -370,18 +394,7 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
-    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
-    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
-    parser.add_argument(
-        "--frontend",
-        type = str,
-        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
-        help = "Path to frontend build",
-    )
-    parser.add_argument("--silent", action = "store_true", help = "Suppress output")
-
-    args = parser.parse_args()
+    args = _make_argument_parser().parse_args()
 
     kwargs = dict(host = args.host, port = args.port, silent = args.silent)
     if args.frontend is not None:
