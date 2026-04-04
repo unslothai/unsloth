@@ -130,11 +130,13 @@ class Router(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
-        self.norm = Gemma4RMSNorm(args.hidden_size, eps = args.rms_norm_eps, with_scale = False)
+        self.norm = Gemma4RMSNorm(
+            args.hidden_size, eps = args.rms_norm_eps, with_scale = False
+        )
         self.proj = nn.Linear(args.hidden_size, args.num_experts, bias = False)
         self.scale = mx.ones((args.hidden_size,))
         self.per_expert_scale = mx.ones((args.num_experts,))
-        self._root_size = args.hidden_size ** -0.5
+        self._root_size = args.hidden_size**-0.5
 
     def __call__(self, x: mx.array):
         x = self.norm(x)
@@ -178,7 +180,10 @@ class Experts(nn.Module):
         )
 
     def __call__(
-        self, x: mx.array, top_k_indices: mx.array, top_k_weights: mx.array,
+        self,
+        x: mx.array,
+        top_k_indices: mx.array,
+        top_k_weights: mx.array,
     ) -> mx.array:
         B, S, H = x.shape
         K = top_k_indices.shape[-1]
@@ -711,7 +716,9 @@ class Model(nn.Module):
                 continue
 
             if k.endswith(".experts.down_proj"):
-                k = k.replace(".experts.down_proj", ".experts.switch_glu.down_proj.weight")
+                k = k.replace(
+                    ".experts.down_proj", ".experts.switch_glu.down_proj.weight"
+                )
                 sanitized[k] = v
                 continue
 
