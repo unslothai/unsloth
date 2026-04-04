@@ -42,6 +42,7 @@ __all__ = [
     "check_tokenizer",
     "add_new_tokens",
     "fix_sentencepiece_gguf",
+    "get_tokenizer_info",
 ]
 
 
@@ -896,6 +897,55 @@ def check_tokenizer(
     return convert_to_fast_tokenizer(tokenizer)
 
 
+def get_tokenizer_info(tokenizer) -> dict:
+    """Return a concise diagnostic summary of a tokenizer instance.
+
+    Collects key properties into a plain dict suitable for logging, debugging,
+    or displaying in the Unsloth Studio UI. All fields are safe to access —
+    missing attributes fall back to ``None`` rather than raising.
+
+    Example output::
+
+        {
+            "name_or_path": "unsloth/Llama-3.2-1B-Instruct",
+            "tokenizer_class": "PreTrainedTokenizerFast",
+            "is_fast": True,
+            "vocab_size": 128000,
+            "added_tokens_count": 256,
+            "model_max_length": 131072,
+            "padding_side": "right",
+            "bos_token": "<|begin_of_text|>",
+            "eos_token": "<|eot_id|>",
+            "pad_token": "<|finetune_right_pad_id|>",
+            "unk_token": None,
+            "has_chat_template": True,
+            "special_tokens_count": 3,
+        }
+
+    Args:
+        tokenizer: Any HuggingFace ``PreTrainedTokenizer`` or
+                   ``PreTrainedTokenizerFast`` instance.
+
+    Returns:
+        A ``dict`` of tokenizer properties. Safe to serialize to JSON.
+    """
+    return {
+        "name_or_path": getattr(tokenizer, "name_or_path", None),
+        "tokenizer_class": type(tokenizer).__name__,
+        "is_fast": getattr(tokenizer, "is_fast", False),
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
+        "added_tokens_count": len(getattr(tokenizer, "added_tokens_decoder", {})),
+        "model_max_length": getattr(tokenizer, "model_max_length", None),
+        "padding_side": getattr(tokenizer, "padding_side", None),
+        "bos_token": getattr(tokenizer, "bos_token", None),
+        "eos_token": getattr(tokenizer, "eos_token", None),
+        "pad_token": getattr(tokenizer, "pad_token", None),
+        "unk_token": getattr(tokenizer, "unk_token", None),
+        "has_chat_template": getattr(tokenizer, "chat_template", None) is not None,
+        "special_tokens_count": len(getattr(tokenizer, "all_special_tokens", [])),
+    }
+
+
 import inspect
 from inspect import getsource
 import trl
@@ -974,11 +1024,18 @@ def patch_sft_trainer_tokenizer():
             "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"
             "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"
             "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"
-            "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"
-            "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"
+            "if 'dataset_text_field' not in locals(): dataset_text_field = None\n"
+            "if formatting_func is None and dataset_text_field is None and 'prompt' in dataset[0] and 'completion' in dataset[0]:\n"
+            "    test_text = (dataset[0]['prompt'] + dataset[0]['completion']) if (isinstance(dataset[0]['prompt'], str) and isinstance(dataset[0]['completion'], str)) else None\n"
+            "elif formatting_func is None and dataset_text_field is not None:\n"
+            "    test_text = dataset[0][dataset_text_field]\n"
+            "elif formatting_func is not None:\n"
+            "    test_text = formatting_func(dataset[0])[0]\n"
+            "else:\n"
+            "    test_text = None\n"
             "chat_template = getattr(tokenizer, 'chat_template', None)\n"
             "chat_template = '' if chat_template is None else chat_template\n"
-            "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "
+            "has_bos_token_already = ((test_text is not None and test_text.startswith(tokenizer.bos_token)) or tokenizer.bos_token in chat_template) "
             "if getattr(tokenizer, 'bos_token', None) is not None else False\n"
             "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"
             "    from functools import partial\n"

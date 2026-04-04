@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  DocumentAttachmentIcon,
+  PlusSignIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
   Background,
   BackgroundVariant,
   type Edge,
@@ -12,8 +17,6 @@ import {
   ReactFlow,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
   useCallback,
@@ -24,42 +27,68 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
-import { RecipeGraphAuxNode, type RecipeGraphAuxNodeData } from "./components/recipe-graph-aux-node";
-import {
-  BlockSheet,
-} from "./components/block-sheet";
+import { Button } from "@/components/ui/button";
+import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
 import { InternalsSync } from "./components/graph/internals-sync";
-import { ExecutionProgressIsland } from "./components/runtime/execution-progress-island";
-import { RecipeStudioHeader } from "./components/recipe-studio-header";
+import {
+  RecipeGraphAuxNode,
+  type RecipeGraphAuxNodeData,
+} from "./components/recipe-graph-aux-node";
 import { RecipeNode } from "./components/recipe-graph-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
+import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { DataEdge } from "./components/rf-ui/data-edge";
+import { ExecutionProgressIsland } from "./components/runtime/execution-progress-island";
 import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { RunDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
+import type {
+  RecipeExecutionRecord,
+  RecipeStudioView,
+} from "./execution-types";
+import { isExecutionInProgress } from "./executions/execution-helpers";
 import { useRecipeEditorGraph } from "./hooks/use-recipe-editor-graph";
 import { useRecipeRuntimeVisuals } from "./hooks/use-recipe-runtime-visuals";
 import { useRecipeStudioActions } from "./hooks/use-recipe-studio-actions";
 import { useRecipeStudioStore } from "./stores/recipe-studio";
-import { isExecutionInProgress } from "./executions/execution-helpers";
 import type { RecipeNodeData } from "./types";
-import { getFitNodeIdsIgnoringNotes } from "./utils/graph/fit-view";
+import { getGraphWarnings } from "./utils/graph-warnings";
+import {
+  FIT_VIEW_DURATION_MS,
+  FIT_VIEW_MAX_ZOOM,
+  FIT_VIEW_PADDING,
+  getFitViewTargetNodes,
+} from "./utils/graph/fit-view";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import { buildDialogOptions } from "./utils/recipe-studio-view";
-import type { RecipeExecutionRecord, RecipeStudioView } from "./execution-types";
 
 const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
-const EDGE_TYPES: EdgeTypes = { canvas: DataEdge, semantic: RecipeGraphSemanticEdge };
+const EDGE_TYPES: EdgeTypes = {
+  canvas: DataEdge,
+  semantic: RecipeGraphSemanticEdge,
+};
 const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
 const TAB_SWITCH_FIT_DELAY_MS = 110;
-const FIT_ANIMATION_MS = 340;
+/**
+ * Maximum RAF iterations to wait for React Flow's ResizeObserver to populate
+ * `node.measured` dimensions before calling fitView. ~20 frames ≈ 333 ms at
+ * 60 fps — more than enough for the render → layout → ResizeObserver cycle.
+ */
+const MAX_FIT_VIEW_RETRIES = 20;
+/**
+ * After all target nodes appear measured, wait this many extra stable frames
+ * before firing fitView. This absorbs `updateNodeInternals` calls from
+ * InternalsSync and individual node mount effects that can transiently reset
+ * measurements.
+ */
+const FIT_VIEW_STABLE_FRAMES = 3;
 
 export type PersistRecipeInput = {
   id: string | null;
@@ -94,6 +123,7 @@ export function RecipeStudioPage({
     llmAuxVisibility,
     configs,
     processors,
+    sheetOpen,
     sheetView,
     activeConfigId,
     dialogOpen,
@@ -115,6 +145,7 @@ export function RecipeStudioPage({
     openConfig,
     updateConfig,
     isValidConnection,
+    setSheetOpen,
     setSheetView,
     setProcessors,
     setDialogOpen,
@@ -132,6 +163,7 @@ export function RecipeStudioPage({
       llmAuxVisibility: state.llmAuxVisibility,
       configs: state.configs,
       processors: state.processors,
+      sheetOpen: state.sheetOpen,
       sheetView: state.sheetView,
       activeConfigId: state.activeConfigId,
       dialogOpen: state.dialogOpen,
@@ -153,6 +185,7 @@ export function RecipeStudioPage({
       openConfig: state.openConfig,
       updateConfig: state.updateConfig,
       isValidConnection: state.isValidConnection,
+      setSheetOpen: state.setSheetOpen,
       setSheetView: state.setSheetView,
       setProcessors: state.setProcessors,
       setDialogOpen: state.setDialogOpen,
@@ -168,16 +201,16 @@ export function RecipeStudioPage({
     null,
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const [blockSheetOpen, setBlockSheetOpen] = useState(false);
   const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
   const [recentCompletedExecution, setRecentCompletedExecution] =
     useState<RecipeExecutionRecord | null>(null);
-  const [reactFlowInstance, setReactFlowInstance] = useState<
-    ReactFlowInstance<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge> | null
-  >(null);
+  const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<
+    Node<RecipeNodeData | RecipeGraphAuxNodeData>,
+    Edge
+  > | null>(null);
   const lastProcessedFitTickRef = useRef(0);
   const previousActiveViewRef = useRef<RecipeStudioView>("editor");
   const previousActiveExecutionIdRef = useRef<string | null>(null);
@@ -257,6 +290,7 @@ export function RecipeStudioPage({
     ).payload;
   }, []);
   const {
+    initialRecipeReady,
     workflowName,
     setWorkflowName,
     saveLoading,
@@ -354,7 +388,8 @@ export function RecipeStudioPage({
     }
     const latestCompleted = executions.find(
       (execution) =>
-        execution.status === "completed" && typeof execution.finishedAt === "number",
+        execution.status === "completed" &&
+        typeof execution.finishedAt === "number",
     );
     if (!latestCompleted || typeof latestCompleted.finishedAt !== "number") {
       setRecentCompletedExecution(null);
@@ -390,8 +425,12 @@ export function RecipeStudioPage({
 
   const openRootBlockSheet = useCallback(() => {
     setSheetView("root");
-    setBlockSheetOpen(true);
-  }, [setSheetView]);
+    setSheetOpen(true);
+  }, [setSheetOpen, setSheetView]);
+  const openSourceBlockSheet = useCallback(() => {
+    setSheetView("seed");
+    setSheetOpen(true);
+  }, [setSheetOpen, setSheetView]);
   const runDialogRows = runDialogKind === "preview" ? previewRows : fullRows;
   const runDialogLoading =
     runDialogKind === "preview" ? previewLoading : fullLoading;
@@ -399,38 +438,69 @@ export function RecipeStudioPage({
   const scheduleFitView = useCallback(
     ({ delayMs = 0 }: { delayMs?: number } = {}) => {
       if (!reactFlowInstance) {
-        return () => {};
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        return () => {
+          /* no-op: instance not available */
+        };
       }
 
       let timeoutId = 0;
       let frameId = 0;
-      let retryFrameId = 0;
+      let cancelled = false;
 
-      const fitWithCurrentNodes = () => {
-        const targetNodes = getFitNodeIdsIgnoringNotes(reactFlowInstance.getNodes());
-        if (targetNodes.length === 0) {
-          return false;
+      /** Check whether every primary workflow node has been measured. */
+      const allTargetsMeasured = (targets: Node[]): boolean =>
+        targets.length > 0 &&
+        targets.every(
+          (n) => n.measured?.width != null && n.measured?.height != null,
+        );
+
+      /** Execute fitView on the current primary workflow nodes. */
+      const doFit = () => {
+        const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
+        if (targets.length === 0) {
+          return;
         }
         viewportMovedSinceAutoFitRef.current = false;
         reactFlowInstance.fitView({
-          duration: FIT_ANIMATION_MS,
-          nodes: targetNodes,
+          duration: FIT_VIEW_DURATION_MS,
+          maxZoom: FIT_VIEW_MAX_ZOOM,
+          padding: FIT_VIEW_PADDING,
+          nodes: targets.map((n) => ({ id: n.id })),
         });
-        return true;
       };
 
-      const runFit = () => {
-        if (fitWithCurrentNodes()) {
+      let retries = 0;
+      let stableCount = 0;
+      const poll = () => {
+        if (cancelled) {
           return;
         }
-
-        retryFrameId = window.requestAnimationFrame(() => {
-          fitWithCurrentNodes();
-        });
+        if (retries >= MAX_FIT_VIEW_RETRIES) {
+          // Timed out waiting — fit with whatever we have (graceful fallback).
+          doFit();
+          return;
+        }
+        const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
+        if (allTargetsMeasured(targets)) {
+          stableCount++;
+          // Wait a few extra frames after measurements appear to let
+          // updateNodeInternals (InternalsSync, node mount effects) settle.
+          if (stableCount >= FIT_VIEW_STABLE_FRAMES) {
+            doFit();
+            return;
+          }
+        } else {
+          // Measurements were reset (e.g. by updateNodeInternals) — restart
+          // the stability counter.
+          stableCount = 0;
+        }
+        retries++;
+        frameId = window.requestAnimationFrame(poll);
       };
 
       const start = () => {
-        frameId = window.requestAnimationFrame(runFit);
+        frameId = window.requestAnimationFrame(poll);
       };
 
       if (delayMs > 0) {
@@ -440,14 +510,12 @@ export function RecipeStudioPage({
       }
 
       return () => {
+        cancelled = true;
         if (timeoutId) {
           window.clearTimeout(timeoutId);
         }
         if (frameId) {
           window.cancelAnimationFrame(frameId);
-        }
-        if (retryFrameId) {
-          window.cancelAnimationFrame(retryFrameId);
         }
       };
     },
@@ -455,9 +523,13 @@ export function RecipeStudioPage({
   );
 
   useEffect(() => {
-    if (previousActiveViewRef.current !== activeView && activeView === "editor") {
+    if (
+      previousActiveViewRef.current !== activeView &&
+      activeView === "editor"
+    ) {
       pendingEditorTabFitRef.current = true;
-      forceEditorTabFitRef.current = previousActiveViewRef.current === "executions";
+      forceEditorTabFitRef.current =
+        previousActiveViewRef.current === "executions";
     }
     previousActiveViewRef.current = activeView;
   }, [activeView]);
@@ -479,7 +551,7 @@ export function RecipeStudioPage({
     pendingEditorTabFitRef.current = false;
     const forceFit = forceEditorTabFitRef.current;
     forceEditorTabFitRef.current = false;
-    if (!forceFit && !viewportMovedSinceAutoFitRef.current) {
+    if (!(forceFit || viewportMovedSinceAutoFitRef.current)) {
       return;
     }
     return scheduleFitView({ delayMs: TAB_SWITCH_FIT_DELAY_MS });
@@ -496,6 +568,163 @@ export function RecipeStudioPage({
     return scheduleFitView();
   }, [activeView, fitViewTick, reactFlowInstance, scheduleFitView]);
 
+  let editorContent: ReactElement;
+  if (initialRecipeReady) {
+    editorContent = (
+      <ReactFlow<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge>
+        onInit={setReactFlowInstance}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        nodes={displayGraph.nodes}
+        edges={displayGraph.edges}
+        proOptions={{ hideAttribution: true }}
+        nodeTypes={NODE_TYPES}
+        edgeTypes={EDGE_TYPES}
+        defaultEdgeOptions={{
+          type: "canvas",
+          data: { path: "smoothstep" },
+        }}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={handleEdgesChange}
+        onConnect={onConnect}
+        onNodeClick={handleNodeClick}
+        onNodeDoubleClick={handleNodeDoubleClick}
+        isValidConnection={isValidConnection}
+        onMoveEnd={(event) => {
+          if (event) {
+            viewportMovedSinceAutoFitRef.current = true;
+          }
+        }}
+        nodesDraggable={canvasInteractive}
+        nodesConnectable={canvasInteractive}
+        elementsSelectable={canvasInteractive}
+        fitView={false}
+        className="h-full w-full rounded-t-none"
+      >
+        <LayoutControls
+          direction={layoutDirection}
+          onLayout={applyLayout}
+          onToggleDirection={handleToggleDirection}
+        />
+        <InternalsSync nodeIds={displayNodeIds} />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={18}
+          size={1}
+          color="#d4d4d8"
+        />
+        {nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
+            <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-dashed border-border/70 bg-background/80 px-6 py-6 text-center shadow-border backdrop-blur-[1px]">
+              <div className="mx-auto flex size-12 items-center justify-center corner-squircle rounded-xl border border-border/70 bg-muted/40">
+                <HugeiconsIcon
+                  icon={DocumentAttachmentIcon}
+                  className="size-6 text-muted-foreground"
+                />
+              </div>
+              <div className="mt-4 space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+                  Best place to start
+                </p>
+                <p className="text-sm font-semibold text-foreground">
+                  Start with source data
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Most synthetic-data recipes begin with a document, dataset, or
+                  file before adding generation and checks.
+                </p>
+              </div>
+              <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  className="corner-squircle"
+                  onClick={openSourceBlockSheet}
+                >
+                  <HugeiconsIcon
+                    icon={DocumentAttachmentIcon}
+                    className="size-4"
+                  />
+                  Start with source data
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="corner-squircle"
+                  onClick={openRootBlockSheet}
+                >
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                  Browse all steps
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+        <Panel position="top-right" className="m-3">
+          <BlockSheet
+            container={sheetContainer}
+            sheetView={sheetView}
+            onViewChange={setSheetView}
+            open={sheetOpen}
+            onOpenChange={setSheetOpen}
+            onAddSampler={handleAddSamplerFromSheet}
+            onAddSeed={handleAddSeedFromSheet}
+            onAddLlm={handleAddLlmFromSheet}
+            onAddModelProvider={handleAddModelProviderFromSheet}
+            onAddModelConfig={handleAddModelConfigFromSheet}
+            onAddToolProfile={handleAddToolProfileFromSheet}
+            onAddExpression={handleAddExpressionFromSheet}
+            onAddValidator={handleAddValidatorFromSheet}
+            onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
+            onOpenProcessors={openProcessorsFromSheet}
+            copied={copied}
+            onCopy={copyRecipe}
+            onImport={() => setImportOpen(true)}
+          />
+        </Panel>
+        <ViewportControls
+          interactive={canvasInteractive}
+          lockDisabled={executionLocked}
+          onToggleInteractive={toggleInteractive}
+        />
+        {islandExecution &&
+          (isExecutionInProgress(islandExecution.status) ||
+            islandExecution.status === "completed") && (
+            <Panel position="top-center" className="!m-0">
+              <ExecutionProgressIsland
+                execution={islandExecution}
+                currentColumnIcon={currentColumnIcon}
+                minimized={runtimeIslandMinimized}
+                onMinimizedChange={setRuntimeIslandMinimized}
+                onViewExecutions={() => setActiveView("executions")}
+              />
+            </Panel>
+          )}
+        <RunValidateFloatingControls
+          runBusy={runBusy}
+          runDialogKind={runDialogKind}
+          validateLoading={validateLoading}
+          executionLocked={executionLocked}
+          onOpenRunDialog={openRunDialog}
+          onValidate={() => {
+            openRunDialog(runDialogKind);
+            void validateFromDialog();
+          }}
+        />
+      </ReactFlow>
+    );
+  } else {
+    editorContent = (
+      <div className="flex h-full items-center justify-center px-6">
+        <div className="rounded-2xl border border-border/70 bg-background/80 px-5 py-4 text-center shadow-border backdrop-blur-[1px]">
+          <p className="text-sm font-medium text-foreground">Loading recipe</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Restoring the studio graph and saved settings.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <main className="w-full px-6 py-8">
@@ -509,131 +738,19 @@ export function RecipeStudioPage({
             saveTone={saveTone}
             savedAtLabel={savedAtLabel}
             workflowName={workflowName}
+            warnings={getGraphWarnings(configs, edges)}
             onWorkflowNameChange={setWorkflowName}
             onViewChange={setActiveView}
             onSaveRecipe={() => {
               void persistRecipe();
             }}
           />
-          <div className="h-[75vh] w-full rounded-t-none" ref={flowContainerRef}>
+          <div
+            className="h-[75vh] w-full rounded-t-none"
+            ref={flowContainerRef}
+          >
             {activeView === "editor" ? (
-              <ReactFlow<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge>
-                onInit={setReactFlowInstance}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
-                nodes={displayGraph.nodes}
-                edges={displayGraph.edges}
-                nodeTypes={NODE_TYPES}
-                edgeTypes={EDGE_TYPES}
-                defaultEdgeOptions={{
-                  type: "canvas",
-                  data: { path: "smoothstep" },
-                }}
-                onNodesChange={handleNodesChange}
-                onEdgesChange={handleEdgesChange}
-                onConnect={onConnect}
-                onNodeClick={handleNodeClick}
-                onNodeDoubleClick={handleNodeDoubleClick}
-                isValidConnection={isValidConnection}
-                onMoveEnd={(event) => {
-                  if (event) {
-                    viewportMovedSinceAutoFitRef.current = true;
-                  }
-                }}
-                nodesDraggable={canvasInteractive}
-                nodesConnectable={canvasInteractive}
-                elementsSelectable={canvasInteractive}
-                fitView={false}
-                className="h-full w-full rounded-t-none"
-              >
-                <LayoutControls
-                  direction={layoutDirection}
-                  onLayout={applyLayout}
-                  onToggleDirection={handleToggleDirection}
-                />
-                <InternalsSync nodeIds={displayNodeIds} />
-                <Background
-                  variant={BackgroundVariant.Dots}
-                  gap={18}
-                  size={1}
-                  color="#d4d4d8"
-                />
-                {nodes.length === 0 && (
-                  <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
-                    <button
-                      type="button"
-                      onClick={openRootBlockSheet}
-                      className="pointer-events-auto corner-squircle flex min-h-36 w-full max-w-md flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/70 bg-background/75 px-6 py-6 text-center backdrop-blur-[1px] transition hover:border-primary/60 hover:bg-background"
-                    >
-                      <div className="flex size-12 items-center justify-center corner-squircle rounded-xl border border-border/70 bg-muted/40">
-                        <HugeiconsIcon
-                          icon={PlusSignIcon}
-                          className="size-6 text-muted-foreground"
-                        />
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">
-                          Add your first block
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Click to open block library.
-                        </p>
-                      </div>
-                    </button>
-                  </div>
-                )}
-                <Panel position="top-right" className="m-3">
-                  <BlockSheet
-                    container={sheetContainer}
-                    sheetView={sheetView}
-                    onViewChange={setSheetView}
-                    open={blockSheetOpen}
-                    onOpenChange={setBlockSheetOpen}
-                    onAddSampler={handleAddSamplerFromSheet}
-                    onAddSeed={handleAddSeedFromSheet}
-              onAddLlm={handleAddLlmFromSheet}
-              onAddModelProvider={handleAddModelProviderFromSheet}
-              onAddModelConfig={handleAddModelConfigFromSheet}
-              onAddToolProfile={handleAddToolProfileFromSheet}
-              onAddExpression={handleAddExpressionFromSheet}
-                    onAddValidator={handleAddValidatorFromSheet}
-                    onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
-                    onOpenProcessors={openProcessorsFromSheet}
-                    copied={copied}
-                    onCopy={copyRecipe}
-                    onImport={() => setImportOpen(true)}
-                  />
-                </Panel>
-                <ViewportControls
-                  interactive={canvasInteractive}
-                  lockDisabled={executionLocked}
-                  onToggleInteractive={toggleInteractive}
-                />
-                {islandExecution &&
-                  (isExecutionInProgress(islandExecution.status) ||
-                    islandExecution.status === "completed") && (
-                    <Panel position="top-center" className="!m-0">
-                      <ExecutionProgressIsland
-                        execution={islandExecution}
-                        currentColumnIcon={currentColumnIcon}
-                        minimized={runtimeIslandMinimized}
-                        onMinimizedChange={setRuntimeIslandMinimized}
-                        onViewExecutions={() => setActiveView("executions")}
-                      />
-                    </Panel>
-                  )}
-                <RunValidateFloatingControls
-                  runBusy={runBusy}
-                  runDialogKind={runDialogKind}
-                  validateLoading={validateLoading}
-                  executionLocked={executionLocked}
-                  onOpenRunDialog={openRunDialog}
-                  onValidate={() => {
-                    openRunDialog(runDialogKind);
-                    void validateFromDialog();
-                  }}
-                />
-              </ReactFlow>
+              editorContent
             ) : (
               <ExecutionsView
                 executions={executions}

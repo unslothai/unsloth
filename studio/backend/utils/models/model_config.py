@@ -5,13 +5,14 @@
 Model and LoRA configuration handling
 """
 
-from transformers import AutoConfig
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import (
     normalize_path,
     is_local_path,
     is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
     outputs_root,
     exports_root,
     resolve_output_dir,
@@ -30,6 +31,37 @@ import yaml
 
 
 logger = get_logger(__name__)
+
+# ── Model size extraction ────────────────────────────────────
+import re as _re
+
+_MODEL_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+# MoE active-parameter pattern: matches "A3B", "A3.5B", etc.
+_ACTIVE_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+
+
+def extract_model_size_b(model_id: str) -> float | None:
+    """Extract model size in billions from a model identifier.
+
+    Prefers MoE active-parameter notation (e.g. ``A3B`` in
+    ``Qwen3.5-35B-A3B``) over the total parameter count.
+    Handles both ``B`` (billions) and ``M`` (millions) suffixes.
+    """
+    mid = (model_id or "").lower()
+    active = _ACTIVE_SIZE_RE.search(mid)
+    if active:
+        val = float(active.group(1))
+        return val / 1000.0 if active.group(2).lower() == "m" else val
+    size = _MODEL_SIZE_RE.search(mid)
+    if not size:
+        return None
+    val = float(size.group(1))
+    return val / 1000.0 if size.group(2).lower() == "m" else val
+
 
 # Model name mapping: maps all equivalent model names to their canonical YAML config file
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
@@ -126,6 +158,38 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-3n-E4B.yaml": [
         "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
         "google/gemma-3n-E4B",
+    ],
+    "unsloth_gemma-4-31B-it.yaml": [
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ],
+    "unsloth_gemma-4-26B-A4B-it.yaml": [
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ],
+    "unsloth_gemma-4-E2B-it.yaml": [
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ],
+    "unsloth_gemma-4-E4B-it.yaml": [
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ],
+    "unsloth_gemma-4-31B.yaml": [
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ],
+    "unsloth_gemma-4-26B-A4B.yaml": [
+        "unsloth/gemma-4-26B-A4B",
+        "google/gemma-4-26B-A4B",
+    ],
+    "unsloth_gemma-4-E2B.yaml": [
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ],
+    "unsloth_gemma-4-E4B.yaml": [
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
     ],
     "unsloth_gpt-oss-20b.yaml": [
         "openai/gpt-oss-20b",
@@ -391,6 +455,7 @@ def load_model_config(
     """
     Load model config with optional authentication control.
     """
+    from transformers import AutoConfig
 
     if token:
         # Explicit token provided - use it
@@ -473,10 +538,10 @@ try:
 
     model_type = getattr(config, "model_type", "unknown")
     archs = getattr(config, "architectures", [])
-    logger.info(json.dumps({"is_vision": is_vlm, "model_type": model_type,
+    print(json.dumps({"is_vision": is_vlm, "model_type": model_type,
                        "architectures": archs}))
 except Exception as exc:
-    logger.info(json.dumps({"error": str(exc)}))
+    print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
 
@@ -630,7 +695,10 @@ _AUDIO_TOKEN_PATTERNS = {
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: "<|audio_start|>" in tokens and "<|audio_end|>" in tokens,
+    "dac": lambda tokens: "<|audio_start|>" in tokens
+    and "<|audio_end|>" in tokens
+    and "<|text_start|>" in tokens
+    and "<|text_end|>" in tokens,
     "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_"))
     > 10000,
 }
@@ -677,12 +745,8 @@ def _detect_audio_from_tokenizer(
 
     # 1) Check local HF cache first (works for gated/offline models)
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        cache_dir = Path(HF_HUB_CACHE)
-        repo_dir_name = f"models--{model_name.replace('/', '--')}"
-        repo_dir = cache_dir / repo_dir_name
-        if repo_dir.exists():
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is not None and repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
@@ -801,7 +865,29 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
 # Preferred GGUF quantization levels, in descending priority.
 # Q4_K_M is a good default: small, fast, acceptable quality.
+# UD (Unsloth Dynamic) variants are always preferred over standard quants
+# because they provide better quality per bit. If the repo has no UD variants
+# (e.g., bartowski repos), the standard quants are used as fallback.
+# Ordered by best size/quality tradeoff, not raw quality.
 _GGUF_QUANT_PREFERENCE = [
+    # UD variants (best quality per bit) -- Q4 is the sweet spot
+    "UD-Q4_K_XL",
+    "UD-Q4_K_L",
+    "UD-Q5_K_XL",
+    "UD-Q3_K_XL",
+    "UD-Q6_K_XL",
+    "UD-Q6_K_S",
+    "UD-Q8_K_XL",
+    "UD-Q2_K_XL",
+    "UD-IQ4_NL",
+    "UD-IQ4_XS",
+    "UD-IQ3_S",
+    "UD-IQ3_XXS",
+    "UD-IQ2_M",
+    "UD-IQ2_XXS",
+    "UD-IQ1_M",
+    "UD-IQ1_S",
+    # Standard quants (fallback for non-Unsloth repos)
     "Q4_K_M",
     "Q4_K_S",
     "Q5_K_M",
@@ -810,7 +896,15 @@ _GGUF_QUANT_PREFERENCE = [
     "Q8_0",
     "Q3_K_M",
     "Q3_K_L",
+    "Q3_K_S",
     "Q2_K",
+    "Q2_K_L",
+    "IQ4_NL",
+    "IQ4_XS",
+    "IQ3_M",
+    "IQ3_XXS",
+    "IQ2_M",
+    "IQ1_M",
     "F16",
     "BF16",
     "F32",
@@ -932,7 +1026,79 @@ def list_gguf_variants(
             )
         )
 
+    # Sort by size descending (largest = best quality first).
+    # Recommended pinning and OOM demotion are handled client-side
+    # where GPU VRAM info is available.
+    variants.sort(key = lambda v: -v.size_bytes)
+
     return variants, has_vision
+
+
+def list_local_gguf_variants(
+    directory: str,
+) -> tuple[list[GgufVariantInfo], bool]:
+    """List GGUF quantization variants in a local directory.
+
+    Mirrors :func:`list_gguf_variants` but reads from the filesystem
+    instead of the HuggingFace API.  Aggregates shard sizes by quant
+    label so that split GGUFs appear as a single variant.
+
+    Returns:
+        (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
+    """
+    p = Path(directory)
+    if not p.is_dir():
+        return [], False
+
+    quant_totals: dict[str, int] = {}
+    quant_first_file: dict[str, str] = {}
+    has_vision = False
+
+    for f in sorted(p.glob("*.gguf")):
+        if _is_mmproj(f.name):
+            has_vision = True
+            continue
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        quant = _extract_quant_label(f.name)
+        quant_totals[quant] = quant_totals.get(quant, 0) + size
+        if quant not in quant_first_file:
+            quant_first_file[quant] = f.name
+
+    variants = [
+        GgufVariantInfo(
+            filename = quant_first_file[q],
+            quant = q,
+            size_bytes = s,
+        )
+        for q, s in quant_totals.items()
+    ]
+    variants.sort(key = lambda v: -v.size_bytes)
+    return variants, has_vision
+
+
+def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
+    """Find the GGUF file in *directory* matching a quantization *variant*.
+
+    For sharded GGUFs (multiple files with the same quant label), returns
+    the first shard (sorted by name) which is what ``llama-server -m`` expects.
+
+    Returns the resolved absolute path, or ``None`` if no match.
+    """
+    p = Path(directory)
+    if not p.is_dir():
+        return None
+
+    matches = sorted(
+        f
+        for f in p.glob("*.gguf")
+        if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
+    )
+    if matches:
+        return str(matches[0].resolve())
+    return None
 
 
 def detect_gguf_model_remote(
@@ -1315,17 +1481,20 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         return config
 
         # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
-        # adapter_config.json), try matching the last 1-2 path components against
-        # the registry (e.g. "Spark-TTS-0.5B/LLM").
-        if model_name not in _REVERSE_MODEL_MAPPING and (
-            model_name.startswith("/") or model_name.startswith(".")
-        ):
-            parts = Path(model_name).parts
+        # adapter_config.json, or C:\Users\...\model on Windows), try matching
+        # the last 1-2 path components against the registry
+        # (e.g. "Spark-TTS-0.5B/LLM").
+        _is_local_path = is_local_path(model_name)
+        # Normalize Windows backslash paths so Path().parts splits correctly
+        # on POSIX/WSL hosts (pathlib treats backslashes as literals on Linux).
+        _normalized = normalize_path(model_name) if _is_local_path else model_name
+        if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
+            parts = Path(_normalized).parts
             for depth in [2, 1]:
                 if len(parts) >= depth:
                     suffix = "/".join(parts[-depth:])
-                    if suffix in _REVERSE_MODEL_MAPPING:
-                        canonical_file = _REVERSE_MODEL_MAPPING[suffix]
+                    if suffix.lower() in _REVERSE_MODEL_MAPPING:
+                        canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
                         for config_path in defaults_dir.rglob(canonical_file):
                             if config_path.is_file():
                                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -1335,8 +1504,12 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                                     )
                                     return config
 
-        # Try exact model name match (for backward compatibility)
-        model_filename = model_name.replace("/", "_") + ".yaml"
+        # Try exact model name match (for backward compatibility).
+        # For local filesystem paths, use only the directory basename to
+        # avoid passing absolute paths (e.g. C:\...) into rglob which
+        # raises "Non-relative patterns are unsupported" on Windows.
+        _lookup_name = Path(_normalized).name if _is_local_path else model_name
+        model_filename = _lookup_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
         for config_path in defaults_dir.rglob(model_filename):
             if config_path.is_file():
@@ -1484,15 +1657,25 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
 
-        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
-        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        # Preserve requested casing, but if a case-variant already exists in local HF cache,
+        # reuse that exact repo_id spelling to avoid one-time re-downloads after #2592.
         if not is_local:
-            identifier = identifier.lower()
-            path = path.lower()
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved_identifier,
+                    identifier,
+                )
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
-            gguf_file = detect_gguf_model(path)
+            if gguf_variant:
+                gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
+            else:
+                gguf_file = detect_gguf_model(path)
             if gguf_file:
                 display_name = Path(gguf_file).stem
                 logger.info(f"Detected local GGUF model: {gguf_file}")
@@ -1705,6 +1888,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        if not is_local:
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # --- Logic for Base Model and Vision Detection ---
         base_model = None

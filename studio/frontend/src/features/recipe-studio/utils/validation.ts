@@ -136,7 +136,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
   }
   if (config.kind === "llm") {
     if (!config.model_alias.trim()) {
-      errors.push("Model alias is required.");
+      errors.push("Choose a saved model.");
     }
     if (!config.prompt.trim()) {
       errors.push("Prompt is required.");
@@ -158,23 +158,23 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     if (config.llm_type === "judge") {
       const scores = config.scores ?? [];
       if (scores.length === 0) {
-        errors.push("LLM Judge needs at least one score.");
+        errors.push("Add at least one scoring rule.");
       }
       for (const score of scores) {
         if (!score.name.trim()) {
-          errors.push("LLM Judge score name is required.");
+          errors.push("Each scoring rule needs a name.");
         }
         if (!score.description.trim()) {
-          errors.push("LLM Judge score description is required.");
+          errors.push("Each scoring rule needs a description.");
         }
         const options = score.options ?? [];
         if (options.length === 0) {
-          errors.push(`LLM Judge score ${score.name || "Unnamed"} needs options.`);
+          errors.push(`Scoring rule ${score.name || "Untitled"} needs options.`);
         }
         for (const option of options) {
           if (!option.value.trim() || !option.description.trim()) {
             errors.push(
-              `LLM Judge score ${score.name || "Unnamed"} options need value + description.`,
+              `Scoring rule ${score.name || "Untitled"} needs both a value and a description for each option.`,
             );
             break;
           }
@@ -200,25 +200,25 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
   }
   if (config.kind === "tool_config") {
     if (config.mcp_providers.length === 0) {
-      errors.push("Add at least one MCP server.");
+      errors.push("Add at least one tool server.");
     }
     const serverNames = new Set<string>();
     for (const provider of config.mcp_providers) {
       const name = provider.name.trim();
       if (!name) {
-        errors.push("Each MCP server needs a name.");
+        errors.push("Each tool server needs a name.");
         continue;
       }
       if (serverNames.has(name)) {
-        errors.push(`Duplicate MCP server name: ${name}.`);
+        errors.push(`Tool server names must be unique: ${name}.`);
       }
       serverNames.add(name);
       if (provider.provider_type === "stdio") {
         if (!provider.command?.trim()) {
-          errors.push(`MCP server ${name}: command is required.`);
+          errors.push(`Tool server ${name}: add a command.`);
         }
       } else if (!provider.endpoint?.trim()) {
-        errors.push(`MCP server ${name}: endpoint is required.`);
+        errors.push(`Tool server ${name}: add an endpoint.`);
       }
     }
     const maxTurnsRaw = config.max_tool_call_turns?.trim();
@@ -226,7 +226,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       maxTurnsRaw &&
       (!Number.isFinite(Number(maxTurnsRaw)) || Number(maxTurnsRaw) < 1)
     ) {
-      errors.push("Max tool call turns must be >= 1.");
+      errors.push("Max tool-use turns must be 1 or more.");
     }
     const timeoutRaw = config.timeout_sec?.trim();
     if (
@@ -241,38 +241,42 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       .map((value) => value.trim())
       .filter(Boolean);
     if (targets.length === 0) {
-      errors.push("Target code column is required.");
+      errors.push("Choose the code step to check.");
     }
     const batch = parseIntNumber(config.batch_size);
     if (batch === null || batch < 1) {
       errors.push("Batch size must be an integer >= 1.");
     }
     if (!config.code_lang.trim()) {
-      errors.push("Validator code language is required.");
+      errors.push("Choose a code language for this check.");
     } else if (config.validator_type === "oxc") {
       if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
-        errors.push("OXC validator code language must be javascript/typescript/jsx/tsx.");
+        errors.push("This JS/TS check only supports JavaScript or TypeScript.");
       }
       if (!isOxcValidationMode(config.oxc_validation_mode)) {
-        errors.push("OXC validation mode must be syntax, lint, or syntax+lint.");
+        errors.push("Choose whether to check syntax, lint rules, or both.");
       }
       if (!isOxcCodeShape(config.oxc_code_shape)) {
-        errors.push("OXC code shape must be auto, module, or snippet.");
+        errors.push("Choose whether this code is a full file or a snippet.");
       }
     } else if (
       config.code_lang !== "python" &&
       !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
     ) {
-      errors.push("Code validator code language must be python or sql dialect.");
+      errors.push("This check supports Python or SQL.");
     }
   }
   if (config.kind === "seed") {
     const seedSourceType = config.seed_source_type ?? "hf";
     if (seedSourceType === "hf" && !config.hf_repo_id.trim()) {
-      errors.push("Seed dataset repo is required.");
+      errors.push("Choose a Hugging Face dataset.");
     }
-    if (!config.hf_path.trim()) {
-      errors.push("Seed metadata not loaded. Click 'Load columns + 10 rows'.");
+    const hasPath =
+      seedSourceType === "unstructured"
+        ? (config.resolved_paths?.length ?? 0) > 0
+        : Boolean(config.hf_path.trim());
+    if (!hasPath) {
+      errors.push("Load the source-data preview first.");
     }
     if (
       seedSourceType === "hf" &&
@@ -283,7 +287,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     }
     if (seedSourceType === "unstructured") {
       if (config.drop && (config.seed_columns?.length ?? 0) === 0) {
-        errors.push("Seed drop needs loaded columns.");
+        errors.push("Load the available fields before hiding any from the final dataset.");
       }
       const chunkSizeRaw = Number(config.unstructured_chunk_size);
       const chunkOverlapRaw = Number(config.unstructured_chunk_overlap);
@@ -305,7 +309,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
         .map((value) => value.trim())
         .filter(Boolean);
       if (selectedDropColumns.length > 0 && (config.seed_columns?.length ?? 0) === 0) {
-        errors.push("Seed drop columns need loaded columns.");
+        errors.push("Load the available fields before hiding any from the final dataset.");
       }
     }
 

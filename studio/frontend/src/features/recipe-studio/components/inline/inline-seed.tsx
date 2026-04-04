@@ -45,7 +45,9 @@ export function InlineSeed({ config, onUpdate }: InlineSeedProps): ReactElement 
   const isLocal = mode === "local";
   const fileName = isLocal
     ? config.local_file_name?.trim()
-    : config.unstructured_file_name?.trim();
+    : config.unstructured_file_names?.length
+      ? `${config.unstructured_file_names.length} file${config.unstructured_file_names.length !== 1 ? "s" : ""}`
+      : undefined;
 
   return (
     <div className="corner-squircle flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-2">

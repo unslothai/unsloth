@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useState } from "react";
 import type { ModelProviderConfig } from "../../types";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
 
@@ -38,15 +39,24 @@ export function ModelProviderDialog({
   return (
     <div className="space-y-4">
       <NameField
-        label="Provider name"
+        label="Connection name"
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
-      <div className="grid gap-2">
+      <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+        <p className="text-sm font-semibold text-foreground">
+          Start with the endpoint you want this model to use
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Most connections only need an endpoint. Add an API key if that
+          service requires one.
+        </p>
+      </div>
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Endpoint"
           htmlFor={endpointId}
-          hint="Base API URL used for model requests."
+          hint="Base URL for the model service or gateway."
         />
         <Input
           id={endpointId}
@@ -56,11 +66,11 @@ export function ModelProviderDialog({
           onChange={(event) => updateField("endpoint", event.target.value)}
         />
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="API key (optional)"
           htmlFor={apiKeyId}
-          hint="Inline key. prefer env var for safer configs."
+          hint="Paste a key here, or use an environment variable below."
         />
         <Input
           id={apiKeyId}
@@ -71,20 +81,17 @@ export function ModelProviderDialog({
       </div>
       <Collapsible open={optionalOpen} onOpenChange={setOptionalOpen}>
         <CollapsibleTrigger asChild={true}>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
-          >
-            <span className="font-semibold uppercase">Optional</span>
-            <span>{optionalOpen ? "Hide" : "Show"}</span>
-          </button>
+          <CollapsibleSectionTriggerButton
+            label="Advanced request overrides"
+            open={optionalOpen}
+          />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
-              label="API key env (optional)"
+              label="API key environment variable"
               htmlFor={apiKeyEnvId}
-              hint="Env var name to read secret key from runtime."
+              hint="Name of the environment variable that stores the key."
             />
             <Input
               id={apiKeyEnvId}
@@ -94,11 +101,11 @@ export function ModelProviderDialog({
               onChange={(event) => updateField("api_key_env", event.target.value)}
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Extra headers (JSON)"
               htmlFor={extraHeadersId}
-              hint="Optional request headers merged into every call."
+              hint="Optional headers to send with every request."
             />
             <Textarea
               id={extraHeadersId}
@@ -108,11 +115,11 @@ export function ModelProviderDialog({
               onChange={(event) => updateField("extra_headers", event.target.value)}
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Extra body (JSON)"
               htmlFor={extraBodyId}
-              hint="Optional payload fields merged into requests."
+              hint="Optional request fields to send every time."
             />
             <Textarea
               id={extraBodyId}

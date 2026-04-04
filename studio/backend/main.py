@@ -6,13 +6,39 @@ Main FastAPI application for Unsloth UI Backend
 """
 
 import os
+import sys
+from pathlib import Path as _Path
 
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Ensure backend dir is on sys.path so _platform_compat is importable when
+# main.py is launched directly (e.g. `uvicorn main:app`).
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
+# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# See: https://github.com/python/cpython/issues/102396
+import _platform_compat  # noqa: F401
+
+import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
+
+# Fix broken Windows registry MIME types.  Some Windows installs map .js to
+# "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
+# module reads from the registry, and FastAPI/Starlette's StaticFiles uses
+# mimetypes.guess_type() to set Content-Type headers.  Browsers enforce strict
+# MIME checking for ES module scripts (<script type="module">) and will refuse
+# to execute .js files served as text/plain — resulting in a blank page.
+# Calling add_type() *before* StaticFiles is instantiated ensures the correct
+# types are used regardless of the OS registry.
+if sys.platform == "win32":
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
 
 # Suppress annoying dependency warnings in production
 if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
@@ -21,7 +47,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -36,10 +62,17 @@ from routes import (
     export_router,
     inference_router,
     models_router,
+    training_history_router,
     training_router,
 )
 from auth import storage
-from utils.hardware import detect_hardware, get_device, DeviceType
+from auth.authentication import get_current_subject
+from utils.hardware import (
+    detect_hardware,
+    get_device,
+    DeviceType,
+    get_backend_visible_gpu_info,
+)
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
@@ -60,6 +93,17 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
+    from storage.studio_db import cleanup_orphaned_runs
+
+    try:
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "cleanup_orphaned_runs failed at startup: %s", exc
+        )
+
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
     # Runs in a background thread so it doesn't block server startup.
     import threading
@@ -77,13 +121,13 @@ async def lifespan(app: FastAPI):
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
+
+        bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(
-            "Sign in with the seeded credentials and change the password immediately:\n"
-        )
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password: {bootstrap_pw}\n")
+        print(f"    password saved to: {bootstrap_path}")
+        print("    Open the Studio UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
@@ -136,6 +180,9 @@ app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(
+    training_history_router, prefix = "/api/train", tags = ["training-history"]
+)
 
 
 # ============ Health and System Endpoints ============
@@ -144,11 +191,44 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
+    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
+    device_type = platform_map.get(sys.platform, sys.platform)
+
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
+        "device_type": device_type,
+        "chat_only": _hw_module.CHAT_ONLY,
     }
+
+
+@app.post("/api/shutdown")
+async def shutdown_server(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Gracefully shut down the Unsloth Studio server.
+
+    Called by the frontend quit dialog so users can stop the server from the UI
+    without needing to use the CLI or kill the process manually.
+    """
+    import asyncio
+
+    async def _delayed_shutdown():
+        await asyncio.sleep(0.2)  # Let the HTTP response return first
+        trigger = getattr(request.app.state, "trigger_shutdown", None)
+        if trigger is not None:
+            trigger()
+        else:
+            # Fallback when not launched via run_server() (e.g. direct uvicorn)
+            import signal
+            import os
+
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
+    return {"status": "shutting_down"}
 
 
 @app.get("/api/system")
@@ -156,20 +236,13 @@ async def get_system_info():
     """Get system information"""
     import platform
     import psutil
-    from utils.hardware import get_device, get_gpu_memory_info, DeviceType
+    from utils.hardware import get_device
 
-    # GPU Info — uses the hardware module (works on CUDA, MPS, CPU)
-    mem_info = get_gpu_memory_info()
-    gpu_info = {"available": mem_info.get("available", False), "devices": []}
-
-    if mem_info.get("available"):
-        gpu_info["devices"].append(
-            {
-                "index": mem_info.get("device", 0),
-                "name": mem_info.get("device_name", "Unknown"),
-                "memory_total_gb": round(mem_info.get("total_gb", 0), 2),
-            }
-        )
+    visibility_info = get_backend_visible_gpu_info()
+    gpu_info = {
+        "available": visibility_info["available"],
+        "devices": visibility_info["devices"],
+    }
 
     # CPU & Memory
     memory = psutil.virtual_memory()
@@ -188,6 +261,13 @@ async def get_system_info():
     }
 
 
+@app.get("/api/system/gpu-visibility")
+async def get_gpu_visibility(
+    current_subject: str = Depends(get_current_subject),
+):
+    return get_backend_visible_gpu_info()
+
+
 @app.get("/api/system/hardware")
 async def get_hardware_info():
     """Return GPU name, total VRAM, and key ML package versions."""
@@ -200,6 +280,22 @@ async def get_hardware_info():
 
 
 # ============ Serve Frontend (Optional) ============
+
+
+def _strip_crossorigin(html_bytes: bytes) -> bytes:
+    """Remove ``crossorigin`` attributes from script/link tags.
+
+    Vite adds ``crossorigin`` by default which forces CORS mode on font
+    subresource loads.  When Studio is served over plain HTTP, Firefox
+    HTTPS-Only Mode does not exempt CORS font requests -- causing all
+    @font-face downloads to fail silently.  Stripping the attribute
+    makes them regular same-origin fetches that work on any protocol.
+    """
+    import re as _re
+
+    html = html_bytes.decode("utf-8")
+    html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
+    return html.encode("utf-8")
 
 
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
@@ -243,6 +339,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
     @app.get("/")
     async def serve_root():
         content = (build_path / "index.html").read_bytes()
+        content = _strip_crossorigin(content)
         content = _inject_bootstrap(content, app)
         return Response(
             content = content,
@@ -266,6 +363,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         # Serve index.html as bytes — avoids Content-Length mismatch
         content = (build_path / "index.html").read_bytes()
+        content = _strip_crossorigin(content)
         content = _inject_bootstrap(content, app)
         return Response(
             content = content,

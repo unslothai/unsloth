@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.3.4"
+__version__ = "2026.4.2"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -64,7 +64,8 @@ __all__ = [
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
-    "prefer_flex_attn_if_supported",
+    "determine_attention_implementation",
+    "_set_attn_impl",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -222,36 +223,76 @@ def apply_unsloth_gradient_checkpointing(
     return use_gradient_checkpointing
 
 
-def prefer_flex_attn_if_supported(model_class, config):
-    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
-        return None
-    try:
-        from transformers.utils.import_utils import is_torch_flex_attn_available
+# Models that don't work with flex_attention:
+# GPT-OSS: left padding issues cause incorrect outputs.
+# Mllama: BlockMask Q_LEN!=KV_LEN ValueError on decode.
+# NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
+# Gemma3N: timm vision wrappers don't support flex_attention.
+# ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
+# access on some GPU architectures (B200). Falls back to eager safely.
+_FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
+_EAGER_ONLY_PREFIXES = ("gemma3n",)
 
-        if not is_torch_flex_attn_available():
-            return None
-        if model_class is None or not getattr(
-            model_class, "_supports_flex_attn", False
-        ):
-            return None
-        # GPT-OSS, Mllama and Gemma3N use eager/sdpa attention during
-        # inference since flex attention returns incorrect results or errors out.
-        # GPT-OSS: left padding issues cause incorrect outputs.
-        # Mllama: _update_causal_mask uses make_flex_block_causal_mask which
-        # creates BlockMask with Q_LEN=KV_LEN=total_seq_len, but during
-        # decode q_len=1, causing ValueError. Needs transformers update.
-        # Gemma3N: timm vision wrappers (eg Gemma3nVisionConfig) do not
-        # support flex_attention.
-        model_type = getattr(config, "model_type", "") if config else ""
-        if model_type in ("gpt_oss", "mllama") or str(model_type).startswith("gemma3n"):
-            return None
-        if config is not None:
-            setattr(config, "_attn_implementation", "flex_attention")
-            if hasattr(config, "attn_implementation"):
-                setattr(config, "attn_implementation", "flex_attention")
-        return "flex_attention"
-    except Exception:
-        return None
+
+def _is_flex_excluded(model_type):
+    return model_type in _FLEX_EXCLUDED_MODELS
+
+
+def _is_eager_only(model_type):
+    return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
+
+
+def _set_attn_impl(config, impl):
+    """Helper function to set attention implementation on config and return it."""
+    if config is not None:
+        setattr(config, "_attn_implementation", impl)
+        if hasattr(config, "attn_implementation"):
+            setattr(config, "attn_implementation", impl)
+    return impl
+
+
+def determine_attention_implementation(model_class, config):
+    model_type = getattr(config, "model_type", "").lower()
+
+    # Eager-only models (e.g. gemma3n timm vision towers)
+    if _is_eager_only(model_type):
+        _set_attn_impl(config, "eager")
+        return "eager"
+
+    # Flash Attention 2
+    if HAS_FLASH_ATTENTION and model_class is not None:
+        supports_fa2 = getattr(model_class, "_supports_flash_attn_2", False) or getattr(
+            model_class, "_supports_flash_attn", False
+        )
+        if supports_fa2:
+            _set_attn_impl(config, "flash_attention_2")
+            return "flash_attention_2"
+
+    # Flex Attention
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0":
+        try:
+            from transformers.utils.import_utils import is_torch_flex_attn_available
+
+            if (
+                is_torch_flex_attn_available()
+                and model_class is not None
+                and getattr(model_class, "_supports_flex_attn", False)
+                and not _is_flex_excluded(model_type)
+            ):
+                attention_dropout = getattr(config, "attention_dropout", 0) or 0
+                if attention_dropout == 0:
+                    _set_attn_impl(config, "flex_attention")
+                    return "flex_attention"
+        except Exception:
+            pass
+
+    # SDPA
+    if model_class is not None and getattr(model_class, "_supports_sdpa", False):
+        _set_attn_impl(config, "sdpa")
+        return "sdpa"
+
+    _set_attn_impl(config, "eager")
+    return "eager"
 
 
 def _run_temporary_patches(phase):
@@ -493,6 +534,15 @@ try:
 
     gemma3_logger.addFilter(HideLoggingMessage("strongly recommended"))
     del gemma3_logger
+except:
+    pass
+
+# Gemma4 It is strongly recommended to train Gemma4 models with the `eager`
+try:
+    from transformers.models.gemma4.modeling_gemma4 import logger as gemma4_logger
+
+    gemma4_logger.addFilter(HideLoggingMessage("strongly recommended"))
+    del gemma4_logger
 except:
     pass
 
@@ -757,7 +807,16 @@ model_architectures = [
     "falcon_h1",
 ]
 
+# Transformers 5.x uses class-level annotations with @strict, @auto_docstring,
+# and interval() in config classes. exec(inspect.getsource(...)) fails because
+# those symbols are not in scope. Skip the exec-based config patching for 5.x
+# since those configs already use rope_parameters (the v5 replacement for
+# rope_scaling).
+_skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
+
 for model_name in model_architectures:
+    if _skip_config_exec_patch:
+        break
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
@@ -791,9 +850,12 @@ for model_name in model_architectures:
         if Version(transformers_version) <= Version("4.42.4"):
             config = patch_mistral_nemo_config(config)
 
-    exec(config, globals())
-    exec(f"import {config_filepath}", globals())
-    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+    try:
+        exec(config, globals())
+        exec(f"import {config_filepath}", globals())
+        exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+    except Exception:
+        continue
 # =============================================
 
 # =============================================
@@ -973,20 +1035,25 @@ except:
 try:
     from xformers import __version__ as xformers_version
 
-    # [TODO] Xformers does NOT work on RTX 50x (12), B200 (10), Jetson (11)
+    # Xformers <= 0.0.32.post2 has a broken FA3 dispatch on Blackwell/RTX 50x GPUs.
+    # The FA3 check used `capability >= (9, 0)` which matches SM 10.0/11.0/12.0,
+    # causing sm_90a kernels to be attempted on non-Hopper GPUs (CUDA error in
+    # flash_fwd_launch_template.h:188). Fixed in 0.0.33 with `<= (9, 0)`.
     # See https://github.com/facebookresearch/xformers/issues/1329
-    # CUDA error (/workspace/xfrm2/third_party/flash-attention/hopper/flash_fwd_launch_template.h:188)
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
-        Version(xformers_version) in (Version("0.0.32.post2"),)
-    ):
-        raise NotImplementedError(
-            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"
-            "```\n"
-            "pip install ninja\n"
-            "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
-            "```\n"
-        )
+    if DEVICE_TYPE == "cuda":
+        major_version, minor_version = torch.cuda.get_device_capability()
+        if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
+            Version(xformers_version) <= Version("0.0.32.post2")
+        ):
+            raise NotImplementedError(
+                f"Unsloth: Xformers {xformers_version} has a broken FA3 dispatch on "
+                f"SM {major_version}.{minor_version} GPUs. Please upgrade to >= 0.0.33 or build from source via\n"
+                "```\n"
+                "pip install ninja\n"
+                "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"
+                "```\n"
+            )
+
     # Temporarily disable 0.0.27 and higher - inference issues
     if False:  # Version(xformers_version) >= Version("0.0.27"):
         raise ImportError(
@@ -1872,6 +1939,18 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
             if _has_ccm and _inner.training:
                 inputs["token_type_ids"] = torch.zeros_like(inputs["input_ids"])
+    # Gemma4 uses mm_token_type_ids (not token_type_ids) for VLM masking
+    if "mm_token_type_ids" not in inputs and "input_ids" in inputs:
+        _inner = model
+        for _attr in ("base_model", "model", "model"):
+            _inner = getattr(_inner, _attr, _inner)
+        if getattr(getattr(_inner, "config", None), "model_type", "") in ("gemma4",):
+            import sys as _sys
+
+            _mod = _sys.modules.get(type(_inner).__module__)
+            _has_ccm = _mod is not None and hasattr(_mod, "create_causal_mask_mapping")
+            if _has_ccm and _inner.training:
+                inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
 
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs

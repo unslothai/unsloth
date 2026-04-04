@@ -51,5 +51,5 @@ logging:
 inference:
   trust_remote_code: false
   temperature: 0.15
-  top_p: default
+  top_p: 0.95
 

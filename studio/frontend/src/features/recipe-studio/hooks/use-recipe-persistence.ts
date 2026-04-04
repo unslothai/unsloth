@@ -36,6 +36,7 @@ type UseRecipePersistenceParams = {
 };
 
 type UseRecipePersistenceResult = {
+  initialRecipeReady: boolean;
   workflowName: string;
   setWorkflowName: (value: string) => void;
   saveLoading: boolean;
@@ -143,7 +144,9 @@ function sanitizeSeedForShare(payload: unknown): unknown {
       ui.seed_drop_columns = [];
       ui.seed_preview_rows = [];
       ui.local_file_name = "";
-      ui.unstructured_file_name = "";
+      ui.unstructured_file_ids = [];
+      ui.unstructured_file_names = [];
+      ui.unstructured_file_sizes = [];
     }
   }
 
@@ -151,12 +154,20 @@ function sanitizeSeedForShare(payload: unknown): unknown {
     if (source && "path" in source) {
       source.path = "";
     }
+    if (source && "paths" in source) {
+      source.paths = [];
+    }
+    if (seedConfig) {
+      seedConfig.resolved_paths = [];
+    }
     if (ui) {
       ui.seed_columns = [];
       ui.seed_drop_columns = [];
       ui.seed_preview_rows = [];
       ui.local_file_name = "";
-      ui.unstructured_file_name = "";
+      ui.unstructured_file_ids = [];
+      ui.unstructured_file_names = [];
+      ui.unstructured_file_sizes = [];
     }
   }
 
@@ -174,6 +185,7 @@ export function useRecipePersistence({
   loadRecipe,
   getCurrentPayloadFromStore,
 }: UseRecipePersistenceParams): UseRecipePersistenceResult {
+  const [initialRecipeReady, setInitialRecipeReady] = useState(false);
   const [workflowName, setWorkflowName] = useState("Unnamed");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [savedSignature, setSavedSignature] = useState("");
@@ -195,6 +207,7 @@ export function useRecipePersistence({
   const savedAtLabel = formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
+    setInitialRecipeReady(false);
     const nextName = normalizeNonEmptyName(initialRecipeName, "Unnamed");
     resetRecipe();
     setWorkflowName(nextName);
@@ -210,6 +223,7 @@ export function useRecipePersistence({
 
     const payload = getCurrentPayloadFromStore();
     setSavedSignature(buildSignature(nextName, payload));
+    setInitialRecipeReady(true);
   }, [
     getCurrentPayloadFromStore,
     initialPayload,
@@ -287,6 +301,7 @@ export function useRecipePersistence({
   );
 
   return {
+    initialRecipeReady,
     workflowName,
     setWorkflowName,
     saveLoading,

@@ -16,13 +16,293 @@ from __future__ import annotations
 import structlog
 from loggers import get_logger
 import os
+import platform
+import shutil
 import sys
 import time
 import traceback
+import json
+import subprocess as _sp
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.request
 
 logger = get_logger(__name__)
+from utils.hardware import apply_gpu_ids
+
+
+_CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
+_CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+_MAMBA_SSM_RELEASE_TAG = "v2.3.1"
+_MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
+
+
+def _model_wants_causal_conv1d(model_name: str) -> bool:
+    name = model_name.lower()
+    return any(
+        key in name
+        for key in (
+            "qwen3.5",
+            "qwen3_5",
+            "qwen3-next",
+            "qwen3_next",
+            "nemotron_h",
+            "nemotron-h",
+            "nemotron-3-nano",
+            "falcon_h1",
+            "falcon-h1",
+            "granite-4.0-h",
+            "granitemoehybrid",
+            "lfm2",
+        )
+    )
+
+
+def _causal_conv1d_platform_tag() -> str | None:
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux"):
+        if machine in {"x86_64", "amd64"}:
+            return "linux_x86_64"
+        if machine in {"aarch64", "arm64"}:
+            return "linux_aarch64"
+        return None
+    # No prebuilt wheels published for macOS or Windows
+    return None
+
+
+def _probe_causal_conv1d_env() -> dict[str, str] | None:
+    try:
+        probe = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json, sys, re, torch; "
+                    "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
+                    "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
+                    "torch_mm = parts[0] + '.' + minor; "
+                    "print(json.dumps({"
+                    "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
+                    "'torch_mm': torch_mm, "
+                    "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                    "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
+                    "}))"
+                ),
+            ],
+            stdout = _sp.PIPE,
+            stderr = _sp.PIPE,
+            text = True,
+            timeout = 30,
+        )
+    except _sp.TimeoutExpired:
+        logger.warning("Torch environment probe timed out after 30s")
+        return None
+    if probe.returncode != 0:
+        logger.warning(
+            "Failed to probe torch environment for causal-conv1d wheel:\n%s",
+            probe.stdout,
+        )
+        return None
+
+    try:
+        return json.loads(probe.stdout.strip())
+    except json.JSONDecodeError:
+        logger.warning(
+            "Failed to parse torch environment probe output: %s", probe.stdout
+        )
+        return None
+
+
+def _direct_wheel_url(
+    *,
+    filename_prefix: str,
+    package_version: str,
+    release_tag: str,
+    release_base_url: str,
+    env: dict[str, str] | None = None,
+) -> str | None:
+    env = env or _probe_causal_conv1d_env()
+    platform_tag = _causal_conv1d_platform_tag()
+    if env is None or platform_tag is None or not env.get("cuda_major"):
+        return None
+
+    filename = (
+        f"{filename_prefix}-{package_version}"
+        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"cxx11abi{env['cxx11abi']}-{env['python_tag']}-{env['python_tag']}-{platform_tag}.whl"
+    )
+    return f"{release_base_url}/{release_tag}/{filename}"
+
+
+def _url_exists(url: str) -> bool:
+    try:
+        request = urllib.request.Request(url, method = "HEAD")
+        with urllib.request.urlopen(request, timeout = 10):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        logger.warning("Unexpected HTTP error while probing %s: %s", url, exc)
+        return False
+    except Exception as exc:
+        logger.warning("Failed to probe %s: %s", url, exc)
+        return False
+
+
+def _install_package_wheel_first(
+    *,
+    event_queue: Any,
+    import_name: str,
+    display_name: str,
+    pypi_name: str,
+    pypi_version: str,
+    filename_prefix: str,
+    release_tag: str,
+    release_base_url: str,
+) -> None:
+    try:
+        __import__(import_name)
+        logger.info("%s already installed", display_name)
+        return
+    except ImportError:
+        pass
+
+    env = _probe_causal_conv1d_env()
+    wheel_url = _direct_wheel_url(
+        filename_prefix = filename_prefix,
+        package_version = pypi_version,
+        release_tag = release_tag,
+        release_base_url = release_base_url,
+        env = env,
+    )
+
+    if wheel_url is None:
+        logger.info("No compatible %s wheel candidate", display_name)
+    else:
+        if _url_exists(wheel_url):
+            _send_status(event_queue, f"Installing prebuilt {display_name} wheel...")
+            installed = False
+            # Try uv first if available, then fall back to pip
+            if shutil.which("uv"):
+                uv_cmd = [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    sys.executable,
+                    "--no-deps",
+                    wheel_url,
+                ]
+                result = _sp.run(
+                    uv_cmd,
+                    stdout = _sp.PIPE,
+                    stderr = _sp.STDOUT,
+                    text = True,
+                )
+                if result.returncode == 0:
+                    installed = True
+                else:
+                    logger.warning(
+                        "uv failed to install %s wheel:\n%s",
+                        display_name,
+                        result.stdout,
+                    )
+            if not installed:
+                pip_cmd = [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-deps",
+                    wheel_url,
+                ]
+                result = _sp.run(
+                    pip_cmd,
+                    stdout = _sp.PIPE,
+                    stderr = _sp.STDOUT,
+                    text = True,
+                )
+                if result.returncode == 0:
+                    installed = True
+                else:
+                    logger.warning(
+                        "pip failed to install %s wheel:\n%s",
+                        display_name,
+                        result.stdout,
+                    )
+            if installed:
+                logger.info("Installed prebuilt %s wheel successfully", display_name)
+                return
+        else:
+            logger.info("No published %s wheel found: %s", display_name, wheel_url)
+
+    _send_status(event_queue, f"Installing {display_name} from PyPI...")
+    pypi_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-build-isolation",
+        "--no-deps",
+        "--no-cache-dir",
+        f"{pypi_name}=={pypi_version}",
+    ]
+    result = _sp.run(
+        pypi_cmd,
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    if result.returncode != 0:
+        logger.error("Failed to install %s from PyPI:\n%s", display_name, result.stdout)
+        return
+
+    logger.info("Installed %s from PyPI", display_name)
+
+
+def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
+    if not _model_wants_causal_conv1d(model_name):
+        return
+
+    _install_package_wheel_first(
+        event_queue = event_queue,
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
+        filename_prefix = "causal_conv1d",
+        release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
+        release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+    )
+
+
+_SSM_MODEL_SUBSTRINGS = (
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+)
+
+
+def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
+    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+        return
+
+    logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
+    _install_package_wheel_first(
+        event_queue = event_queue,
+        import_name = "mamba_ssm",
+        display_name = "mamba-ssm",
+        pypi_name = "mamba-ssm",
+        pypi_version = _MAMBA_SSM_PACKAGE_VERSION,
+        filename_prefix = "mamba_ssm",
+        release_tag = _MAMBA_SSM_RELEASE_TAG,
+        release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+    )
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -36,59 +316,25 @@ def _activate_transformers_version(model_name: str) -> None:
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from utils.transformers_version import needs_transformers_5, _resolve_base_model
+    from utils.transformers_version import (
+        needs_transformers_5,
+        _resolve_base_model,
+        _ensure_venv_t5_exists,
+        _VENV_T5_DIR,
+    )
 
     resolved = _resolve_base_model(model_name)
     if needs_transformers_5(resolved):
-        venv_t5 = os.path.join(
-            os.path.expanduser("~"), ".unsloth", "studio", ".venv_t5"
-        )
-        if os.path.isdir(venv_t5):
-            sys.path.insert(0, venv_t5)
-            logger.info("Activated transformers 5.x from %s", venv_t5)
-        else:
-            # Fallback: pip install at runtime (slower, ~10-15s)
-            logger.warning(".venv_t5 not found at %s — installing at runtime", venv_t5)
-            import subprocess as sp
-
-            os.makedirs(venv_t5, exist_ok = True)
-            r1 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "transformers==5.2.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
+        if not _ensure_venv_t5_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
             )
-            r2 = sp.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--target",
-                    venv_t5,
-                    "--no-deps",
-                    "huggingface_hub==1.3.0",
-                ],
-                stdout = sp.PIPE,
-                stderr = sp.STDOUT,
-            )
-            if r1.returncode != 0 or r2.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to install transformers 5.x into {venv_t5}. "
-                    f"pip returncode: transformers={r1.returncode}, huggingface_hub={r2.returncode}"
-                )
-            sys.path.insert(0, venv_t5)
+        if _VENV_T5_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_DIR)
+        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
         # Propagate to child subprocesses (e.g. GGUF converter)
         _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = venv_t5 + (os.pathsep + _pp if _pp else "")
+        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
@@ -122,6 +368,8 @@ def run_training_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
+    apply_gpu_ids(config.get("resolved_gpu_ids"))
+
     model_name = config["model_name"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
@@ -138,7 +386,63 @@ def run_training_process(
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # ── 1a. Auto-enable trust_remote_code for unsloth/* transformers 5.x models ──
+    # Some newer architectures (e.g. NemotronH) have config parsing bugs in
+    # transformers that require trust_remote_code=True as a workaround.
+    # Only auto-enable for unsloth/* prefixed models (trusted source).
+    # Exclude Gemma 4 since it is a native transformers 5.5 model and
+    # trust_remote_code=True would bypass the compiler (disabling fused CE).
+    from utils.transformers_version import needs_transformers_5
+
+    _lowered = model_name.lower()
+    _is_native_t5 = any(x in _lowered for x in ("gemma-4", "gemma4"))
+    if (
+        needs_transformers_5(model_name)
+        and _lowered.startswith("unsloth/")
+        and not _is_native_t5
+        and not config.get("trust_remote_code", False)
+    ):
+        config["trust_remote_code"] = True
+        logger.info(
+            "Auto-enabled trust_remote_code for unsloth/* transformers 5.x model: %s",
+            model_name,
+        )
+
+    # ── 1b. Set up causal-conv1d first, then install mamba-ssm if needed ──
+    try:
+        _ensure_causal_conv1d_fast_path(event_queue, model_name)
+        _ensure_mamba_ssm(event_queue, model_name)
+    except Exception as exc:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": (
+                    f"Please choose another model to train, since "
+                    f"causal-conv1d / mamba-ssm failed to install "
+                    f"with error: {exc}"
+                ),
+                "stack": traceback.format_exc(limit = 20),
+                "ts": time.time(),
+            }
+        )
+        return
+
+    # ── 1c. Set fork start method so dataset.map() can multiprocess ──
+    # The parent launched us via spawn (clean process), but the compiled
+    # SFTTrainer checks get_start_method() and disables num_proc if not "fork".
+    # Linux only: fork is the default start method and is safe here (no CUDA
+    # context exists yet). macOS defaults to spawn since Python 3.8 because
+    # fork is unsafe with macOS frameworks (Metal/MPS, CoreFoundation) --
+    # do NOT override on macOS. Windows has no fork at all.
+    if sys.platform == "linux":
+        import multiprocessing as _mp
+
+        try:
+            _mp.set_start_method("fork", force = True)
+        except RuntimeError:
+            pass  # Already set
+
+    # ── 1c. On Windows, check Triton availability (must be before import torch) ──
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
@@ -153,7 +457,7 @@ def run_training_process(
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
-        _send_status(event_queue, "Importing ML libraries...")
+        _send_status(event_queue, "Importing Unsloth...")
 
         backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
@@ -204,7 +508,7 @@ def run_training_process(
 
     # Wire up progress callback → event_queue
     def _on_progress(progress: TrainingProgress):
-        has_train_loss = progress.step >= 0 and progress.loss > 0
+        has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
         if has_train_loss or has_eval_loss:
             event_queue.put(
@@ -280,6 +584,7 @@ def run_training_process(
             dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
             format_type = config.get("format_type", ""),
             local_datasets = config.get("local_datasets") or None,
+            local_eval_datasets = config.get("local_eval_datasets") or None,
             custom_format_mapping = config.get("custom_format_mapping"),
             subset = config.get("subset"),
             train_split = config.get("train_split", "train"),
@@ -298,21 +603,21 @@ def run_training_process(
         # [DEBUG] Print first sample before model is loaded
         # dataset is a dict {"dataset": <Dataset>, "detected_format": ..., ...}
         # or a raw Dataset for audio paths
-        try:
-            ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
-            print(
-                f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}",
-                flush = True,
-            )
-            print(f"[DEBUG] Columns: {ds.column_names}", flush = True)
-            sample = ds[0]
-            preview = {k: str(v)[:300] for k, v in sample.items()}
-            print(f"[DEBUG] First sample: {preview}\n", flush = True)
-        except Exception as e:
-            print(
-                f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}",
-                flush = True,
-            )
+        # try:
+        #     ds = dataset["dataset"] if isinstance(dataset, dict) else dataset
+        #     print(
+        #         f"\n[DEBUG] Dataset loaded BEFORE model. type={type(ds).__name__}, len={len(ds)}",
+        #         flush = True,
+        #     )
+        #     print(f"[DEBUG] Columns: {ds.column_names}", flush = True)
+        #     sample = ds[0]
+        #     preview = {k: str(v)[:300] for k, v in sample.items()}
+        #     print(f"[DEBUG] First sample: {preview}\n", flush = True)
+        # except Exception as e:
+        #     print(
+        #         f"[DEBUG] Could not preview first sample: {type(e).__name__}: {e}",
+        #         flush = True,
+        #     )
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)
@@ -346,16 +651,46 @@ def run_training_process(
                 )
             return
 
+        # ── Start tqdm monitor early so it captures download + tokenization bars ──
+        import threading as _th
+
+        _tqdm_stop = _th.Event()
+
+        def _monitor_tqdm():
+            from tqdm.auto import tqdm as _tqdm_cls
+
+            while not _tqdm_stop.is_set():
+                for bar in list(getattr(_tqdm_cls, "_instances", set())):
+                    try:
+                        n, total = bar.n or 0, bar.total or 0
+                        desc = getattr(bar, "desc", "") or ""
+                        if total > 0 and n > 0 and desc:
+                            pct = min(int(n * 100 / total), 100)
+                            _send_status(
+                                event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})"
+                            )
+                    except (AttributeError, ReferenceError):
+                        pass
+                _tqdm_stop.wait(3)
+
+        _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
+        _tqdm_thread.start()
+
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        use_lora = training_type == "LoRA/QLoRA"
+
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
             model_name = model_name,
             max_seq_length = config["max_seq_length"],
             load_in_4bit = config["load_in_4bit"],
+            full_finetuning = not use_lora,
             hf_token = hf_token,
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
+            gpu_ids = config.get("resolved_gpu_ids"),
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:
@@ -375,8 +710,6 @@ def run_training_process(
             return
 
         # ── 4d. Prepare model (LoRA or full finetuning) ──
-        training_type = config.get("training_type", "LoRA/QLoRA")
-        use_lora = training_type == "LoRA/QLoRA"
         if use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
@@ -445,7 +778,14 @@ def run_training_process(
             ensure_dir(Path(tensorboard_dir))
 
         # Start training (directly — no inner thread, we ARE the subprocess)
-        _send_status(event_queue, "Starting training...")
+        dataset_display = (
+            config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
+        )
+        _send_status(
+            event_queue,
+            f'Training "{model_name}"'
+            + (f"\nDataset = {dataset_display}" if dataset_display else ""),
+        )
         max_steps = config.get("max_steps", 0)
         save_steps = config.get("save_steps", 0)
 
@@ -460,7 +800,7 @@ def run_training_process(
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
-            weight_decay = config.get("weight_decay", 0.01),
+            weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
             train_on_completions = config.get("train_on_completions", False),
@@ -475,6 +815,8 @@ def run_training_process(
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
         )
+
+        _tqdm_stop.set()
 
         # Check final state
         progress = trainer.get_training_progress()
@@ -804,7 +1146,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
         "optim": config.get("optim", "adamw_8bit"),
-        "weight_decay": config.get("weight_decay", 0.01),
+        "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
     }
 
@@ -843,7 +1185,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         def on_log(self, args, state, control, logs = None, **kwargs):
             if not logs:
                 return
-            loss_value = logs.get("loss", logs.get("train_loss", 0.0))
+            loss_value = logs.get("loss", logs.get("train_loss", None))
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time
@@ -859,7 +1201,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     "step": current_step,
                     "epoch": round(state.epoch, 2) if state.epoch else 0,
                     "loss": loss_value,
-                    "learning_rate": logs.get("learning_rate", 0.0),
+                    "learning_rate": logs.get("learning_rate", None),
                     "total_steps": total_steps,
                     "elapsed_seconds": elapsed,
                     "eta_seconds": eta,

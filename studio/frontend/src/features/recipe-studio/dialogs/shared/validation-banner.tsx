@@ -16,7 +16,7 @@ export function ValidationBanner({
   }
   return (
     <p className="text-xs text-amber-600">
-      <span className="font-semibold">Fix before run: </span>
+      <span className="font-semibold">Needs attention: </span>
       {errors.join(". ")}.
     </p>
   );

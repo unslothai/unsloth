@@ -2,16 +2,32 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Navbar } from "@/components/navbar";
+import { usePlatformStore } from "@/config/env";
 import {
   Outlet,
   createRootRoute,
+  redirect,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { Suspense } from "react";
 import { AppProvider } from "../provider";
 
+const CHAT_ONLY_ALLOWED = new Set(["/", "/chat", "/login", "/signup", "/change-password"]);
+
+function isChatOnlyAllowed(pathname: string): boolean {
+  if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
+  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
+  return false;
+}
+
 export const Route = createRootRoute({
+  beforeLoad: ({ location }) => {
+    const chatOnly = usePlatformStore.getState().isChatOnly();
+    if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
+      throw redirect({ to: "/chat" });
+    }
+  },
   component: RootLayout,
 });
 

@@ -23,12 +23,15 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, type RefObject, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { LlmConfig } from "../../types";
 import { isLikelyImageValue } from "../../utils/image-preview";
 import { findInvalidJinjaReferences } from "../../utils/refs";
 import { getAvailableVariables } from "../../utils/variables";
+import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { AvailableVariables } from "../shared/available-variables";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -115,8 +118,14 @@ export function LlmGeneralTab({
   const hasHfSeed = Boolean(
     seedConfig && (seedConfig.seed_source_type ?? "hf") === "hf",
   );
-  const seedColumns = seedConfig?.seed_columns ?? [];
-  const seedPreviewRows = seedConfig?.seed_preview_rows ?? [];
+  const seedColumns = useMemo(
+    () => seedConfig?.seed_columns ?? [],
+    [seedConfig],
+  );
+  const seedPreviewRows = useMemo(
+    () => seedConfig?.seed_preview_rows ?? [],
+    [seedConfig],
+  );
   const imageColumnOptions = useMemo(() => {
     if (seedColumns.length === 0) {
       return [];
@@ -160,29 +169,57 @@ export function LlmGeneralTab({
   const reasoningToggleId = `${config.id}-reasoning-content`;
   const advancedOpen = config.advancedOpen === true;
   const toolAliasAnchorRef = useRef<HTMLDivElement>(null);
+  const needsSetupHelp = !hasModelConfigs || !hasModelProviders;
+  const needsModelChoice = !config.model_alias?.trim();
 
   return (
     <div className="space-y-4">
-      <AvailableVariables configId={config.id} />
       <NameField
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
-      {(!hasModelConfigs || !hasModelProviders) && (
-        <div className="rounded-2xl border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          <p className="font-semibold text-foreground">Setup hint</p>
-          <p>
-            {!hasModelProviders && "Add a Model Provider block. "}
-            {!hasModelConfigs &&
-              "Add a Model Config block and pick its alias here."}
+      {needsSetupHelp ? (
+        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+          <p className="text-sm font-semibold text-foreground">
+            Set up the model once, then come back here
+          </p>
+          <div className="mt-2 space-y-1.5">
+            {!hasModelProviders && (
+              <p className="flex items-start gap-2">
+                <HugeiconsIcon
+                  icon={ArrowRight01Icon}
+                  className="mt-0.5 size-3.5 shrink-0 text-primary"
+                />
+                <span>Add a Provider connection step in AI generation → Setup.</span>
+              </p>
+            )}
+            {!hasModelConfigs && (
+              <p className="flex items-start gap-2">
+                <HugeiconsIcon
+                  icon={ArrowRight01Icon}
+                  className="mt-0.5 size-3.5 shrink-0 text-primary"
+                />
+                <span>Add a Model preset step, connect it, then choose it below.</span>
+              </p>
+            )}
+          </div>
+        </div>
+      ) : needsModelChoice ? (
+        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+          <p className="text-sm font-semibold text-foreground">
+            Start by choosing a model preset
+          </p>
+          <p className="mt-1">
+            Once that is in place, write the prompt and add optional tool access
+            if this step needs tools.
           </p>
         </div>
-      )}
-      <div className="grid gap-2">
+      ) : null}
+      <div className="grid gap-1.5">
         <FieldLabel
-          label="Model alias"
+          label="Model preset"
           htmlFor={modelAliasId}
-          hint="Alias must match a Model Config block."
+          hint="Choose the reusable model setup for this step."
         />
         <div ref={modelAliasAnchorRef}>
           <Combobox
@@ -197,7 +234,7 @@ export function LlmGeneralTab({
             <ComboboxInput
               id={modelAliasId}
               className="nodrag w-full"
-              placeholder="Pick model alias or type"
+              placeholder="Choose a model preset"
               onBlur={(event) => {
                 const inputValue = event.target.value;
                 if (inputValue !== config.model_alias) {
@@ -218,59 +255,60 @@ export function LlmGeneralTab({
           </Combobox>
         </div>
       </div>
-      <div className="grid gap-2">
-        <FieldLabel
-          label="Tool profile (optional)"
-          htmlFor={toolAliasId}
-          hint="Pick a shared Tool Profile block. Leave empty for no tools."
-        />
-        <div ref={toolAliasAnchorRef}>
-          <Combobox
-            items={toolProfileAliases}
-            filteredItems={toolProfileAliases}
-            filter={null}
-            value={config.tool_alias || null}
-            onValueChange={(value) => onUpdate({ tool_alias: value ?? "" })}
-            itemToStringValue={(value) => value}
-            autoHighlight={true}
-          >
-            <ComboboxInput
-              id={toolAliasId}
-              className="nodrag w-full"
-              placeholder={
-                hasToolProfiles ? "Pick tool profile or type" : "No tool profiles yet"
-              }
-              onBlur={(event) => {
-                const inputValue = event.target.value;
-                if (inputValue !== (config.tool_alias ?? "")) {
-                  onUpdate({ tool_alias: inputValue });
-                }
-              }}
-            />
-            <ComboboxContent anchor={toolAliasAnchorRef}>
-              <ComboboxEmpty>No tool profiles found</ComboboxEmpty>
-              <ComboboxList>
-                {(alias: string) => (
-                  <ComboboxItem key={alias} value={alias}>
-                    {alias}
-                  </ComboboxItem>
-                )}
-              </ComboboxList>
-            </ComboboxContent>
-          </Combobox>
+      {!hasToolProfiles && (
+        <p className="text-xs text-muted-foreground">
+          Need tools for this step? Add a Tool access step in AI generation →
+          Setup.
+        </p>
+      )}
+      {(hasToolProfiles || Boolean(config.tool_alias?.trim())) && (
+        <div className="grid gap-1.5">
+          <FieldLabel
+            label="Tool access (optional)"
+            htmlFor={toolAliasId}
+            hint="Choose saved tool access for this step. Leave empty if this step should not use tools."
+          />
+          <div ref={toolAliasAnchorRef}>
+            <Combobox
+              items={toolProfileAliases}
+              filteredItems={toolProfileAliases}
+              filter={null}
+              value={config.tool_alias || null}
+              onValueChange={(value) => onUpdate({ tool_alias: value ?? "" })}
+              itemToStringValue={(value) => value}
+              autoHighlight={true}
+            >
+              <ComboboxInput
+                id={toolAliasId}
+                className="nodrag w-full"
+                placeholder="Choose tool access"
+                onBlur={(event) => {
+                  const inputValue = event.target.value;
+                  if (inputValue !== (config.tool_alias ?? "")) {
+                    onUpdate({ tool_alias: inputValue });
+                  }
+                }}
+              />
+              <ComboboxContent anchor={toolAliasAnchorRef}>
+                <ComboboxEmpty>No tool access found</ComboboxEmpty>
+                <ComboboxList>
+                  {(alias: string) => (
+                    <ComboboxItem key={alias} value={alias}>
+                      {alias}
+                    </ComboboxItem>
+                  )}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
+          </div>
         </div>
-        {!hasToolProfiles && (
-          <p className="text-xs text-muted-foreground">
-            Add a Tool Profile block to configure MCP servers and allowed tools.
-          </p>
-        )}
-      </div>
+      )}
       {config.llm_type === "code" && (
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Code language"
             htmlFor={codeLangId}
-            hint="Target language for LLM code generation."
+            hint="Choose the language this AI step should generate."
           />
           <Select
             value={config.code_lang ?? "python"}
@@ -289,11 +327,11 @@ export function LlmGeneralTab({
           </Select>
         </div>
       )}
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Prompt"
           htmlFor={promptId}
-          hint="Jinja template. references other columns via {{ variable }}."
+          hint="Write the prompt for this step. Insert other fields with {{ field_name }}."
         />
         <Textarea
           id={promptId}
@@ -304,20 +342,21 @@ export function LlmGeneralTab({
         />
         {invalidPromptRefs.length > 0 && (
           <p className="text-xs text-destructive">
-            Unknown reference: {invalidPromptText}
+            Unknown field: {invalidPromptText}
             {invalidPromptRefs.length > 3
               ? ` +${invalidPromptRefs.length - 3} more`
               : ""}
           </p>
         )}
       </div>
+      <AvailableVariables configId={config.id} />
       {hasHfSeed && (
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-3">
             <FieldLabel
               label="Use image context"
               htmlFor={imageContextToggleId}
-              hint="Attach one seed image column to this LLM call."
+              hint="Attach one image field from your source data to this AI step."
             />
             <Switch
               id={imageContextToggleId}
@@ -338,11 +377,11 @@ export function LlmGeneralTab({
             />
           </div>
           {imageContext.enabled && (
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <FieldLabel
-                label="Image column"
+                label="Image field"
                 htmlFor={imageContextColumnId}
-                hint="Pick the seed column that contains image data."
+                hint="Choose the source-data field that contains the image."
               />
               <Select
                 value={imageContext.column_name || undefined}
@@ -375,11 +414,11 @@ export function LlmGeneralTab({
         </div>
       )}
       {config.llm_type === "structured" && (
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
-            label="Output format (JSON schema)"
+            label="Response format"
             htmlFor={outputFormatId}
-            hint="Schema used to constrain structured JSON output."
+            hint="Describe the JSON shape you want back."
           />
           <Textarea
             id={outputFormatId}
@@ -391,47 +430,46 @@ export function LlmGeneralTab({
           />
         </div>
       )}
-      <div className="grid gap-2">
-        <FieldLabel
-          label="System prompt (optional)"
-          htmlFor={systemPromptId}
-          hint="Global behavior instructions prepended before prompt."
-        />
-        <Textarea
-          id={systemPromptId}
-          className="corner-squircle nodrag max-h-[450px] overflow-auto"
-          aria-invalid={invalidSystemRefs.length > 0}
-          value={config.system_prompt}
-          onChange={(event) => onUpdate({ system_prompt: event.target.value })}
-        />
-        {invalidSystemRefs.length > 0 && (
-          <p className="text-xs text-destructive">
-            Unknown reference: {invalidSystemText}
-            {invalidSystemRefs.length > 3
-              ? ` +${invalidSystemRefs.length - 3} more`
-              : ""}
-          </p>
-        )}
-      </div>
       <Collapsible
         open={advancedOpen}
         onOpenChange={(open) => onUpdate({ advancedOpen: open })}
       >
         <CollapsibleTrigger asChild={true}>
-          <button
-            type="button"
-            className="flex w-full items-center justify-between text-left text-xs text-muted-foreground"
-          >
-            <span className="font-semibold uppercase">Advanced</span>
-            <span>{advancedOpen ? "Hide" : "Show"}</span>
-          </button>
+          <CollapsibleSectionTriggerButton
+            label="Trace and extra controls"
+            open={advancedOpen}
+          />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
-              label="Trace capture"
+              label="Instructions (optional)"
+              htmlFor={systemPromptId}
+              hint="Add extra guidance that should apply before the prompt."
+            />
+            <Textarea
+              id={systemPromptId}
+              className="corner-squircle nodrag max-h-[450px] overflow-auto"
+              aria-invalid={invalidSystemRefs.length > 0}
+              value={config.system_prompt}
+              onChange={(event) =>
+                onUpdate({ system_prompt: event.target.value })
+              }
+            />
+            {invalidSystemRefs.length > 0 && (
+              <p className="text-xs text-destructive">
+                Unknown field: {invalidSystemText}
+                {invalidSystemRefs.length > 3
+                  ? ` +${invalidSystemRefs.length - 3} more`
+                  : ""}
+              </p>
+            )}
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Save trace details"
               htmlFor={traceModeId}
-              hint="Adds {column}__trace for debugging/replay."
+              hint="Adds a trace field you can inspect later."
             />
             <Select
               value={config.with_trace ?? "none"}
@@ -456,9 +494,9 @@ export function LlmGeneralTab({
           </div>
           <div className="flex items-center justify-between gap-3">
             <FieldLabel
-              label="Extract reasoning content"
+              label="Save reasoning text"
               htmlFor={reasoningToggleId}
-              hint="Adds {column}__reasoning_content when model provides it."
+              hint="Adds a reasoning field when the model returns one."
             />
             <Switch
               id={reasoningToggleId}

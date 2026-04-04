@@ -131,7 +131,6 @@ def _apply_data_designer_image_context_patch() -> None:
 
 
 def build_model_providers(recipe: dict[str, Any]):
-    from data_designer.config.default_model_settings import get_default_providers
     from data_designer.config.models import ModelProvider
 
     providers: list[ModelProvider] = []
@@ -151,9 +150,25 @@ def build_model_providers(recipe: dict[str, Any]):
             )
         )
 
-    # DataDesigner currently expects at least one provider even if they only use static samplers,
-    # but it's fine it gives a warning only.
-    return providers or get_default_providers()
+    return providers
+
+
+def _recipe_has_llm_columns(recipe: dict[str, Any]) -> bool:
+    for column in recipe.get("columns", []):
+        if not isinstance(column, dict):
+            continue
+        column_type = column.get("column_type")
+        if isinstance(column_type, str) and column_type.startswith("llm-"):
+            return True
+    return False
+
+
+def _validate_recipe_runtime_support(
+    recipe: dict[str, Any],
+    model_providers: list[Any],
+) -> None:
+    if _recipe_has_llm_columns(recipe) and not model_providers:
+        raise ValueError("Add a Provider connection block before running this recipe.")
 
 
 def build_mcp_providers(
@@ -243,9 +258,27 @@ def create_data_designer(
     _apply_data_designer_image_context_patch()
     from data_designer.interface.data_designer import DataDesigner
 
+    model_providers = build_model_providers(recipe)
+    _validate_recipe_runtime_support(recipe, model_providers)
+
+    # DataDesigner requires at least one model provider in its registry even
+    # when the pipeline contains no LLM columns.  Supply a lightweight stub
+    # so sampler/expression-only recipes can run without a real provider.
+    if not model_providers:
+        from data_designer.config.models import ModelProvider
+
+        model_providers = [
+            ModelProvider(
+                name = "_unused",
+                endpoint = "http://localhost",
+                provider_type = "openai",
+                api_key = None,
+            )
+        ]
+
     return DataDesigner(
         artifact_path = artifact_path,
-        model_providers = build_model_providers(recipe),
+        model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
     )
 

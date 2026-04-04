@@ -7,8 +7,8 @@ from typing import Optional
 
 import typer
 
-from cli.config import Config, load_config
-from cli.options import add_options_from_config
+from unsloth_cli.config import Config, load_config
+from unsloth_cli.options import add_options_from_config
 
 
 @add_options_from_config(Config)

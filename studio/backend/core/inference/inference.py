@@ -18,7 +18,14 @@ from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
-from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
+from utils.hardware import (
+    get_device,
+    clear_gpu_cache,
+    log_gpu_memory,
+    get_device_map,
+    raise_if_offloaded,
+    get_visible_gpu_count,
+)
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -26,6 +33,180 @@ from loggers import get_logger
 
 
 logger = get_logger(__name__)
+
+
+class HarmonyTextStreamer:
+    """Streaming text decoder for gpt-oss harmony channel protocol.
+
+    gpt-oss models emit multi-channel output using special tokens like
+    ``<|channel|>analysis<|message|>...`` and ``<|channel|>final<|message|>...``.
+    A plain ``TextIteratorStreamer(skip_special_tokens=True)`` strips the special
+    tokens but leaves the channel names concatenated with content, producing
+    garbled output such as ``analysisWe need to respond...assistantfinalHello!``.
+
+    This streamer decodes with ``skip_special_tokens=False`` so the full
+    harmony markup is visible, then uses **stateful incremental** parsing
+    to emit properly-formatted text:
+
+    - ``<think>`` emitted once when the ``analysis`` channel is first seen
+    - Analysis content streamed incrementally
+    - ``</think>`` emitted once when the ``final`` channel is first seen
+    - Final content streamed incrementally
+
+    This avoids the delta-on-transformed bug where wrapping tags shift
+    position as content grows.
+
+    Implements the same ``put`` / ``end`` / iterator interface as
+    ``TextIteratorStreamer`` so ``generate_stream`` can use it as a drop-in
+    replacement.
+    """
+
+    import re as _re
+
+    _HARMONY_RE = _re.compile(
+        r"<\|channel\|>(\w+)<\|message\|>(.*?)(?=<\|end\|>|<\|channel\|>|\Z)",
+        _re.DOTALL,
+    )
+
+    def __init__(self, tokenizer, *, skip_prompt: bool = True, timeout: float = 0.2):
+        import queue
+
+        self.tokenizer = tokenizer
+        self.skip_prompt = skip_prompt
+        self.timeout = timeout
+
+        self._queue: queue.Queue = queue.Queue()
+        self._token_ids: list = []
+        self._prompt_len: int = 0
+        self._is_first_put: bool = True
+        self._stop: bool = False
+
+        # Stateful channel tracking — avoids delta-on-transformed bugs
+        self._emitted_think_open: bool = False
+        self._emitted_think_close: bool = False
+        self._analysis_emitted: int = 0  # chars of analysis content emitted
+        self._final_emitted: int = 0  # chars of final content emitted
+
+    # ------------------------------------------------------------------
+    # put / end — called from the generation thread
+    # ------------------------------------------------------------------
+
+    def put(self, value):
+        """Receive new token IDs from model.generate()."""
+        import torch
+
+        if isinstance(value, torch.Tensor):
+            # value shape: (batch, seq) — take first batch element
+            ids = value[0].tolist() if value.dim() > 1 else value.tolist()
+        elif isinstance(value, (list, tuple)):
+            ids = list(value)
+        else:
+            ids = [value]
+
+        if self._is_first_put and self.skip_prompt:
+            # First call contains the full prompt; remember its length
+            self._prompt_len = len(ids)
+            self._token_ids = list(ids)
+            self._is_first_put = False
+            return
+
+        self._token_ids.extend(ids)
+
+        # Decode only the generated part (after the prompt)
+        gen_ids = self._token_ids[self._prompt_len :]
+        raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
+        self._process_incremental(raw)
+
+    def end(self):
+        """Signal generation is complete."""
+        # Final decode to capture any remaining content
+        gen_ids = self._token_ids[self._prompt_len :]
+        if gen_ids:
+            raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
+            self._process_incremental(raw)
+
+        # Close any open think tags
+        if self._emitted_think_open and not self._emitted_think_close:
+            self._queue.put("</think>")
+            self._emitted_think_close = True
+
+        self._stop = True
+        self._queue.put(None)  # sentinel
+
+    # ------------------------------------------------------------------
+    # Iterator interface — consumed by the streaming loop
+    # ------------------------------------------------------------------
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        from queue import Empty
+
+        while True:
+            try:
+                val = self._queue.get(timeout = self.timeout)
+            except Empty:
+                if self._stop:
+                    raise StopIteration
+                raise  # propagate Empty so caller can check thread liveness
+            if val is None:
+                raise StopIteration
+            return val
+
+    # ------------------------------------------------------------------
+    # Stateful incremental harmony protocol parsing
+    # ------------------------------------------------------------------
+
+    def _process_incremental(self, raw: str) -> None:
+        """Parse harmony channels and emit deltas per-channel.
+
+        Instead of transforming the entire raw text and computing a string
+        delta (which breaks when wrapping ``<think>`` tags shift position),
+        this tracks per-channel content lengths and emits:
+
+        - ``<think>`` once when analysis channel first appears
+        - analysis content deltas (computed on channel content directly)
+        - ``</think>`` once when final channel first appears
+        - final content deltas
+        """
+        # If raw contains <|channel|> but no complete channel+message pair yet,
+        # buffer silently — don't emit partial channel names as text.
+        has_channel_token = "<|channel|>" in raw
+        matches = list(self._HARMONY_RE.finditer(raw))
+
+        if has_channel_token and not matches:
+            # Partial harmony markup still building — wait for more tokens
+            return
+
+        if not has_channel_token and not matches:
+            # No harmony protocol at all — should not happen for gpt-oss
+            # but handle gracefully by not emitting anything
+            return
+
+        for m in matches:
+            channel = m.group(1).lower()
+            content = m.group(2)
+
+            if channel == "analysis":
+                if not self._emitted_think_open:
+                    self._queue.put("<think>")
+                    self._emitted_think_open = True
+
+                new_content = content[self._analysis_emitted :]
+                if new_content:
+                    self._analysis_emitted = len(content)
+                    self._queue.put(new_content)
+
+            elif channel in ("final", "assistant"):
+                if self._emitted_think_open and not self._emitted_think_close:
+                    self._queue.put("</think>")
+                    self._emitted_think_close = True
+
+                new_content = content[self._final_emitted :]
+                if new_content:
+                    self._final_emitted = len(content)
+                    self._queue.put(new_content)
 
 
 class InferenceBackend:
@@ -36,14 +217,9 @@ class InferenceBackend:
         self.active_model_name = None
         self.loading_models = set()
         self.loaded_local_models = []  # [(display_name, path), ...]
-        self.default_models = [
-            "unsloth/Qwen3-4B-Instruct-2507",
-            "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-            "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-            "unsloth/Phi-3.5-mini-instruct",
-            "unsloth/Gemma-3-4B-it",
-            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
-        ]
+        from core.inference.defaults import get_default_models
+
+        self.default_models = get_default_models()
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
 
@@ -72,6 +248,7 @@ class InferenceBackend:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """
         Load any model: base, LoRA adapter, text, or vision.
@@ -91,6 +268,10 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
+            device_map = get_device_map(gpu_ids)
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
 
             self.models[model_name] = {
                 "is_vision": config.is_vision,
@@ -121,6 +302,7 @@ class InferenceBackend:
                         config.path,
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -156,6 +338,7 @@ class InferenceBackend:
                             config.path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -176,6 +359,7 @@ class InferenceBackend:
                             llm_path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -192,6 +376,7 @@ class InferenceBackend:
                         config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -209,6 +394,7 @@ class InferenceBackend:
                         whisper_language = "English",
                         whisper_task = "transcribe",
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -236,6 +422,7 @@ class InferenceBackend:
                         model_name = config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -250,6 +437,11 @@ class InferenceBackend:
                     self._audio_codec_manager.load_codec(
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
+
+                # Reject CPU/disk offload for audio models too
+                raise_if_offloaded(
+                    self.models[model_name]["model"], device_map, "Inference"
+                )
 
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
@@ -272,6 +464,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -328,6 +521,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -337,6 +531,10 @@ class InferenceBackend:
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+
+            raise_if_offloaded(
+                self.models[model_name]["model"], device_map, "Inference"
+            )
 
             # Load chat template info
             self._load_chat_template_info(model_name)
@@ -380,10 +578,18 @@ class InferenceBackend:
                 # Clear GPU memory cache
                 clear_gpu_cache()
 
-                # Remove stale compiled cache so the next model gets a fresh one
+                # Remove stale compiled cache so the next model gets a fresh one.
+                # On spawn-based platforms, preserve trainer files so that any
+                # concurrent training dataset.map() workers can still import them.
+                import sys as _sys
                 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-                clear_unsloth_compiled_cache()
+                _preserve = (
+                    ["Unsloth*Trainer.py"]
+                    if _sys.platform in ("win32", "darwin")
+                    else None
+                )
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
@@ -438,6 +644,7 @@ class InferenceBackend:
         dtype = None,
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Final Corrected Version:
@@ -462,7 +669,12 @@ class InferenceBackend:
                     base_model_name, None, is_lora = False
                 )
                 if not self.load_model(
-                    base_config, max_seq_length, dtype, load_in_4bit, hf_token
+                    base_config,
+                    max_seq_length,
+                    dtype,
+                    load_in_4bit,
+                    hf_token,
+                    gpu_ids = gpu_ids,
                 ):
                     return False, None, None
 
@@ -633,7 +845,7 @@ class InferenceBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """
@@ -663,7 +875,7 @@ class InferenceBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
@@ -750,6 +962,12 @@ class InferenceBackend:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
+        if system_prompt:
+            template_messages = [
+                {"role": "system", "content": system_prompt}
+            ] + messages
+        else:
+            template_messages = messages
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -760,7 +978,7 @@ class InferenceBackend:
                     f"one via tokenizer.chat_template before inference."
                 )
             formatted_prompt = tokenizer.apply_chat_template(
-                messages, tokenize = False, add_generation_prompt = True
+                template_messages, tokenize = False, add_generation_prompt = True
             )
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -815,30 +1033,51 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            vision_messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-            ]
+            user_msg = {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": user_message},
+                ],
+            }
+            if system_prompt:
+                vision_messages = [
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": system_prompt}],
+                    },
+                    user_msg,
+                ]
+            else:
+                vision_messages = [user_msg]
 
-            input_text = processor.apply_chat_template(
-                vision_messages, add_generation_prompt = True, tokenize = False
-            )
+            try:
+                input_text = processor.apply_chat_template(
+                    vision_messages, add_generation_prompt = True, tokenize = False
+                )
+            except Exception as e:
+                if system_prompt:
+                    logger.warning(
+                        f"Vision processor for '{self.active_model_name}' may not support "
+                        f"system messages; retrying without. Original error: {e}"
+                    )
+                    vision_messages = [user_msg]
+                    input_text = processor.apply_chat_template(
+                        vision_messages, add_generation_prompt = True, tokenize = False
+                    )
+                else:
+                    raise
             inputs = processor(
                 image,
                 input_text,
                 add_special_tokens = False,
                 return_tensors = "pt",
-            ).to(self.device)
+            ).to(model.device)
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(
-                self.device
+                model.device
             )
 
         # Stream with TextIteratorStreamer + background thread
@@ -886,6 +1125,7 @@ class InferenceBackend:
             output = ""
             from queue import Empty
 
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -893,9 +1133,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -903,7 +1145,7 @@ class InferenceBackend:
                         cleaned = self._clean_generated_text(output)
                         yield cleaned
             finally:
-                if cancel_event is not None:
+                if cancel_event is not None and not generation_complete:
                     cancel_event.set()
                 thread.join(timeout = 10)
                 if thread.is_alive():
@@ -952,7 +1194,7 @@ class InferenceBackend:
                     break
 
         # Use ASR-specific system prompt if user hasn't set a custom one
-        if not system_prompt or system_prompt == "You are a helpful AI assistant.":
+        if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Build messages in Gemma 3n format — audio goes INTO apply_chat_template
@@ -975,7 +1217,7 @@ class InferenceBackend:
             return_dict = True,
             return_tensors = "pt",
             truncation = False,
-        ).to(self.device)
+        ).to(model.device)
 
         try:
             from transformers import TextIteratorStreamer
@@ -1071,6 +1313,23 @@ class InferenceBackend:
             logger.error(f"Whisper ASR error: {e}")
             yield f"Error: {str(e)}"
 
+    def _is_gpt_oss_model(self, model_name: str = None) -> bool:
+        """Check if the given (or active) model uses the gpt-oss harmony protocol."""
+        name = (model_name or self.active_model_name or "").lower()
+        try:
+            from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
+
+            # Exact match
+            if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
+                return True
+            # Partial match (e.g. name-bnb-4bit variants)
+            for key, tmpl in MODEL_TO_TEMPLATE_MAPPER.items():
+                if tmpl == "gpt-oss" and (key in name or name in key):
+                    return True
+        except Exception:
+            pass
+        return "gpt-oss" in name
+
     def generate_stream(
         self,
         prompt: str,
@@ -1079,7 +1338,7 @@ class InferenceBackend:
         top_k: int = 40,
         min_p: float = 0.0,
         max_new_tokens: int = 256,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
@@ -1106,12 +1365,32 @@ class InferenceBackend:
             from transformers import TextIteratorStreamer
             import threading
 
-            streamer = TextIteratorStreamer(
-                tokenizer,
-                skip_prompt = True,
-                skip_special_tokens = True,
-                timeout = 0.2,
-            )
+            # Use HarmonyTextStreamer for gpt-oss models to properly parse
+            # the multi-channel harmony protocol into <think> tags
+            if self._is_gpt_oss_model():
+                try:
+                    streamer = HarmonyTextStreamer(
+                        tokenizer,
+                        skip_prompt = True,
+                        timeout = 0.2,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"HarmonyTextStreamer init failed, falling back: {e}"
+                    )
+                    streamer = TextIteratorStreamer(
+                        tokenizer,
+                        skip_prompt = True,
+                        skip_special_tokens = True,
+                        timeout = 0.2,
+                    )
+            else:
+                streamer = TextIteratorStreamer(
+                    tokenizer,
+                    skip_prompt = True,
+                    skip_special_tokens = True,
+                    timeout = 0.2,
+                )
 
             generation_kwargs = dict(
                 **inputs,
@@ -1167,6 +1446,7 @@ class InferenceBackend:
             output = ""
             from queue import Empty
 
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -1174,9 +1454,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -1184,7 +1466,12 @@ class InferenceBackend:
                         cleaned = self._clean_generated_text(output)
                         yield cleaned
             finally:
-                if cancel_event is not None:
+                # Only set cancel_event when we exited early (user cancel),
+                # NOT on normal completion.  cancel_event is a shared mp.Event
+                # — setting it unconditionally would leave a stale cancel
+                # signal that could interfere with the next serialized
+                # generation request (e.g. in compare mode).
+                if cancel_event is not None and not generation_complete:
                     cancel_event.set()
                 thread.join(timeout = 10)
                 if thread.is_alive():
@@ -1209,7 +1496,7 @@ class InferenceBackend:
         top_k: int = 50,
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
     ) -> Tuple[bytes, int]:
         """
@@ -1703,6 +1990,15 @@ class InferenceBackend:
 
     def _clean_generated_text(self, text: str) -> str:
         """Strip leaked special tokens using the tokenizer's own token list."""
+        if self._is_gpt_oss_model():
+            # HarmonyTextStreamer produces clean <think>...</think> output.
+            # Strip harmony protocol tokens and other gpt-oss added tokens
+            # (e.g. <|return|>) that may leak past the streamer.
+            import re
+
+            text = re.sub(r"<\|[a-z_]+\|>", "", text)
+            return text.strip()
+
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
         if tokenizer:
             for token in getattr(tokenizer, "all_special_tokens", []):

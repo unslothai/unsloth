@@ -25,6 +25,7 @@ export {
   isSubcategoryConfig,
   isValidatorConfig,
 } from "./config-type-guards";
+export { getGraphWarnings, type GraphWarning } from "./graph-warnings";
 export { nextName } from "./naming";
 export { nodeDataFromConfig } from "./node-data";
 export { getConfigErrors } from "./validation";

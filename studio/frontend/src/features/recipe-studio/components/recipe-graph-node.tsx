@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
@@ -14,10 +14,10 @@ import {
   EqualSignIcon,
   FingerPrintIcon,
   FunctionIcon,
-  Plug01Icon,
   Parabola02Icon,
   PencilEdit02Icon,
   Plant01Icon,
+  Plug01Icon,
   Shield02Icon,
   Tag01Icon,
   TagsIcon,
@@ -25,22 +25,31 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type NodeProps,
   NodeResizer,
   Position,
   useUpdateNodeInternals,
-  type NodeProps,
 } from "@xyflow/react";
-import { memo, type ReactElement, useEffect } from "react";
-import { MAX_NODE_WIDTH, MAX_NOTE_NODE_WIDTH, MIN_NODE_WIDTH } from "../constants";
+import { type ReactElement, memo, useEffect } from "react";
+import {
+  MAX_NODE_WIDTH,
+  MAX_NOTE_NODE_WIDTH,
+  MIN_NODE_WIDTH,
+} from "../constants";
+import { useNodeConnectionStatus } from "../hooks/use-node-connection-status";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type {
-  RecipeNode as RecipeGraphNodeType,
   LlmType,
   NodeConfig,
+  RecipeNode as RecipeGraphNodeType,
   SamplerType,
 } from "../types";
 import { NODE_HANDLE_CLASS } from "../utils/handle-layout";
 import { HANDLE_IDS } from "../utils/handles";
+import {
+  RECIPE_STUDIO_NODE_TONES,
+  RECIPE_STUDIO_USER_NODE_TONE,
+} from "../utils/ui-tones";
 import { InlineCategoryBadges } from "./inline/inline-category-badges";
 import { InlineExpression } from "./inline/inline-expression";
 import { InlineLlm } from "./inline/inline-llm";
@@ -81,36 +90,33 @@ function parseNoteOpacity(value: string | undefined): number {
 
 const NODE_META = {
   sampler: {
-    tone: "bg-emerald-50 text-emerald-600 border-emerald-100",
+    tone: RECIPE_STUDIO_NODE_TONES.sampler,
   },
   llm: {
-    tone: "bg-sky-50 text-sky-600 border-sky-100",
+    tone: RECIPE_STUDIO_NODE_TONES.llm,
   },
   validator: {
-    tone: "bg-rose-50 text-rose-600 border-rose-100",
+    tone: RECIPE_STUDIO_NODE_TONES.validator,
   },
   expression: {
-    tone: "bg-indigo-50 text-indigo-600 border-indigo-100",
+    tone: RECIPE_STUDIO_NODE_TONES.expression,
   },
   note: {
-    tone: "bg-violet-50 text-violet-700 border-violet-100",
+    tone: RECIPE_STUDIO_NODE_TONES.note,
   },
   seed: {
-    tone: "bg-lime-50 text-lime-700 border-lime-100",
+    tone: RECIPE_STUDIO_NODE_TONES.seed,
   },
   model_provider: {
-    tone: "bg-amber-50 text-amber-600 border-amber-100",
+    tone: RECIPE_STUDIO_NODE_TONES.model_provider,
   },
   model_config: {
-    tone: "bg-orange-50 text-orange-600 border-orange-100",
+    tone: RECIPE_STUDIO_NODE_TONES.model_config,
   },
   tool_config: {
-    tone: "bg-cyan-50 text-cyan-700 border-cyan-100",
+    tone: RECIPE_STUDIO_NODE_TONES.tool_config,
   },
 } as const;
-const USER_NODE_TONE =
-  "bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900/60";
-
 const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   category: Tag01Icon,
   subcategory: TagsIcon,
@@ -167,19 +173,19 @@ function resolveNodeIcon(
 
 function getConfigSummary(config: NodeConfig | undefined): string {
   if (!config) {
-    return "Open details for config";
+    return "Open settings";
   }
 
   if (config.kind === "sampler") {
     if (config.sampler_type === "category") {
       const count = config.values?.length ?? 0;
-      return `${count} values`;
+      return `${count} options`;
     }
     if (config.sampler_type === "subcategory") {
       if (config.subcategory_parent?.trim()) {
-        return `Parent: ${config.subcategory_parent}`;
+        return `Based on ${config.subcategory_parent}`;
       }
-      return "Select parent category";
+      return "Choose the main field";
     }
     if (config.sampler_type === "datetime") {
       const start = config.datetime_start?.trim() || "?";
@@ -188,9 +194,9 @@ function getConfigSummary(config: NodeConfig | undefined): string {
     }
     if (config.sampler_type === "timedelta") {
       if (config.reference_column_name?.trim()) {
-        return `Ref: ${config.reference_column_name}`;
+        return `From ${config.reference_column_name}`;
       }
-      return "Pick datetime reference";
+      return "Choose a date field";
     }
     if (
       config.sampler_type === "person" ||
@@ -203,40 +209,41 @@ function getConfigSummary(config: NodeConfig | undefined): string {
       }
       return locale;
     }
-    return "Open details for config";
+    return "Open settings";
   }
 
   if (config.kind === "llm") {
     if (config.llm_type === "structured") {
-      return "Structured output schema in details";
+      return "Set the response format in settings";
     }
     if (config.llm_type === "judge") {
       const scoreCount = config.scores?.length ?? 0;
-      return `${scoreCount} scorers`;
+      return `${scoreCount} criteria`;
     }
     if (config.tool_alias?.trim()) {
-      return `Tool profile: ${config.tool_alias.trim()}`;
+      return `Tools: ${config.tool_alias.trim()}`;
     }
-    return "Prompt/system via linked input nodes";
+    return "Add your prompt in settings";
   }
 
   if (config.kind === "tool_config") {
     const providerCount = config.mcp_providers.length;
-    const allowCount = config.allow_tools?.filter((value) => value.trim()).length ?? 0;
+    const allowCount =
+      config.allow_tools?.filter((value) => value.trim()).length ?? 0;
     const providerLabel =
-      providerCount === 1 ? "1 MCP server" : `${providerCount} MCP servers`;
+      providerCount === 1 ? "1 server" : `${providerCount} servers`;
     if (allowCount === 0) {
       return `${providerLabel} · all tools allowed`;
     }
-    return `${providerLabel} · ${allowCount} allowed tools`;
+    return `${providerLabel} · ${allowCount} selected tools`;
   }
 
   if (config.kind === "validator") {
     const target = config.target_columns[0]?.trim();
     if (target) {
-      return `Target: ${target}`;
+      return `Checks ${target}`;
     }
-    return "Pick LLM code target";
+    return "Choose code to check";
   }
 
   if (config.kind === "seed") {
@@ -249,30 +256,31 @@ function getConfigSummary(config: NodeConfig | undefined): string {
     }
     if (
       seedSourceType === "unstructured" &&
-      config.unstructured_file_name?.trim()
+      config.unstructured_file_names?.length
     ) {
-      return config.unstructured_file_name.trim();
+      const count = config.unstructured_file_names.length;
+      return `${count} file${count !== 1 ? "s" : ""} uploaded`;
     }
     if (config.hf_path.trim()) {
       return config.hf_path.trim();
     }
     if (seedSourceType === "hf") {
-      return "Set HF dataset repo";
+      return "Choose a dataset";
     }
     if (seedSourceType === "local") {
-      return "Upload structured file";
+      return "Upload a table file";
     }
-    return "Upload PDF/DOCX/TXT file";
+    return "Upload a document";
   }
 
   if (config.kind === "markdown_note") {
     if (config.markdown.trim()) {
-      return "Markdown preview";
+      return "Note preview";
     }
-    return "Add markdown content";
+    return "Add note text";
   }
 
-  return "Open details for config";
+  return "Open settings";
 }
 
 function renderNodeBody(
@@ -285,7 +293,8 @@ function renderNodeBody(
   }
 
   if (config && isInlineConfig(config)) {
-    const onUpdate = (patch: Partial<NodeConfig>) => updateConfig(config.id, patch);
+    const onUpdate = (patch: Partial<NodeConfig>) =>
+      updateConfig(config.id, patch);
 
     if (config.kind === "sampler") {
       return <InlineSampler config={config} onUpdate={onUpdate} />;
@@ -355,6 +364,7 @@ function RecipeGraphNodeBase({
   const updateNodeInternals = useUpdateNodeInternals();
   const executionLocked = Boolean(data.executionLocked);
   const runtimeState = data.runtimeState ?? "idle";
+  const connectionStatus = useNodeConnectionStatus(id, config);
 
   useEffect(() => {
     updateNodeInternals(id);
@@ -400,7 +410,8 @@ function RecipeGraphNodeBase({
     data.kind === "expression" ||
     data.kind === "sampler" ||
     data.kind === "seed";
-  const showSemanticIn = data.kind === "model_config" || data.kind === "validator";
+  const showSemanticIn =
+    data.kind === "model_config" || data.kind === "validator";
   const showSemanticOut =
     data.kind === "model_config" ||
     data.kind === "model_provider" ||
@@ -417,7 +428,7 @@ function RecipeGraphNodeBase({
     config?.kind === "sampler" &&
     (config.sampler_type === "person" ||
       config.sampler_type === "person_from_faker")
-      ? USER_NODE_TONE
+      ? RECIPE_STUDIO_USER_NODE_TONE
       : meta.tone;
   const runtimeNodeTone =
     runtimeState === "running"
@@ -425,12 +436,18 @@ function RecipeGraphNodeBase({
       : runtimeState === "done"
         ? "border-emerald-500/60 ring-1 ring-emerald-500/20"
         : "";
+  const hasConnectionIssue =
+    connectionStatus.isDisconnected ||
+    connectionStatus.missingDataInput;
 
   return (
     <BaseNode
       className={cn(
         "corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm",
         runtimeNodeTone,
+        hasConnectionIssue &&
+          runtimeState === "idle" &&
+          "opacity-80 border-dashed border-amber-400/70",
       )}
     >
       {runtimeState === "running" && config?.kind === "llm" && (

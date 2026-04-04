@@ -13,6 +13,7 @@ PATH to point at the venv.
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -21,8 +22,41 @@ import urllib.request
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
+IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 
-# ── Paths ──────────────────────────────────────────────────────────────
+
+def _infer_no_torch() -> bool:
+    """Determine whether to run in no-torch (GGUF-only) mode.
+
+    Checks UNSLOTH_NO_TORCH env var first.  When unset, falls back to
+    platform detection so that Intel Macs automatically use GGUF-only
+    mode even when invoked from ``unsloth studio update`` (which does
+    not inject the env var).
+    """
+    env = os.environ.get("UNSLOTH_NO_TORCH")
+    if env is not None:
+        return env.strip().lower() in ("1", "true")
+    return IS_MAC_INTEL
+
+
+NO_TORCH = _infer_no_torch()
+
+# -- Verbosity control ----------------------------------------------------------
+# By default the installer shows a minimal progress bar (one line, in-place).
+# Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
+#   CLI:        unsloth studio setup --verbose
+#   Linux/Mac:  UNSLOTH_VERBOSE=1 ./studio/setup.sh
+#   Windows:    $env:UNSLOTH_VERBOSE="1" ; .\studio\setup.ps1
+VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
+
+# Progress bar state -- updated by _progress() as each install step runs.
+# _TOTAL counts: pip-upgrade + 7 shared steps + triton (non-Windows) + local-plugin + finalize
+# Update _TOTAL here if you add or remove install steps in install_python_stack().
+_STEP: int = 0
+_TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
+
+# -- Paths --------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 REQ_ROOT = SCRIPT_DIR / "backend" / "requirements"
 SINGLE_ENV = REQ_ROOT / "single-env"
@@ -31,39 +65,78 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
 
-# ── Color support ──────────────────────────────────────────────────────
+# -- Unicode-safe printing ---------------------------------------------
+# On Windows the default console encoding can be a legacy code page
+# (e.g. CP1252) that cannot represent Unicode glyphs such as ✅ or ❌.
+# _safe_print() gracefully degrades to ASCII equivalents so the
+# installer never crashes just because of a status glyph.
+
+_UNICODE_TO_ASCII: dict[str, str] = {
+    "\u2705": "[OK]",  # ✅
+    "\u274c": "[FAIL]",  # ❌
+    "\u26a0\ufe0f": "[!]",  # ⚠️  (warning + variation selector)
+    "\u26a0": "[!]",  # ⚠  (warning without variation selector)
+}
 
 
-def _enable_colors() -> bool:
-    """Try to enable ANSI color support. Returns True if available."""
-    if not hasattr(sys.stdout, "fileno"):
-        return False
+def _safe_print(*args: object, **kwargs: object) -> None:
+    """Drop-in print() replacement that survives non-UTF-8 consoles."""
     try:
-        if not os.isatty(sys.stdout.fileno()):
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Stringify, then swap emoji for ASCII equivalents
+        text = " ".join(str(a) for a in args)
+        for uni, ascii_alt in _UNICODE_TO_ASCII.items():
+            text = text.replace(uni, ascii_alt)
+        # Final fallback: replace any remaining unencodable chars
+        print(
+            text.encode(sys.stdout.encoding or "ascii", errors = "replace").decode(
+                sys.stdout.encoding or "ascii", errors = "replace"
+            ),
+            **kwargs,
+        )
+
+
+# ── Color support ──────────────────────────────────────────────────────
+# Same logic as startup_banner: NO_COLOR disables, FORCE_COLOR or TTY enables.
+
+
+def _stdout_supports_color() -> bool:
+    """True if we should emit ANSI colors (matches startup_banner)."""
+    if os.environ.get("NO_COLOR", "").strip():
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip():
+        return True
+    try:
+        if not sys.stdout.isatty():
             return False
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         return False
     if IS_WINDOWS:
         try:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
-            # Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) on stdout
-            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            handle = kernel32.GetStdHandle(-11)
             mode = ctypes.c_ulong()
             kernel32.GetConsoleMode(handle, ctypes.byref(mode))
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)
-            return True
-        except Exception:
+        except (ImportError, AttributeError, OSError):
             return False
-    return True  # Unix terminals support ANSI by default
+    return True
 
 
-_HAS_COLOR = _enable_colors()
+_HAS_COLOR = _stdout_supports_color()
+
+
+# Column layout — matches setup.sh step() helper:
+#   2-space indent, 15-char label (dim), then value.
+_LABEL = "deps"
+_COL = 15
 
 
 def _green(msg: str) -> str:
-    return f"\033[92m{msg}\033[0m" if _HAS_COLOR else msg
+    return f"\033[38;5;108m{msg}\033[0m" if _HAS_COLOR else msg
 
 
 def _cyan(msg: str) -> str:
@@ -74,18 +147,55 @@ def _red(msg: str) -> str:
     return f"\033[91m{msg}\033[0m" if _HAS_COLOR else msg
 
 
+def _dim(msg: str) -> str:
+    return f"\033[38;5;245m{msg}\033[0m" if _HAS_COLOR else msg
+
+
+def _title(msg: str) -> str:
+    return f"\033[38;5;150m{msg}\033[0m" if _HAS_COLOR else msg
+
+
+_RULE = "\u2500" * 52
+
+
+def _step(label: str, value: str, color_fn = None) -> None:
+    """Print a single step line in the column format."""
+    if color_fn is None:
+        color_fn = _green
+    padded = label[:_COL]
+    print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
+
+
+def _progress(label: str) -> None:
+    """Print an in-place progress bar aligned to the step column layout."""
+    global _STEP
+    _STEP += 1
+    if VERBOSE:
+        return
+    width = 20
+    filled = int(width * _STEP / _TOTAL)
+    bar = "=" * filled + "-" * (width - filled)
+    pad = " " * (_COL - len(_LABEL))
+    end = "\n" if _STEP >= _TOTAL else ""
+    sys.stdout.write(
+        f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
+    )
+    sys.stdout.flush()
+
+
 def run(
     label: str, cmd: list[str], *, quiet: bool = True
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a command; on failure print output and exit."""
-    print(_cyan(f"   {label}..."))
+    if VERBOSE:
+        _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
     )
     if result.returncode != 0:
-        print(_red(f"❌ {label} failed (exit code {result.returncode}):"))
+        _step("error", f"{label} failed (exit code {result.returncode})", _red)
         if result.stdout:
             print(result.stdout.decode(errors = "replace"))
         sys.exit(result.returncode)
@@ -95,7 +205,20 @@ def run(
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 
-# ── uv bootstrap ──────────────────────────────────────────────────────
+# Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
+# These packages either *are* torch extensions or have unconditional
+# ``Requires-Dist: torch`` in their published metadata, so installing
+# them would pull torch back into the environment.
+NO_TORCH_SKIP_PACKAGES = {
+    "torch-stoi",
+    "timm",
+    "torchcodec",
+    "torch-c-dlpack-ext",
+    "openai-whisper",
+    "transformers-cfg",
+}
+
+# -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
 UV_NEEDS_SYSTEM = False  # Set by _bootstrap_uv() via probe
@@ -106,15 +229,15 @@ def _bootstrap_uv() -> bool:
     global UV_NEEDS_SYSTEM
     if not shutil.which("uv"):
         return False
-    # Probe: try a dry-run install without --system.
-    # If uv can't find a venv it exits with code 2.
+    # Probe: try a dry-run install targeting the current Python explicitly.
+    # Without --python, uv can ignore the activated venv on some platforms.
     probe = subprocess.run(
-        ["uv", "pip", "install", "--dry-run", "pip"],
+        ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
     )
     if probe.returncode != 0:
-        # Retry with --system to confirm it works
+        # Retry with --system (some envs need it when uv can't find a venv)
         probe_sys = subprocess.run(
             ["uv", "pip", "install", "--dry-run", "--system", "pip"],
             stdout = subprocess.PIPE,
@@ -159,9 +282,20 @@ def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
 
 
 def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
-    """Build a standard pip install command."""
+    """Build a standard pip install command.
+
+    Strips uv-only flags like --upgrade-package that pip doesn't understand.
+    """
     cmd = [sys.executable, "-m", "pip", "install"]
-    cmd.extend(args)
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--upgrade-package":
+            skip_next = True  # skip the flag and its value
+            continue
+        cmd.append(arg)
     return cmd
 
 
@@ -170,8 +304,17 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     cmd = ["uv", "pip", "install"]
     if UV_NEEDS_SYSTEM:
         cmd.append("--system")
+    # Always pass --python so uv targets the correct environment.
+    # Without this, uv can ignore an activated venv and install into
+    # the system Python (observed on Colab and similar environments).
+    cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
-    cmd.append("--torch-backend=auto")
+    # Torch is pre-installed by install.sh/setup.ps1.  Do not add
+    # --torch-backend by default -- it can cause solver dead-ends on
+    # CPU-only machines.  Callers that need it can set UV_TORCH_BACKEND.
+    _tb = os.environ.get("UV_TORCH_BACKEND", "")
+    if _tb:
+        cmd.append(f"--torch-backend={_tb}")
     return cmd
 
 
@@ -187,8 +330,13 @@ def pip_install(
         constraint_args = ["-c", str(CONSTRAINTS)]
 
     actual_req = req
+    temp_reqs: list[Path] = []
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
     req_args: list[str] = []
     if actual_req is not None:
         req_args = ["-r", str(actual_req)]
@@ -196,7 +344,8 @@ def pip_install(
     try:
         if USE_UV:
             uv_cmd = _build_uv_cmd(args) + constraint_args + req_args
-            print(_cyan(f"   {label}..."))
+            if VERBOSE:
+                print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
@@ -211,8 +360,8 @@ def pip_install(
         pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
     finally:
-        if actual_req is not None and actual_req != req:
-            actual_req.unlink(missing_ok = True)
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
 
 
 def download_file(url: str, dest: Path) -> None:
@@ -228,7 +377,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         text = True,
     )
     if result.returncode != 0:
-        print(_red(f"   ⚠️  Could not find package {package_name}, skipping patch"))
+        _step(_LABEL, f"package {package_name} not found, skipping patch", _red)
         return
 
     location = None
@@ -238,43 +387,166 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
             break
 
     if not location:
-        print(_red(f"   ⚠️  Could not determine location of {package_name}"))
+        _step(_LABEL, f"could not locate {package_name}", _red)
         return
 
     dest = Path(location) / relative_path
-    print(_cyan(f"   Patching {dest.name} in {package_name}..."))
+    _step(_LABEL, f"patching {dest.name} in {package_name}...", _dim)
     download_file(url, dest)
 
 
-# ── Main install sequence ─────────────────────────────────────────────
+# -- Main install sequence ---------------------------------------------
 
 
 def install_python_stack() -> int:
-    global USE_UV
+    global USE_UV, _STEP, _TOTAL
+    _STEP = 0
 
-    # 1. Upgrade pip (needed even with uv as fallback and for bootstrapping)
-    run("Upgrading pip", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    # When called from install.sh (which already installed unsloth into the venv),
+    # SKIP_STUDIO_BASE=1 is set to avoid redundant reinstallation of base packages.
+    # When called from "unsloth studio update", it is NOT set so base packages
+    # (unsloth + unsloth-zoo) are always reinstalled to pick up new versions.
+    skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
+    # When --package is used, install a different package name (e.g. roland-sloth for testing)
+    package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
+    # When --local is used, overlay a local repo checkout after updating deps
+    local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
+    base_total = 10 if IS_WINDOWS else 11
+    if IS_MACOS:
+        base_total -= 1  # triton step is skipped on macOS
+    _TOTAL = (base_total - 1) if skip_base else base_total
 
-    # Try to use uv for faster installs
+    # 1. Try to use uv for faster installs (must happen before pip upgrade
+    #    because uv venvs don't include pip by default)
     USE_UV = _bootstrap_uv()
-    installer = "uv" if USE_UV else "pip"
-    print(_cyan(f"── Installing Python stack (via {installer}) ──"))
 
-    # 2. Core packages: unsloth-zoo + unsloth
-    pip_install(
-        "Installing base packages",
-        "--no-cache-dir",
-        req = REQ_ROOT / "base.txt",
-    )
+    # 2. Ensure pip is available (uv venvs created by install.sh don't include pip)
+    _progress("pip bootstrap")
+    if USE_UV:
+        run(
+            "Bootstrapping pip via uv",
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "pip",
+            ],
+        )
+    else:
+        # pip may not exist yet (uv-created venvs omit it). Try ensurepip
+        # first, then upgrade. Only fall back to a direct upgrade when pip
+        # is already present.
+        _has_pip = (
+            subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+
+        if not _has_pip:
+            run(
+                "Bootstrapping pip via ensurepip",
+                [sys.executable, "-m", "ensurepip", "--upgrade"],
+            )
+        else:
+            run(
+                "Upgrading pip",
+                [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+            )
+
+    # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
+    if skip_base:
+        pass
+    elif NO_TORCH:
+        # No-torch update path: install unsloth + unsloth-zoo with --no-deps
+        # (current PyPI metadata still declares torch as a hard dep), then
+        # runtime deps with --no-deps (avoids transitive torch).
+        _progress("base packages (no torch)")
+        pip_install(
+            f"Updating {package_name} + unsloth-zoo (no-torch mode)",
+            "--no-cache-dir",
+            "--no-deps",
+            "--upgrade-package",
+            package_name,
+            "--upgrade-package",
+            "unsloth-zoo",
+            package_name,
+            "unsloth-zoo",
+        )
+        pip_install(
+            "Installing no-torch runtime deps",
+            "--no-cache-dir",
+            "--no-deps",
+            req = REQ_ROOT / "no-torch-runtime.txt",
+        )
+        if local_repo:
+            pip_install(
+                "Overlaying local repo (editable)",
+                "--no-cache-dir",
+                "--no-deps",
+                "-e",
+                local_repo,
+                constrain = False,
+            )
+    elif local_repo:
+        # Local dev install: update deps from base.txt, then overlay the
+        # local checkout as an editable install (--no-deps so torch is
+        # never re-resolved).
+        _progress("base packages")
+        pip_install(
+            "Updating base packages",
+            "--no-cache-dir",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
+            req = REQ_ROOT / "base.txt",
+        )
+        pip_install(
+            "Overlaying local repo (editable)",
+            "--no-cache-dir",
+            "--no-deps",
+            "-e",
+            local_repo,
+            constrain = False,
+        )
+    elif package_name != "unsloth":
+        # Custom package name (e.g. roland-sloth for testing) — install directly
+        _progress("base packages")
+        pip_install(
+            f"Installing {package_name}",
+            "--no-cache-dir",
+            package_name,
+        )
+    else:
+        # Update path: upgrade only unsloth + unsloth-zoo while preserving
+        # existing torch/CUDA installations.  Torch is pre-installed by
+        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+        _progress("base packages")
+        pip_install(
+            "Updating base packages",
+            "--no-cache-dir",
+            "--upgrade-package",
+            "unsloth",
+            "--upgrade-package",
+            "unsloth-zoo",
+            req = REQ_ROOT / "base.txt",
+        )
 
     # 3. Extra dependencies
+    _progress("unsloth extras")
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
         req = REQ_ROOT / "extras.txt",
     )
 
-    # 3b. Extra dependencies (no-deps) — audio model support etc.
+    # 3b. Extra dependencies (no-deps) -- audio model support etc.
+    _progress("extra codecs")
     pip_install(
         "Installing extras (no-deps)",
         "--no-deps",
@@ -282,16 +554,24 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 4. Overrides (torchao, transformers) — force-reinstall
-    pip_install(
-        "Installing dependency overrides",
-        "--force-reinstall",
-        "--no-cache-dir",
-        req = REQ_ROOT / "overrides.txt",
-    )
+    # 4. Overrides (torchao, transformers) -- force-reinstall
+    #    Skip entirely when torch is unavailable (e.g. Intel Mac GGUF-only mode)
+    #    because overrides.txt contains torchao which requires torch.
+    if NO_TORCH:
+        _progress("dependency overrides (skipped, no torch)")
+    else:
+        _progress("dependency overrides")
+        pip_install(
+            "Installing dependency overrides",
+            "--force-reinstall",
+            "--no-cache-dir",
+            req = REQ_ROOT / "overrides.txt",
+        )
 
     # 5. Triton kernels (no-deps, from source)
-    if not IS_WINDOWS:
+    #    Skip on Windows (no support) and macOS (no support).
+    if not IS_WINDOWS and not IS_MACOS:
+        _progress("triton kernels")
         pip_install(
             "Installing triton kernels",
             "--no-deps",
@@ -322,6 +602,7 @@ def install_python_stack() -> int:
     # )
 
     # 8. Studio dependencies
+    _progress("studio deps")
     pip_install(
         "Installing studio dependencies",
         "--no-cache-dir",
@@ -329,6 +610,7 @@ def install_python_stack() -> int:
     )
 
     # 9. Data-designer dependencies
+    _progress("data designer deps")
     pip_install(
         "Installing data-designer base dependencies",
         "--no-cache-dir",
@@ -336,6 +618,7 @@ def install_python_stack() -> int:
     )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
+    _progress("data designer")
     pip_install(
         "Installing data-designer",
         "--no-cache-dir",
@@ -345,12 +628,13 @@ def install_python_stack() -> int:
 
     # 11. Local Data Designer seed plugin
     if not LOCAL_DD_UNSTRUCTURED_PLUGIN.is_dir():
-        print(
+        _safe_print(
             _red(
                 f"❌ Missing local plugin directory: {LOCAL_DD_UNSTRUCTURED_PLUGIN}",
             ),
         )
         return 1
+    _progress("local plugin")
     pip_install(
         "Installing local data-designer unstructured plugin",
         "--no-cache-dir",
@@ -360,6 +644,7 @@ def install_python_stack() -> int:
     )
 
     # 12. Patch metadata for single-env compatibility
+    _progress("finalizing")
     run(
         "Patching single-env metadata",
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
@@ -372,7 +657,7 @@ def install_python_stack() -> int:
         stderr = subprocess.DEVNULL,
     )
 
-    print(_green("✅ Python dependencies installed"))
+    _step(_LABEL, "installed")
     return 0
 
 

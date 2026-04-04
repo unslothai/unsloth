@@ -13,13 +13,15 @@ export interface ModelOption {
 export interface LoraModelOption extends ModelOption {
   baseModel?: string;
   updatedAt?: number;
-  source?: "training" | "exported";
+  source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
 }
 
 export interface ModelSelectorChangeMeta {
-  source: "hub" | "lora" | "exported";
+  source: "hub" | "lora" | "exported" | "local";
   isLora: boolean;
   ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
 }
 

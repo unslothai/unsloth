@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
-import type { ModelType, StepNumber } from "@/types/training";
+import { DEFAULT_HYPERPARAMS, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS } from "@/config/training";
+import { authFetch } from "@/features/auth";
+import { isAdapterMethod } from "@/types/training";
+import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -13,6 +15,39 @@ import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
 const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
+
+/**
+ * Auto-select LoRA (16-bit) vs QLoRA (4-bit) based on model size and GPU memory.
+ *
+ * Rule: if model_size_gb * 1.5 * context_scale fits in free VRAM, use "lora" (16-bit).
+ * Otherwise use "qlora" (4-bit).
+ *
+ * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
+ */
+async function autoSelectTrainingMethod(
+  modelSizeBytes: number,
+  contextLength: number,
+): Promise<TrainingMethod | null> {
+  try {
+    const res = await authFetch("/api/system/hardware");
+    if (!res.ok) return null;
+    const data = await res.json();
+    const freeGb: number | null = data?.gpu?.vram_free_gb ?? null;
+    if (freeGb == null) return null;
+
+    const modelSizeGb = modelSizeBytes / (1024 ** 3);
+
+    let contextScale = 1.0;
+    if (contextLength >= 32768) contextScale = 4.0;
+    else if (contextLength >= 16384) contextScale = 2.0;
+    else if (contextLength > 8192) contextScale = 1.7;
+
+    const estimatedUsage = modelSizeGb * 1.5 * contextScale;
+    return estimatedUsage <= freeGb ? "lora" : "qlora";
+  } catch {
+    return null;
+  }
+}
 
 function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
   return {};
@@ -39,6 +74,7 @@ const initialState: TrainingConfigState = {
   datasetSliceStart: null,
   datasetSliceEnd: null,
   uploadedFile: null,
+  uploadedEvalFile: null,
   isCheckingVision: false,
   isVisionModel: false,
   isEmbeddingModel: false,
@@ -49,6 +85,7 @@ const initialState: TrainingConfigState = {
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,
+  maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
 };
 
@@ -62,6 +99,15 @@ let _modelConfigController: AbortController | null = null;
 // since the last auto-set (model load or dataset change).
 let _trainOnCompletionsManuallySet = false;
 
+// Track whether the user has manually edited the learning rate
+// since the last model load. When false, switching training method
+// auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
+let _learningRateManuallySet = false;
+
+// Stash the model-config-provided (YAML) learning rate so that
+// setTrainingMethod can restore it when switching back from full to adapter.
+let _yamlLearningRate: number | undefined = undefined;
+
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
@@ -74,6 +120,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetImage",
   "isDatasetAudio",
   "trainOnCompletions",
+  "maxPositionEmbeddings",
 ]);
 
 function partializePersistedState(
@@ -128,7 +175,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (get().selectedModel !== modelName) return;
 
             _trainOnCompletionsManuallySet = false;
+            _learningRateManuallySet = false;
+            _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
+
+            // If the model config provides a specific learning rate, treat
+            // it as authoritative so the async auto-select does not overwrite it.
+            const modelConfigHasLR = patch.learningRate !== undefined;
+            _yamlLearningRate = patch.learningRate;
+
+            // YAML learning rates are tuned for adapter methods (LoRA/QLoRA).
+            // If the user is currently on full fine-tune, override with the
+            // full-finetune default instead of applying the YAML adapter LR.
+            if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
+              patch.learningRate = LR_DEFAULT_FULL;
+            }
 
             // If vision model + image dataset already known, override
             // trainOnCompletions to false regardless of backend default.
@@ -137,11 +198,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             const isAudio = !!modelDetails.is_audio;
-            // Pure audio model → always uncheck trainOnCompletions.
+            // Pure audio model -> always uncheck trainOnCompletions.
             if (isAudio && !modelDetails.is_vision) {
               patch.trainOnCompletions = false;
             }
-            // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
+            // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
             if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
               patch.trainOnCompletions = false;
             }
@@ -151,6 +212,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
+
+            // Auto-select training method based on model size vs GPU memory.
+            // If model_size * 1.5 * context_scale fits in free VRAM, use LoRA 16-bit.
+            // Otherwise use QLoRA 4-bit.
+            const modelSizeBytes = modelDetails.model_size_bytes;
+            if (modelSizeBytes && modelSizeBytes > 0) {
+              void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
+                .then((method) => {
+                  if (get().selectedModel !== modelName) return;
+                  if (method) {
+                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
+                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
+                      : {};
+                    set({ trainingMethod: method, ...lrPatch });
+                  }
+                });
+            }
 
             set({
               ...patch,
@@ -162,6 +240,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
+              maxPositionEmbeddings: modelDetails.max_position_embeddings ?? null,
             });
           })
           .catch((error) => {
@@ -209,6 +288,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           hfToken: state.hfToken.trim() || null,
           subset: state.datasetSubset,
           split,
+          isVlm: state.isVisionModel,
         })
           .then((res) => {
             if (controller.signal.aborted) return;
@@ -253,6 +333,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetAdvisorNotification: null,
         datasetSliceStart: null,
         datasetSliceEnd: null,
+        uploadedEvalFile: null,
         isDatasetImage: null,
         isDatasetAudio: false,
         isCheckingDataset: false,
@@ -314,8 +395,33 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.modelDefaultsAppliedFor === state.selectedModel) return;
           void loadAndApplyModelDefaults(state.selectedModel);
         },
-        setTrainingMethod: (trainingMethod) => set({ trainingMethod }),
-        setHfToken: (hfToken) => set({ hfToken }),
+        setTrainingMethod: (trainingMethod) => {
+          if (_learningRateManuallySet) {
+            set({ trainingMethod });
+            return;
+          }
+
+          const prev = get().trainingMethod;
+          const wasAdapter = isAdapterMethod(prev);
+          const nowAdapter = isAdapterMethod(trainingMethod);
+
+          // qlora <-> lora: same LR range, don't touch learning rate
+          if (wasAdapter && nowAdapter) {
+            set({ trainingMethod });
+            return;
+          }
+
+          // Category changed (adapter <-> full)
+          if (nowAdapter) {
+            // Switching TO adapter: restore YAML LR if available
+            set({ trainingMethod, learningRate: _yamlLearningRate ?? LR_DEFAULT_LORA });
+          } else {
+            // Switching TO full: no YAML full-LR exists, use constant
+            set({ trainingMethod, learningRate: LR_DEFAULT_FULL });
+          }
+        },
+        setHfToken: (hfToken) =>
+          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();
@@ -444,14 +550,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetManualMapping: emptyManualMapping(),
             datasetSliceStart: null,
             datasetSliceEnd: null,
+            uploadedEvalFile: null,
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
           });
         },
+        setUploadedEvalFile: (uploadedEvalFile) => set({
+          uploadedEvalFile,
+          evalSteps: uploadedEvalFile ? 0.1 : 0,
+        }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
-        setLearningRate: (learningRate) => set({ learningRate }),
+        setLearningRate: (learningRate) => {
+          _learningRateManuallySet = true;
+          set({ learningRate });
+        },
         setOptimizerType: (optimizerType) => set({ optimizerType }),
         setLrSchedulerType: (lrSchedulerType) => set({ lrSchedulerType }),
         setLoraRank: (loraRank) => set({ loraRank }),
@@ -490,7 +604,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
         canProceed: () => canProceedForStep(get()),
-        reset: () => set(initialState),
+        reset: () => {
+          _trainOnCompletionsManuallySet = false;
+          _learningRateManuallySet = false;
+          _yamlLearningRate = undefined;
+          set(initialState);
+        },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
@@ -499,13 +618,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
+          // Only clear the manual-edit flag when the config provides a LR,
+          // so unrelated config patches don't silently disarm the guard.
+          if (patch.learningRate !== undefined) {
+            _learningRateManuallySet = false;
+          }
           set(patch);
         },
       };
     },
     {
       name: "unsloth_training_config_v1",
-      version: 8,
+      version: 9,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -534,6 +658,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           s.datasetAssistantTemplate ??= "";
           s.datasetLabelMapping ??= {};
           s.datasetAdvisorNotification ??= null;
+        }
+        if (version < 9) {
+          // weight_decay default changed from 0.01 to 0.001.
+          if (s.weightDecay === 0.01) {
+            s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
+          }
         }
         return s as unknown as TrainingConfigStore;
       },

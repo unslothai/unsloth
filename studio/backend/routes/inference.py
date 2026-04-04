@@ -5,11 +5,12 @@
 Inference API routes for model loading and text generation.
 """
 
+import os
 import sys
 import time
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Optional
 import json
@@ -17,6 +18,30 @@ import structlog
 from loggers import get_logger
 import asyncio
 import threading
+
+
+import re as _re
+
+# Model size extraction (shared with core/inference/llama_cpp.py)
+from utils.models import extract_model_size_b as _extract_model_size_b
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Extract a user-friendly message from known llama-server errors."""
+    msg = str(exc)
+    m = _re.search(
+        r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
+        msg,
+    )
+    if m:
+        return (
+            f"Message too long: {m.group(1)} tokens exceeds the {m.group(2)}-token "
+            f"context window. Try increasing the Context Length in Model settings, "
+            f"or shorten the conversation."
+        )
+    if "Lost connection to llama-server" in msg:
+        return "Lost connection to the model server. It may have crashed -- try reloading the model."
+    return "An internal error occurred"
 
 
 # Add backend directory to path
@@ -55,6 +80,7 @@ from models.inference import (
     ChoiceDelta,
     CompletionChoice,
     CompletionMessage,
+    CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
 )
@@ -64,8 +90,23 @@ import io
 import wave
 import base64
 import numpy as np
+from datetime import date as _date
 
 router = APIRouter()
+
+# Appended to tool-use nudge to discourage plan-without-action
+_TOOL_ACTION_NUDGE = (
+    " IMPORTANT: Always call tools directly -- never write code yourself."
+    " Never describe what you plan to do -- just call the tool immediately."
+    " For any code request, call the python tool. For any factual question, call web_search."
+    " Do NOT output code blocks -- use the python tool instead."
+)
+
+# Regex for stripping leaked tool-call XML from assistant messages/stream
+_TOOL_XML_RE = _re.compile(
+    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    _re.DOTALL,
+)
 logger = get_logger(__name__)
 
 
@@ -95,6 +136,83 @@ async def load_model(
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
+        # ── Already-loaded check: skip reload if the exact model is active ──
+        backend = get_inference_backend()
+        llama_backend = get_llama_cpp_backend()
+
+        if request.gguf_variant:
+            if (
+                llama_backend.is_loaded
+                and llama_backend.hf_variant
+                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
+                and llama_backend.model_identifier
+                and llama_backend.model_identifier.lower() == request.model_path.lower()
+            ):
+                logger.info(
+                    f"Model already loaded (GGUF): {request.model_path} variant={request.gguf_variant}, skipping reload"
+                )
+                inference_config = load_inference_config(llama_backend.model_identifier)
+                from utils.models import is_audio_input_type
+
+                _gguf_audio = (
+                    llama_backend._audio_type
+                    if hasattr(llama_backend, "_audio_type")
+                    else None
+                )
+                _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
+                return LoadResponse(
+                    status = "already_loaded",
+                    model = llama_backend.model_identifier,
+                    display_name = llama_backend.model_identifier,
+                    is_vision = llama_backend._is_vision,
+                    is_lora = False,
+                    is_gguf = True,
+                    is_audio = _gguf_is_audio,
+                    audio_type = _gguf_audio,
+                    has_audio_input = is_audio_input_type(_gguf_audio)
+                    if _gguf_audio
+                    else False,
+                    inference = inference_config,
+                    context_length = llama_backend.context_length,
+                    max_context_length = llama_backend.max_context_length,
+                    native_context_length = llama_backend.native_context_length,
+                    supports_reasoning = llama_backend.supports_reasoning,
+                    reasoning_always_on = llama_backend.reasoning_always_on,
+                    chat_template = llama_backend.chat_template,
+                    speculative_type = llama_backend.speculative_type,
+                )
+        else:
+            if (
+                backend.active_model_name
+                and backend.active_model_name.lower() == request.model_path.lower()
+            ):
+                logger.info(
+                    f"Model already loaded (Unsloth): {request.model_path}, skipping reload"
+                )
+                inference_config = load_inference_config(backend.active_model_name)
+                _model_info = backend.models.get(backend.active_model_name, {})
+                _chat_template = None
+                try:
+                    _tpl_info = _model_info.get("chat_template_info", {})
+                    _chat_template = _tpl_info.get("template")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not retrieve chat template for {backend.active_model_name}: {e}"
+                    )
+                return LoadResponse(
+                    status = "already_loaded",
+                    model = backend.active_model_name,
+                    display_name = backend.active_model_name,
+                    is_vision = _model_info.get("is_vision", False),
+                    is_lora = _model_info.get("is_lora", False),
+                    is_gguf = False,
+                    is_audio = _model_info.get("is_audio", False),
+                    audio_type = _model_info.get("audio_type"),
+                    has_audio_input = _model_info.get("has_audio_input", False),
+                    inference = inference_config,
+                    chat_template = _chat_template,
+                )
+
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
@@ -109,8 +227,17 @@ async def load_model(
                 detail = f"Invalid model identifier: {request.model_path}",
             )
 
+        # Normalize gpu_ids: empty list means auto-selection, same as None
+        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
+            if effective_gpu_ids is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "gpu_ids is not supported for GGUF models yet.",
+                )
+
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -122,24 +249,35 @@ async def load_model(
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
             # Route to HF mode or local mode based on config
+            # Run in a thread so the event loop stays free for progress
+            # polling and other requests during the (potentially long)
+            # GGUF download + llama-server startup.
             if config.gguf_hf_repo:
-                # HF mode: llama-server downloads via -hf "repo:quant"
-                success = llama_backend.load_model(
+                # HF mode: download via huggingface_hub then start llama-server
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
+                    chat_template_override = request.chat_template_override,
+                    cache_type_kv = request.cache_type_kv,
+                    speculative_type = request.speculative_type,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
-                success = llama_backend.load_model(
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
+                    chat_template_override = request.chat_template_override,
+                    cache_type_kv = request.cache_type_kv,
+                    speculative_type = request.speculative_type,
                 )
 
             if not success:
@@ -150,6 +288,17 @@ async def load_model(
 
             logger.info(f"Loaded GGUF model via llama-server: {config.identifier}")
 
+            # Detect TTS audio by probing the loaded model's vocabulary
+            from utils.models import is_audio_input_type
+
+            _gguf_audio = llama_backend.detect_audio_type()
+            _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
+            llama_backend._is_audio = _gguf_is_audio
+            llama_backend._audio_type = _gguf_audio
+            if _gguf_is_audio:
+                logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
+                await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
+
             inference_config = load_inference_config(config.identifier)
 
             return LoadResponse(
@@ -159,7 +308,19 @@ async def load_model(
                 is_vision = config.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_audio = _gguf_is_audio,
+                audio_type = _gguf_audio,
+                has_audio_input = is_audio_input_type(_gguf_audio),
                 inference = inference_config,
+                context_length = llama_backend.context_length,
+                max_context_length = llama_backend.max_context_length,
+                native_context_length = llama_backend.native_context_length,
+                supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_always_on = llama_backend.reasoning_always_on,
+                supports_tools = llama_backend.supports_tools,
+                cache_type_kv = llama_backend.cache_type_kv,
+                chat_template = llama_backend.chat_template,
+                speculative_type = llama_backend.speculative_type,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -233,13 +394,16 @@ async def load_model(
                 except Exception as e:
                     logger.warning(f"Could not read adapter_config.json: {e}")
 
-        # Load the model
-        success = backend.load_model(
+        # Load the model in a thread so the event loop stays free
+        # for download progress polling and other requests.
+        success = await asyncio.to_thread(
+            backend.load_model,
             config = config,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
+            gpu_ids = effective_gpu_ids,
         )
 
         if not success:
@@ -266,6 +430,15 @@ async def load_model(
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
 
+        # Get chat template from tokenizer
+        _chat_template = None
+        try:
+            _model_info = backend.models.get(config.identifier, {})
+            _tpl_info = _model_info.get("chat_template_info", {})
+            _chat_template = _tpl_info.get("template")
+        except Exception:
+            pass
+
         return LoadResponse(
             status = "loaded",
             model = config.identifier,
@@ -277,13 +450,27 @@ async def load_model(
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
             inference = inference_config,
+            chat_template = _chat_template,
         )
 
     except HTTPException:
         raise
+    except ValueError as e:
+        logger.warning("Rejected inference GPU selection: %s", e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to load model: {str(e)}")
+        msg = str(e)
+        # Surface a friendlier message for models that Unsloth cannot load
+        not_supported_hints = [
+            "No config file found",
+            "not yet supported",
+            "is not supported",
+            "does not support",
+        ]
+        if any(h.lower() in msg.lower() for h in not_supported_hints):
+            msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+        raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
 @router.post("/validate", response_model = ValidateModelResponse)
@@ -343,11 +530,11 @@ async def unload_model(
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
-        # Check if the GGUF backend has this model loaded
+        # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_loaded
-            and llama_backend.model_identifier == request.model_path
+        if llama_backend.is_active and (
+            llama_backend.model_identifier == request.model_path
+            or not llama_backend.is_loaded
         ):
             llama_backend.unload_model()
             logger.info(f"Unloaded GGUF model: {request.model_path}")
@@ -426,7 +613,7 @@ async def generate_stream(
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
-            yield f"data: {json.dumps({'error': 'An internal error occurred'})}\n\n"
+            yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
 
     return StreamingResponse(
         stream(),
@@ -451,13 +638,25 @@ async def get_status(
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
+            _model_id = llama_backend.model_identifier
+            _inference_cfg = load_inference_config(_model_id) if _model_id else None
             return InferenceStatusResponse(
-                active_model = llama_backend.model_identifier,
+                active_model = _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
+                is_audio = getattr(llama_backend, "_is_audio", False),
+                audio_type = getattr(llama_backend, "_audio_type", None),
                 loading = [],
-                loaded = [llama_backend.model_identifier],
+                loaded = [_model_id],
+                inference = _inference_cfg,
+                supports_reasoning = llama_backend.supports_reasoning,
+                reasoning_always_on = llama_backend.reasoning_always_on,
+                supports_tools = llama_backend.supports_tools,
+                context_length = llama_backend.context_length,
+                max_context_length = llama_backend.max_context_length,
+                native_context_length = llama_backend.native_context_length,
+                speculative_type = llama_backend.speculative_type,
             )
 
         # Otherwise, report Unsloth backend status
@@ -474,6 +673,11 @@ async def get_status(
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
 
+        # gpt-oss safetensors models support reasoning via harmony channels
+        supports_reasoning = False
+        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
+            supports_reasoning = backend._is_gpt_oss_model()
+
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             is_vision = is_vision,
@@ -483,6 +687,7 @@ async def get_status(
             has_audio_input = has_audio_input,
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
+            supports_reasoning = supports_reasoning,
         )
 
     except Exception as e:
@@ -504,77 +709,83 @@ async def generate_audio(
     """
     Generate audio (TTS) from the latest user message.
     Returns a JSON response with base64-encoded WAV audio.
-    Only works when an audio model is loaded.
+    Works with both GGUF (llama-server) and Unsloth/transformers backends.
     """
     import base64
-
-    backend = get_inference_backend()
-    if not backend.active_model_name:
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
-    model_info = backend.models.get(backend.active_model_name, {})
-    if not model_info.get("is_audio"):
-        raise HTTPException(
-            status_code = 400, detail = "Active model is not an audio model."
-        )
 
     # Extract text from the last user message
     _, chat_messages, _ = _extract_content_parts(payload.messages)
     if not chat_messages:
         raise HTTPException(status_code = 400, detail = "No messages provided.")
-
     last_user_msg = next(
         (m for m in reversed(chat_messages) if m["role"] == "user"), None
     )
     if not last_user_msg:
         raise HTTPException(status_code = 400, detail = "No user message found.")
-
     text = last_user_msg["content"]
+
+    # Pick backend — both return (wav_bytes, sample_rate)
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
+        model_name = llama_backend.model_identifier
+        gen = lambda: llama_backend.generate_audio_response(
+            text = text,
+            audio_type = llama_backend._audio_type,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = payload.top_k,
+            min_p = payload.min_p,
+            max_new_tokens = payload.max_tokens or 2048,
+            repetition_penalty = payload.repetition_penalty,
+        )
+    else:
+        backend = get_inference_backend()
+        if not backend.active_model_name:
+            raise HTTPException(status_code = 400, detail = "No model loaded.")
+        model_info = backend.models.get(backend.active_model_name, {})
+        if not model_info.get("is_audio"):
+            raise HTTPException(
+                status_code = 400, detail = "Active model is not an audio model."
+            )
+        model_name = backend.active_model_name
+        gen = lambda: backend.generate_audio_response(
+            text = text,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            top_k = payload.top_k,
+            min_p = payload.min_p,
+            max_new_tokens = payload.max_tokens or 2048,
+            repetition_penalty = payload.repetition_penalty,
+            use_adapter = payload.use_adapter,
+        )
 
     try:
         wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: backend.generate_audio_response(
-                text = text,
-                temperature = payload.temperature,
-                top_p = payload.top_p,
-                top_k = payload.top_k,
-                min_p = payload.min_p,
-                max_new_tokens = payload.max_tokens or 2048,
-                repetition_penalty = payload.repetition_penalty,
-                use_adapter = payload.use_adapter,
-            ),
+            None, gen
         )
-
-        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-
-        return JSONResponse(
-            content = {
-                "id": completion_id,
-                "object": "chat.completion.audio",
-                "model": backend.active_model_name,
-                "audio": {
-                    "data": audio_b64,
-                    "format": "wav",
-                    "sample_rate": sample_rate,
-                },
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": f'[Generated audio from: "{text[:100]}"]',
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-            }
-        )
-
     except Exception as e:
         logger.error(f"Audio generation error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = str(e))
+
+    audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+    return JSONResponse(
+        content = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion.audio",
+            "model": model_name,
+            "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f'[Generated audio from: "{text[:100]}"]',
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
 
 
 # =====================================================================
@@ -627,11 +838,11 @@ def _extract_content_parts(
     (``[{type: "text", ...}, {type: "image_url", ...}]``).
 
     Returns:
-        system_prompt:  The system message text (or a default).
+        system_prompt:  The system message text (empty string if none provided).
         chat_messages:  Non-system messages with content flattened to strings.
         image_base64:   Base64 data of the *first* image found, or ``None``.
     """
-    system_prompt = "You are a helpful AI assistant."
+    system_prompt = ""
     chat_messages: list[dict] = []
     first_image_b64: Optional[str] = None
 
@@ -697,6 +908,8 @@ async def openai_chat_completions(
     # ── Determine which backend is active ─────────────────────
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
+        if getattr(llama_backend, "_is_audio", False):
+            return await generate_audio(payload, request)
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
@@ -798,7 +1011,7 @@ async def openai_chat_completions(
                         logger.error(
                             f"Error during audio input streaming: {e}", exc_info = True
                         )
-                        yield f"data: {json.dumps({'error': {'message': 'An internal error occurred', 'type': 'server_error'}})}\n\n"
+                        yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
 
                 return StreamingResponse(
                     audio_input_stream(),
@@ -845,6 +1058,25 @@ async def openai_chat_completions(
                 detail = "Image provided but current GGUF model does not support vision.",
             )
 
+        # Convert image to PNG for llama-server (stb_image has limited format support)
+        if image_b64:
+            try:
+                import base64 as _b64
+                from io import BytesIO as _BytesIO
+                from PIL import Image as _Image
+
+                raw = _b64.b64decode(image_b64)
+                img = _Image.open(_BytesIO(raw))
+                if img.mode == "RGBA":
+                    img = img.convert("RGB")
+                buf = _BytesIO()
+                img.save(buf, format = "PNG")
+                image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                raise HTTPException(
+                    status_code = 400, detail = f"Failed to process image: {e}"
+                )
+
         # Build message list with system prompt prepended
         gguf_messages = []
         if system_prompt:
@@ -856,6 +1088,263 @@ async def openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        # ── Tool-calling path (agentic loop) ──────────────────
+        use_tools = (
+            payload.enable_tools and llama_backend.supports_tools and not image_b64
+        )
+
+        if use_tools:
+            from core.inference.tools import ALL_TOOLS
+
+            if payload.enabled_tools is not None:
+                tools_to_use = [
+                    t
+                    for t in ALL_TOOLS
+                    if t["function"]["name"] in payload.enabled_tools
+                ]
+            else:
+                tools_to_use = ALL_TOOLS
+
+            # ── Tool-use system prompt nudge ──────────────────────
+            _tool_names = {t["function"]["name"] for t in tools_to_use}
+            _has_web = "web_search" in _tool_names
+            _has_code = "python" in _tool_names or "terminal" in _tool_names
+
+            _date_line = f"The current date is {_date.today().isoformat()}."
+
+            # Small models (<9B) struggle with multi-step search plans,
+            # so simplify the web tips to avoid plan-then-stall behavior.
+            _model_size_b = _extract_model_size_b(model_name)
+            _is_small_model = _model_size_b is not None and _model_size_b < 9
+
+            if _is_small_model:
+                _web_tips = "Do not repeat the same search query."
+            else:
+                _web_tips = (
+                    "When you search and find a relevant URL in the results, "
+                    "fetch its full content by calling web_search with the url parameter. "
+                    "Do not repeat the same search query. If a search returns "
+                    "no useful results, try rephrasing or fetching a result URL directly."
+                )
+            _code_tips = (
+                "Use code execution for math, calculations, data processing, "
+                "or to parse and analyze information from tool results."
+            )
+
+            if _has_web and _has_code:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "tools rather than answering from memory. "
+                    + _web_tips
+                    + " "
+                    + _code_tips
+                )
+            elif _has_code:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "code execution rather than answering from memory. " + _code_tips
+                )
+            elif _has_web:
+                _nudge = (
+                    _date_line + " "
+                    "You have access to tools. When appropriate, prefer using "
+                    "web search for up-to-date or uncertain factual "
+                    "information rather than answering from memory. " + _web_tips
+                )
+            else:
+                _nudge = ""
+
+            if _nudge:
+                _nudge += _TOOL_ACTION_NUDGE
+                # Append nudge to system prompt (preserve user's prompt)
+                if system_prompt:
+                    system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
+                else:
+                    system_prompt = _nudge
+                # Rebuild gguf_messages with updated system prompt
+                gguf_messages = []
+                if system_prompt:
+                    gguf_messages.append({"role": "system", "content": system_prompt})
+                gguf_messages.extend(chat_messages)
+
+            # ── Strip stale tool-call XML from conversation history ─
+            for _msg in gguf_messages:
+                if _msg.get("role") == "assistant" and isinstance(
+                    _msg.get("content"), str
+                ):
+                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+
+            def gguf_generate_with_tools():
+                return llama_backend.generate_chat_completion_with_tools(
+                    messages = gguf_messages,
+                    tools = tools_to_use,
+                    temperature = payload.temperature,
+                    top_p = payload.top_p,
+                    top_k = payload.top_k,
+                    min_p = payload.min_p,
+                    max_tokens = payload.max_tokens,
+                    repetition_penalty = payload.repetition_penalty,
+                    presence_penalty = payload.presence_penalty,
+                    cancel_event = cancel_event,
+                    enable_thinking = payload.enable_thinking,
+                    auto_heal_tool_calls = payload.auto_heal_tool_calls
+                    if payload.auto_heal_tool_calls is not None
+                    else True,
+                    max_tool_iterations = payload.max_tool_calls_per_message
+                    if payload.max_tool_calls_per_message is not None
+                    else 25,
+                    tool_call_timeout = payload.tool_call_timeout
+                    if payload.tool_call_timeout is not None
+                    else 300,
+                    session_id = payload.session_id,
+                )
+
+            _tool_sentinel = object()
+
+            async def gguf_tool_stream():
+                try:
+                    first_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(role = "assistant"),
+                                finish_reason = None,
+                            )
+                        ],
+                    )
+                    yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                    # Iterate the synchronous generator in a thread so
+                    # the event loop stays free for disconnect detection.
+                    gen = gguf_generate_with_tools()
+                    prev_text = ""
+                    _stream_usage = None
+                    _stream_timings = None
+                    while True:
+                        if await request.is_disconnected():
+                            cancel_event.set()
+                            return
+
+                        event = await asyncio.to_thread(next, gen, _tool_sentinel)
+                        if event is _tool_sentinel:
+                            break
+
+                        if event["type"] == "status":
+                            # Empty status marks an iteration boundary
+                            # in the GGUF tool loop (e.g. after a
+                            # re-prompt).  Reset the cumulative cursor
+                            # so the next assistant turn streams cleanly.
+                            if not event["text"]:
+                                prev_text = ""
+                            # Emit tool status as a custom SSE event
+                            # (including empty ones to clear UI badges)
+                            status_data = json.dumps(
+                                {
+                                    "type": "tool_status",
+                                    "content": event["text"],
+                                }
+                            )
+                            yield f"data: {status_data}\n\n"
+                            continue
+
+                        if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_start":
+                                prev_text = ""
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
+                        if event["type"] == "metadata":
+                            _stream_usage = event.get("usage")
+                            _stream_timings = event.get("timings")
+                            continue
+
+                        # "content" type -- cumulative text
+                        # Sanitize the full cumulative then diff against
+                        # the last sanitized snapshot so cross-chunk XML
+                        # tags are handled correctly.
+                        raw_cumulative = event.get("text", "")
+                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        new_text = clean_cumulative[len(prev_text) :]
+                        prev_text = clean_cumulative
+                        if not new_text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [
+                                ChunkChoice(
+                                    delta = ChoiceDelta(content = new_text),
+                                    finish_reason = None,
+                                )
+                            ],
+                        )
+                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(),
+                                finish_reason = "stop",
+                            )
+                        ],
+                    )
+                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    # Usage chunk (OpenAI-standard: choices=[], usage populated)
+                    if _stream_usage or _stream_timings:
+                        usage_obj = CompletionUsage(
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
+                        )
+                        usage_chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [],
+                            usage = usage_obj,
+                            timings = _stream_timings,
+                        )
+                        yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    raise
+                except Exception as e:
+                    import traceback
+
+                    tb = traceback.format_exc()
+                    logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
+                    error_chunk = {
+                        "error": {
+                            "message": _friendly_error(e),
+                            "type": "server_error",
+                        },
+                    }
+                    yield f"data: {json.dumps(error_chunk)}\n\n"
+
+            return StreamingResponse(
+                gguf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        # ── Standard GGUF path (no tools) ─────────────────────
+
         def gguf_generate():
             return llama_backend.generate_chat_completion(
                 messages = gguf_messages,
@@ -864,10 +1353,14 @@ async def openai_chat_completions(
                 top_p = payload.top_p,
                 top_k = payload.top_k,
                 min_p = payload.min_p,
-                max_tokens = payload.max_tokens or 2048,
+                max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
+                presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
+                enable_thinking = payload.enable_thinking,
             )
+
+        _gguf_sentinel = object()
 
         if payload.stream:
 
@@ -887,12 +1380,34 @@ async def openai_chat_completions(
                     )
                     yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                    # Content chunks — llama backend yields cumulative text
+                    # Iterate the synchronous generator in a thread so
+                    # the event loop stays free for disconnect detection.
+                    gen = gguf_generate()
                     prev_text = ""
-                    for cumulative in gguf_generate():
+                    _stream_usage = None
+                    _stream_timings = None
+                    while True:
                         if await request.is_disconnected():
                             cancel_event.set()
                             return
+                        cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
+                        if cumulative is _gguf_sentinel:
+                            break
+                        # Capture server metadata for final usage chunk
+                        if isinstance(cumulative, dict):
+                            if cumulative.get("type") == "metadata":
+                                _stream_usage = cumulative.get("usage")
+                                _stream_timings = cumulative.get("timings")
+                            else:
+                                logger.warning(
+                                    "gguf_stream_chunks: unexpected dict event: %s",
+                                    {
+                                        k: v
+                                        for k, v in cumulative.items()
+                                        if k != "timings"
+                                    },
+                                )
+                            continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
@@ -923,6 +1438,24 @@ async def openai_chat_completions(
                         ],
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    # Usage chunk (OpenAI-standard: choices=[], usage populated)
+                    if _stream_usage or _stream_timings:
+                        usage_obj = CompletionUsage(
+                            prompt_tokens = (_stream_usage or {}).get("prompt_tokens", 0),
+                            completion_tokens = (_stream_usage or {}).get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = (_stream_usage or {}).get("total_tokens", 0),
+                        )
+                        usage_chunk = ChatCompletionChunk(
+                            id = completion_id,
+                            created = created,
+                            model = model_name,
+                            choices = [],
+                            usage = usage_obj,
+                            timings = _stream_timings,
+                        )
+                        yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -932,7 +1465,7 @@ async def openai_chat_completions(
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
                     error_chunk = {
                         "error": {
-                            "message": "An internal error occurred",
+                            "message": _friendly_error(e),
                             "type": "server_error",
                         },
                     }
@@ -951,6 +1484,8 @@ async def openai_chat_completions(
             try:
                 full_text = ""
                 for token in gguf_generate():
+                    if isinstance(token, dict):
+                        continue  # skip metadata dict in non-streaming path
                     full_text = token
 
                 response = ChatCompletion(
@@ -1051,7 +1586,22 @@ async def openai_chat_completions(
                 yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
 
                 prev_text = ""
-                for cumulative in generate():
+                # Run sync generator in thread pool to avoid blocking
+                # the event loop. Critical for compare mode: two SSE
+                # requests arrive concurrently but the orchestrator
+                # serializes them via _gen_lock. Without run_in_executor
+                # the second request's blocking lock acquisition would
+                # freeze the entire event loop, stalling both streams.
+                _DONE = object()  # sentinel for generator exhaustion
+                loop = asyncio.get_event_loop()
+                gen = generate()
+                while True:
+                    # next(gen, _DONE) returns _DONE instead of raising
+                    # StopIteration — StopIteration cannot propagate
+                    # through asyncio futures (Python limitation).
+                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+                    if cumulative is _DONE:
+                        break
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
@@ -1096,7 +1646,7 @@ async def openai_chat_completions(
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 error_chunk = {
                     "error": {
-                        "message": "An internal error occurred",
+                        "message": _friendly_error(e),
                         "type": "server_error",
                     },
                 }
@@ -1136,6 +1686,94 @@ async def openai_chat_completions(
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = str(e))
+
+
+# =====================================================================
+# Sandbox file serving  (/sandbox/{session_id}/{filename})
+# =====================================================================
+
+_SANDBOX_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+
+
+@router.get("/sandbox/{session_id}/{filename}")
+async def serve_sandbox_file(
+    session_id: str,
+    filename: str,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """
+    Serve image files created by Python tool execution.
+
+    Accepts auth via Authorization header OR ?token= query param
+    (needed because <img src> cannot send custom headers).
+    """
+    from fastapi.responses import FileResponse
+
+    # ── Authentication (header or query param) ──────────────────
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt_token = auth_header[7:]
+    elif token:
+        jwt_token = token
+    else:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing authentication token",
+        )
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
+    await get_current_subject(creds)
+
+    # ── Filename sanitization ───────────────────────────────────
+    safe_filename = os.path.basename(filename)
+    if not safe_filename or safe_filename in (".", ".."):
+        raise HTTPException(status_code = 404, detail = "Not found")
+
+    # ── Extension allowlist ─────────────────────────────────────
+    ext = os.path.splitext(safe_filename)[1].lower()
+    media_type = _SANDBOX_MEDIA_TYPES.get(ext)
+    if not media_type:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "File type not allowed",
+        )
+
+    # ── Path containment check ──────────────────────────────────
+    home = os.path.expanduser("~")
+    sandbox_root = os.path.realpath(os.path.join(home, "studio_sandbox"))
+    safe_session = os.path.basename(session_id.replace("..", ""))
+    if not safe_session:
+        raise HTTPException(status_code = 404, detail = "Not found")
+
+    file_path = os.path.realpath(
+        os.path.join(sandbox_root, safe_session, safe_filename)
+    )
+    if not file_path.startswith(sandbox_root + os.sep):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Access denied",
+        )
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code = 404, detail = "Not found")
+
+    return FileResponse(
+        path = file_path,
+        media_type = media_type,
+        headers = {
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # =====================================================================

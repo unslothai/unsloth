@@ -34,6 +34,9 @@ class TrainingStartRequest(BaseModel):
     local_datasets: List[str] = Field(
         default_factory = list, description = "List of local dataset paths"
     )
+    local_eval_datasets: List[str] = Field(
+        default_factory = list, description = "List of local eval dataset paths"
+    )
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")
@@ -78,7 +81,7 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.01, description = "Weight decay")
+    weight_decay: float = Field(0.001, description = "Weight decay")
     random_seed: int = Field(42, description = "Random seed")
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
@@ -124,6 +127,12 @@ class TrainingStartRequest(BaseModel):
     wandb_project: Optional[str] = Field(None, description = "W&B project name")
     enable_tensorboard: bool = Field(False, description = "Enable TensorBoard logging")
     tensorboard_dir: Optional[str] = Field(None, description = "TensorBoard directory")
+
+    # GPU selection
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+    )
 
 
 class TrainingJobResponse(BaseModel):
@@ -174,8 +183,8 @@ class TrainingProgress(BaseModel):
     job_id: str = Field(..., description = "Training job identifier")
     step: int = Field(..., description = "Current training step")
     total_steps: int = Field(..., description = "Total training steps")
-    loss: float = Field(..., description = "Current loss value")
-    learning_rate: float = Field(..., description = "Current learning rate")
+    loss: Optional[float] = Field(None, description = "Current loss value")
+    learning_rate: Optional[float] = Field(None, description = "Current learning rate")
     progress_percent: float = Field(
         ..., description = "Progress percentage (0.0 to 100.0)"
     )
@@ -193,3 +202,59 @@ class TrainingProgress(BaseModel):
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )
+
+
+class TrainingRunSummary(BaseModel):
+    """Summary of a training run for list views."""
+
+    id: str
+    status: Literal["running", "completed", "stopped", "error"]
+    model_name: str
+    dataset_name: str
+    started_at: str
+    ended_at: Optional[str] = None
+    total_steps: Optional[int] = None
+    final_step: Optional[int] = None
+    final_loss: Optional[float] = None
+    output_dir: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+    loss_sparkline: Optional[List[float]] = None
+
+
+class TrainingRunListResponse(BaseModel):
+    """Response for listing training runs."""
+
+    runs: List[TrainingRunSummary]
+    total: int
+
+
+class TrainingRunMetrics(BaseModel):
+    """Metrics arrays for a training run, using paired step arrays per metric."""
+
+    step_history: List[int] = Field(default_factory = list)
+    loss_history: List[float] = Field(default_factory = list)
+    loss_step_history: List[int] = Field(default_factory = list)
+    lr_history: List[float] = Field(default_factory = list)
+    lr_step_history: List[int] = Field(default_factory = list)
+    grad_norm_history: List[float] = Field(default_factory = list)
+    grad_norm_step_history: List[int] = Field(default_factory = list)
+    eval_loss_history: List[float] = Field(default_factory = list)
+    eval_step_history: List[int] = Field(default_factory = list)
+    final_epoch: Optional[float] = None
+    final_num_tokens: Optional[int] = None
+
+
+class TrainingRunDetailResponse(BaseModel):
+    """Response for a single training run with config and metrics."""
+
+    run: TrainingRunSummary
+    config: dict
+    metrics: TrainingRunMetrics
+
+
+class TrainingRunDeleteResponse(BaseModel):
+    """Response for deleting a training run."""
+
+    status: str
+    message: str

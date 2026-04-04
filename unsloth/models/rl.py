@@ -93,6 +93,58 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 
 
+def _maybe_prepare_vllm_for_resume(trainer):
+    if not torch.cuda.is_available():
+        return
+
+    llm = getattr(trainer, "llm", None)
+    if llm is None:
+        llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
+    if llm is None:
+        return
+
+    model_config = getattr(
+        getattr(getattr(llm, "llm_engine", None), "vllm_config", None),
+        "model_config",
+        None,
+    )
+    if not getattr(model_config, "enable_sleep_mode", False):
+        return
+
+    try:
+        llm.sleep(1)
+    except Exception:
+        pass
+
+    import gc
+
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+def _patch_resume_from_checkpoint_memory(trainer_class):
+    original_train = getattr(trainer_class, "train", None)
+    if original_train is None:
+        return
+    if getattr(original_train, "_unsloth_resume_guard", False):
+        return
+
+    def _unsloth_train_with_resume_guard(self, *args, **kwargs):
+        resume_from_checkpoint = kwargs.get("resume_from_checkpoint", None)
+        if resume_from_checkpoint is None:
+            resume_from_checkpoint = kwargs.get("model_path", None)
+        if resume_from_checkpoint is None and len(args) != 0:
+            resume_from_checkpoint = args[0]
+
+        if resume_from_checkpoint:
+            _maybe_prepare_vllm_for_resume(self)
+        return original_train(self, *args, **kwargs)
+
+    _unsloth_train_with_resume_guard._unsloth_resume_guard = True
+    trainer_class.train = _unsloth_train_with_resume_guard
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -221,8 +273,17 @@ def PatchRL(FastLanguageModel):
         with torch.no_grad():
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
+                    try:
+                        num_items_in_batch = self._get_num_items_in_batch(
+                            [inputs], self.args.device
+                        )
+                    except (AttributeError, TypeError):
+                        num_items_in_batch = None
                     loss, outputs = self.compute_loss(
-                        model, inputs, return_outputs = True
+                        model,
+                        inputs,
+                        return_outputs = True,
+                        num_items_in_batch = num_items_in_batch,
                     )
                 loss = loss.mean().detach()
 
@@ -305,7 +366,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -315,6 +375,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -335,12 +412,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
@@ -686,8 +760,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             else:
                 continue
             call_args.append(f"{k} = {k}")
-        arguments = f"\n{' '*8}" + f",\n{' '*8}".join(arguments)
-        call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
+        arguments = f"\n{' ' * 8}" + f",\n{' ' * 8}".join(arguments)
+        call_args = f"\n{' ' * 12}" + f",\n{' ' * 12}".join(call_args)
         processed.append(
             (
                 arguments,
@@ -701,7 +775,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add tokenizer if not seen
     if "tokenizer" not in parameters and "processing_class" in parameters:
-        arguments += f",\n{' '*8}tokenizer = None"
+        arguments += f",\n{' ' * 8}tokenizer = None"
         call_args = call_args.replace(
             "processing_class = processing_class",
             "processing_class = tokenizer if tokenizer is not None else processing_class",
@@ -1119,14 +1193,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "dataset_num_proc" in call_args:
         num_proc_check = (
             "import multiprocessing as _mp\n"
-            "if _mp.get_start_method() != 'fork':\n"
-            "    dataset_num_proc = None\n"
-            "elif dataset_num_proc is None:\n"
-            "    import psutil\n"
-            "    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
-            "    memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "    if memory_gb_left <= 2: dataset_num_proc = 1\n"
-            "    else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
+            "if dataset_num_proc is None:\n"
+            "    if _mp.get_start_method() != 'fork':\n"
+            "        dataset_num_proc = None\n"
+            "    else:\n"
+            "        import psutil\n"
+            "        dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
+            "        memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
+            "        if memory_gb_left <= 2: dataset_num_proc = 1\n"
+            "        else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
         )
         extra_args += num_proc_check
 
@@ -1232,7 +1307,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Unsloth gradient checkpointing requires use_reentrant=True, so we remove
     # the setting after super().__init__() when it gets auto-applied.
     RLConfig_post = ""
-    if trl_version >= Version("0.27.0") and RLConfig_name == "GRPOConfig":
+    if trl_version >= Version("0.27.0"):
         RLConfig_post = (
             "        # Unsloth: Remove use_reentrant=False forced by TRL 0.27.0+\n"
             "        if getattr(self, 'gradient_checkpointing_kwargs', None) is not None:\n"
@@ -1489,6 +1564,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         imports,
         overwrite = False,
     )
+    patched_trainer = getattr(created_module, f"Unsloth{RLTrainer_name}")
+    if trainer_file == "grpo_trainer":
+        _patch_resume_from_checkpoint_memory(patched_trainer)
 
     # Patch Trainer
     exec(
@@ -1705,8 +1783,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
                 new_vllm_part = (
-                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"
-                    f"\n{' '*8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
+                    f"\n{' ' * 8}else:\n"
                 )
 
         if trl_version >= Version("0.18.0"):

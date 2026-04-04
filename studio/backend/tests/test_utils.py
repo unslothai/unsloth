@@ -285,7 +285,7 @@ class TestLogGpuMemory:
     def test_does_not_raise(self):
         log_gpu_memory("test")
 
-    def test_logs_gpu_info_when_available(self, caplog):
+    def test_logs_gpu_info_when_available(self, capfd):
         fake_info = {
             "available": True,
             "backend": "cuda",
@@ -295,35 +295,27 @@ class TestLogGpuMemory:
             "utilization_pct": 12.5,
             "free_gb": 14.0,
         }
-        import structlog
-        from loggers import get_logger
 
-        with (
-            patch(
-                "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-            ),
-            caplog.at_level(logging.INFO, logger = "utils.hardware.hardware"),
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
         ):
             log_gpu_memory("unit-test")
 
-        assert "unit-test" in caplog.text
-        assert "CUDA" in caplog.text
-        assert "FakeGPU" in caplog.text
+        captured = capfd.readouterr()
+        assert "unit-test" in captured.out
+        assert "CUDA" in captured.out
+        assert "FakeGPU" in captured.out
 
-    def test_logs_cpu_fallback_when_no_gpu(self, caplog):
+    def test_logs_cpu_fallback_when_no_gpu(self, capfd):
         fake_info = {"available": False, "backend": "cpu"}
-        import structlog
-        from loggers import get_logger
 
-        with (
-            patch(
-                "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-            ),
-            caplog.at_level(logging.INFO, logger = "utils.hardware.hardware"),
+        with patch(
+            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
         ):
             log_gpu_memory("cpu-test")
 
-        assert "No GPU available" in caplog.text
+        captured = capfd.readouterr()
+        assert "No GPU available" in captured.out
 
 
 # ========== format_error_message() ==========
