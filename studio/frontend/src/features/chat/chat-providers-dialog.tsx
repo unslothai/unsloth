@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -23,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { CloudIcon, Delete02Icon, Wifi02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -41,6 +43,23 @@ import {
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
 } from "./external-providers";
+import { ApiProviderLogo } from "./api-provider-logo";
+
+/** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
+const PROVIDER_FORM_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
+const PROVIDER_FORM_DURATION = 0.2;
+
+function parseManualModelIds(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of text.split(/[\n,]+/)) {
+    const id = raw.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
 
 interface ChatProvidersDialogProps {
   open: boolean;
@@ -66,11 +85,33 @@ export function ChatProvidersDialog({
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [mutatingProvider, setMutatingProvider] = useState(false);
+  const [manualModelIds, setManualModelIds] = useState("");
+  const reduceMotion = useReducedMotion();
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+
+  const isCuratedModelList = useMemo(() => {
+    return registryByType.get(providerType)?.model_list_mode === "curated";
+  }, [registryByType, providerType]);
+
+  const modelsPanelKey = isCuratedModelList ? "curated" : "remote";
+
+  useEffect(() => {
+    if (!providerType || editingProviderId) return;
+    const entry = registryByType.get(providerType);
+    if (entry?.model_list_mode === "curated") {
+      setAvailableModels([...entry.default_models]);
+      setSelectedModelIds([...entry.default_models]);
+      setManualModelIds("");
+    } else if (entry) {
+      setAvailableModels([]);
+      setSelectedModelIds([]);
+      setManualModelIds("");
+    }
+  }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
     () => providers.reduce((count, provider) => count + provider.models.length, 0),
@@ -140,6 +181,7 @@ export function ChatProvidersDialog({
     setBaseUrlDraft("");
     setAvailableModels([]);
     setSelectedModelIds([]);
+    setManualModelIds("");
   }
 
   function toggleModel(modelId: string) {
@@ -174,6 +216,12 @@ export function ChatProvidersDialog({
   async function loadModels() {
     if (!providerType) {
       toast.error("Choose a provider first.");
+      return;
+    }
+    if (isCuratedModelList) {
+      toast.info(
+        "This provider has a very large model catalog. Use the suggestions and add model IDs manually — full list is not fetched.",
+      );
       return;
     }
     if (!apiKey.trim()) {
@@ -212,13 +260,26 @@ export function ChatProvidersDialog({
       toast.error("API key is required.");
       return;
     }
-    if (availableModels.length === 0) {
-      toast.error('Load available models first, then choose which to enable.');
-      return;
-    }
-    if (selectedModelIds.length === 0) {
-      toast.error("Select at least one model.");
-      return;
+    const curated = selectedRegistryEntry?.model_list_mode === "curated";
+    const modelsToSave = curated
+      ? [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])]
+      : [...selectedModelIds];
+    if (curated) {
+      if (modelsToSave.length === 0) {
+        toast.error(
+          "Select at least one suggested model and/or add model IDs in the box below.",
+        );
+        return;
+      }
+    } else {
+      if (availableModels.length === 0) {
+        toast.error("Load available models first, then choose which to enable.");
+        return;
+      }
+      if (selectedModelIds.length === 0) {
+        toast.error("Select at least one model.");
+        return;
+      }
     }
     setMutatingProvider(true);
     try {
@@ -239,7 +300,7 @@ export function ChatProvidersDialog({
         providerType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
-        models: [...selectedModelIds],
+        models: modelsToSave,
         createdAt,
         updatedAt,
       };
@@ -266,13 +327,27 @@ export function ChatProvidersDialog({
       toast.error("API key is required.");
       return;
     }
-    if (availableModels.length === 0) {
-      toast.error('Load available models first, then choose which to enable.');
-      return;
-    }
-    if (selectedModelIds.length === 0) {
-      toast.error("Select at least one model.");
-      return;
+    const entry = registryByType.get(existing.providerType);
+    const curated = entry?.model_list_mode === "curated";
+    const modelsToSave = curated
+      ? [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])]
+      : [...selectedModelIds];
+    if (curated) {
+      if (modelsToSave.length === 0) {
+        toast.error(
+          "Select at least one suggested model and/or add model IDs in the box below.",
+        );
+        return;
+      }
+    } else {
+      if (availableModels.length === 0) {
+        toast.error("Load available models first, then choose which to enable.");
+        return;
+      }
+      if (selectedModelIds.length === 0) {
+        toast.error("Select at least one model.");
+        return;
+      }
     }
     setMutatingProvider(true);
     try {
@@ -291,7 +366,7 @@ export function ChatProvidersDialog({
             ? {
                 ...provider,
                 baseUrl: updated.base_url ?? "",
-                models: [...selectedModelIds],
+                models: modelsToSave,
                 updatedAt,
               }
             : provider,
@@ -312,8 +387,19 @@ export function ChatProvidersDialog({
     setProviderType(provider.providerType);
     setApiKey(await getExternalProviderApiKey(provider.id));
     setBaseUrlDraft(provider.baseUrl);
-    setAvailableModels([...provider.models]);
-    setSelectedModelIds([...provider.models]);
+    const entry = registryByType.get(provider.providerType);
+    if (entry?.model_list_mode === "curated") {
+      const defaults = new Set(entry.default_models);
+      const inDefaults = provider.models.filter((m) => defaults.has(m));
+      const custom = provider.models.filter((m) => !defaults.has(m));
+      setAvailableModels([...entry.default_models]);
+      setSelectedModelIds(inDefaults);
+      setManualModelIds(custom.join("\n"));
+    } else {
+      setAvailableModels([...provider.models]);
+      setSelectedModelIds([...provider.models]);
+      setManualModelIds("");
+    }
   }
 
   async function deleteProvider(providerId: string) {
@@ -396,15 +482,22 @@ export function ChatProvidersDialog({
                   return (
                     <div key={provider.id} className="rounded-xl border p-4">
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">
-                            {provider.name}
-                          </div>
-                          <div className="truncate text-xs text-muted-foreground">
-                            <span className="font-mono">{provider.providerType}</span>
-                            {" · "}
-                            {registryEntry?.display_name ?? provider.providerType}
-                            {detail ? ` · ${detail}` : ""}
+                        <div className="flex min-w-0 gap-3">
+                          <ApiProviderLogo
+                            providerType={provider.providerType}
+                            className="mt-0.5 size-[calc(2rem*0.95)]"
+                            title={provider.name}
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">
+                              {provider.name}
+                            </div>
+                            <div className="truncate text-xs text-muted-foreground">
+                              <span className="font-mono">{provider.providerType}</span>
+                              {" · "}
+                              {registryEntry?.display_name ?? provider.providerType}
+                              {detail ? ` · ${detail}` : ""}
+                            </div>
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
@@ -426,7 +519,10 @@ export function ChatProvidersDialog({
                             disabled={mutatingProvider}
                             onClick={() => void testProvider(provider)}
                           >
-                            <HugeiconsIcon icon={Wifi02Icon} className="mr-1 size-3.5" />
+                            <HugeiconsIcon
+                              icon={Wifi02Icon}
+                              className="mr-1 size-[calc(0.875rem*0.95)]"
+                            />
                             Check
                           </Button>
                           <Button
@@ -438,7 +534,10 @@ export function ChatProvidersDialog({
                             onClick={() => void deleteProvider(provider.id)}
                             title="Delete provider"
                           >
-                            <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                            <HugeiconsIcon
+                              icon={Delete02Icon}
+                              className="size-[calc(1rem*0.95)]"
+                            />
                           </Button>
                         </div>
                       </div>
@@ -466,11 +565,11 @@ export function ChatProvidersDialog({
               )}
             </div>
           </div>
-          <div className="min-w-0 border-t border-border/80 pt-8 md:border-l md:border-t-0 md:pl-10 md:pt-0 lg:pl-12">
+          <div className="min-w-0 border-t border-border/80 pt-8 md:flex md:flex-col md:border-l md:border-t-0 md:pl-10 md:pt-0 lg:pl-12">
             <h3 className="mb-6 text-sm font-semibold tracking-tight">
               {editingProviderId ? "Edit provider" : "Add provider"}
             </h3>
-            <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-6 md:flex-1">
               <div className="space-y-2">
                 <Label htmlFor="provider-preset" className="text-sm font-medium">
                   Provider
@@ -482,6 +581,7 @@ export function ChatProvidersDialog({
                     setProviderType(value);
                     setAvailableModels([]);
                     setSelectedModelIds([]);
+                    setManualModelIds("");
                   }}
                 >
                   <SelectTrigger
@@ -494,7 +594,14 @@ export function ChatProvidersDialog({
                   <SelectContent>
                     {registry.map((entry) => (
                       <SelectItem key={entry.provider_type} value={entry.provider_type}>
-                        {entry.display_name}
+                        <span className="flex items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={entry.provider_type}
+                            className="size-4"
+                            title={entry.display_name}
+                          />
+                          {entry.display_name}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -538,74 +645,173 @@ export function ChatProvidersDialog({
               </div>
 
               <div className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <Label className="text-sm font-medium">Models</Label>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8"
-                    disabled={modelsLoading || mutatingProvider}
-                    onClick={() => void loadModels()}
+                <AnimatePresence initial={false} mode="wait">
+                  <motion.div
+                    key={modelsPanelKey}
+                    className="origin-top space-y-3 overflow-hidden"
+                    initial={
+                      reduceMotion
+                        ? false
+                        : { opacity: 0, height: 0 }
+                    }
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={
+                      reduceMotion
+                        ? undefined
+                        : { opacity: 0, height: 0 }
+                    }
+                    transition={{
+                      height: {
+                        duration: PROVIDER_FORM_DURATION,
+                        ease: PROVIDER_FORM_EASE,
+                      },
+                      opacity: {
+                        duration: reduceMotion ? 0 : 0.14,
+                        ease: PROVIDER_FORM_EASE,
+                      },
+                    }}
                   >
-                    {modelsLoading ? (
-                      <>
-                        <Spinner className="mr-2 size-3.5" />
-                        Loading…
-                      </>
-                    ) : (
-                      "Load available models"
-                    )}
-                  </Button>
-                </div>
-                {availableModels.length === 0 ? (
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    Add your API key, then load models to choose which ones appear in chat.
-                  </p>
-                ) : (
-                  <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Label className="text-sm font-medium">Models</Label>
                       <Button
                         type="button"
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
-                        className="h-7 text-xs"
-                        onClick={selectAllModels}
+                        className="h-8"
+                        disabled={modelsLoading || mutatingProvider || isCuratedModelList}
+                        title={
+                          isCuratedModelList
+                            ? "Full catalog is not fetched for this provider"
+                            : undefined
+                        }
+                        onClick={() => void loadModels()}
                       >
-                        Select all
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={clearModelSelection}
-                      >
-                        Clear
+                        {modelsLoading ? (
+                          <>
+                            <Spinner className="mr-2 size-3.5" />
+                            Loading…
+                          </>
+                        ) : (
+                          "Load available models"
+                        )}
                       </Button>
                     </div>
-                    <ul className="max-h-48 space-y-2 overflow-y-auto pr-1">
-                      {availableModels.map((model, index) => (
-                        <li key={model} className="flex items-center gap-2.5">
-                          <Checkbox
-                            id={`provider-model-${index}`}
-                            checked={selectedModelIds.includes(model)}
-                            onCheckedChange={() => toggleModel(model)}
+                    {isCuratedModelList ? (
+                      <div className="space-y-3">
+                        <p className="text-sm leading-relaxed text-muted-foreground">
+                          This provider lists a huge number of models. Studio does not download the
+                          full catalog — pick suggestions below and/or enter exact model IDs.
+                        </p>
+                        {availableModels.length > 0 ? (
+                          <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={selectAllModels}
+                              >
+                                Select all suggestions
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => {
+                                  clearModelSelection();
+                                  setManualModelIds("");
+                                }}
+                              >
+                                Clear
+                              </Button>
+                            </div>
+                            <ul className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                              {availableModels.map((model, index) => (
+                                <li key={model} className="flex items-center gap-2.5">
+                                  <Checkbox
+                                    id={`provider-model-curated-${modelsPanelKey}-${index}`}
+                                    checked={selectedModelIds.includes(model)}
+                                    onCheckedChange={() => toggleModel(model)}
+                                  />
+                                  <label
+                                    htmlFor={`provider-model-curated-${modelsPanelKey}-${index}`}
+                                    className="min-w-0 cursor-pointer break-all text-sm leading-tight"
+                                  >
+                                    {model}
+                                  </label>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        <div className="space-y-2">
+                          <Label htmlFor="provider-manual-models" className="text-sm font-medium">
+                            Model IDs (one per line or comma-separated)
+                          </Label>
+                          <Textarea
+                            id="provider-manual-models"
+                            value={manualModelIds}
+                            onChange={(event) => setManualModelIds(event.target.value)}
+                            placeholder={
+                              "openai/gpt-4o-mini\nanthropic/claude-sonnet-4-5\ngoogle/gemini-2.5-flash"
+                            }
+                            rows={5}
+                            className="min-h-[100px] resize-y font-mono text-sm"
                           />
-                          <label
-                            htmlFor={`provider-model-${index}`}
-                            className="min-w-0 cursor-pointer break-all text-sm leading-tight"
+                        </div>
+                      </div>
+                    ) : availableModels.length === 0 ? (
+                      <p className="text-sm leading-relaxed text-muted-foreground">
+                        Add your API key, then load models to choose which ones appear in chat.
+                      </p>
+                    ) : (
+                      <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={selectAllModels}
                           >
-                            {model}
-                          </label>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                            Select all
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={clearModelSelection}
+                          >
+                            Clear
+                          </Button>
+                        </div>
+                        <ul className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                          {availableModels.map((model, index) => (
+                            <li key={model} className="flex items-center gap-2.5">
+                              <Checkbox
+                                id={`provider-model-remote-${modelsPanelKey}-${index}`}
+                                checked={selectedModelIds.includes(model)}
+                                onCheckedChange={() => toggleModel(model)}
+                              />
+                              <label
+                                htmlFor={`provider-model-remote-${modelsPanelKey}-${index}`}
+                                className="min-w-0 cursor-pointer break-all text-sm leading-tight"
+                              >
+                                {model}
+                              </label>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </motion.div>
+                </AnimatePresence>
               </div>
 
-              <div className="flex flex-wrap gap-3 pt-2">
+              <div className="mt-auto flex flex-wrap gap-3 pt-2">
                 <Button
                   type="button"
                   disabled={registryLoading || syncingProviders || modelsLoading || mutatingProvider}
@@ -621,12 +827,6 @@ export function ChatProvidersDialog({
                   {editingProviderId ? "Cancel edit" : "Clear"}
                 </Button>
               </div>
-              {registryLoading || syncingProviders ? (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Spinner className="size-3.5" />
-                  Syncing provider registry and saved configs...
-                </div>
-              ) : null}
             </div>
           </div>
         </div>

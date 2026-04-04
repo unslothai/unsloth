@@ -4,9 +4,8 @@
 """
 Async HTTP client for proxying chat completions to external LLM providers.
 
-All target providers (OpenAI, Mistral, Google Gemini, Cohere, Together AI,
-Fireworks AI, Perplexity) expose OpenAI-compatible /v1/chat/completions
-endpoints, so a single client handles all of them.
+Most registry providers expose OpenAI-compatible /v1/chat/completions endpoints;
+Anthropic uses native Messages API with translation in this client.
 """
 
 import logging
@@ -442,6 +441,33 @@ class ExternalProviderClient:
             return models
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
+            raise
+
+    async def verify_models_endpoint_lightweight(self) -> None:
+        """
+        Confirm GET /models returns 200 without buffering the full response body.
+
+        Used for providers with enormous catalogs (e.g. OpenRouter, Hugging Face router)
+        where downloading the full JSON would be prohibitive.
+        """
+        url = f"{self.base_url}/models"
+        try:
+            async with _http_client.stream(
+                "GET",
+                url,
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            ) as response:
+                if response.status_code != 200:
+                    response.raise_for_status()
+                async for _chunk in response.aiter_bytes(chunk_size = 2048):
+                    break
+        except httpx.HTTPError as exc:
+            logger.error(
+                "Lightweight /models check failed for %s: %s",
+                self.provider_type,
+                exc,
+            )
             raise
 
     async def close(self) -> None:

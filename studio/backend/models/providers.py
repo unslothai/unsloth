@@ -5,7 +5,7 @@
 Pydantic schemas for the external LLM providers API.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,10 @@ class ProviderRegistryEntry(BaseModel):
     )
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
+    )
+    model_list_mode: Literal["remote", "curated"] = Field(
+        "remote",
+        description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
     )
 
 
