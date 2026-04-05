@@ -109,7 +109,7 @@ class TestVisionCacheStoresFalse:
         assert is_vision_model("org/text-only") is False
         assert is_vision_model("org/text-only") is False
         mock_uncached.assert_called_once()
-        assert _vision_detection_cache["org/text-only"] is False
+        assert _vision_detection_cache[("org/text-only", None)] is False
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/Qwen3.5-2B") is True
 
         mock_subprocess.assert_called_once()
-        assert _vision_detection_cache["unsloth/Qwen3.5-2B"] is True
+        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +231,22 @@ class TestVisionCacheDirectPath:
 
 
 class TestVisionCacheTokenHandling:
-    """The cache is keyed on model_name only (same as _audio_detection_cache).
-    Different tokens for the same model should use the cached result."""
+    """The cache is keyed on (model_name, hf_token).
+    Different tokens for the same model should trigger separate detections
+    to handle gated models correctly."""
 
     @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
-    def test_same_model_different_tokens_uses_cache(self, mock_uncached):
-        """Second call with a different token should still hit cache."""
+    def test_different_tokens_trigger_new_detection(self, mock_uncached):
+        """Calls with different tokens should trigger separate detections to
+        handle gated models correctly (e.g. unauthenticated probe → False,
+        then authenticated call should re-check)."""
         assert is_vision_model("gated/model", hf_token = "token-a") is True
         assert is_vision_model("gated/model", hf_token = "token-b") is True
-        mock_uncached.assert_called_once_with("gated/model", "token-a")
+        assert mock_uncached.call_count == 2
+
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
+    def test_same_token_uses_cache(self, mock_uncached):
+        """Repeated calls with identical model + token should hit cache."""
+        assert is_vision_model("gated/model", hf_token = "token-a") is True
+        assert is_vision_model("gated/model", hf_token = "token-a") is True
+        mock_uncached.assert_called_once()

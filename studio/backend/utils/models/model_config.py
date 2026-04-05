@@ -610,8 +610,9 @@ def _is_vision_model_subprocess(
         return False
 
 
-# Cache vision detection results per session to avoid repeated subprocess spawns
-_vision_detection_cache: Dict[str, bool] = {}
+# Cache vision detection results per session to avoid repeated subprocess spawns.
+# Keyed by (model_name, hf_token) to handle gated models correctly.
+_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
 
 
 def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -623,18 +624,19 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     runs in a subprocess with .venv_t5/ activated — same pattern as the
     training and inference workers.
 
-    Results are cached per model_name for the lifetime of the process to avoid
-    repeated subprocess spawns and HuggingFace API calls.
+    Results are cached per (model_name, hf_token) for the lifetime of the
+    process to avoid repeated subprocess spawns and HuggingFace API calls.
 
     Args:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
     """
-    if model_name in _vision_detection_cache:
-        return _vision_detection_cache[model_name]
+    cache_key = (model_name, hf_token)
+    if cache_key in _vision_detection_cache:
+        return _vision_detection_cache[cache_key]
 
     result = _is_vision_model_uncached(model_name, hf_token)
-    _vision_detection_cache[model_name] = result
+    _vision_detection_cache[cache_key] = result
     return result
 
 
