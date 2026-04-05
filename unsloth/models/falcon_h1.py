@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import attnres_init_forward_state, attnres_transform_attention_output
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
@@ -423,6 +424,8 @@ def FalconH1DecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
+    attnres_state = kwargs.get("attnres_state", None)
+    attnres_layer_idx = kwargs.get("attnres_layer_idx", None)
     if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(
@@ -441,6 +444,15 @@ def FalconH1DecoderLayer_fast_forward(
             **kwargs,
         )
         attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
+        attention_hidden_states = attnres_transform_attention_output(
+            attention_hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
+        )
 
         mamba_hidden_states = self.mamba(
             hidden_states = hidden_states,
@@ -486,6 +498,15 @@ def FalconH1DecoderLayer_fast_forward(
             **kwargs,
         )
         attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
+        attention_hidden_states = attnres_transform_attention_output(
+            attention_hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
+        )
 
         hidden_states = mamba_hidden_states + attention_hidden_states
 
@@ -560,6 +581,15 @@ def _FalconH1_fast_forward_inference(
         else:
             attention_mask = None
 
+        attnres_state = attnres_init_forward_state(
+            self,
+            hidden_states = X,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            use_cache = True,
+        )
+
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
@@ -583,6 +613,14 @@ def _FalconH1_fast_forward_inference(
             )
             attention_hidden_states = (
                 attention_hidden_states * decoder_layer.attn_out_multiplier
+            )
+            attention_hidden_states = attnres_transform_attention_output(
+                attention_hidden_states,
+                attnres_state = attnres_state,
+                attnres_layer_idx = idx,
+                residual = residual,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
             )
             mamba_hidden_states = decoder_layer.mamba(
                 hidden_states = X,
