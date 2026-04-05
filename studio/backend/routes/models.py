@@ -152,10 +152,9 @@ def _scan_models_dir(
     # should list files individually, and a config.json alone (no weights)
     # does not make a model directory.
     try:
-        _has_config = (
-            (models_dir / "config.json").exists()
-            or (models_dir / "adapter_config.json").exists()
-        )
+        _has_config = (models_dir / "config.json").exists() or (
+            models_dir / "adapter_config.json"
+        ).exists()
         _has_weights = (
             any(models_dir.glob("*.gguf"))
             or any(models_dir.glob("*.safetensors"))
@@ -281,7 +280,9 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     # it is not an LM Studio publisher structure -- _scan_models_dir
     # already handles it.
     try:
-        if (lm_dir / "config.json").exists() or (lm_dir / "adapter_config.json").exists():
+        if (lm_dir / "config.json").exists() or (
+            lm_dir / "adapter_config.json"
+        ).exists():
             return []
     except OSError:
         pass
