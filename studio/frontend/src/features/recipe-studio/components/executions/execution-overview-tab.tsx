@@ -116,10 +116,12 @@ export function ExecutionOverviewTab({
                 />
               </div>
               <div className="space-y-1.5 text-xs">
-                <p className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">LLM columns</span>
-                  <span className="font-semibold">{formatMetricValue(llmColumnCount)}</span>
-                </p>
+                {llmColumnCount > 0 && (
+                  <p className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">LLM columns</span>
+                    <span className="font-semibold">{formatMetricValue(llmColumnCount)}</span>
+                  </p>
+                )}
                 <p className="flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">Null rate</span>
                   <span className="font-semibold">{nullRate?.toFixed(1) ?? "--"}%</span>
@@ -164,40 +166,42 @@ export function ExecutionOverviewTab({
               </div>
             </div>
           </div>
-          <div className="rounded-xl border border-border/60 bg-card/55 p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs text-muted-foreground">Model usage</p>
-              <HugeiconsIcon icon={Flag02Icon} className="size-4 text-muted-foreground" />
-            </div>
-            {modelUsageRows.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No model usage yet.</p>
-            ) : (
-              <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Model</TableHead>
-                      <TableHead className="text-right">Input</TableHead>
-                      <TableHead className="text-right">Output</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {modelUsageRows.map((usage) => (
-                      <TableRow key={usage.model}>
-                        <TableCell className="max-w-[320px] truncate">{usage.model}</TableCell>
-                        <TableCell className="text-right">
-                          {formatMetricValue(usage.input)}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {formatMetricValue(usage.output)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+          {(llmColumnCount > 0 || modelUsageRows.length > 0) && (
+            <div className="rounded-xl border border-border/60 bg-card/55 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">Model usage</p>
+                <HugeiconsIcon icon={Flag02Icon} className="size-4 text-muted-foreground" />
               </div>
-            )}
-          </div>
+              {modelUsageRows.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No model usage yet.</p>
+              ) : (
+                <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Model</TableHead>
+                        <TableHead className="text-right">Input</TableHead>
+                        <TableHead className="text-right">Output</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {modelUsageRows.map((usage) => (
+                        <TableRow key={usage.model}>
+                          <TableCell className="max-w-[320px] truncate">{usage.model}</TableCell>
+                          <TableCell className="text-right">
+                            {formatMetricValue(usage.input)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {formatMetricValue(usage.output)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
       <div className="overflow-hidden rounded-xl corner-squircle border">

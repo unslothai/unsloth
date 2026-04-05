@@ -11,6 +11,8 @@ from utils.paths import (
     normalize_path,
     is_local_path,
     is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
     outputs_root,
     exports_root,
     resolve_output_dir,
@@ -156,6 +158,38 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-3n-E4B.yaml": [
         "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
         "google/gemma-3n-E4B",
+    ],
+    "unsloth_gemma-4-31B-it.yaml": [
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ],
+    "unsloth_gemma-4-26B-A4B-it.yaml": [
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ],
+    "unsloth_gemma-4-E2B-it.yaml": [
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ],
+    "unsloth_gemma-4-E4B-it.yaml": [
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ],
+    "unsloth_gemma-4-31B.yaml": [
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ],
+    "unsloth_gemma-4-26B-A4B.yaml": [
+        "unsloth/gemma-4-26B-A4B",
+        "google/gemma-4-26B-A4B",
+    ],
+    "unsloth_gemma-4-E2B.yaml": [
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ],
+    "unsloth_gemma-4-E4B.yaml": [
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
     ],
     "unsloth_gpt-oss-20b.yaml": [
         "openai/gpt-oss-20b",
@@ -711,12 +745,8 @@ def _detect_audio_from_tokenizer(
 
     # 1) Check local HF cache first (works for gated/offline models)
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        cache_dir = Path(HF_HUB_CACHE)
-        repo_dir_name = f"models--{model_name.replace('/', '--')}"
-        repo_dir = cache_dir / repo_dir_name
-        if repo_dir.exists():
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is not None and repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
@@ -1627,11 +1657,18 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
 
-        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
-        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        # Preserve requested casing, but if a case-variant already exists in local HF cache,
+        # reuse that exact repo_id spelling to avoid one-time re-downloads after #2592.
         if not is_local:
-            identifier = identifier.lower()
-            path = path.lower()
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved_identifier,
+                    identifier,
+                )
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
@@ -1851,6 +1888,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        if not is_local:
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # --- Logic for Base Model and Vision Detection ---
         base_model = None

@@ -114,6 +114,17 @@ FORCE_FLOAT32 = [
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
+
+
+def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
+    """Remove Unsloth 4bit suffixes without lowercasing (HF cache dirs are case-sensitive)."""
+    s = model_name
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(s) >= len(suffix) and s.lower().endswith(suffix.lower()):
+            s = s[: -len(suffix)]
+    return s
+
+
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
@@ -404,8 +415,7 @@ class FastLanguageModel(FastLlamaModel):
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
-            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.lower().removesuffix("-bnb-4bit")
+            model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # Change -BF16 to all False for 4bit, 8bit etc
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
@@ -551,8 +561,7 @@ class FastLanguageModel(FastLlamaModel):
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
-                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.lower().removesuffix("-bnb-4bit")
+                model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # Change -BF16 to all False for 4bit, 8bit etc
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
@@ -1019,8 +1028,7 @@ class FastModel(FastBaseModel):
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
-            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.lower().removesuffix("-bnb-4bit")
+            model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # Change -BF16 to all False for 4bit, 8bit etc
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
@@ -1320,8 +1328,7 @@ class FastModel(FastBaseModel):
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
-                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.lower().removesuffix("-bnb-4bit")
+                model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # Change -BF16 to all False for 4bit, 8bit etc
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False

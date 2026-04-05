@@ -49,8 +49,10 @@ try:
     )
     from core.inference import get_inference_backend
     from utils.paths import (
+        is_local_path,
         outputs_root,
         exports_root,
+        resolve_cached_repo_id_case,
         resolve_output_dir,
         resolve_export_dir,
     )
@@ -77,8 +79,10 @@ except ImportError:
     )
     from core.inference import get_inference_backend
     from utils.paths import (
+        is_local_path,
         outputs_root,
         exports_root,
+        resolve_cached_repo_id_case,
         resolve_output_dir,
         resolve_export_dir,
     )
@@ -597,10 +601,15 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
-        from utils.models.model_config import is_local_path
-
         if not is_local_path(model_name):
-            model_name = model_name.lower()
+            resolved = resolve_cached_repo_id_case(model_name)
+            if resolved != model_name:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved,
+                    model_name,
+                )
+            model_name = resolved
 
         logger.info(f"Getting model config for: {model_name}")
         from utils.models.model_config import detect_audio_type

@@ -59,7 +59,7 @@ export function ExecutionsView({
     typeof value === "number" && Number.isFinite(value)
       ? `${value.toLocaleString()} s`
       : "--";
-  const [detailTab, setDetailTab] = useState("overview");
+  const [detailTab, setDetailTab] = useState("data");
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
   >({});
@@ -341,12 +341,16 @@ export function ExecutionsView({
   }, [selectedExecution]);
 
   useEffect(() => {
-    if (!terminalRef.current) {
+    setDetailTab("data");
+  }, [selectedExecution?.id]);
+
+  useEffect(() => {
+    if (detailTab !== "overview" || !terminalRef.current) {
       return;
     }
     shouldStickTerminalToBottomRef.current = true;
     terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-  }, [selectedExecution?.id]);
+  }, [detailTab, selectedExecution?.id]);
 
   useEffect(() => {
     if (!terminalRef.current) {
@@ -440,9 +444,9 @@ export function ExecutionsView({
             <Tabs value={detailTab} onValueChange={setDetailTab}>
               <div className="flex items-center justify-between gap-2">
                 <TabsList className="border border-border/60 bg-card/40">
+                  <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="overview">Overview</TabsTrigger>
                   <TabsTrigger value="columns">Columns</TabsTrigger>
-                  <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="raw">Raw</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2">
