@@ -152,10 +152,9 @@ def _scan_models_dir(
     # should list files individually, and a config.json alone (no weights)
     # does not make a model directory.
     try:
-        _has_config = (
-            (models_dir / "config.json").exists()
-            or (models_dir / "adapter_config.json").exists()
-        )
+        _has_config = (models_dir / "config.json").exists() or (
+            models_dir / "adapter_config.json"
+        ).exists()
         _has_weights = any(
             f.suffix.lower() in (".gguf", ".safetensors", ".bin")
             for f in models_dir.iterdir()
