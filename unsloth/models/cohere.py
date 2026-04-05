@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import attnres_init_forward_state, attnres_transform_attention_output
 from ._utils import __version__
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype, Version
@@ -184,6 +185,8 @@ def CohereDecoderLayer_fast_forward(
     *args,
     **kwargs,
 ):
+    attnres_state = kwargs.get("attnres_state", None)
+    attnres_layer_idx = kwargs.get("attnres_layer_idx", None)
     if use_cache and hasattr(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
@@ -209,6 +212,15 @@ def CohereDecoderLayer_fast_forward(
             padding_mask = padding_mask,
             **kwargs,
         )
+        hidden_states_attention = attnres_transform_attention_output(
+            hidden_states_attention,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
+        )
 
         # Fully Connected
         hidden_states_mlp = fast_swiglu_inference(self.mlp, hidden_states)
@@ -228,6 +240,15 @@ def CohereDecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             **kwargs,
+        )
+        hidden_states_attention = attnres_transform_attention_output(
+            hidden_states_attention,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
 
         # Fully Connected
@@ -468,6 +489,15 @@ def CohereModel_fast_forward_inference(
     else:
         attention_mask = None
 
+    attnres_state = attnres_init_forward_state(
+        self,
+        hidden_states = hidden_states,
+        attention_mask = attention_mask,
+        position_ids = position_ids,
+        past_key_values = past_key_values,
+        use_cache = True,
+    )
+
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
@@ -487,6 +517,14 @@ def CohereModel_fast_forward_inference(
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             )
+        )
+        hidden_states_attention = attnres_transform_attention_output(
+            hidden_states_attention,
+            attnres_state = attnres_state,
+            attnres_layer_idx = idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
         )
 
         hidden_states_mlp = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
