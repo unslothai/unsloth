@@ -555,9 +555,10 @@ def _is_vision_model_subprocess(
     with .venv_t5/ prepended to sys.path so AutoConfig recognizes newer
     architectures (glm4_moe_lite, etc.).
 
-    Returns True/False for definitive results, or None when the subprocess
-    failed (timeout, non-zero exit, error in output) so callers can decide
-    whether to cache the result.
+    Returns True/False for definitive results, or None for transient failures
+    (timeouts) so callers can decide whether to cache the result.
+    Deterministic failures (non-zero exit, error in output) return False
+    so they are cached and not retried on every call.
     """
     token_arg = hf_token or ""
 
@@ -584,7 +585,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 stderr or result.stdout.strip(),
             )
-            return None
+            return False
 
         data = json.loads(result.stdout.strip())
         if "error" in data:
@@ -593,7 +594,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 data["error"],
             )
-            return None
+            return False
 
         is_vlm = data["is_vision"]
         logger.info(
@@ -611,7 +612,7 @@ def _is_vision_model_subprocess(
         return None
     except Exception as exc:
         logger.warning("Vision check subprocess failed for '%s': %s", model_name, exc)
-        return None
+        return False
 
 
 # Cache vision detection results per session to avoid repeated subprocess spawns.
@@ -640,10 +641,13 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """
     # Normalize model name for cache key to avoid duplicate entries for
     # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
-    if is_local_path(model_name):
-        normalized = normalize_path(model_name)
-    else:
-        normalized = resolve_cached_repo_id_case(model_name)
+    try:
+        if is_local_path(model_name):
+            normalized = normalize_path(model_name)
+        else:
+            normalized = resolve_cached_repo_id_case(model_name)
+    except Exception:
+        normalized = model_name
     cache_key = (normalized, hf_token)
 
     if cache_key in _vision_detection_cache:
