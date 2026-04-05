@@ -508,7 +508,7 @@ class FastLanguageModel(FastLlamaModel):
             model_type = model_types
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
@@ -1282,7 +1282,7 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
 
         # New transformers need to check manually.
-        if SUPPORTS_LLAMA32:
+        if SUPPORTS_LLAMA32 and is_model and is_peft:
             # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
