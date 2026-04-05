@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import attnres_init_forward_state, attnres_transform_attention_output
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
@@ -218,6 +219,8 @@ def Gemma2DecoderLayer_fast_forward(
     *args,
     **kwargs,
 ):
+    attnres_state = kwargs.get("attnres_state", None)
+    attnres_layer_idx = kwargs.get("attnres_layer_idx", None)
     if use_cache and hasattr(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
@@ -243,6 +246,15 @@ def Gemma2DecoderLayer_fast_forward(
             padding_mask = padding_mask,
             _flag_for_generation = self._flag_for_generation,
             **kwargs,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
@@ -274,6 +286,15 @@ def Gemma2DecoderLayer_fast_forward(
             use_cache = use_cache,
             padding_mask = padding_mask,
             **kwargs,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, gemma = True
@@ -527,6 +548,16 @@ def Gemma2Model_fast_forward_inference(
     else:
         SWA = attention_mask
         GA = attention_mask
+
+    attnres_state = attnres_init_forward_state(
+        self,
+        hidden_states = hidden_states,
+        attention_mask = attention_mask,
+        position_ids = position_ids,
+        past_key_values = past_key_values,
+        use_cache = True,
+    )
+
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism, we need to move all tensors to the same device
@@ -550,6 +581,14 @@ def Gemma2Model_fast_forward_inference(
             attention_mask = SWA if use_sliding_window else GA,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             use_sliding_window = use_sliding_window,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = idx,
+            residual = residual,
+            attention_mask = SWA if use_sliding_window else GA,
+            position_ids = position_ids,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             decoder_layer.post_attention_layernorm,
