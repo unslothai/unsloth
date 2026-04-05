@@ -11,6 +11,7 @@ import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-s
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingConfigState } from "../types/config";
+import type { CheckFormatResponse } from "../types/datasets";
 import { toast } from "sonner";
 
 /** Chatml → format-specific role remap (only for formats that differ from chatml). */
@@ -78,27 +79,39 @@ export function useTrainingActions() {
           });
         }
 
-        const selectedPreferenceNeedsReview =
-          config.datasetFormat === "preference" && check.detected_format !== "preference";
+        const preferenceMismatchNeedsReview =
+          (config.datasetFormat === "preference" && check.detected_format !== "preference") ||
+          (check.detected_format === "preference"
+            && config.datasetFormat !== "auto"
+            && config.datasetFormat !== "preference");
         const needsReview =
           check.requires_manual_mapping ||
           check.detected_format === "custom_heuristic" ||
-          selectedPreferenceNeedsReview;
+          preferenceMismatchNeedsReview;
+        const mappingCheck: CheckFormatResponse = preferenceMismatchNeedsReview
+          ? {
+              ...check,
+              requires_manual_mapping: true,
+              warning:
+                check.warning
+                ?? "Selected dataset format does not match the detected preference schema. Please map columns manually before training.",
+            }
+          : check;
         if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};
-          if (check.suggested_mapping) {
+          if (mappingCheck.suggested_mapping) {
             const table = ROLE_REMAP[config.datasetFormat];
-            for (const [col, role] of Object.entries(check.suggested_mapping)) {
+            for (const [col, role] of Object.entries(mappingCheck.suggested_mapping)) {
               hint[col] = table ? (table[role] ?? role) : role;
             }
           } else if (isAudio) {
-            if (check.detected_audio_column) hint[check.detected_audio_column] = "audio";
-            if (check.detected_text_column) hint[check.detected_text_column] = "text";
-            if (check.detected_speaker_column) hint[check.detected_speaker_column] = "speaker_id";
+            if (mappingCheck.detected_audio_column) hint[mappingCheck.detected_audio_column] = "audio";
+            if (mappingCheck.detected_text_column) hint[mappingCheck.detected_text_column] = "text";
+            if (mappingCheck.detected_speaker_column) hint[mappingCheck.detected_speaker_column] = "speaker_id";
           } else if (isVlm) {
-            if (check.detected_image_column) hint[check.detected_image_column] = "image";
-            if (check.detected_text_column) hint[check.detected_text_column] = "text";
+            if (mappingCheck.detected_image_column) hint[mappingCheck.detected_image_column] = "image";
+            if (mappingCheck.detected_text_column) hint[mappingCheck.detected_text_column] = "text";
           }
 
           if (Object.keys(hint).length > 0) {
@@ -106,7 +119,7 @@ export function useTrainingActions() {
           }
 
           runtimeStore.setStarting(false);
-          dialogStore.openMapping(check);
+          dialogStore.openMapping(mappingCheck);
           return false;
         }
       }

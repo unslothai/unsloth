@@ -3116,6 +3116,10 @@ class UnslothTrainer:
                 isinstance(dataset, dict)
                 and dataset.get("final_format") == "preference"
             )
+            if is_preference_dataset and (self.is_vlm or self.is_audio_vlm):
+                raise ValueError(
+                    "Preference training is not supported for vision/audio VLM models yet."
+                )
 
             # Add model-specific parameters
             # Use optim and lr_scheduler_type from training_args if provided, otherwise use defaults

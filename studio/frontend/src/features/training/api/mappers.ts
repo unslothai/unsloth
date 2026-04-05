@@ -75,6 +75,7 @@ export function buildTrainingStartPayload(
     gradient_accumulation_steps: config.gradientAccumulation,
     warmup_steps: isEmbedding ? null : config.warmupSteps,
     warmup_ratio: isEmbedding ? 0.03 : null,
+    max_prompt_length: config.maxPromptLength,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,

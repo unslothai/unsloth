@@ -177,6 +177,7 @@ async def start_training(
             "gradient_accumulation_steps": request.gradient_accumulation_steps,
             "warmup_steps": request.warmup_steps,
             "warmup_ratio": request.warmup_ratio,
+            "max_prompt_length": request.max_prompt_length,
             "max_steps": request.max_steps,
             "save_steps": request.save_steps,
             "weight_decay": request.weight_decay,

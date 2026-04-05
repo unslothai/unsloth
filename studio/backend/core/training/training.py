@@ -158,6 +158,7 @@ class TrainingBackend:
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
             "warmup_ratio": kwargs.get("warmup_ratio"),
+            "max_prompt_length": kwargs.get("max_prompt_length"),
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),

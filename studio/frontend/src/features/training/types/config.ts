@@ -51,6 +51,7 @@ export interface TrainingConfigState {
   gradientAccumulation: number;
   weightDecay: number;
   warmupSteps: number;
+  maxPromptLength: number | null;
   maxSteps: number;
   saveSteps: number;
   evalSteps: number;

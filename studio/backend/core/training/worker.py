@@ -793,6 +793,7 @@ def run_training_process(
             gradient_accumulation_steps = config.get("gradient_accumulation_steps", 4),
             warmup_steps = config.get("warmup_steps"),
             warmup_ratio = config.get("warmup_ratio"),
+            max_prompt_length = config.get("max_prompt_length"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
             weight_decay = config.get("weight_decay", 0.001),
