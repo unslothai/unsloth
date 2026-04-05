@@ -644,13 +644,10 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-# Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
-# default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-    UNSLOTH_HOME="$STUDIO_HOME"
-else
-    UNSLOTH_HOME="$HOME/.unsloth"
-fi
+if [ "$_DOCKER_NO_VENV" = true ]; then
+    step "llama.cpp" "skipped (Docker)"
+else  # begin non-Docker llama.cpp block
+UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
@@ -1163,6 +1160,7 @@ else
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
+fi  # end non-Docker llama.cpp block
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
