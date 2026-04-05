@@ -548,12 +548,16 @@ except Exception as exc:
 
 def _is_vision_model_subprocess(
     model_name: str, hf_token: Optional[str] = None
-) -> bool:
+) -> Optional[bool]:
     """Run is_vision_model check in a subprocess with transformers 5.x.
 
     Same pattern as training/inference workers: spawn a clean subprocess
     with .venv_t5/ prepended to sys.path so AutoConfig recognizes newer
     architectures (glm4_moe_lite, etc.).
+
+    Returns True/False for definitive results, or None when the subprocess
+    failed (timeout, non-zero exit, error in output) so callers can decide
+    whether to cache the result.
     """
     token_arg = hf_token or ""
 
@@ -580,7 +584,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 stderr or result.stdout.strip(),
             )
-            return False
+            return None
 
         data = json.loads(result.stdout.strip())
         if "error" in data:
@@ -589,7 +593,7 @@ def _is_vision_model_subprocess(
                 model_name,
                 data["error"],
             )
-            return False
+            return None
 
         is_vlm = data["is_vision"]
         logger.info(
@@ -604,14 +608,16 @@ def _is_vision_model_subprocess(
 
     except subprocess.TimeoutExpired:
         logger.warning("Vision check subprocess timed out for '%s'", model_name)
-        return False
+        return None
     except Exception as exc:
         logger.warning("Vision check subprocess failed for '%s': %s", model_name, exc)
-        return False
+        return None
 
 
 # Cache vision detection results per session to avoid repeated subprocess spawns.
-# Keyed by (model_name, hf_token) to handle gated models correctly.
+# Keyed by (normalized_model_name, hf_token) to handle gated models correctly.
+# Only definitive results (True/False from successful detection) are cached;
+# transient failures (network errors, timeouts) are NOT cached so they can be retried.
 _vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
 
 
@@ -621,27 +627,45 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Works for fine-tuned models since they inherit the base architecture.
 
     For models that require transformers 5.x (e.g. GLM-4.7-Flash), the check
-    runs in a subprocess with .venv_t5/ activated — same pattern as the
+    runs in a subprocess with .venv_t5/ activated -- same pattern as the
     training and inference workers.
 
     Results are cached per (model_name, hf_token) for the lifetime of the
     process to avoid repeated subprocess spawns and HuggingFace API calls.
+    Transient failures are not cached so they can be retried on the next call.
 
     Args:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
     """
-    cache_key = (model_name, hf_token)
+    # Normalize model name for cache key to avoid duplicate entries for
+    # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
+    if is_local_path(model_name):
+        normalized = normalize_path(model_name)
+    else:
+        normalized = resolve_cached_repo_id_case(model_name)
+    cache_key = (normalized, hf_token)
+
     if cache_key in _vision_detection_cache:
         return _vision_detection_cache[cache_key]
 
     result = _is_vision_model_uncached(model_name, hf_token)
-    _vision_detection_cache[cache_key] = result
-    return result
+    # Only cache definitive results; None means a transient failure occurred
+    # and we should retry on the next call instead of locking in a wrong answer.
+    if result is not None:
+        _vision_detection_cache[cache_key] = result
+        return result
+    return False
 
 
-def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -> bool:
-    """Uncached vision model detection — called by is_vision_model().
+def _is_vision_model_uncached(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[bool]:
+    """Uncached vision model detection -- called by is_vision_model().
+
+    Returns True/False for definitive results, or None when detection failed
+    due to a transient error (network, timeout, subprocess failure) so the
+    caller knows not to cache the result.
 
     Do not call directly; use is_vision_model() instead.
     """
@@ -652,7 +676,7 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
     if needs_transformers_5(model_name):
         logger.info(
-            "Model '%s' needs transformers 5.x — checking vision via subprocess",
+            "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
         return _is_vision_model_subprocess(model_name, hf_token = hf_token)
@@ -703,7 +727,7 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
     except Exception as e:
         logger.warning(f"Could not determine if {model_name} is vision model: {e}")
-        return False
+        return None
 
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
