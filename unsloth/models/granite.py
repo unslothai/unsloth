@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import attnres_init_forward_state, attnres_transform_attention_output
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
@@ -204,6 +205,8 @@ def GraniteDecoderLayer_fast_forward(
         if hasattr(self, "residual_multiplier")
         else self.config.residual_multiplier
     )
+    attnres_state = kwargs.get("attnres_state", None)
+    attnres_layer_idx = kwargs.get("attnres_layer_idx", None)
 
     if use_cache and hasattr(
         self, "_flag_for_generation"
@@ -224,6 +227,15 @@ def GraniteDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation = self._flag_for_generation,
             **kwargs,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
@@ -248,6 +260,15 @@ def GraniteDecoderLayer_fast_forward(
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
             **kwargs,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
@@ -473,6 +494,15 @@ def GraniteModel_fast_forward_inference(
         self.max_seq_length, hidden_states.device.index
     )
 
+    attnres_state = attnres_init_forward_state(
+        self,
+        hidden_states = hidden_states,
+        attention_mask = attention_mask,
+        position_ids = position_ids,
+        past_key_values = past_key_values,
+        use_cache = True,
+    )
+
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
@@ -492,6 +522,14 @@ def GraniteModel_fast_forward_inference(
             attention_mask = attention_mask,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             position_embeddings = position_embeddings,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
         )
 
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
