@@ -270,8 +270,11 @@ def _install_package_wheel_first(
             sys.executable,
             "--no-build-isolation",
             "--no-deps",
-            f"{pypi_name}=={pypi_version}",
         ]
+        # Avoid stale cache artifacts from partial HIP source builds
+        if is_hip:
+            pypi_cmd.append("--no-cache")
+        pypi_cmd.append(f"{pypi_name}=={pypi_version}")
     else:
         pypi_cmd = [
             sys.executable,
