@@ -1093,8 +1093,13 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     Returns the resolved absolute path, or ``None`` if no match.
     """
     p = Path(directory)
+    # If a file path was passed (e.g. a standalone .gguf entry), use its
+    # parent directory so variant lookup still works.
     if not p.is_dir():
-        return None
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            p = p.parent
+        else:
+            return None
 
     matches = sorted(
         f
