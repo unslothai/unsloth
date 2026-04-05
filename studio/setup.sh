@@ -610,6 +610,9 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
+if [ "$_DOCKER_NO_VENV" = true ]; then
+    step "llama.cpp" "skipped (Docker)"
+else  # begin non-Docker llama.cpp block
 UNSLOTH_HOME="$HOME/.unsloth"
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
@@ -1093,6 +1096,7 @@ else
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
+fi  # end non-Docker llama.cpp block
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
