@@ -1159,9 +1159,9 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
 # (gfx in rocminfo or amd-smi list). Then require rocminfo "Marketing Name:.*Radeon".
+_amd_gpu_radeon=false
 case "$TORCH_INDEX_URL" in
     */rocm*)
-        _amd_gpu_radeon=false
         if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
            rocminfo 2>/dev/null | grep -q 'Marketing Name:.*Radeon'; then
             _amd_gpu_radeon=true
