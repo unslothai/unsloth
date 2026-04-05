@@ -128,7 +128,10 @@ class TestVisionCacheOnException:
     it and returns False.  That False must be cached so subsequent calls don't
     retry and fail again."""
 
-    @patch("utils.models.model_config.load_model_config", side_effect = OSError("network down"))
+    @patch(
+        "utils.models.model_config.load_model_config",
+        side_effect = OSError("network down"),
+    )
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     def test_exception_result_cached(self, mock_needs_t5, mock_load_config):
         """A real exception inside _is_vision_model_uncached should be caught,
