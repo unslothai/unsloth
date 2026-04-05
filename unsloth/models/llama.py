@@ -78,6 +78,11 @@ from ..kernels import *
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
 
+from .attnres import (
+    attnres_init_forward_state,
+    attnres_transform_attention_output,
+)
+
 # Final patching code
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
@@ -824,6 +829,8 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
+    attnres_state = kwargs.get("attnres_state", None)
+    attnres_layer_idx = kwargs.get("attnres_layer_idx", None)
     if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(
@@ -840,6 +847,15 @@ def LlamaDecoderLayer_fast_forward(
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
             **kwargs,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
         hidden_states += residual
 
@@ -864,6 +880,15 @@ def LlamaDecoderLayer_fast_forward(
             padding_mask = padding_mask,
             position_embeddings = position_embeddings,
             **kwargs,
+        )
+        hidden_states = attnres_transform_attention_output(
+            hidden_states,
+            attnres_state = attnres_state,
+            attnres_layer_idx = attnres_layer_idx,
+            residual = residual,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            position_ids = position_ids,
         )
         hidden_states = residual + hidden_states
 
@@ -1198,6 +1223,17 @@ def LlamaModel_fast_forward(
     else:
         position_embeddings = None
 
+    attnres_state = attnres_init_forward_state(
+        self,
+        hidden_states = hidden_states,
+        attention_mask = attention_mask,
+        position_ids = position_ids,
+        past_key_values = past_key_values,
+        use_cache = use_cache,
+        output_attentions = output_attentions,
+        output_hidden_states = output_hidden_states,
+    )
+
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
@@ -1205,19 +1241,22 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         mask = causal_mask
+        layer_kwargs = dict(kwargs)
         if IS_GEMMA2:
             use_sliding_window = idx % 2 == 0
             if use_sliding_window:
                 mask = self.SWA_mask if use_static_mask else dynamic_SWA_mask
             else:
                 mask = self.GA_mask if use_static_mask else dynamic_GA_mask
-            kwargs["use_sliding_window"] = use_sliding_window
+            layer_kwargs["use_sliding_window"] = use_sliding_window
+        layer_kwargs["attnres_state"] = attnres_state
+        layer_kwargs["attnres_layer_idx"] = idx
 
         if gradient_checkpointing and not isinstance(
             decoder_layer, GradientCheckpointingLayer
         ):
 
-            def create_custom_forward(module):
+            def create_custom_forward(module, layer_kwargs = layer_kwargs):
                 def custom_forward(*inputs):
                     return module(
                         *inputs,
@@ -1225,7 +1264,7 @@ def LlamaModel_fast_forward(
                         output_attentions,
                         padding_mask = padding_mask,
                         position_embeddings = position_embeddings,
-                        **kwargs,
+                        **layer_kwargs,
                     )
 
                 return custom_forward
@@ -1252,7 +1291,7 @@ def LlamaModel_fast_forward(
                 use_cache = use_cache,
                 padding_mask = padding_mask,
                 position_embeddings = position_embeddings,
-                **kwargs,
+                **layer_kwargs,
             )
             hidden_states = layer_outputs[0]
 
@@ -1362,6 +1401,15 @@ def _LlamaModel_fast_forward_inference(
         # Compute rotary_seq_len once to avoid per-layer GPU-CPU sync from .item()
         rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
+        attnres_state = attnres_init_forward_state(
+            self,
+            hidden_states = X,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            use_cache = True,
+        )
+
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
@@ -1385,6 +1433,14 @@ def _LlamaModel_fast_forward_inference(
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
                 rotary_seq_len = rotary_seq_len,
+            )
+            X = attnres_transform_attention_output(
+                X,
+                attnres_state = attnres_state,
+                attnres_layer_idx = idx,
+                residual = residual,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
             )
             X += residual
 
