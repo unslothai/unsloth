@@ -30,6 +30,13 @@ from .attention_dispatch import (
     run_attention,
     select_attention_backend,
 )
+from .attnres import (
+    AttnResConfig,
+    AttnResState,
+    apply_attnres,
+    begin_attnres,
+    end_attnres,
+)
 
 __all__ = [
     "configure_sample_packing",
@@ -39,6 +46,11 @@ __all__ = [
     "mark_allow_overlength",
     "AttentionConfig",
     "AttentionContext",
+    "AttnResConfig",
+    "AttnResState",
+    "apply_attnres",
+    "begin_attnres",
+    "end_attnres",
     "FLASH_VARLEN",
     "FLASH_DENSE",
     "XFORMERS",
