@@ -5,13 +5,14 @@
 Model and LoRA configuration handling
 """
 
-from transformers import AutoConfig
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import (
     normalize_path,
     is_local_path,
     is_model_cached,
+    get_cache_path,
+    resolve_cached_repo_id_case,
     outputs_root,
     exports_root,
     resolve_output_dir,
@@ -30,6 +31,37 @@ import yaml
 
 
 logger = get_logger(__name__)
+
+# ── Model size extraction ────────────────────────────────────
+import re as _re
+
+_MODEL_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+# MoE active-parameter pattern: matches "A3B", "A3.5B", etc.
+_ACTIVE_SIZE_RE = _re.compile(
+    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
+)
+
+
+def extract_model_size_b(model_id: str) -> float | None:
+    """Extract model size in billions from a model identifier.
+
+    Prefers MoE active-parameter notation (e.g. ``A3B`` in
+    ``Qwen3.5-35B-A3B``) over the total parameter count.
+    Handles both ``B`` (billions) and ``M`` (millions) suffixes.
+    """
+    mid = (model_id or "").lower()
+    active = _ACTIVE_SIZE_RE.search(mid)
+    if active:
+        val = float(active.group(1))
+        return val / 1000.0 if active.group(2).lower() == "m" else val
+    size = _MODEL_SIZE_RE.search(mid)
+    if not size:
+        return None
+    val = float(size.group(1))
+    return val / 1000.0 if size.group(2).lower() == "m" else val
+
 
 # Model name mapping: maps all equivalent model names to their canonical YAML config file
 # Format: "canonical_model_name.yaml": [list of all equivalent model names]
@@ -126,6 +158,38 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-3n-E4B.yaml": [
         "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
         "google/gemma-3n-E4B",
+    ],
+    "unsloth_gemma-4-31B-it.yaml": [
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ],
+    "unsloth_gemma-4-26B-A4B-it.yaml": [
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ],
+    "unsloth_gemma-4-E2B-it.yaml": [
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ],
+    "unsloth_gemma-4-E4B-it.yaml": [
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ],
+    "unsloth_gemma-4-31B.yaml": [
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ],
+    "unsloth_gemma-4-26B-A4B.yaml": [
+        "unsloth/gemma-4-26B-A4B",
+        "google/gemma-4-26B-A4B",
+    ],
+    "unsloth_gemma-4-E2B.yaml": [
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ],
+    "unsloth_gemma-4-E4B.yaml": [
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
     ],
     "unsloth_gpt-oss-20b.yaml": [
         "openai/gpt-oss-20b",
@@ -391,6 +455,7 @@ def load_model_config(
     """
     Load model config with optional authentication control.
     """
+    from transformers import AutoConfig
 
     if token:
         # Explicit token provided - use it
@@ -680,12 +745,8 @@ def _detect_audio_from_tokenizer(
 
     # 1) Check local HF cache first (works for gated/offline models)
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        cache_dir = Path(HF_HUB_CACHE)
-        repo_dir_name = f"models--{model_name.replace('/', '--')}"
-        repo_dir = cache_dir / repo_dir_name
-        if repo_dir.exists():
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is not None and repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
@@ -1420,17 +1481,20 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         return config
 
         # If model_name is a local path (e.g. /home/.../Spark-TTS-0.5B/LLM from
-        # adapter_config.json), try matching the last 1-2 path components against
-        # the registry (e.g. "Spark-TTS-0.5B/LLM").
-        if model_name not in _REVERSE_MODEL_MAPPING and (
-            model_name.startswith("/") or model_name.startswith(".")
-        ):
-            parts = Path(model_name).parts
+        # adapter_config.json, or C:\Users\...\model on Windows), try matching
+        # the last 1-2 path components against the registry
+        # (e.g. "Spark-TTS-0.5B/LLM").
+        _is_local_path = is_local_path(model_name)
+        # Normalize Windows backslash paths so Path().parts splits correctly
+        # on POSIX/WSL hosts (pathlib treats backslashes as literals on Linux).
+        _normalized = normalize_path(model_name) if _is_local_path else model_name
+        if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
+            parts = Path(_normalized).parts
             for depth in [2, 1]:
                 if len(parts) >= depth:
                     suffix = "/".join(parts[-depth:])
-                    if suffix in _REVERSE_MODEL_MAPPING:
-                        canonical_file = _REVERSE_MODEL_MAPPING[suffix]
+                    if suffix.lower() in _REVERSE_MODEL_MAPPING:
+                        canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
                         for config_path in defaults_dir.rglob(canonical_file):
                             if config_path.is_file():
                                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -1440,8 +1504,12 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                                     )
                                     return config
 
-        # Try exact model name match (for backward compatibility)
-        model_filename = model_name.replace("/", "_") + ".yaml"
+        # Try exact model name match (for backward compatibility).
+        # For local filesystem paths, use only the directory basename to
+        # avoid passing absolute paths (e.g. C:\...) into rglob which
+        # raises "Non-relative patterns are unsupported" on Windows.
+        _lookup_name = Path(_normalized).name if _is_local_path else model_name
+        model_filename = _lookup_name.replace("/", "_") + ".yaml"
         # Search in subfolders and root
         for config_path in defaults_dir.rglob(model_filename):
             if config_path.is_file():
@@ -1589,11 +1657,18 @@ class ModelConfig:
             identifier = f"unsloth/{identifier}"
             path = identifier
 
-        # Enforce lowercase for remote Hugging Face identifiers to prevent cache duplication
-        # Hugging Face Hub APIs are case-insensitive remotely, but case-sensitive locally (repo_folder_name).
+        # Preserve requested casing, but if a case-variant already exists in local HF cache,
+        # reuse that exact repo_id spelling to avoid one-time re-downloads after #2592.
         if not is_local:
-            identifier = identifier.lower()
-            path = path.lower()
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved_identifier,
+                    identifier,
+                )
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
@@ -1813,6 +1888,12 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        if not is_local:
+            resolved_identifier = resolve_cached_repo_id_case(identifier)
+            if resolved_identifier != identifier:
+                identifier = resolved_identifier
+                path = resolved_identifier
 
         # --- Logic for Base Model and Vision Detection ---
         base_model = None

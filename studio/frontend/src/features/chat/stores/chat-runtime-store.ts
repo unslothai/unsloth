@@ -151,6 +151,7 @@ type ChatRuntimeStore = {
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
+  ggufNativeContextLength: number | null;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
@@ -164,6 +165,8 @@ type ChatRuntimeStore = {
   toolCallTimeout: number;
   kvCacheDtype: string | null;
   loadedKvCacheDtype: string | null;
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
@@ -197,6 +200,7 @@ type ChatRuntimeStore = {
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
+  setSpeculativeType: (type: string | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -215,6 +219,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   activeGgufVariant: null,
   ggufContextLength: null,
   ggufMaxContextLength: null,
+  ggufNativeContextLength: null,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
   reasoningEnabled: true,
@@ -228,6 +233,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
+  speculativeType: "ngram-mod",
+  loadedSpeculativeType: null,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
@@ -290,6 +297,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       activeGgufVariant: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
+      ggufNativeContextLength: null,
       contextUsage: null,
       supportsReasoning: false,
       reasoningEnabled: true,
@@ -299,6 +307,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
+      speculativeType: "ngram-mod",
+      loadedSpeculativeType: null,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -324,6 +334,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
+  setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>

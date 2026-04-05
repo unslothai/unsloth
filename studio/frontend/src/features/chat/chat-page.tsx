@@ -162,10 +162,12 @@ const CompareContent = memo(function CompareContent({
   pairId,
   models,
   loraModels,
+  onFoldersChange,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  onFoldersChange?: () => void;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
@@ -176,6 +178,7 @@ const CompareContent = memo(function CompareContent({
       pairId={pairId}
       models={models}
       loraModels={loraModels}
+      onFoldersChange={onFoldersChange}
     />
   );
 });
@@ -259,10 +262,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
   models,
   loraModels,
+  onFoldersChange,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  onFoldersChange?: () => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -327,6 +332,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                     ggufVariant: meta.ggufVariant,
                   })
                 }
+                onFoldersChange={onFoldersChange}
                 variant="ghost"
                 size="sm"
                 className="max-w-[50%]"
@@ -359,6 +365,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                     ggufVariant: meta.ggufVariant,
                   })
                 }
+                onFoldersChange={onFoldersChange}
                 variant="ghost"
                 size="sm"
                 className="max-w-[50%]"
@@ -585,6 +592,9 @@ export function ChatPage(): ReactElement {
   }, []);
   const handleNewCompare = useCallback(() => {
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, []);
 
@@ -612,6 +622,9 @@ export function ChatPage(): ReactElement {
   const enterCompare = useCallback(() => {
     setViewBeforeCompare((prev) => prev ?? view);
     setView({ mode: "compare", pairId: crypto.randomUUID() });
+    // Clear activeThreadId so compare panes do not inherit the single-chat
+    // thread ID as a fallback for session_id routing.
+    useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
   }, [view]);
 
@@ -619,9 +632,13 @@ export function ChatPage(): ReactElement {
     if (!viewBeforeCompare) return;
     setView(viewBeforeCompare);
     setViewBeforeCompare(null);
-    // Restore context usage from the active thread's last assistant message
+    // Restore context usage from the active thread's last assistant message.
+    // Use the thread ID from the saved view rather than the store, because
+    // activeThreadId may have been cleared on compare entry.
     const store = useChatRuntimeStore.getState();
-    const threadId = store.activeThreadId;
+    const threadId =
+      ("threadId" in viewBeforeCompare ? viewBeforeCompare.threadId : null) ??
+      store.activeThreadId;
     if (threadId) {
       void db.messages
         .where("threadId")
@@ -728,6 +745,7 @@ export function ChatPage(): ReactElement {
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
           setView({ mode: "compare", pairId: crypto.randomUUID() });
+          useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
@@ -846,6 +864,7 @@ export function ChatPage(): ReactElement {
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
+                onFoldersChange={refreshLocalModels}
                 variant="ghost"
                 open={modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
@@ -858,14 +877,16 @@ export function ChatPage(): ReactElement {
                   label={
                     loadProgress?.phase === "starting"
                       ? "Starting model…"
-                      : loadingModel.isDownloaded
+                      : loadingModel.isDownloaded || loadingModel.isCachedLora
                         ? "Loading model…"
                         : "Downloading model…"
                   }
                   title={
                     loadingModel.isDownloaded
                       ? `Loading ${loadingModel.displayName} from cache.`
-                      : `Loading ${loadingModel.displayName}. This may include downloading.`
+                      : loadingModel.isCachedLora
+                        ? `Loading ${loadingModel.displayName} into memory.`
+                        : `Loading ${loadingModel.displayName}. This may include downloading.`
                   }
                   progressPercent={loadProgress?.percent}
                   progressLabel={loadProgress?.label}
@@ -911,6 +932,7 @@ export function ChatPage(): ReactElement {
               pairId={view.pairId}
               models={models}
               loraModels={loraModels}
+              onFoldersChange={refreshLocalModels}
             />
           )}
         </div>
@@ -934,7 +956,6 @@ export function ChatPage(): ReactElement {
               });
             }
           }}
-          onFoldersChange={refreshLocalModels}
         />
       </SidebarProvider>
     </div>

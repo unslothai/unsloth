@@ -20,11 +20,15 @@ import {
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import {
+  type ScanFolderInfo,
+  addScanFolder,
   deleteCachedModel,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
   listLocalModels,
+  listScanFolders,
+  removeScanFolder,
 } from "@/features/chat/api/chat-api";
 import type {
   CachedGgufRepo,
@@ -42,7 +46,7 @@ import {
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Trash2Icon } from "lucide-react";
 import {
@@ -123,23 +127,22 @@ function ModelRow({
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
         selected && "bg-accent/60",
-        exceeds && "opacity-50",
       )}
     >
       <span
         className={cn(
           "block min-w-0 flex-1 truncate",
-          exceeds && "line-through decoration-muted-foreground/50",
+          exceeds && "!text-gray-500 dark:!text-gray-400",
         )}
       >
         {label}
       </span>
       <span className="ml-auto flex items-center gap-1.5 shrink-0">
         {vramStatus === "exceeds" && (
-          <span className="text-[9px] font-medium text-red-400">OOM</span>
+          <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">OOM</span>
         )}
         {vramStatus === "tight" && (
-          <span className="text-[9px] font-medium text-amber-400">TIGHT</span>
+          <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
         )}
         {meta ? (
           <span className="text-[10px] text-muted-foreground">{meta}</span>
@@ -350,7 +353,7 @@ function GgufVariantExpander({
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                {v.quant}
+                <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>{v.quant}</span>
                 {v.downloaded ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
                     downloaded
@@ -363,12 +366,12 @@ function GgufVariantExpander({
               </span>
               <span className="flex items-center gap-1.5 shrink-0">
                 {oom && (
-                  <span className="text-[9px] font-medium text-red-400">
+                  <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
                     OOM
                   </span>
                 )}
                 {tight && (
-                  <span className="text-[9px] font-medium text-amber-400">
+                  <span className="text-[9px] font-medium !text-amber-400">
                     TIGHT
                   </span>
                 )}
@@ -415,6 +418,7 @@ let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
+let _scanFoldersCache: ScanFolderInfo[] = [];
 
 /** Sort LM Studio models with unsloth publisher first. */
 function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
@@ -434,10 +438,12 @@ export function HubModelPicker({
   models,
   value,
   onSelect,
+  onFoldersChange,
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onFoldersChange?: () => void;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
@@ -469,6 +475,13 @@ export function HubModelPicker({
   const [customFolderModels, setCustomFolderModels] =
     useState<LocalModelInfo[]>(_customFolderCache);
 
+  // Custom scan folders management
+  const [scanFolders, setScanFolders] = useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const [folderInput, setFolderInput] = useState("");
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const [showFolderInput, setShowFolderInput] = useState(false);
+  const [folderLoading, setFolderLoading] = useState(false);
+
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
       .then((res) => {
@@ -483,6 +496,57 @@ export function HubModelPicker({
       })
       .catch(() => {});
   }, []);
+
+  const refreshScanFolders = useCallback(() => {
+    listScanFolders()
+      .then((v) => {
+        _scanFoldersCache = v;
+        setScanFolders(v);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleAddFolder = useCallback(async () => {
+    const trimmed = folderInput.trim();
+    if (!trimmed || folderLoading) return;
+    setFolderError(null);
+    setFolderLoading(true);
+    try {
+      const created = await addScanFolder(trimmed);
+      // Backend returns existing row for duplicates, so deduplicate
+      const next = _scanFoldersCache.some((f) => f.id === created.id || f.path === created.path)
+        ? _scanFoldersCache
+        : [..._scanFoldersCache, created];
+      _scanFoldersCache = next;
+      setScanFolders(next);
+      setFolderInput("");
+      setShowFolderInput(false);
+      refreshLocalModelsList();
+      onFoldersChange?.();
+      // Background reconciliation with the server
+      void refreshScanFolders();
+    } catch (e) {
+      setFolderError(e instanceof Error ? e.message : "Failed to add folder");
+    } finally {
+      setFolderLoading(false);
+    }
+  }, [folderInput, folderLoading, refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
+
+  const handleRemoveFolder = useCallback(async (id: number) => {
+    try {
+      await removeScanFolder(id);
+      // Optimistic update so the folder disappears immediately
+      const next = _scanFoldersCache.filter((f) => f.id !== id);
+      _scanFoldersCache = next;
+      setScanFolders(next);
+      refreshScanFolders();
+      refreshLocalModelsList();
+      onFoldersChange?.();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to remove folder");
+      refreshScanFolders();
+    }
+  }, [refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
 
   const refreshCachedLists = useCallback(() => {
     listCachedGguf()
@@ -503,6 +567,7 @@ export function HubModelPicker({
   useEffect(() => {
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached)
     refreshLocalModelsList();
+    refreshScanFolders();
 
     if (alreadyCached) return;
     let done = 0;
@@ -523,7 +588,7 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-  }, [alreadyCached]);
+  }, [alreadyCached, refreshLocalModelsList, refreshScanFolders]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return;
@@ -878,9 +943,95 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && customFolderModels.length > 0 ? (
+          {!showHfSection ? (
             <>
-              <ListLabel>Custom Folders</ListLabel>
+              <div className="flex items-center justify-between px-2.5 py-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Custom Folders
+                </span>
+                <button
+                  type="button"
+                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
+                  onClick={() => {
+                    setShowFolderInput((open) => {
+                      if (open) { setFolderInput(""); setFolderError(null); }
+                      return !open;
+                    });
+                  }}
+                  className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+                >
+                  <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                </button>
+              </div>
+
+              {/* Folder paths */}
+              {scanFolders.map((f) => (
+                <div
+                  key={f.id}
+                  className="group flex items-center gap-1.5 px-3 py-0.5"
+                >
+                  <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
+                  <span
+                    className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/70"
+                    title={f.path}
+                  >
+                    {f.path}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveFolder(f.id)}
+                    aria-label={`Remove folder ${f.path}`}
+                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
+                  </button>
+                </div>
+              ))}
+
+              {/* Add folder input */}
+              {showFolderInput && (
+                <div className="px-2.5 pb-1 pt-0.5">
+                  <div className="flex items-center gap-1">
+                    <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
+                    <input
+                      value={folderInput}
+                      onChange={(e) => { setFolderInput(e.target.value); setFolderError(null); }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); handleAddFolder(); }
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setShowFolderInput(false); setFolderInput(""); setFolderError(null); }
+                      }}
+                      placeholder="/path/to/models"
+                      className="h-6 min-w-0 flex-1 rounded border border-border/50 bg-transparent px-1.5 font-mono text-[10px] text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-foreground/20"
+                      disabled={folderLoading}
+                      autoFocus={true}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddFolder}
+                      disabled={folderLoading || !folderInput.trim()}
+                      className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                    >
+                      Add
+                    </button>
+                  </div>
+                  {folderError && (
+                    <p className="px-0.5 pt-0.5 text-[10px] text-destructive">{folderError}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Empty state */}
+              {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
+                <button
+                  type="button"
+                  onClick={() => setShowFolderInput(true)}
+                  className="px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground"
+                >
+                  + Add a folder to scan for local models
+                </button>
+              )}
+
+              {/* Models from custom folders */}
               {customFolderModels.map((m) => {
                 const isGguf =
                   isGgufRepo(m.id) ||

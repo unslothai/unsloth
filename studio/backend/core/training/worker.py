@@ -390,11 +390,16 @@ def run_training_process(
     # Some newer architectures (e.g. NemotronH) have config parsing bugs in
     # transformers that require trust_remote_code=True as a workaround.
     # Only auto-enable for unsloth/* prefixed models (trusted source).
+    # Exclude Gemma 4 since it is a native transformers 5.5 model and
+    # trust_remote_code=True would bypass the compiler (disabling fused CE).
     from utils.transformers_version import needs_transformers_5
 
+    _lowered = model_name.lower()
+    _is_native_t5 = any(x in _lowered for x in ("gemma-4", "gemma4"))
     if (
         needs_transformers_5(model_name)
-        and model_name.lower().startswith("unsloth/")
+        and _lowered.startswith("unsloth/")
+        and not _is_native_t5
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True

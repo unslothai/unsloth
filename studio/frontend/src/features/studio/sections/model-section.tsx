@@ -489,12 +489,12 @@ export function ModelSection() {
                           <ComboboxItem
                             key={id}
                             value={id}
-                            className={`gap-2 ${exceeds ? "opacity-50" : ""}`}
+                            className="gap-2"
                           >
                             <Tooltip>
                               <TooltipTrigger asChild={true}>
                                 <span
-                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "line-through decoration-muted-foreground/50" : ""}`}
+                                  className={`block min-w-0 flex-1 truncate ${exceeds ? "!text-gray-500 dark:!text-gray-400" : ""}`}
                                 >
                                   {id}
                                 </span>
@@ -519,12 +519,12 @@ export function ModelSection() {
                             </Tooltip>
                             <span className="ml-auto flex items-center gap-1.5 shrink-0">
                               {fitStatus === "exceeds" && (
-                                <span className="text-[9px] font-medium text-red-400">
+                                <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
                                   OOM
                                 </span>
                               )}
                               {fitStatus === "tight" && (
-                                <span className="text-[9px] font-medium text-amber-400">
+                                <span className="text-[9px] font-medium !text-amber-400">
                                   TIGHT
                                 </span>
                               )}
