@@ -1047,8 +1047,13 @@ def list_local_gguf_variants(
         (variants, has_vision): list of non-mmproj GGUF variants + vision flag.
     """
     p = Path(directory)
+    # If a file path was passed (e.g. a standalone .gguf entry), scan its
+    # parent directory instead so we still find the correct variants.
     if not p.is_dir():
-        return [], False
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            p = p.parent
+        else:
+            return [], False
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}

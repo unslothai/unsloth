@@ -146,6 +146,40 @@ def _scan_models_dir(
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
+    # Check if the directory itself IS a model (has a model config AND
+    # weight files).  Both conditions are required: a bare directory with
+    # only loose .gguf files (no config) might be a mixed collection that
+    # should list files individually, and a config.json alone (no weights)
+    # does not make a model directory.
+    try:
+        _has_config = (
+            (models_dir / "config.json").exists()
+            or (models_dir / "adapter_config.json").exists()
+        )
+        _has_weights = (
+            any(models_dir.glob("*.gguf"))
+            or any(models_dir.glob("*.safetensors"))
+            or any(models_dir.glob("*.bin"))
+        )
+        _is_self_model = _has_config and _has_weights
+    except OSError:
+        _is_self_model = False
+
+    if _is_self_model:
+        try:
+            updated_at = models_dir.stat().st_mtime
+        except OSError:
+            updated_at = None
+        return [
+            LocalModelInfo(
+                id = str(models_dir),
+                display_name = models_dir.name,
+                path = str(models_dir),
+                source = "models_dir",
+                updated_at = updated_at,
+            ),
+        ]
+
     found: List[LocalModelInfo] = []
     for child in models_dir.iterdir():
         if limit is not None and len(found) >= limit:
@@ -243,6 +277,15 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
+    # If the directory itself is a model directory (has config files),
+    # it is not an LM Studio publisher structure -- _scan_models_dir
+    # already handles it.
+    try:
+        if (lm_dir / "config.json").exists() or (lm_dir / "adapter_config.json").exists():
+            return []
+    except OSError:
+        pass
+
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
         try:
@@ -261,6 +304,18 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             updated_at = updated_at,
                         ),
                     )
+                continue
+
+            # If the child directory itself looks like a model (has config
+            # or model weight files), skip it -- _scan_models_dir already
+            # handles it.  Only treat it as a publisher directory otherwise.
+            _child_is_model = (
+                (child / "config.json").exists()
+                or (child / "adapter_config.json").exists()
+                or any(child.glob("*.safetensors"))
+                or any(child.glob("*.bin"))
+            )
+            if _child_is_model:
                 continue
 
             # child is a publisher directory -- scan its sub-directories
