@@ -155,8 +155,8 @@ class TestVisionCacheDirectPath:
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
     def test_direct_vlm_detection_cached(self, mock_load_config, mock_needs_t5):
-        """A standard VLM detected via vision_config should be cached."""
-        cfg = MagicMock()
+        """A standard VLM detected via architecture suffix should be cached."""
+        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
         cfg.model_type = "gemma3"
         cfg.architectures = ["Gemma3ForConditionalGeneration"]
         mock_load_config.return_value = cfg
@@ -186,7 +186,7 @@ class TestVisionCacheDirectPath:
         self, mock_load_config, mock_needs_t5
     ):
         """Models with vision_config (LLaVA, Qwen2-VL, etc.) should be cached as True."""
-        cfg = MagicMock()
+        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
         cfg.model_type = "qwen2_vl"
         cfg.architectures = ["Qwen2VLForCausalLM"]  # Doesn't match VLM suffixes
         cfg.vision_config = {"hidden_size": 1024}
@@ -201,7 +201,7 @@ class TestVisionCacheDirectPath:
     def test_audio_model_excluded_and_cached(self, mock_load_config, mock_needs_t5):
         """Audio-only models (csm, whisper) with ForConditionalGeneration
         should be excluded from VLM detection and cached as False."""
-        cfg = MagicMock()
+        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         mock_load_config.return_value = cfg
