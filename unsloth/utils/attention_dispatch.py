@@ -24,6 +24,7 @@ import torch
 from torch import Tensor
 from torch.nn.functional import scaled_dot_product_attention
 
+from .attnres import AttnResState, apply_attnres
 from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
@@ -88,6 +89,7 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
+    attnres_state: Optional[AttnResState] = None
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -145,6 +147,9 @@ def run_attention(
     sdpa_kwargs = config.sdpa_kwargs or {}
     xformers_kwargs = config.xformers_kwargs or {}
 
+    def finalize(output: Tensor) -> Tensor:
+        return apply_attnres(output, context.attnres_state)
+
     bsz = context.bsz
     n_heads = context.n_heads
     q_len = context.q_len
@@ -158,7 +163,7 @@ def run_attention(
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
         V_f = V.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
         _, cu_seqlens, max_seqlen = context.seq_info
-        return flash_attn_varlen_func(
+        out = flash_attn_varlen_func(
             Q_f,
             K_f,
             V_f,
@@ -168,13 +173,15 @@ def run_attention(
             max_seqlen,
             **flash_varlen_kwargs,
         ).view(bsz, q_len, n_heads, head_dim)
+        return finalize(out)
     elif backend == FLASH_DENSE:
         Q_t = Q.transpose(1, 2)
         K_t = K.transpose(1, 2)
         V_t = V.transpose(1, 2)
-        return flash_attn_func(Q_t, K_t, V_t, **flash_dense_kwargs).reshape(
+        out = flash_attn_func(Q_t, K_t, V_t, **flash_dense_kwargs).reshape(
             bsz, q_len, n_heads, head_dim
         )
+        return finalize(out)
     elif backend == XFORMERS:
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
@@ -241,7 +248,7 @@ def run_attention(
             out = out.reshape(bsz, q_len, n_heads, head_dim)
         else:
             out = out.view(bsz, q_len, n_heads, head_dim)
-        return out
+        return finalize(out)
     else:
         local_mask = context.attention_mask
         is_causal_local = False
@@ -329,7 +336,7 @@ def run_attention(
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
             out = scaled_dot_product_attention(Q, K, V, **kwargs)
-            return out.transpose(1, 2)
+            return finalize(out.transpose(1, 2))
 
         K_mod = K
         V_mod = V
@@ -349,7 +356,7 @@ def run_attention(
             V_mod.contiguous(),
             **kwargs,
         )
-        return out.transpose(1, 2).contiguous()
+        return finalize(out.transpose(1, 2).contiguous())
 
 
 __all__ = [
