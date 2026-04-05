@@ -60,6 +60,13 @@ from .flex_attention import (
     create_flex_attention_causal_mask,
     create_flex_attention_sliding_window_mask,
 )
+from ..utils.attnres import (
+    AttnResConfig,
+    AttnResState,
+    apply_attnres,
+    begin_attnres,
+    end_attnres,
+)
 
 import os
 
