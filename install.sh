@@ -978,6 +978,21 @@ _find_no_torch_runtime() {
     fi
 }
 
+# ── AMD ROCm GPU detection helper ──
+# Returns 0 (true) if an actual AMD GPU is present, 1 (false) otherwise.
+# Checks rocminfo for gfx[1-9]* (excludes gfx000 CPU agent) and
+# amd-smi list for GPU data rows (excludes header-only output).
+_has_amd_rocm_gpu() {
+    if command -v rocminfo >/dev/null 2>&1 && \
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
+        return 0
+    elif command -v amd-smi >/dev/null 2>&1 && \
+         amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[]/{ found=1 } END{ exit !found }'; then
+        return 0
+    fi
+    return 1
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -995,16 +1010,7 @@ get_torch_index_url() {
     fi
     if [ -z "$_smi" ]; then
         # No NVIDIA GPU -- check for AMD ROCm GPU
-        # First confirm an actual AMD GPU is present (not just ROCm tools installed)
-        _has_rocm_gpu=false
-        if command -v rocminfo >/dev/null 2>&1 && \
-           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
-            _has_rocm_gpu=true
-        elif command -v amd-smi >/dev/null 2>&1 && \
-             amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[]/{ found=1 } END{ exit !found }'; then
-            _has_rocm_gpu=true
-        fi
-        if [ "$_has_rocm_gpu" != true ]; then
+        if ! _has_amd_rocm_gpu; then
             echo "$_base/cpu"; return
         fi
         # AMD GPU confirmed -- detect ROCm version
@@ -1155,16 +1161,8 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # (gfx in rocminfo or amd-smi list). Then require rocminfo "Marketing Name:.*Radeon".
 case "$TORCH_INDEX_URL" in
     */rocm*)
-        _amd_gpu_here=false
         _amd_gpu_radeon=false
-        if command -v rocminfo >/dev/null 2>&1 && \
-           rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/{found=1} END{exit !found}'; then
-            _amd_gpu_here=true
-        elif command -v amd-smi >/dev/null 2>&1 && \
-             amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[]/{ found=1 } END{ exit !found }'; then
-            _amd_gpu_here=true
-        fi
-        if [ "$_amd_gpu_here" = true ] && command -v rocminfo >/dev/null 2>&1 && \
+        if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
            rocminfo 2>/dev/null | grep -q 'Marketing Name:.*Radeon'; then
             _amd_gpu_radeon=true
         fi
@@ -1255,37 +1253,30 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
                     --find-links "$_RADEON_BASE_URL" \
                     $_radeon_pkgs
-                substep "installing bitsandbytes for AMD Radeon..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" \
-                    "bitsandbytes>=0.49.1"
             else
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                 run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
                     "$TORCH_CONSTRAINT" torchvision torchaudio \
                     --index-url "$TORCH_INDEX_URL"
-                substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
             run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
                 "$TORCH_CONSTRAINT" torchvision torchaudio \
                 --index-url "$TORCH_INDEX_URL"
-            substep "installing bitsandbytes for AMD ROCm..."
-            run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
         run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
-        # AMD ROCm: install bitsandbytes with AMD support
-        case "$TORCH_INDEX_URL" in
-            */rocm*)
-                substep "installing bitsandbytes for AMD ROCm..."
-                run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
-                ;;
-        esac
     fi
+    # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths)
+    case "$TORCH_INDEX_URL" in
+        */rocm*)
+            substep "installing bitsandbytes for AMD ROCm..."
+            run_install_cmd "install bitsandbytes (AMD)" uv pip install --python "$_VENV_PY" "bitsandbytes>=0.49.1"
+            ;;
+    esac
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$SKIP_TORCH" = true ]; then

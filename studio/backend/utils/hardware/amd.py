@@ -9,6 +9,8 @@ nvidia.py counterparts.
 """
 
 import json
+import math
+import re
 import subprocess
 from typing import Any, Optional
 
@@ -47,14 +49,10 @@ def _parse_numeric(value: Any) -> Optional[float]:
     if isinstance(value, dict):
         return _parse_numeric(value.get("value"))
     if isinstance(value, (int, float)):
-        import math
-
         f = float(value)
         return f if math.isfinite(f) else None
     if isinstance(value, str):
         # Strip units like "W", "C", "%", "MB", "MiB", "GB", "GiB" etc.
-        import re
-
         cleaned = re.sub(r"\s*[A-Za-z/%]+$", "", value.strip())
         if not cleaned or cleaned.lower() in ("n/a", "none", "unknown"):
             return None
