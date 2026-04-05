@@ -52,23 +52,6 @@ def _clear_vision_cache():
     _vision_detection_cache.clear()
 
 
-def _make_config(**attrs):
-    """Return a lightweight mock config with the given attributes."""
-    cfg = MagicMock()
-    # Remove all default MagicMock attributes so hasattr checks are explicit
-    cfg.configure_mock(**attrs)
-    # Only expose the attrs we explicitly set
-    real_attrs = set(attrs.keys())
-    original_hasattr = hasattr
-
-    def _controlled_hasattr(obj, name):
-        if obj is cfg:
-            return name in real_attrs
-        return original_hasattr(obj, name)
-
-    return cfg, _controlled_hasattr
-
-
 # ---------------------------------------------------------------------------
 # Cache hit / miss tests
 # ---------------------------------------------------------------------------
@@ -141,20 +124,20 @@ class TestVisionCacheSubprocessPath:
 
 
 class TestVisionCacheOnException:
-    """When detection raises an exception, the function returns False.
-    That False must be cached so subsequent calls don't retry and fail again."""
+    """When detection raises an exception, _is_vision_model_uncached catches
+    it and returns False.  That False must be cached so subsequent calls don't
+    retry and fail again."""
 
-    @patch(
-        "utils.models.model_config._is_vision_model_uncached",
-        side_effect = [False],
-    )
-    def test_exception_result_cached(self, mock_uncached):
-        """After an exception-triggered False, the cache should serve False."""
-        # The uncached function returns False (simulating the except branch)
+    @patch("utils.models.model_config.load_model_config", side_effect = OSError("network down"))
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    def test_exception_result_cached(self, mock_needs_t5, mock_load_config):
+        """A real exception inside _is_vision_model_uncached should be caught,
+        return False, and that False should be cached for subsequent calls."""
+        # First call: load_model_config raises → except branch → False
         assert is_vision_model("broken/model") is False
-        # Second call should not invoke uncached again
+        # Second call: cache hit, load_model_config not called again
         assert is_vision_model("broken/model") is False
-        mock_uncached.assert_called_once()
+        mock_load_config.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
