@@ -193,10 +193,11 @@ def _setup_cache_env() -> None:
         os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
     ).expanduser()
     hf_default = xdg_cache / "huggingface"
+    hf_home = Path(os.environ.get("HF_HOME", str(hf_default)))
     defaults: dict[str, str] = {
         "HF_HOME": str(hf_default),
-        "HF_HUB_CACHE": str(hf_default / "hub"),
-        "HF_XET_CACHE": str(hf_default / "xet"),
+        "HF_HUB_CACHE": str(hf_home / "hub"),
+        "HF_XET_CACHE": str(hf_home / "xet"),
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
