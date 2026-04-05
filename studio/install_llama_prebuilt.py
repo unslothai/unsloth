@@ -3120,7 +3120,7 @@ def resolve_release_asset_choice(
         )
 
     published_choice: AssetChoice | None = None
-    if host.is_windows and host.is_x86_64:
+    if host.is_windows and host.is_x86_64 and not host.has_rocm:
         published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
