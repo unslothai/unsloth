@@ -34,7 +34,7 @@ def _read_flag(value, default = False):
 def _read_int(value, default):
     try:
         parsed = int(value)
-    except Exception:
+    except (ValueError, TypeError):
         return default
     return max(1, parsed)
 
@@ -42,7 +42,7 @@ def _read_int(value, default):
 def _read_float(value, default):
     try:
         return float(value)
-    except Exception:
+    except (ValueError, TypeError):
         return default
 
 
@@ -183,7 +183,7 @@ def attnres_transform_attention_output(
         attention_output = attention_output + (attnres_state.alpha * mixed)
 
     # Keep current-layer information for future layers in this block.
-    attnres_state.current_block_states.append(attention_output)
+    attnres_state.current_block_states.append(attention_output.clone())
 
     # Finalize a block summary at boundaries.
     at_block_end = ((layer_idx + 1) % attnres_state.block_size) == 0
