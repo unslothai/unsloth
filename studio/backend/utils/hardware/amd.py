@@ -75,24 +75,24 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if isinstance(value, dict):
         unit = str(value.get("unit", "")).strip().lower()
         raw_value = value.get("value")
+    elif isinstance(value, str):
+        # Extract unit suffix from strings like "192 GiB" or "8192 MB"
+        m = re.match(r"^\s*([\d.]+)\s*([A-Za-z]+)\s*$", value.strip())
+        if m:
+            unit = m.group(2).lower()
 
     num = _parse_numeric(raw_value if isinstance(value, dict) else value)
     if num is None:
         return None
 
-    # Explicit unit conversion -- distinguish binary (GiB) from SI (GB)
-    if "gib" in unit:
+    # Unit conversion -- GPU tools (including amd-smi) use binary units even
+    # when labeling them "GB" or "MB", so treat GB/GiB and MB/MiB the same.
+    if "gib" in unit or "gb" in unit:
         return num * 1024
-    if "gb" in unit:
-        return num * 1000
-    if "mib" in unit:
+    if "mib" in unit or "mb" in unit:
         return num
-    if "mb" in unit:
-        return num
-    if "kib" in unit:
+    if "kib" in unit or "kb" in unit:
         return num / 1024
-    if "kb" in unit:
-        return num / 1000
     if unit and (
         "b" in unit and "g" not in unit and "m" not in unit and "k" not in unit
     ):
