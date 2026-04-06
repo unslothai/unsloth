@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Navbar } from "@/components/navbar";
+import { VersionBadge } from "@/components/version-badge";
 import { usePlatformStore } from "@/config/env";
 import {
   Outlet,
@@ -53,6 +54,7 @@ function RootLayout() {
           </Suspense>
         </motion.div>
       </AnimatePresence>
+      <VersionBadge />
     </AppProvider>
   );
 }
