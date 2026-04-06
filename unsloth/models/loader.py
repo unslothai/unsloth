@@ -1371,9 +1371,7 @@ class FastModel(FastBaseModel):
                 or disable_name.lower() in model_types_all
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-                # Use bfloat16 storage where supported; fall back to float32 on
-                # older GPUs (e.g. T4) that lack native bfloat16 support.
-                dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float32
+                dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
         # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
