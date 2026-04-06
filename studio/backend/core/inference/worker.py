@@ -287,14 +287,16 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
 
-        # Auto-enable trust_remote_code for Nemotron models only.
+        # Auto-enable trust_remote_code for NemotronH/Nano models only.
         # NemotronH has config parsing bugs requiring trust_remote_code=True.
         # Other transformers 5.x models are native and do NOT need it.
+        # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code:
             model_name = config["model_name"]
             _mn_lower = model_name.lower()
-            if "nemotron" in _mn_lower and (
+            if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
                 _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
             ):
                 trust_remote_code = True
