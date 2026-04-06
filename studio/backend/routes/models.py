@@ -285,6 +285,8 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
         ).exists():
             return []
     except OSError:
+        # If we cannot stat the config files (permissions, broken symlink,
+        # etc.), treat the directory as a normal LM Studio root and continue.
         pass
 
     found: List[LocalModelInfo] = []
