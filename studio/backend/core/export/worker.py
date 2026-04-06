@@ -32,8 +32,8 @@ logger = get_logger(__name__)
 def _activate_transformers_version(model_name: str) -> None:
     """Activate the correct transformers version BEFORE any ML imports.
 
-    If the model needs transformers 5.x, prepend the pre-installed .venv_t5/
-    directory to sys.path. Otherwise do nothing (default 4.57.x in .venv/).
+    Uses get_transformers_tier() to decide between .venv_t5_550/ (5.5.0),
+    .venv_t5_530/ (5.3.0), or the default 4.57.x.
     """
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -41,24 +41,37 @@ def _activate_transformers_version(model_name: str) -> None:
         sys.path.insert(0, backend_path)
 
     from utils.transformers_version import (
-        needs_transformers_5,
+        get_transformers_tier,
         _resolve_base_model,
-        _ensure_venv_t5_exists,
-        _VENV_T5_DIR,
+        _ensure_venv_t5_530_exists,
+        _ensure_venv_t5_550_exists,
+        _VENV_T5_530_DIR,
+        _VENV_T5_550_DIR,
     )
 
     resolved = _resolve_base_model(model_name)
-    if needs_transformers_5(resolved):
-        if not _ensure_venv_t5_exists():
+    tier = get_transformers_tier(resolved)
+
+    if tier == "550":
+        if not _ensure_venv_t5_550_exists():
             raise RuntimeError(
-                f"Cannot activate transformers 5.x: .venv_t5 missing at {_VENV_T5_DIR}"
+                f"Cannot activate transformers 5.5.0: .venv_t5_550 missing at {_VENV_T5_550_DIR}"
             )
-        if _VENV_T5_DIR not in sys.path:
-            sys.path.insert(0, _VENV_T5_DIR)
-        logger.info("Activated transformers 5.x from %s", _VENV_T5_DIR)
-        # Propagate to child subprocesses (e.g. GGUF converter)
+        if _VENV_T5_550_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_550_DIR)
+        logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
         _pp = os.environ.get("PYTHONPATH", "")
-        os.environ["PYTHONPATH"] = _VENV_T5_DIR + (os.pathsep + _pp if _pp else "")
+        os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "530":
+        if not _ensure_venv_t5_530_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers 5.3.0: .venv_t5_530 missing at {_VENV_T5_530_DIR}"
+            )
+        if _VENV_T5_530_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_530_DIR)
+        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
