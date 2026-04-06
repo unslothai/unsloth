@@ -66,7 +66,7 @@ def show_link(port: int = 8888):
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
             Open Unsloth Studio
         </a>
-        <p style="color: #666666; margin: 12px 0 0 0; font-size: 14px;">
+        <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px;">       
             If the link doesn't work, you can scroll down to view the UI generated directly in Colab.
         </p>
         <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace;">
