@@ -269,6 +269,13 @@
       "min_p": 0.01,
       "repetition_penalty": 1.0
     },
+    "minimax-m2.7": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
     "minimax-m2.5": {
       "temperature": 1.0,
       "top_p": 0.95,
@@ -382,7 +389,7 @@
     "deepseek-r1", "deepseek-v3", "deepseek-ocr",
     "glm-5", "glm-4",
     "nemotron",
-    "minimax-m2.5", "minimax",
+    "minimax-m2.7", "minimax-m2.5", "minimax",
     "gpt-oss", "granite-4",
     "kimi-k2", "kimi",
     "lfm2", "smollm", "olmo", "falcon", "ernie", "seed", "grok", "mimo"
