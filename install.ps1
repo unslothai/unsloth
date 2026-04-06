@@ -876,18 +876,26 @@ shell.Run cmd, 0, False
         } elseif ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.4" unsloth-zoo }
         } else {
-             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth "$PackageName" unsloth-zoo }
+
+            if ($PackageName -eq "unsloth") {
+                # Use the --no-deps  ONLY for the standard unsloth package
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth "$PackageName" unsloth-zoo }
                 if ($baseInstallExit -eq 0) {
                     # Install runtime deps from requirements file if present
                     $RuntimeReq = Find-NoTorchRuntimeFile
                     if ($RuntimeReq) {
-                         $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython -r $RuntimeReq }
-                         }
-                    if ($baseInstallExit -eq 0 -and -not $SkipTorch) {
-                        substep "re-pinning CUDA torch (uv strips +cuXXX suffix during unsloth resolution)..."
-                        $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
-        }
+                        $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython -r $RuntimeReq }
+                    }
                 }
+            } else {
+                # For custom packages (--package roland-sloth), use the original direct install 
+                # This allows uv/pip to resolve dependencies normally as they may not have a 'no-torch-runtime.txt'
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package "$PackageName" "unsloth>=2026.4.4" unsloth-zoo }
+            }
+            if ($baseInstallExit -eq 0 -and -not $SkipTorch) {
+            substep "re-pinning CUDA torch (uv strips +cuXXX suffix during unsloth resolution)..."
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            }
 
         }
         if ($baseInstallExit -ne 0) {
