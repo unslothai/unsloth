@@ -517,14 +517,19 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # HfFileSystem returns POSIX paths; use str.rsplit to extract
+                # filenames correctly on all platforms (os.path.split uses the
+                # OS separator which breaks on Windows).
+                try:
+                    files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
+                    files = [x.rsplit("/", 1)[-1] for x in files]
+                    if (
+                        sum(x == "adapter_config.json" or x == "config.json" for x in files)
+                        >= 2
+                    ):
+                        both_exist = True
+                except Exception:
+                    pass
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
@@ -1291,13 +1296,19 @@ class FastModel(FastBaseModel):
                 exist_config = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
-                    both_exist = True
+                # HfFileSystem returns POSIX paths; use str.rsplit to extract
+                # filenames correctly on all platforms (os.path.split uses the
+                # OS separator which breaks on Windows).
+                try:
+                    files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
+                    files = [x.rsplit("/", 1)[-1] for x in files]
+                    if (
+                        sum(x == "adapter_config.json" or x == "config.json" for x in files)
+                        >= 2
+                    ):
+                        both_exist = True
+                except Exception:
+                    pass
 
         if not is_model and not is_peft:
             error = autoconfig_error if autoconfig_error is not None else peft_error
